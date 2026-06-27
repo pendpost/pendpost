@@ -32,6 +32,23 @@ updates:
       - dependency-name: "eslint-plugin-react-hooks"
         update-types: ["version-update:semver-major"]
 
+  - package-ecosystem: npm
+    directory: "/web"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+    target-branch: develop
+    groups:
+      web-dependencies:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # astro v6 is a major migration for the marketing site; deferred.
+      - dependency-name: "astro"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

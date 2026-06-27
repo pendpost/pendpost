@@ -18,6 +18,7 @@ let clientsState;
 let subState;
 const enableStart = vi.fn(() => Promise.resolve({ ok: true, authUrl: 'https://cloud.example/connect?state=abc' }));
 const ejectCloud = vi.fn(() => Promise.resolve({ ok: true, reauthChecklist: [] }));
+const signOutCloud = vi.fn(() => Promise.resolve({ ok: true }));
 const migrateCloud = vi.fn(() => Promise.resolve({ ok: true, connected: {}, tokens: { ok: true, handed: [], skipped: [] }, push: { ok: true, pushed: [], skipped: [], accepted: [], refused: [] } }));
 const reconcileCloud = vi.fn(() => Promise.resolve({ ok: true, patched: [], skipped: [], refused: [] }));
 const invalidate = vi.fn();
@@ -36,18 +37,19 @@ vi.mock('../../lib/cloud.js', () => ({
   setSpendCap: (...a) => setSpendCap(...a),
   enableStart: (...a) => enableStart(...a),
   ejectCloud: (...a) => ejectCloud(...a),
+  signOutCloud: (...a) => signOutCloud(...a),
   migrateCloud: (...a) => migrateCloud(...a),
   reconcileCloud: (...a) => reconcileCloud(...a),
   useInvalidateCloud: () => invalidate,
 }));
 
-function renderCloud() {
+function renderCloud(props = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <ConfirmProvider>
-          <Cloud />
+          <Cloud {...props} />
         </ConfirmProvider>
       </TooltipProvider>
     </QueryClientProvider>,
@@ -56,12 +58,13 @@ function renderCloud() {
 
 const loading = () => ({ data: undefined, isLoading: true });
 const disconnected = (over = {}) => ({ data: { ok: true, enabled: false, baseUrl: '', workspaceId: '', apiKey: { present: true, tail: null }, ...over }, isLoading: false });
-const connected = (over = {}) => ({ data: { ok: true, enabled: true, baseUrl: 'https://cloud.pendpost.app', workspaceId: 'ws_42', apiKey: { present: true, tail: 'ab12' }, ...over }, isLoading: false });
+const connected = (over = {}) => ({ data: { ok: true, enabled: true, baseUrl: 'https://cloud.pendpost.app', workspaceId: 'ws_42', apiKey: { present: true, tail: 'ab12' }, accountPortalUrl: 'https://accounts.test/user', ...over }, isLoading: false });
 const withClients = (clients) => { clientsState = { data: { ok: true, connection: { workspaceId: 'ws_42', connected: true }, clients }, isLoading: false }; };
 
 beforeEach(() => {
   enableStart.mockClear();
   ejectCloud.mockClear();
+  signOutCloud.mockClear();
   migrateCloud.mockClear();
   reconcileCloud.mockClear();
   invalidate.mockClear();
@@ -71,6 +74,7 @@ beforeEach(() => {
   setSpendCap.mockClear();
   clientsState = { data: { ok: true, connection: {}, clients: [] }, isLoading: false };
   subState = { data: undefined };
+  try { sessionStorage.clear(); } catch { /* jsdom always has it */ }
 });
 
 describe('Cloud', () => {
@@ -80,11 +84,14 @@ describe('Cloud', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/loading/i);
   });
 
-  it('DISABLED: renders the off explainer and ONE enable button (no key fields)', () => {
+  it('DISABLED: renders the off explainer and an explicit SIGN-IN button (no key fields, story 3)', () => {
     cloudState = disconnected();
     renderCloud();
     expect(screen.getByText(/24\/7 cloud service is off/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /enable 24\/7/i })).toBeInTheDocument();
+    // Story 3: the account action is explicit ("Sign in to the cloud"), no longer hidden
+    // behind "enable a feature". The fresh view headlines sign-in / create account.
+    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /sign in or create your cloud account/i })).toBeInTheDocument();
     // No key is ever typed: there is no base url / workspace / api-key input.
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     // The plans & pricing link is surfaced prominently at the decision point and
@@ -92,6 +99,38 @@ describe('Cloud', () => {
     const plansLink = screen.getByRole('link', { name: /view plans and pricing/i });
     expect(plansLink).toHaveAttribute('href', 'https://pendpost.com/services?from=app');
     expect(plansLink).toHaveAttribute('target', '_blank');
+  });
+
+  it('DEEP-LINK (disconnected): a /download?plan=studio launch shows the "you picked Studio" hand-off before sign-in', () => {
+    // First-run funnel: website /services -> /download?plan=studio -> first app open. The
+    // disconnected view must name the chosen tier so the hand-off is honest BEFORE sign-in.
+    cloudState = disconnected();
+    renderCloud({ deepLinkPlan: 'studio' });
+    expect(screen.getByText(/you picked studio/i)).toBeInTheDocument();
+    // The sign-in action is still the one obvious next step.
+    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
+  });
+
+  it('DEEP-LINK (disconnected): falls back to the sessionStorage stash when no prop is passed', () => {
+    // App.jsx stashes the launch plan so it survives the sign-in/connect handshake; the Cloud
+    // page reads it from sessionStorage when the prop is absent (the post-handshake re-render).
+    sessionStorage.setItem('pendpost.cloudLaunch.plan', 'agency');
+    cloudState = disconnected();
+    renderCloud();
+    expect(screen.getByText(/you picked agency/i)).toBeInTheDocument();
+  });
+
+  it('DEEP-LINK (connected): the sessionStorage stash is consumed-once and cleared after connect', () => {
+    sessionStorage.setItem('pendpost.cloudLaunch.plan', 'studio');
+    cloudState = connected();
+    subState = { data: { ok: true, status: 'trialing', tier: null, postsUsed: 3, postsIncluded: 10, allowance: 10, billingMode: 'test' } };
+    renderCloud();
+    // The CheckoutFlow picker is pre-selected on Studio (NOT the Starter default).
+    expect(screen.getByRole('radio', { name: /studio/i })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('radio', { name: /starter/i })).toHaveAttribute('aria-checked', 'false');
+    // Once the connected view has rendered (and seeded the CheckoutFlow), the stash is cleared so
+    // it never leaks into a later session.
+    expect(sessionStorage.getItem('pendpost.cloudLaunch.plan')).toBeNull();
   });
 
   it('UNFINISHED: a configured-but-keyless connection routes to the connect view, not the dead toggles', () => {
@@ -110,12 +149,12 @@ describe('Cloud', () => {
     expect(screen.queryByText('Acme')).not.toBeInTheDocument();
   });
 
-  it('DISABLED: clicking Enable always-on starts the handshake and shows the waiting state', async () => {
+  it('DISABLED: clicking Sign in starts the handshake and shows the waiting state', async () => {
     cloudState = disconnected();
     enableStart.mockResolvedValueOnce({ ok: true, authUrl: 'https://cloud.example/connect?state=abc' });
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /enable 24\/7/i }));
+    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
     await waitFor(() => expect(enableStart).toHaveBeenCalled());
     expect(await screen.findByRole('status')).toHaveTextContent(/waiting for you to finish signing up/i);
     // A fallback link to the sign-up page and a cancel control are offered.
@@ -167,19 +206,45 @@ describe('Cloud', () => {
     expect(screen.getByText(/11 \/ 10 posts fired/i)).toBeInTheDocument();
     // The internal test/live billing mode is NOT surfaced to the user.
     expect(screen.queryByText(/^test$/i)).not.toBeInTheDocument();
-    // A checkout-eligible (non-trial-hardstop) subscription shows the compact plan picker
-    // and a Subscribe button that carries the selected tier (default Starter).
-    await user.click(screen.getByRole('button', { name: /start starter/i }));
+    // The in-app purchase flow: pick a tier card -> Review -> Continue to secure checkout.
+    // Default tier is Starter; the Review CTA carries it, then the summary confirms checkout.
+    await user.click(screen.getByRole('button', { name: /^review starter$/i }));
+    await user.click(await screen.findByRole('button', { name: /continue to secure checkout/i }));
     await waitFor(() => expect(startCheckout).toHaveBeenCalledWith('starter', 'month'));
+    // After confirm, the flow shows the calm "opening secure checkout" state (no dead end).
+    expect(await screen.findByText(/opening secure checkout/i)).toBeInTheDocument();
   });
 
-  it('DISABLED: cancel returns to the idle enable action', async () => {
+  it('CONNECTED: a trial with posts LEFT can still upgrade proactively (gap #1 fixed in GUI)', async () => {
+    cloudState = connected();
+    // An ACTIVE trial with posts remaining: action 'fire', checkoutEligible FALSE. The GUI
+    // still offers the in-app purchase flow (proactive upgrade), not only at exhaustion.
+    subState = {
+      data: {
+        ok: true, alwaysOn: true, status: 'trialing', tier: null, interval: 'month', allowance: 10,
+        postsUsed: 3, postsIncluded: 10, overageCents: 0, extraBrandCents: 0, brandsBilled: 0,
+        estOverageCents: 0, spendCapCents: null, billingMode: 'test', currentPeriodEnd: null,
+        action: 'fire', stopReason: null, checkoutEligible: false, syncStopped: false,
+      },
+    };
+    const user = userEvent.setup();
+    renderCloud();
+    expect(screen.getByText(/3 \/ 10 posts fired/i)).toBeInTheDocument();
+    // No hard-stop banner (trial not exhausted), but the purchase flow IS available.
+    expect(screen.queryByText(/your free trial is used up/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: /studio/i }));
+    await user.click(screen.getByRole('button', { name: /^review studio$/i }));
+    await user.click(await screen.findByRole('button', { name: /continue to secure checkout/i }));
+    await waitFor(() => expect(startCheckout).toHaveBeenCalledWith('studio', 'month'));
+  });
+
+  it('DISABLED: cancel returns to the idle sign-in action', async () => {
     cloudState = disconnected();
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /enable 24\/7/i }));
+    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
     await user.click(await screen.findByRole('button', { name: /cancel/i }));
-    expect(screen.getByRole('button', { name: /enable 24\/7/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
   });
 
   it('DISABLED: a start failure renders an alert and offers retry', async () => {
@@ -187,13 +252,13 @@ describe('Cloud', () => {
     enableStart.mockRejectedValueOnce(new Error('cloud is unreachable'));
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /enable 24\/7/i }));
+    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/cloud is unreachable/i);
     expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
   });
 
-  it('CONNECTED: renders the connection details and the re-sync + eject controls', () => {
+  it('CONNECTED: renders the connection details and the re-sync control (eject moved to the account menu)', () => {
     cloudState = connected();
     renderCloud();
     // Technical fields live in a disclosure but remain in the DOM.
@@ -201,11 +266,45 @@ describe('Cloud', () => {
     expect(screen.getByText(/ending ab12/i)).toBeInTheDocument();
     expect(screen.getByText(/connection details/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /re-sync now/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /eject to self-host/i })).toBeInTheDocument();
+    // Eject is no longer a loose footer control - it lives in the account menu (closed by
+    // default), so the maintenance row carries no destructive button next to the calm ones.
+    expect(screen.queryByRole('button', { name: /eject to self-host/i })).not.toBeInTheDocument();
     // The old redundant primary buttons are gone.
     expect(screen.queryByRole('button', { name: /push approved jobs/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^pause$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /seal my platform tokens/i })).not.toBeInTheDocument();
+  });
+
+  it('CONNECTED: the account menu exposes manage-billing, manage-account, sign-out and eject', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'active', tier: 'studio', interval: 'month', allowance: 300, postsUsed: 5, postsIncluded: 300, overageCents: 10, extraBrandCents: 800, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'live', currentPeriodEnd: null, action: 'fire', checkoutEligible: false, syncStopped: false, stopReason: null, email: 'owner@studio-aurora.test' } };
+    const user = userEvent.setup();
+    renderCloud();
+    // The identity row is the menu trigger (the real email).
+    await user.click(screen.getByRole('button', { name: /account menu for owner@studio-aurora\.test/i }));
+    // Manage account links out to the Clerk account portal from the cloud status.
+    const manage = await screen.findByRole('link', { name: /manage account/i });
+    expect(manage).toHaveAttribute('href', 'https://accounts.test/user');
+    expect(manage).toHaveAttribute('target', '_blank');
+    // The reversible sign-out and the heavier eject both live here, with eject visually after.
+    expect(screen.getByRole('button', { name: /sign out \/ switch account/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /eject to self-host/i })).toBeInTheDocument();
+    // Manage billing is offered (active sub).
+    expect(screen.getByRole('button', { name: /manage subscription/i })).toBeInTheDocument();
+  });
+
+  it('CONNECTED: sign out clears the local key without the eject ceremony (story 4)', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'trialing', allowance: 10, postsUsed: 1, postsIncluded: 10, billingMode: 'live', currentPeriodEnd: null, action: 'fire', checkoutEligible: false, email: 'owner@studio-aurora.test' } };
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: /account menu for owner@studio-aurora\.test/i }));
+    await user.click(await screen.findByRole('button', { name: /sign out \/ switch account/i }));
+    // A calm (non-danger) confirm precedes it; confirming calls the lightweight sign-out,
+    // NOT the heavy eject.
+    await user.click(await screen.findByRole('button', { name: /^sign out$/i }));
+    await waitFor(() => expect(signOutCloud).toHaveBeenCalledTimes(1));
+    expect(ejectCloud).not.toHaveBeenCalled();
   });
 
   it('CONNECTED: re-sync renders the sealed-tokens and pushed-jobs summary', async () => {
@@ -255,8 +354,20 @@ describe('Cloud', () => {
     expect(alert).toHaveTextContent(/the runtime refused the connection/i);
   });
 
+  // Eject lives in the account menu and is confirmed by a danger dialog first; this helper
+  // opens the menu, clicks the eject item, then confirms in the dialog.
+  const ejectViaMenu = async (user) => {
+    await user.click(screen.getByRole('button', { name: /account menu for/i }));
+    await user.click(await screen.findByRole('button', { name: /eject to self-host/i }));
+    // The danger confirm dialog; its title disambiguates from the menu item, and its primary
+    // button is the only "Eject to self-host" button now visible (the menu has closed).
+    expect(await screen.findByText(/eject to self-host\?/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /eject to self-host/i }));
+  };
+
   it('CONNECTED: eject renders the re-auth checklist for vaulted platforms only', async () => {
     cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'trialing', allowance: 10, postsUsed: 1, postsIncluded: 10, billingMode: 'live', currentPeriodEnd: null, action: 'fire', checkoutEligible: false, email: 'owner@studio-aurora.test' } };
     // The REAL cloud contract: reauthChecklist with { platform, hadVaultedToken, howTo }.
     // Only platforms that had a vaulted token need re-minting; the rest are filtered out.
     ejectCloud.mockResolvedValueOnce({
@@ -268,7 +379,7 @@ describe('Cloud', () => {
     });
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /eject to self-host/i }));
+    await ejectViaMenu(user);
     expect(await screen.findByText(/reconnect the instagram account/i)).toBeInTheDocument();
     // The platform with no vaulted token is not listed (nothing to re-mint).
     expect(screen.queryByText(/re-run the linkedin oauth flow/i)).not.toBeInTheDocument();
@@ -276,10 +387,11 @@ describe('Cloud', () => {
 
   it('CONNECTED: an eject error renders an alert banner', async () => {
     cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'trialing', allowance: 10, postsUsed: 1, postsIncluded: 10, billingMode: 'live', currentPeriodEnd: null, action: 'fire', checkoutEligible: false, email: 'owner@studio-aurora.test' } };
     ejectCloud.mockRejectedValueOnce(new Error('cloud is unreachable'));
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /eject to self-host/i }));
+    await ejectViaMenu(user);
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent(/cloud is unreachable/i);
   });
@@ -327,7 +439,7 @@ describe('Cloud', () => {
     expect(screen.getByRole('button', { name: /set a cap/i })).toBeInTheDocument();
   });
 
-  it('CONNECTED: a used-up trial shows the hard-stop banner and a plan picker', async () => {
+  it('CONNECTED: a used-up trial shows the hard-stop banner above the purchase flow', async () => {
     cloudState = connected();
     subState = { data: { ok: true, alwaysOn: true, status: 'trialing', tier: null, interval: 'month', allowance: 10, postsUsed: 10, postsIncluded: 10, overageCents: 0, extraBrandCents: 0, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'test', currentPeriodEnd: null, action: 'trial_exhausted', stopReason: 'trial_exhausted', checkoutEligible: true, syncStopped: true } };
     const user = userEvent.setup();
@@ -335,10 +447,11 @@ describe('Cloud', () => {
     // The hard-stop title + body render, with the trial tier name in the header.
     expect(screen.getByText(/your free trial is used up/i)).toBeInTheDocument();
     expect(screen.getByText('Cloud trial')).toBeInTheDocument();
-    // The compact plan picker + "Choose a plan" affordance subscribe at the selected tier.
-    const studio = screen.getByRole('button', { name: /^studio$/i });
+    // The same single purchase flow drives checkout; when exhausted the CTA leads with "Upgrade".
+    const studio = screen.getByRole('radio', { name: /studio/i });
     await user.click(studio);
-    await user.click(screen.getByRole('button', { name: /choose a plan/i }));
+    await user.click(screen.getByRole('button', { name: /^upgrade to studio$/i }));
+    await user.click(await screen.findByRole('button', { name: /continue to secure checkout/i }));
     await waitFor(() => expect(startCheckout).toHaveBeenCalledWith('studio', 'month'));
   });
 

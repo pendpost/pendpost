@@ -9,7 +9,7 @@ A short description of the change and why.
 - [ ] I followed the house style: no em dashes or en dashes, English only, brand name lowercase `pendpost`.
 - [ ] I did not weaken or bypass the human approval gate (no self-approval; a post with no approval must not publish).
 - [ ] I did not add telemetry, and I did not commit any secrets or a `.env`.
-- [ ] Docs updated if behaviour changed (README, the docs site, or `.env.example`).
+- [ ] Docs updated if behaviour changed (README, `site-docs/`, or `.env.example`).
 
 ## How I tested it
 
