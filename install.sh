@@ -86,6 +86,45 @@ LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Framewo
 { command -v mdimport >/dev/null 2>&1 && mdimport "$APP_DST"; } >/dev/null 2>&1 || true
 echo "[install] pendpost.app installed: $APP_DST - $APP_KIND (double-click / Spotlight 'pendpost')."
 
+# --- "pendpost-notifier.app" in /Applications (approval-queue notification icon) ---
+# macOS attributes a notification to the BUNDLE of the process that posts it, and
+# AppleScript's `display notification` always posts as Script Editor (generic
+# scroll icon). To make the approval-queue notification (lib/notify.mjs) carry the
+# pendpost icon, we ship a pendpost-branded notifier: a re-iconed copy of
+# terminal-notifier with our bundle id + AppIcon. notify.mjs prefers this bundle
+# and falls back to plain osascript when it is absent, so this step is best-effort.
+NOTIFIER_DST="/Applications/pendpost-notifier.app"
+NOTIFIER_ICNS="$APP_DST/Contents/Resources/AppIcon.icns"
+TN_APP=""
+if command -v terminal-notifier >/dev/null 2>&1; then
+  TN_BIN="$(command -v terminal-notifier)"
+  # The .app sits two levels up from the wrapper bin (…/<ver>/terminal-notifier.app).
+  TN_CANDIDATE="$(cd "$(dirname "$TN_BIN")/.." 2>/dev/null && pwd)/terminal-notifier.app"
+  [ -d "$TN_CANDIDATE" ] && TN_APP="$TN_CANDIDATE"
+  # Fallback: search the Homebrew Cellar if the layout differs.
+  if [ -z "$TN_APP" ] && command -v brew >/dev/null 2>&1; then
+    TN_APP="$(/usr/bin/find "$(brew --prefix)/Cellar/terminal-notifier" -maxdepth 2 -name terminal-notifier.app -type d 2>/dev/null | head -1)"
+  fi
+fi
+if [ -n "$TN_APP" ] && [ -d "$TN_APP" ] && [ -f "$NOTIFIER_ICNS" ]; then
+  rm -rf "$NOTIFIER_DST"
+  cp -R "$TN_APP" "$NOTIFIER_DST"
+  PB=/usr/libexec/PlistBuddy
+  NPLIST="$NOTIFIER_DST/Contents/Info.plist"
+  "$PB" -c "Set :CFBundleIdentifier pendpost.notifier" "$NPLIST" 2>/dev/null || true
+  "$PB" -c "Set :CFBundleName pendpost" "$NPLIST" 2>/dev/null || true
+  "$PB" -c "Set :CFBundleDisplayName pendpost" "$NPLIST" 2>/dev/null \
+    || "$PB" -c "Add :CFBundleDisplayName string pendpost" "$NPLIST" 2>/dev/null || true
+  NICONKEY="$("$PB" -c "Print :CFBundleIconFile" "$NPLIST" 2>/dev/null)"
+  [ -n "$NICONKEY" ] && cp "$NOTIFIER_ICNS" "$NOTIFIER_DST/Contents/Resources/${NICONKEY%.icns}.icns"
+  codesign --force --deep -s - "$NOTIFIER_DST" 2>/dev/null || true
+  { [ -x "$LSREGISTER" ] && "$LSREGISTER" -f "$NOTIFIER_DST"; } >/dev/null 2>&1 || true
+  echo "[install] pendpost-notifier.app installed: notifications will carry the pendpost icon."
+else
+  echo "[install] note: terminal-notifier not found - approval notifications use the generic macOS icon."
+  echo "[install]       install it (brew install terminal-notifier) and re-run for the pendpost icon."
+fi
+
 echo "[install] $LABEL installed and started (RunAtLoad; KeepAlive restarts on crash, stops on clean exit)."
 
 # Wait for the agent to bind before announcing the URL (bounded ~6s, the same
