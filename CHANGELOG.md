@@ -6,7 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-06-27
+
 ### Added
+- 24/7 Cloud-Service in-app purchase: compare plans, review the order, open secure checkout, and return to an active plan without leaving the app, with graceful cancel handling. The website deep-links a chosen plan straight into the app (`/download?plan=<tier>`).
+- A cloud account menu on the real account identity: manage billing (Stripe portal), manage account (Clerk), a lightweight reversible sign-out/switch, and an explicit sign-in entry — with the heavier "eject to self-host" kept separate.
+
+### Added (always-on foundation)
 - Always-on self-host: deploy templates for Fly.io, Railway, and Render (`deploy/`) and an always-on self-host guide, so Instagram, LinkedIn, and X publish on schedule even when your computer is off.
 - An optional in-server bearer-token auth gate that activates only when `PENDPOST_HOST` is non-loopback and `PENDPOST_AUTH_TOKEN` is set; the loopback default stays no-auth and unchanged. `PENDPOST_PUBLIC_HOST` extends the host allowlist for a public deployment, and `GET /api/health` is exempt so platform health checks work.
 - A cloud-ready publish-job seam: `lib/publish-job.mjs` builds a versioned, approval-proof publish-job envelope that a separate always-on runtime can consume, with a second approval fence that refuses unapproved or self-approved posts. The contract is documented in `docs/specs/cloud-integration-contract.md`.
