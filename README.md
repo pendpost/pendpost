@@ -8,11 +8,19 @@
 [![MCP native](https://img.shields.io/badge/MCP-native-7c3aed.svg)](https://modelcontextprotocol.io)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
+<p align="center">
+  <img src="brand/github/readme-hero-preview.png" alt="pendpost: an AI agent drafts and schedules posts; a human approval gate decides what publishes" width="820">
+</p>
+
 pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, and X behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
 
 ## Why pendpost is different (not just a scheduler)
 
 Most "AI social" tools are schedulers with an agent bolted on. pendpost is the opposite. It is an operations layer designed around the agent-plus-human workflow, and these are the parts a scheduler does not give you:
+
+<p align="center">
+  <img src="brand/github/approval-gate-diagram-preview.png" alt="The approval gate: an agent drafts, but cannot approve its own draft; a human approves; only then does it publish" width="820">
+</p>
 
 - **Human approval gate.** Every post carries an approval state (`draft`, `approved`, `rejected`) and is fail-closed: a post with no approval will not publish. `plan_create_post` always creates a draft, and only `approve_post` or `reject_post` can flip it. There is no self-approval, so the actor who created a post can never approve it (an agent cannot bless its own draft); the owner is exempt.
 - **Anti-ban circuit breakers.** A Meta error 368 (an action block) trips a breaker that halts the Meta lane and never auto-resumes, because 368 carries no machine-readable clear time. Health probes send zero Graph traffic while blocked. A cadence cap defers bursts rather than dropping them, and a lane pause kill switch is always available.
@@ -50,7 +58,11 @@ docker compose up
 
 ## The dashboard
 
-The planner and the approval queue are the two screens you live in: draft and schedule on the left, approve or reject on the right. Nothing on the right can approve itself. Run `npx pendpost` and open http://127.0.0.1:8090 to see both, or view them at [pendpost.com](https://pendpost.com).
+The planner and the approval queue are the two screens you live in: draft and schedule on the left, approve or reject on the right. Nothing on the right can approve itself.
+
+| Planner | Approval queue |
+| --- | --- |
+| ![The pendpost planner: a calendar of drafted and scheduled posts](brand/screenshots/dashboard-planner.png) | ![The pendpost approval queue: posts waiting for a human decision](brand/screenshots/dashboard-approvals.png) |
 
 ## MCP clients
 
@@ -146,7 +158,7 @@ pendpost is maintained part-time by a small team and is early. Expect rough edge
 
 ## Docs
 
-The full reference lives at **[docs.pendpost.com](https://docs.pendpost.com)**. Marketing, pricing, and every [download option](https://pendpost.com/download) live at **[pendpost.com](https://pendpost.com)**.
+The full reference lives at **[docs.pendpost.com](https://docs.pendpost.com)** (source in `site-docs/`). Marketing, pricing, and every [download option](https://pendpost.com/download) live at **[pendpost.com](https://pendpost.com)**.
 
 ## License
 
