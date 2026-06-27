@@ -73,6 +73,12 @@ export const reconcileCloud = () => postJson('/api/cloud/reconcile', {});
 // everything they need to run the lanes themselves again.
 export const ejectCloud = () => postJson('/api/cloud/eject', {});
 
+// POST /api/cloud/sign-out -> { ok }. The LIGHTWEIGHT "sign out / switch account":
+// clears the local connection + removes the install-global api key WITHOUT the heavy
+// eject ceremony (no re-auth checklist; platform tokens left intact). Reversible -
+// sign back in via the enable handshake. The account-menu's calm counterpart to Eject.
+export const signOutCloud = () => postJson('/api/cloud/sign-out', {});
+
 // POST /api/cloud/migrate { baseUrl?, workspaceId? } -> { ok, connected, tokens, push }.
 // The one-command onboarding: connects (if args), seals the operator's local .env
 // platform tokens into the cloud vault, and pushes approved jobs in a single move.

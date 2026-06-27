@@ -4,6 +4,7 @@ import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpost
 import { useT, useLocale, useSetLocale } from './lib/i18n.js';
 import { applyAccent, clientAccent } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
+import { useInvalidateCloud } from './lib/cloud.js';
 import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, PLATFORMS, matchesFilters, STATUS_FILTERS, moveToDayTarget, activeCampaigns } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
@@ -82,10 +83,71 @@ export default function App() {
   // checklist; drives the quiet planner readiness panel below (US-ONB-05).
   const { data: pendpostHealth } = usePendpostHealth();
   const reschedule = useReschedule();
+  const invalidateCloud = useInvalidateCloud();
   const [page, setPage] = useState(() => {
     const h = window.location.hash.replace('#', '');
     return PAGES.includes(h) ? h : 'planner';
   });
+  // Cloud purchase deep-link + Stripe return (the Shared-contract query params, owned by the
+  // Cloud page — see Cloud.jsx PLAN_PARAM/INTERVAL_PARAM and ?cloud=checkout). Read ONCE from
+  // the launch url: the website links a paid plan to /download?plan=<tier>[&interval=<cadence>]
+  // and Stripe redirects success/cancel to /?cloud=checkout. When present we route to the Cloud
+  // page, pre-select the tier / show the return banner, then strip the params from the url (so a
+  // reload or hash change does not re-trigger them). The hash route is preserved.
+  const cloudLaunch = useMemo(() => {
+    const sp = new URLSearchParams(window.location.search);
+    const planRaw = sp.get('plan');
+    const intervalRaw = sp.get('interval');
+    const plan = ['starter', 'studio', 'agency'].includes(planRaw) ? planRaw : null;
+    const interval = ['month', 'year'].includes(intervalRaw) ? intervalRaw : null;
+    const cloudParam = sp.get('cloud');
+    const checkoutReturn = cloudParam === 'checkout';
+    // Stripe's billing-portal return lands here too (engine returnUrl = /?cloud=portal). It needs
+    // the same route-to-Cloud + url-clean as checkout so fresh subscription/usage shows and the
+    // stale param does not linger; no banner is required (the Cloud read refreshes on mount).
+    const portalReturn = cloudParam === 'portal';
+    // `paramsPresent` = the url carried ANY launch param we own (even an invalid plan value), so we
+    // still strip it on mount; `any` = we have a real action to take (route + maybe pre-select).
+    const paramsPresent = Boolean(planRaw || intervalRaw || cloudParam);
+    return {
+      plan,
+      interval,
+      checkoutReturn,
+      portalReturn,
+      paramsPresent,
+      any: Boolean(plan || checkoutReturn || portalReturn),
+    };
+  }, []);
+  const [cloudReturn, setCloudReturn] = useState(cloudLaunch.checkoutReturn);
+
+  // On launch with any cloud param: jump to the Cloud page and clean the url (keep #cloud). We
+  // ALSO stash a deep-linked plan/interval in sessionStorage so it survives the sign-in / connect
+  // handshake — a DISCONNECTED (first-run) user has no SubscriptionMeter yet to consume the prop,
+  // so without this the website's "the app pre-selects it for you" promise would break for exactly
+  // the dominant funnel (website /services -> /download?plan=studio -> first app open). The Cloud
+  // page consumes-and-clears the stash once it can seed the CheckoutFlow. We strip the url params
+  // whenever any were present, even an unrecognized plan value, so nothing stale lingers.
+  useEffect(() => {
+    if (cloudLaunch.plan) {
+      try {
+        sessionStorage.setItem('pendpost.cloudLaunch.plan', cloudLaunch.plan);
+        if (cloudLaunch.interval) {
+          sessionStorage.setItem('pendpost.cloudLaunch.interval', cloudLaunch.interval);
+        } else {
+          sessionStorage.removeItem('pendpost.cloudLaunch.interval');
+        }
+      } catch { /* sessionStorage may be unavailable; deep-link is best-effort */ }
+    }
+    if (cloudLaunch.any) setPage('cloud');
+    // Returning from the Stripe billing portal: force a fresh subscription/usage read so any
+    // plan/payment change made in the portal shows immediately (the query is otherwise stale for
+    // up to 30 s). No banner — the Cloud page just reflects the up-to-date state.
+    if (cloudLaunch.portalReturn) invalidateCloud();
+    if (cloudLaunch.paramsPresent && window.location.search) {
+      window.history.replaceState(null, '', `${window.location.pathname}#cloud`);
+    }
+  }, [cloudLaunch.any, cloudLaunch.paramsPresent]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const [view, setView] = useState('week');
   const [anchor, setAnchor] = useState(() => startOfWeek(new Date()));
   const [campaignFilter, setCampaignFilter] = useState('active');
@@ -558,7 +620,12 @@ export default function App() {
               ) : page === 'clients' ? (
                 <Clients />
               ) : page === 'cloud' ? (
-                <Cloud />
+                <Cloud
+                  checkoutReturn={cloudReturn}
+                  onReturnDismiss={() => setCloudReturn(false)}
+                  deepLinkPlan={cloudLaunch.plan}
+                  deepLinkInterval={cloudLaunch.interval}
+                />
               ) : page === 'composer' && composer ? (
                 <Composer
                   mode={composer.mode}
