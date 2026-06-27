@@ -1,0 +1,28 @@
+# render.yaml - run pendpost always-on on Render (Blueprint).
+#
+# SECURITY: pendpost ships with NO auth. On a public Render URL you MUST gate
+# access. Set PENDPOST_AUTH_TOKEN (the in-server bearer gate) and PENDPOST_PUBLIC_HOST
+# in the Render dashboard, OR front the service with Cloudflare Access. Never run a
+# public, unauthenticated publish API. See site-docs/always-on.mdx.
+services:
+  - type: web
+    name: pendpost
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    autoDeploy: false
+    # /api/health is exempt from the auth gate, so this probe works once the gate is on.
+    healthCheckPath: /api/health
+    envVars:
+      - key: PENDPOST_HOST
+        value: 0.0.0.0
+      - key: PENDPOST_PORT
+        value: 8090
+      - key: PENDPOST_AUTH_TOKEN
+        sync: false   # set in the dashboard; enables the in-server bearer gate
+      - key: PENDPOST_PUBLIC_HOST
+        sync: false   # your hostname, e.g. pendpost.onrender.com
+    disk:
+      name: pendpost-data
+      mountPath: /app/data
+      sizeGB: 1

@@ -1,0 +1,66 @@
+{
+  "_README": "pendpost brand-lint rules. EDIT THIS FILE freely - it is the live rule set. To disable a rule, delete its object (or flip severity to \"warn\"). To add one, append an object. Schema: { id: string, severity: \"error\"|\"warn\", matcher: {regex,flags} | \"<builtin>\", hint: string }. A regex matcher runs against the caption text; flags default to \"g\". A string matcher names a built-in in lib/lint.mjs MATCHERS (captionLength, hashtagCount, allCaps, brokenLink) - those are platform-aware. The shipped default ships at the install root; a copy at the workspace root (rules.json next to your .env) overrides it. errors block publish; warns are advisory. See site-docs for the full reference.",
+  "version": 1,
+  "rules": [
+    {
+      "id": "broken-link",
+      "severity": "error",
+      "matcher": "brokenLink",
+      "hint": "This link is empty or malformed (a bare scheme or an empty markdown link). Give it a real destination or remove it."
+    },
+    {
+      "id": "caption-length",
+      "severity": "warn",
+      "matcher": "captionLength",
+      "hint": "Caption is over the platform's cap and will be truncated at publish. Trim it or split the thought."
+    },
+    {
+      "id": "hashtag-count",
+      "severity": "warn",
+      "matcher": "hashtagCount",
+      "hint": "That is a lot of hashtags - reads as spammy and platforms down-rank tag stuffing. Keep a tight, relevant set."
+    },
+    {
+      "id": "all-caps",
+      "severity": "warn",
+      "matcher": "allCaps",
+      "hint": "Long ALL-CAPS runs read as shouting and hurt accessibility (screen readers spell them out). Use sentence case and let the words carry the weight."
+    },
+    {
+      "id": "em-dash",
+      "severity": "warn",
+      "matcher": { "regex": "[\\u2013\\u2014]", "flags": "g" },
+      "hint": "Em/en dashes are a tell of AI-written copy and overuse reads as breathless. Use a comma, a period, or restructure."
+    },
+    {
+      "id": "ai-vocab",
+      "severity": "warn",
+      "matcher": { "regex": "\\b(delve|leverage|seamless(?:ly)?|synerg(?:y|ies|istic)|robust|deep dive|at the heart of|stands as a testament|navigate the landscape|in today'?s fast-?paced world)\\b", "flags": "gi" },
+      "hint": "Classic AI-vocabulary. Say it plainly: 'leverage' -> 'use', 'delve into' -> 'look at', 'seamless' -> 'smooth' (or cut it)."
+    },
+    {
+      "id": "negative-parallelism",
+      "severity": "warn",
+      "matcher": { "regex": "\\bnot (just|only)\\b[^.!?]{0,60}?,?\\s+(but|it'?s|its|it is|they'?re|we'?re)\\b", "flags": "gi" },
+      "hint": "The 'it's not just X, it's Y' construction is an AI tic. State the point directly instead of building it up."
+    },
+    {
+      "id": "rule-of-three",
+      "severity": "warn",
+      "matcher": { "regex": "\\b\\w+,\\s+\\w+,?\\s+and\\s+\\w+\\b", "flags": "gi" },
+      "hint": "Three-item lists ('fast, simple, and reliable') are padding when reflexive. Keep the one word that earns its place."
+    },
+    {
+      "id": "filler-hedging",
+      "severity": "warn",
+      "matcher": { "regex": "\\b(very|really|actually|basically|literally|simply|quite|in order to|that being said|at the end of the day)\\b", "flags": "gi" },
+      "hint": "Filler and hedging dilute the line. Delete it - the sentence is almost always stronger without."
+    },
+    {
+      "id": "promo-puffery",
+      "severity": "warn",
+      "matcher": { "regex": "\\b(world-?class|cutting-?edge|best-?in-?class|game-?changer|game-?changing|revolutionary|unleash|unlock(?:ing)?|supercharge|elevate|next-?level|state-?of-?the-?art|transform your)\\b", "flags": "gi" },
+      "hint": "Promotional puffery reads as a press release. Show the concrete thing it does instead of claiming it is amazing."
+    }
+  ]
+}

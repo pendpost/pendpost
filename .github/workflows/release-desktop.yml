@@ -1,0 +1,269 @@
+name: release desktop
+
+# Build the desktop installers (macOS .dmg + Windows .exe) and attach them to a
+# GitHub Release. Mirrors release-npm.yml / release-image.yml: it runs on a
+# published release (owner action) or a manual dispatch, never on a normal push.
+#
+# CERT-FREE BY DESIGN. Every step that does not need a certificate - building the
+# dashboard, assembling the runtime bundle (with a checksum-verified Node), making
+# the .dmg / .exe - runs unconditionally. Signing + notarization are gated on the
+# owner's secrets being present, so:
+#   * workflow_dispatch  -> always produces UNSIGNED installers as build artifacts
+#                           (so the pipeline is testable today, before any certs).
+#   * release + secrets   -> produces SIGNED + NOTARIZED installers, attached to the
+#                           release as pendpost-macos.dmg / pendpost-windows-setup.exe.
+#   * release, no secrets -> assembles everything, then SKIPS the upload (an unsigned
+#                           asset must never land on a public release) and prints how
+#                           to enable it. The job still goes green.
+#
+# Owner secrets to enable signing (see packaging/desktop/README.md):
+#   macOS  : APPLE_DEVELOPER_ID_CERT_P12_BASE64, APPLE_DEVELOPER_ID_CERT_PASSWORD,
+#            APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD
+#   Windows: WINDOWS_CERT_PFX_BASE64, WINDOWS_CERT_PASSWORD
+#
+# The download buttons stay hidden until DESKTOP_AVAILABLE is flipped to true in
+# web/src/data/brand.ts - do that only after the first signed release verifies.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write # upload assets to the release
+
+jobs:
+  # ---------------------------------------------------------------- macOS -----
+  macos:
+    # Self-hosted on the owner's always-on Mac: macOS-hosted runners bill 10x
+    # included minutes; the self-hosted runner is free. Safe on a PRIVATE repo.
+    runs-on: [self-hosted, macOS]
+    # Must exceed the notarize step's `notarytool --wait --timeout 45m`, else a
+    # slow-but-working Apple notary queue trips the JOB cap and cancels the run
+    # before stapling (happened on the first real release: Apple took ~28m+, the
+    # old 30m job cap killed it mid-wait). Self-hosted minutes are free, so give
+    # the 45m notary budget ~13m of headroom for bundle/sign/staple/upload.
+    timeout-minutes: 58
+    if: github.repository == 'pendpost/pendpost'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        # Event data (TAG) reaches the shell only via env + quoting, never inline
+        # ${{ }} in run - the documented defense against workflow script injection.
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "$EVENT" = "release" ]; then
+            v="${TAG#v}"
+          else
+            v="$(node -p "require('./package.json').version")"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Detect signing capability
+        id: signing
+        shell: bash
+        # Renders to the literal true/false (never the secret value), so it is safe
+        # to print and to gate later steps on.
+        run: echo "enabled=${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 != '' && secrets.APPLE_APP_PASSWORD != '' }}" >> "$GITHUB_OUTPUT"
+
+      # CERT-FREE: build the dashboard, stage the product files (guarded against
+      # leaking credentials), and bundle a checksum-verified UNIVERSAL Node.
+      - name: Assemble runtime bundle
+        shell: bash
+        run: node packaging/desktop/build-bundle.mjs --platform mac --out build/desktop-mac
+
+      # CERT-FREE: compile the universal launcher and assemble pendpost.app.
+      - name: Assemble pendpost.app
+        shell: bash
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          chmod +x packaging/desktop/macos/build-app.sh
+          packaging/desktop/macos/build-app.sh build/desktop-mac/runtime build/pendpost.app "$VERSION"
+
+      # GATED: import the Developer ID cert into an ephemeral keychain.
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          CERT_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/pendpost-signing.keychain-db"
+          KC_PW="$(openssl rand -base64 24)"
+          security create-keychain -p "$KC_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KC_PW" "$KEYCHAIN"
+          echo "$CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CERT_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KC_PW" "$KEYCHAIN" >/dev/null
+          # Make the ephemeral keychain the search list so codesign finds the
+          # identity (the runner is discarded after the job, so no need to preserve
+          # the login keychain).
+          security list-keychains -d user -s "$KEYCHAIN"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | grep 'Developer ID Application' | head -1 | grep -oE '[0-9A-F]{40}')"
+          if [ -z "$IDENTITY" ]; then echo "No Developer ID Application identity found in the imported cert." >&2; exit 1; fi
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      # GATED: sign (hardened runtime + JIT entitlements for the bundled Node),
+      # build the .dmg, sign it, notarize, and staple.
+      - name: Sign, notarize, and package .dmg
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="build/pendpost.app"
+          ENT="packaging/desktop/macos/entitlements.plist"
+          # Sign the bundled Node first (inner Mach-O), then the app bundle. The
+          # JIT entitlements let V8 run under the hardened runtime.
+          codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP/Contents/Resources/runtime/node"
+          codesign --force --options runtime --timestamp --entitlements "$ENT" --sign "$SIGN_IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          hdiutil create -volname pendpost -srcfolder "$APP" -ov -format UDZO build/pendpost-macos.dmg
+          codesign --force --timestamp --sign "$SIGN_IDENTITY" build/pendpost-macos.dmg
+          # --timeout bounds the submit so a genuinely hung notary (e.g. stuck
+          # "initiating connection") can't burn the whole job budget. 20m was too
+          # tight: Apple ACCEPTED the submission but its processing exceeded 20m
+          # (common on a first submission), which failed the run even though
+          # notarization was working. 45m gives the notary room while still
+          # bounding a real hang; re-run if Apple is in a multi-hour backlog.
+          xcrun notarytool submit build/pendpost-macos.dmg \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" \
+            --wait --timeout 45m
+          xcrun stapler staple build/pendpost-macos.dmg
+          xcrun stapler validate build/pendpost-macos.dmg
+
+      # CERT-FREE fallback: an unsigned .dmg so dispatch runs still produce a
+      # testable artifact (it trips Gatekeeper - never attached to a release).
+      - name: Package unsigned .dmg
+        if: steps.signing.outputs.enabled != 'true'
+        shell: bash
+        run: hdiutil create -volname pendpost -srcfolder build/pendpost.app -ov -format UDZO build/pendpost-macos.dmg
+
+      - name: Attach .dmg to the release
+        if: github.event_name == 'release' && steps.signing.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: gh release upload "$TAG" build/pendpost-macos.dmg --clobber
+
+      - name: Release without signing secrets (skip upload)
+        if: github.event_name == 'release' && steps.signing.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "::warning title=macOS desktop asset not attached::Apple signing secrets are not set, so the unsigned .dmg was NOT attached to this release (it would trip Gatekeeper). Add APPLE_DEVELOPER_ID_CERT_P12_BASE64, APPLE_DEVELOPER_ID_CERT_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (see packaging/desktop/README.md) and re-run."
+
+      - name: Upload .dmg as a build artifact (dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pendpost-macos-dmg
+          path: build/pendpost-macos.dmg
+
+  # -------------------------------------------------------------- Windows -----
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    if: github.repository == 'pendpost/pendpost'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "$EVENT" = "release" ]; then
+            v="${TAG#v}"
+          else
+            v="$(node -p "require('./package.json').version")"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Detect signing capability
+        id: signing
+        shell: bash
+        run: echo "enabled=${{ secrets.WINDOWS_CERT_PFX_BASE64 != '' }}" >> "$GITHUB_OUTPUT"
+
+      # CERT-FREE: build the dashboard, stage the product files, bundle node.exe,
+      # and drop launch.cmd next to the runtime so Inno can pick both up.
+      - name: Assemble runtime bundle
+        shell: bash
+        run: |
+          node packaging/desktop/build-bundle.mjs --platform win --out build/desktop-win
+          cp packaging/desktop/windows/launch.cmd build/desktop-win/launch.cmd
+
+      # CERT-FREE: compile the installer.
+      - name: Build the installer (Inno Setup)
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          choco install innosetup --no-progress -y
+          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup *\ISCC.exe' | Sort-Object FullName | Select-Object -Last 1
+          if (-not $iscc) { throw 'ISCC.exe not found after installing Inno Setup' }
+          $staging = Join-Path $env:GITHUB_WORKSPACE 'build\desktop-win'
+          & $iscc.FullName "/DMyAppVersion=$env:VERSION" "/DStagingDir=$staging" 'packaging\desktop\windows\pendpost.iss'
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
+
+      # GATED: code-sign the installer.
+      - name: Sign the installer
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          WINDOWS_CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          WINDOWS_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERT_PFX_BASE64))
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName | Select-Object -Last 1
+          if (-not $signtool) { throw 'signtool.exe not found' }
+          $exe = 'build\desktop-win\out\pendpost-windows-setup.exe'
+          & $signtool.FullName sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f $pfx /p $env:WINDOWS_CERT_PASSWORD $exe
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed ($LASTEXITCODE)" }
+          Remove-Item $pfx -Force
+
+      - name: Attach installer to the release
+        if: github.event_name == 'release' && steps.signing.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        shell: bash
+        run: gh release upload "$TAG" build/desktop-win/out/pendpost-windows-setup.exe --clobber
+
+      - name: Release without signing secrets (skip upload)
+        if: github.event_name == 'release' && steps.signing.outputs.enabled != 'true'
+        shell: bash
+        run: |
+          echo "::warning title=Windows desktop asset not attached::WINDOWS_CERT_PFX_BASE64 is not set, so the unsigned installer was NOT attached to this release (it would trip SmartScreen). Add WINDOWS_CERT_PFX_BASE64 + WINDOWS_CERT_PASSWORD (see packaging/desktop/README.md) and re-run."
+
+      - name: Upload installer as a build artifact (dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pendpost-windows-setup
+          path: build/desktop-win/out/pendpost-windows-setup.exe

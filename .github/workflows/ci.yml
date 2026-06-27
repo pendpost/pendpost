@@ -1,0 +1,54 @@
+name: CI
+
+# paths-ignore skips CI on non-code commits (docs, memory, root overview HTML).
+# `*.html` matches root-level overview files only — web/ sources are unaffected.
+# Dependabot bumps always touch package.json, so they are never skipped (keeps
+# the "CI" name → dependabot-auto-merge's workflow_run trigger intact).
+on:
+  pull_request:
+    branches: [develop, staging, main]
+    paths-ignore: ['**/*.md', 'docs/**', '.claude/**', '*.html']
+  push:
+    branches: [develop, staging, main]
+    paths-ignore: ['**/*.md', 'docs/**', '.claude/**', '*.html']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20 = engines floor (.nvmrc) + lowest supported; 22 = current LTS.
+        # Node 18 dropped: EOL 2025-04-30.
+        node-version: [20, 22]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm run check
+
+  build-dashboard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - run: npm run build
+        working-directory: app
+      - run: npm test
+        working-directory: app

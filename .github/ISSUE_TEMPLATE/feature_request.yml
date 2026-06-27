@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest an idea for pendpost.
+title: "[feature] "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that pendpost does not support today?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: >-
+        What you would like to see. pendpost ships every capability on both the
+        /api and /mcp faces (the parity rule), so a new write capability has to
+        land on both. Nothing may bypass the human approval gate.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you thought about.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else, links, or examples.
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: My request respects the parity rule and the human approval gate
+          required: true

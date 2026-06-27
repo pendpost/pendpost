@@ -1,0 +1,47 @@
+# Dependabot configuration for pendpost.
+# The root package has zero runtime dependencies and no lockfile, so it has no
+# npm entry here. Only the app/ and web/ sub-packages and the GitHub Actions
+# workflows are tracked. All pull requests target the develop integration trunk.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/app"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    target-branch: develop
+    groups:
+      app-dependencies:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Breaking majors deferred to a dedicated, tested migration (not hygiene
+      # bumps): tailwind v4 (config rewrite) and lucide v1 (removed the platform
+      # brand icons this app relies on).
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "lucide-react"
+        update-types: ["version-update:semver-major"]
+      # eslint 9/10 needs the flat-config migration and the react-hooks plugin
+      # rule changes; stay on eslint 8 + react-hooks 4 until that lands together.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "eslint-plugin-react-hooks"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - github-actions
+    target-branch: develop
+    groups:
+      actions:
+        update-types:
+          - minor
+          - patch

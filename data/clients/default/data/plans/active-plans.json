@@ -1,0 +1,6 @@
+{
+  "note": "Manifest of campaigns pendpost knows about. The example 'acme-launch' campaign ships so a fresh checkout shows content on first run; delete this entry (and data/plans/acme-launch/) once you add your own.",
+  "plans": [
+    { "id": "acme-launch", "path": "data/plans/acme-launch/post-plan.json", "active": true }
+  ]
+}

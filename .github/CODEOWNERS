@@ -1,0 +1,7 @@
+# Code review routing for pendpost.
+#
+# Every path in this repository is reviewed by the pendpost maintainers.
+# This file only takes effect once the @pendpost/maintainers team exists in
+# the pendpost org; until then GitHub silently ignores the rule below.
+
+* @pendpost/maintainers

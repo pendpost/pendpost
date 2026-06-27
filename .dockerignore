@@ -1,0 +1,15 @@
+.git
+node_modules
+app/node_modules
+app/dist
+site-docs
+web
+*.log
+.env
+state.json
+state.json.corrupt-*
+data/.mock-ledger.json
+data/plans/.meta-block.json
+data/plans/*/covers
+npm-debug.log*
+.DS_Store

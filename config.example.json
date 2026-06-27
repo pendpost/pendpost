@@ -1,0 +1,8 @@
+{
+  "_README": "Copy to config.json (gitignored) to set non-secret posting defaults. These are also editable from the dashboard Settings page. defaultTimezone is the viewer's display timezone; pendpost stores all schedule times in UTC. platforms is the per-platform publishing on/off policy: a platform set false never publishes (locally or from the managed cloud). A platform omitted from the map defaults to on, EXCEPT facebook which defaults off.",
+  "defaultLink": "",
+  "utm": "",
+  "hashtagPresets": [],
+  "defaultTimezone": "UTC",
+  "platforms": { "instagram": true, "facebook": false, "linkedin": true, "youtube": true, "x": true }
+}

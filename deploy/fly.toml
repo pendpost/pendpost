@@ -1,0 +1,48 @@
+# fly.toml - run pendpost always-on on Fly.io so IG, LinkedIn, and X publish on
+# schedule even when your computer is off. Copy this to the repo root (or pass it
+# with `fly deploy -c deploy/fly.toml`) and edit `app`/`primary_region`.
+#
+# SECURITY: pendpost is local-first and ships with NO auth. Hosting it on a public
+# URL REQUIRES an access gate. This template binds 0.0.0.0 and expects EITHER the
+# in-server bearer gate (set PENDPOST_AUTH_TOKEN + PENDPOST_PUBLIC_HOST as secrets)
+# OR a zero-trust proxy in front (Cloudflare Access, Tailscale). Never run a public,
+# unauthenticated publish API. See site-docs/always-on.mdx.
+
+app = "pendpost"
+primary_region = "ams"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PENDPOST_HOST = "0.0.0.0"
+  PENDPOST_PORT = "8090"
+  # Your Fly hostname, so the host allowlist accepts it once the gate is on:
+  # PENDPOST_PUBLIC_HOST = "pendpost.fly.dev"
+
+# Set the bearer token and your platform credentials as SECRETS, never in this file:
+#   fly secrets set PENDPOST_AUTH_TOKEN="$(openssl rand -hex 32)"
+#   fly secrets set PENDPOST_PUBLIC_HOST=pendpost.fly.dev
+#   fly secrets set META_SYSTEM_USER_TOKEN=... LINKEDIN_ACCESS_TOKEN=... (see .env.example)
+
+[http_service]
+  internal_port = 8090
+  force_https = true
+  # Always-on: never stop the machine, or a scheduled IG/LinkedIn/X post would not
+  # fire while it is asleep. This is the whole point of hosting it.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.checks]
+    [http_service.checks.health]
+      method = "get"
+      path = "/api/health"
+      interval = "30s"
+      timeout = "5s"
+
+# Persist plans, media, and covers across deploys. Create it once:
+#   fly volumes create pendpost_data --size 1
+[mounts]
+  source = "pendpost_data"
+  destination = "/app/data"

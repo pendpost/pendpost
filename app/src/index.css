@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* NFR-LIC-02: self-hosted Inter (variable, latin subset - covers de-CH umlauts).
+   No runtime Google Fonts CDN; the woff2 is a vendored static asset (OFL-1.1,
+   see src/fonts/OFL.txt). One variable file carries every weight (100-900). */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('./fonts/inter-latin-variable.woff2') format('woff2');
+}
+
+@layer base {
+  body {
+    @apply font-body antialiased bg-slate-50 text-slate-800 dark:bg-zinc-950 dark:text-zinc-100;
+  }
+  /* Gated behind .theme-ready (set one frame after first paint, main.jsx) so
+     the theme BOOTSTRAP never animates - only user toggles do (UX-07). */
+  html.theme-ready body {
+    transition: background-color 350ms ease, color 350ms ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html.theme-ready body {
+      transition: none;
+    }
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply bg-white/70 dark:bg-zinc-900/60 backdrop-blur-2xl border border-white/50 dark:border-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.05)];
+  }
+
+  /* Slim, modern scrollbar - replaces the default chunky OS gutter inside
+     dialogs/text areas. Track is invisible; thumb is a soft, rounded pill that
+     fades darker on hover. Firefox uses the standard thin/colour properties. */
+  .scrollbar-soft {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(161 161 170 / 0.5) transparent;
+  }
+  .scrollbar-soft::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scrollbar-soft::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-soft::-webkit-scrollbar-thumb {
+    background-color: rgb(161 161 170 / 0.45);
+    border-radius: 9999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  .scrollbar-soft::-webkit-scrollbar-thumb:hover {
+    background-color: rgb(113 113 122 / 0.7);
+    background-clip: padding-box;
+  }
+
+  /* MediaPlayer seek line - a hairline track whose filled portion is painted via
+     an inline linear-gradient (updated per requestAnimationFrame for smoothness,
+     never the chunky per-second timeupdate step). The thumb is a small dot that
+     only grows on hover/focus, keeping the resting state minimal. */
+  .pp-seek {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.22);
+    cursor: pointer;
+  }
+  .pp-seek::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 9px;
+    width: 9px;
+    border-radius: 9999px;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    transition: transform 120ms ease;
+  }
+  .pp-seek:hover::-webkit-slider-thumb,
+  .pp-seek:focus-visible::-webkit-slider-thumb {
+    transform: scale(1.4);
+  }
+  .pp-seek::-moz-range-thumb {
+    height: 9px;
+    width: 9px;
+    border: none;
+    border-radius: 9999px;
+    background: #fff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
+  .pp-seek:focus-visible {
+    outline: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pp-seek::-webkit-slider-thumb {
+      transition: none;
+    }
+  }
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   pendpost motion kit - the gate keyframes, shared by GateMark (boot splash +
+   "all caught up" reward state). Teal (var(--accent)) stays the single
+   "go / approved" signal. All of it is disabled under prefers-reduced-motion,
+   matching the theme-bootstrap guard above and the house pattern across the app.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* the living mark - breathe + chevron clearing forward (brand loader) */
+@keyframes pp-breathe       { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.055); } }
+@keyframes pp-chevron-clear { 0% { stroke-dashoffset: 64; } 55% { stroke-dashoffset: 0; } 80% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -64; } }
+
+/* reward / "all caught up" state - the gate at rest, gently breathing */
+@keyframes pp-rest          { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@keyframes pp-glow-pulse    { 0%, 100% { opacity: .5; } 50% { opacity: .9; } }
+
+@media (prefers-reduced-motion: reduce) {
+  [class~="pp-anim"], [style*="pp-breathe"], [style*="pp-chevron-clear"],
+  [style*="pp-rest"], [style*="pp-glow-pulse"] {
+    animation: none !important;
+  }
+}

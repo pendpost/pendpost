@@ -1,0 +1,53 @@
+{
+  "campaign": "Acme Launch",
+  "note": "Example campaign that ships with pendpost so first run shows real content. Draft, approve, and schedule it freely; publishing needs a connected platform. Delete this folder and its manifest entry when you start your own.",
+  "timezone": "UTC",
+  "posts": [
+    {
+      "id": "welcome",
+      "type": "text",
+      "platforms": [
+        "linkedin"
+      ],
+      "scheduledAt": "2026-06-22T09:00:00Z",
+      "caption": "We built Acme so small teams can ship without the busywork. Three months in beta, hundreds of fixes, and now it is open. Tell us what you want next.",
+      "link": "https://example.com/acme",
+      "status": "planned",
+      "approval": "draft",
+      "createdBy": "agent:claude",
+      "createdAt": "2026-06-19T08:00:00Z"
+    },
+    {
+      "id": "launch-reel",
+      "type": "reel",
+      "platforms": [
+        "instagram",
+        "facebook"
+      ],
+      "scheduledAt": "2026-06-23T17:00:00Z",
+      "path": "data/media/acme-reel.mp4",
+      "caption": "Launch day. Here is the 20-second tour of what Acme actually does.",
+      "firstComment": "Questions? Drop them here and we will answer every one.",
+      "status": "planned",
+      "approval": "draft",
+      "createdBy": "agent:claude",
+      "createdAt": "2026-06-19T08:05:00Z"
+    },
+    {
+      "id": "teaser",
+      "type": "reel",
+      "platforms": [
+        "instagram"
+      ],
+      "scheduledAt": "2026-06-21T12:00:00Z",
+      "path": "data/media/acme-bts.mp4",
+      "caption": "A look behind the scenes before tomorrow's launch.",
+      "status": "planned",
+      "approval": "approved",
+      "createdBy": "agent:claude",
+      "approvalBy": "owner",
+      "approvalAt": "2026-06-20T10:00:00Z",
+      "createdAt": "2026-06-19T16:00:00Z"
+    }
+  ]
+}

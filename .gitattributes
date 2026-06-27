@@ -1,0 +1,16 @@
+* text=auto eol=lf
+
+# Binary assets: do not diff or normalize line endings.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mp4 binary
+*.mov binary
+*.woff binary
+*.woff2 binary
+
+# Generated lockfiles: collapse in diffs and exclude from language stats.
+app/package-lock.json linguist-generated=true
+web/package-lock.json linguist-generated=true

@@ -1,0 +1,23 @@
+# pendpost - docker compose up
+# Browse http://127.0.0.1:8090. With no .env it runs in MOCK mode (zero creds).
+services:
+  pendpost:
+    build: .
+    image: pendpost:local
+    # Host exposure stays loopback-only; the container binds 0.0.0.0 internally.
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      PENDPOST_HOST: "0.0.0.0"
+      # PENDPOST_MODE: "mock"   # uncomment to force mock even if a .env is mounted
+    volumes:
+      # Persist plans + media + covers across container recreation. The named
+      # volume is seeded from the image's data/ (example campaign) on first run.
+      - pendpost-data:/app/data
+      # Optional: mount your real credentials to publish for real. Leave commented
+      # to stay in mock mode. Create a .env (see .env.example) before enabling.
+      # - ./.env:/app/.env:ro
+    restart: unless-stopped
+
+volumes:
+  pendpost-data:

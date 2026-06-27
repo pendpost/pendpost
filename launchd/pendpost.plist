@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template - install.sh substitutes __NODE__, __REPO__ and __HOME__ and
+     copies the result to ~/Library/LaunchAgents/. Do not load this file
+     directly. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>pendpost</string>
+  <!-- Entrypoint is launcher/serve.sh: it optionally rebuilds the dashboard
+       (only when a gitignored .build-on-boot sentinel exists in the repo) and
+       then exec's the server with the node binary passed as $1 - launchd's PATH
+       is minimal, so the node path cannot be assumed to be discoverable. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>__REPO__/launcher/serve.sh</string>
+    <string>__NODE__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__REPO__</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart on crashes (non-zero exit) but STOP on a clean exit 0 - the
+       server exits 0 on EADDRINUSE when another instance (e.g. a foreground
+       dev run) owns the port, and boolean KeepAlive would relaunch-loop
+       every 30s regardless of exit status. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/pendpost.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/pendpost.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,38 @@
+name: mcpb release
+
+# Pack the Claude Desktop bundle (.mcpb) and attach it to the GitHub Release.
+# Runs when a release is published. There is no public Anthropic .mcpb directory
+# (verified 2026-06), so the release asset IS the distribution channel; link it
+# from the README and docs.pendpost.com.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+      - run: npm install -g @anthropic-ai/mcpb
+      - run: mcpb validate mcpb/manifest.json
+      - name: Pack the bundle
+        run: mcpb pack mcpb "pendpost-${{ github.event.release.tag_name || github.ref_name }}.mcpb"
+      - name: Attach .mcpb to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" "pendpost-${{ github.event.release.tag_name }}.mcpb" --clobber
+      - name: Upload as a workflow artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: pendpost-mcpb
+          path: "*.mcpb"

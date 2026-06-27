@@ -1,0 +1,49 @@
+name: release npm
+
+# Publish pendpost to npm when a GitHub Release is published (owner action), or on
+# a manual dispatch. This never runs on a normal push, so npm publish stays an
+# explicit, owner-gated step. `prepack` (npm run build) bakes app/dist into the
+# tarball, and the `files` allowlist keeps it to the shipped product.
+#
+# Prerequisites (owner): the repo is public, and an npm granular/automation token
+# is stored as the NPM_TOKEN secret. Provenance needs `id-token: write` and a
+# public repo; it attaches a verifiable build attestation to the package.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    # Self-hosted (the owner's Mac) so publishing costs no GitHub-hosted minutes
+    # while the repo is private/Free. Switch back to ubuntu-latest once the repo
+    # is public (hosted minutes are then free and --provenance becomes available).
+    runs-on: [self-hosted, macOS]
+    if: github.repository == 'pendpost/pendpost'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+      # Full gate before we publish: syntax, parity, and the zero-dep test suite
+      # (this is what CI runs; supply-chain.test.mjs asserts the version files match).
+      - run: npm run check
+      - name: Verify the release tag matches package.json
+        if: github.event_name == 'release'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "Release tag ($tag) does not match package.json version ($pkg)." >&2
+            exit 1
+          fi
+      # No --provenance: it requires a public repo. Re-add it when the repo is public.
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.pendpost/pendpost",
+  "description": "Local-first social MCP: an agent drafts and schedules posts; you approve before anything publishes.",
+  "version": "1.0.0",
+  "repository": {
+    "url": "https://github.com/pendpost/pendpost",
+    "source": "github"
+  },
+  "websiteUrl": "https://pendpost.com",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "pendpost",
+      "version": "1.0.0",
+      "runtimeHint": "npx",
+      "transport": { "type": "stdio" },
+      "packageArguments": [
+        { "type": "named", "name": "--stdio" }
+      ]
+    }
+  ]
+}

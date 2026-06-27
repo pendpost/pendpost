@@ -1,0 +1,91 @@
+name: Bug report
+description: Something is not working as expected.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Before you paste anything, scrub
+        every token and secret from your logs and output. Never paste the contents
+        of a .env file. pendpost runs locally, so most of what you see is safe to
+        share, but credentials are not.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the bug in a sentence or two.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: List the exact steps so a maintainer can follow along.
+      placeholder: |
+        1. Start the server with ...
+        2. Call ... (or click ...)
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: pendpost version
+    validations:
+      required: true
+  - type: dropdown
+    id: ran-how
+    attributes:
+      label: How you ran it
+      options:
+        - npx
+        - git (npm start)
+        - docker
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - mock
+        - live
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Paste relevant logs or output. Remove any tokens or secrets first.
+      render: shell
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I reproduced this in mock mode, or noted that it is live-only
+          required: true
+        - label: I removed all credentials and secrets from the logs above
+          required: true

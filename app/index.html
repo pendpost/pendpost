@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>pendpost</title>
+    <script>
+      // Theme bootstrap BEFORE the stylesheet/bundle so light-mode users never
+      // see a dark first paint (UX-07). main.jsx keeps a harmless mirror.
+      document.documentElement.classList.toggle('dark', localStorage.getItem('pendpost-theme') !== 'light');
+    </script>
+    <!-- pendpost gate mark (dark tile), inline so the tab icon needs no asset fetch -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20100%20100'%3E%3Crect%20width='100'%20height='100'%20rx='22'%20fill='%2314171c'/%3E%3Crect%20x='1.5'%20y='1.5'%20width='97'%20height='97'%20rx='20.5'%20fill='none'%20stroke='%23232830'%20stroke-width='3'/%3E%3Cg%20fill='none'%20stroke='%235eead4'%20stroke-width='8'%20stroke-linecap='round'%20stroke-linejoin='round'%3E%3Cpath%20d='M41%2031%20L31%2031%20L31%2069%20L41%2069'/%3E%3Cpath%20d='M59%2031%20L69%2031%20L69%2069%20L59%2069'/%3E%3Cpath%20d='M45%2040%20L55%2050%20L45%2060'/%3E%3C/g%3E%3C/svg%3E" />
+    <style>
+      /* Boot brand moment: the gate mark breathes while the bundle loads, then
+         React replaces #root on mount (zero flash). Inlined because the design
+         tokens/CSS aren't loaded at first paint; teal default is #5eead4 (dark)
+         / #0f766e (light), matching var(--accent). Honours reduced-motion. */
+      #pp-boot {
+        position: fixed; inset: 0; display: grid; place-items: center;
+        background: #0d0f12; color: #5eead4;
+      }
+      html:not(.dark) #pp-boot { background: #ffffff; color: #0f766e; }
+      #pp-boot svg { animation: pp-boot-breathe 2.6s ease-in-out infinite; transform-origin: center; }
+      #pp-boot .pp-boot-chevron { stroke-dasharray: 64; animation: pp-boot-clear 2.6s ease-in-out infinite; }
+      @keyframes pp-boot-breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.055); } }
+      @keyframes pp-boot-clear { 0% { stroke-dashoffset: 64; } 55%, 80% { stroke-dashoffset: 0; } 100% { stroke-dashoffset: -64; } }
+      @media (prefers-reduced-motion: reduce) {
+        #pp-boot svg, #pp-boot .pp-boot-chevron { animation: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="pp-boot" aria-hidden="true">
+        <svg width="72" height="72" viewBox="0 0 100 100" fill="none">
+          <g fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M41 31 L31 31 L31 69 L41 69" />
+            <path d="M59 31 L69 31 L69 69 L59 69" />
+            <path class="pp-boot-chevron" d="M45 40 L55 50 L45 60" />
+          </g>
+        </svg>
+      </div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

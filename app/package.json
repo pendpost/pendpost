@@ -1,0 +1,43 @@
+{
+  "name": "pendpost-app",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint src --ext .js,.jsx --max-warnings=0",
+    "safe-install": "npm ci",
+    "safe-install:dev": "npm install",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check:i18n": "vitest run src/__tests__/no-hardcoded-strings.test.js src/__tests__/locale-completeness.test.js"
+  },
+  "dependencies": {
+    "@radix-ui/react-popover": "^1.1.17",
+    "@radix-ui/react-tooltip": "^1.2.10",
+    "@tanstack/react-query": "^5.59.0",
+    "lucide-react": "^0.577.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@vitejs/plugin-react": "^6.0.2",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.37.0",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "jest-axe": "^10.0.0",
+    "jsdom": "^29.1.1",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.13",
+    "vite": "^8.0.16",
+    "vitest": "^4.1.9"
+  }
+}

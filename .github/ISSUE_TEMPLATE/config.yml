@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/pendpost/pendpost/security/advisories/new
+    about: Report it privately, never in a public issue (see SECURITY.md).
+  - name: Ask a question or share an idea
+    url: https://github.com/pendpost/pendpost/discussions
+    about: Use Discussions for questions and ideas.
+  - name: Read the documentation
+    url: https://docs.pendpost.com
+    about: The docs may already answer it.

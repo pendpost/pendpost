@@ -1,0 +1,67 @@
+{
+  "name": "pendpost",
+  "version": "1.0.0",
+  "description": "pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, and X behind a human approval gate you control.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Nomadik GmbH",
+  "homepage": "https://pendpost.com",
+  "mcpName": "io.github.pendpost/pendpost",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pendpost/pendpost.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pendpost/pendpost/issues"
+  },
+  "bin": {
+    "pendpost": "bin/pendpost.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "social-media",
+    "social-media-scheduler",
+    "scheduler",
+    "mcp",
+    "mcp-server",
+    "agent",
+    "approval-gate",
+    "local-first",
+    "self-hosted",
+    "open-source",
+    "automation",
+    "buffer-alternative",
+    "instagram",
+    "facebook",
+    "linkedin",
+    "youtube",
+    "x"
+  ],
+  "files": [
+    "server.mjs",
+    "lib/",
+    "scripts/",
+    "bin/",
+    "app/dist/",
+    "data/plans/",
+    "data/media/",
+    "data/captions/",
+    "rules.json",
+    "config.example.json",
+    ".env.example",
+    "README.md",
+    "LICENSE",
+    "DISCLAIMER.md",
+    "SECURITY.md",
+    "AGENTS.md"
+  ],
+  "scripts": {
+    "start": "node bin/pendpost.mjs",
+    "dev": "node --watch server.mjs",
+    "build": "cd app && npm install && npm run build",
+    "prepack": "npm run build",
+    "check": "node --check server.mjs && for f in lib/*.mjs lib/drivers/*.mjs scripts/*.mjs bin/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && node scripts/check-encoding.mjs && node test/parity-check.mjs && for t in test/*.test.mjs; do node \"$t\" || exit 1; done"
+  }
+}

@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>pendpost</string>
+  <key>CFBundleDisplayName</key>
+  <string>pendpost</string>
+  <key>CFBundleIdentifier</key>
+  <string>pendpost.launcher</string>
+  <key>CFBundleVersion</key>
+  <string>1.0</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>launcher</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <!-- Launcher only: opens a Chrome app window then exits - no Dock dwell. -->
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

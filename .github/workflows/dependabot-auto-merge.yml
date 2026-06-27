@@ -1,0 +1,63 @@
+name: Dependabot auto-merge
+
+# Self-merging for low-risk dependency updates.
+#
+# This repo is private on the GitHub Free plan, where branch rulesets and the
+# native "auto-merge" feature are unavailable, so we cannot gate a merge on
+# required checks the usual way. Instead we trigger from workflow_run AFTER the
+# CI workflow finishes: the job only runs when CI concluded "success", so a
+# green CI run is the gate - a bump that breaks the build is never merged.
+# (workflow_run also runs with a full read-write GITHUB_TOKEN, unlike the
+# read-only token dependabot gets on pull_request events.)
+#
+# Policy: minor/patch updates self-merge (grouped minor+patch PRs, and any
+# singleton whose major is unchanged). Major bumps are left for human review;
+# breaking majors are additionally blocked at source by dependabot ignore rules.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    steps:
+      - name: Merge minor/patch dependabot updates that passed CI
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number,title --jq '.[0] // empty')
+          if [ -z "$pr" ]; then echo "no open PR for branch $BRANCH"; exit 0; fi
+          num=$(echo "$pr" | jq -r '.number')
+          title=$(echo "$pr" | jq -r '.title')
+          echo "evaluating PR #$num: $title"
+
+          merge=false
+          # Grouped PRs are configured to contain only minor+patch updates.
+          case "$title" in
+            *"-dependencies group"*|*"actions group"*) merge=true ;;
+          esac
+          # Singleton "Bump <name> from <old> to <new>": merge if major unchanged.
+          if [ "$merge" = false ]; then
+            old=$(echo "$title" | sed -nE 's/.* from ([0-9]+)(\.[0-9]+)?.* to .*/\1/p')
+            new=$(echo "$title" | sed -nE 's/.* from .* to ([0-9]+)(\.[0-9]+)?.*/\1/p')
+            if [ -n "$old" ] && [ -n "$new" ] && [ "$old" = "$new" ]; then merge=true; fi
+          fi
+
+          if [ "$merge" = true ]; then
+            echo "minor/patch update - merging #$num"
+            gh pr merge "$num" --repo "$REPO" --squash --delete-branch
+          else
+            echo "major or unrecognized bump - leaving #$num for human review"
+          fi

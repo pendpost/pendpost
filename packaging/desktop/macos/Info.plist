@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Info.plist for the SHIPPED, signed pendpost.app. build-app.sh substitutes
+     __VERSION__. CFBundleIdentifier is a reverse-DNS id under the owner's domain
+     (Developer ID distribution does not require a registered App ID). -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>pendpost</string>
+  <key>CFBundleDisplayName</key>
+  <string>pendpost</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.pendpost.app</string>
+  <key>CFBundleVersion</key>
+  <string>__VERSION__</string>
+  <key>CFBundleShortVersionString</key>
+  <string>__VERSION__</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleExecutable</key>
+  <string>pendpost</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>Nomadik GmbH. MIT-licensed.</string>
+  <!-- The dashboard is served over loopback HTTP; NSAllowsLocalNetworking permits
+       http://127.0.0.1 without weakening App Transport Security globally. -->
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
