@@ -130,10 +130,10 @@ try {
   writeRegistry({ tiktok: { script: 'scripts/tiktok-social.mjs', platforms: ['tiktok'], credentialEnvKeys: ['TIKTOK_ACCESS_TOKEN'] } });
   const { execFileSync } = await import('node:child_process');
   const parityOut = execFileSync(process.execPath, [path.join(REPO, 'test', 'parity-check.mjs')], { encoding: 'utf8' });
-  ok(/63 routes, 43 tools.*0 documented UI-only/.test(parityOut),
+  ok(/64 routes, 43 tools.*0 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 63/43 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 64/43 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

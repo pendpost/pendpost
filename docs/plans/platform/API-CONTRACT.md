@@ -90,7 +90,8 @@ and need no exemption.)
     "/api/cloud/clients/always-on",
     "/api/cloud/checkout",
     "/api/cloud/billing-portal",
-    "/api/cloud/spend-cap"
+    "/api/cloud/spend-cap",
+    "/api/cloud/sign-out"
   ],
   "tools": [],
   "uiOnly": []
