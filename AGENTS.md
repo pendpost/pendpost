@@ -35,9 +35,10 @@ Exercise everything here before connecting a real platform.
 ## Secrets never flow through you
 
 You NEVER read, type, paste, or write a raw secret or token. `config_set` can
-set non-secret identifiers only, never a secret. Secrets are minted ONLY by the
-per-engine CLI ceremony the owner runs locally (it writes `.env` at mode 0600);
-the token never passes through the agent, the chat, or the dashboard.
+set non-secret identifiers only, never a secret. Secrets are entered ONLY by the
+owner, in a local ceremony the owner runs themselves - the per-engine CLI or the
+dashboard Setup page - which writes `.env` at mode 0600; the token never passes
+through the agent or the chat.
 
 ## Per-platform setup loop
 
@@ -146,9 +147,9 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 **Steps**
 
 1. **Create a project and enable the API** - In Google Cloud Console, create a project and enable "YouTube Data API v3" under APIs & Services -> Library.
-2. **Configure the OAuth consent screen** - Configure the OAuth consent screen and add the scope https://www.googleapis.com/auth/youtube.force-ssl. Add your Google account as a test user while the app is in Testing.
+2. **Publish the consent screen to Production** - On the OAuth consent screen, add the scope https://www.googleapis.com/auth/youtube.force-ssl, then publish the app to Production (Google Auth Platform -> Audience -> Publish app). A Production app issues a durable refresh token and only asks you to confirm access once. Leaving it in Testing works for a quick trial but expires the token after 7 days - publish before you rely on it.
 3. **Create the OAuth client** - Create an OAuth 2.0 client (Desktop or Web application). For a Web client, add the redirect URI http://localhost:8088/callback. Record the client ID and client secret. _(sets env `YT_CLIENT_ID, YT_CLIENT_SECRET`)_
-4. **Run the OAuth flow to mint a refresh token** - Run the CLI below to authorize in the browser and store the refresh token. The token exchange happens in the CLI - this dashboard never sees the raw token. _(sets env `YT_REFRESH_TOKEN`)_
+4. **Run the OAuth flow to mint a refresh token** - Run the CLI below to authorize in the browser and store the refresh token. The token exchange happens in the CLI - this dashboard never sees the raw token. Expect a one-time "Google hasn't verified this app" screen - that is normal for your own bring-your-own app: click Advanced -> Go to pendpost (unsafe) to continue. No Google verification is needed. _(sets env `YT_REFRESH_TOKEN`)_
    ```bash
    node scripts/yt-social.mjs auth
    ```
@@ -156,5 +157,5 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 **Common failures**
 
 - _No refresh token is returned, so the lane cannot stay authenticated._ Google only issues a refresh token on the first consent for a client. **Fix:** Force a fresh consent (add prompt=consent / access_type=offline), or revoke prior access for the app and re-run auth.
-- _The token stops working after about a week._ The OAuth consent screen is still in Testing mode, where refresh tokens expire in 7 days. **Fix:** Publish the consent screen (or keep re-authorizing); a Production app issues long-lived refresh tokens.
+- _The token stops working after about a week._ The consent screen is still in Testing mode, where refresh tokens expire in 7 days. **Fix:** Publish the app to Production (step 2) for a long-lived refresh token.
 - _Uploads or updates are rejected with insufficient permissions._ The youtube.force-ssl scope was not granted during consent. **Fix:** Add https://www.googleapis.com/auth/youtube.force-ssl to the consent screen and re-authorize.

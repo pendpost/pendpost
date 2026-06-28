@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-28
+
+### Added
+- Connect panel: set up Instagram, Facebook, LinkedIn, YouTube, and X from inside the app. Credentials go into collapsible per-platform cards that save as you type — no Save button — and never leave your machine.
+- Disconnect: clear a platform's stored credentials straight from its card, for rotating keys or stepping away from a shared machine.
+- YouTube setup guidance: Production-first connect steps and plain-language reassurance for Google's "this app isn't verified" consent screen, so the one-time warning doesn't read as a dead end.
+- `pendpost connect`: a CLI entry point for the same operator-only connect flow.
+
+### Fixed
+- The OAuth connect ceremony now reports progress and completion instead of leaving you on a dead-end screen.
+- macOS approval notifications now show the pendpost icon.
+
 ## [1.0.1] - 2026-06-27
 
 ### Added

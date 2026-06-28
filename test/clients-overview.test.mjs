@@ -164,9 +164,9 @@ try {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const parityOut = execFileSync('node', [path.join(__dirname, 'parity-check.mjs')], { encoding: 'utf8' });
   ok(/\bOK\b/.test(parityOut), `parity-check exits 0 / OK: ${parityOut.trim()}`);
-  ok(/64 routes, 43 tools/.test(parityOut), `parity is 64 routes / 43 tools: ${parityOut.trim()}`);
+  ok(/67 routes, 43 tools/.test(parityOut), `parity is 67 routes / 43 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 64/43 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 66/43 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

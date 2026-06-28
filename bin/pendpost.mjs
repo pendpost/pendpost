@@ -17,11 +17,15 @@ if (arg === '--help' || arg === '-h') {
   console.log(`pendpost - agent-operated social ops with a human approval gate
 
 Usage: pendpost [--help] [--version] [--stdio]
+       pendpost connect <platform>      connect a platform from any folder
 
 Starts the local pendpost server (dashboard + REST /api + MCP /mcp) on
 http://127.0.0.1:8090. With no credentials it runs in MOCK mode: drive the full
 draft -> approve -> schedule -> publish -> insights loop with zero setup.
 
+  connect <platform>   one-command connect for youtube | meta | linkedin | x;
+                       writes the credential to your active client's .env (run
+                       'pendpost connect' with no platform for details).
   --stdio   also speak MCP over stdio (for one-click Claude Desktop / .mcpb use);
             the local dashboard still runs so you can approve posts in the browser.
 
@@ -39,6 +43,45 @@ if (arg === '--version' || arg === '-v') {
   const pkg = JSON.parse(fs.readFileSync(path.join(INSTALL_ROOT, 'package.json'), 'utf8'));
   console.log(pkg.version);
   process.exit(0);
+}
+
+// `connect <platform>`: one command, runnable from ANY folder, to connect a
+// platform without booting the server. It just shells out to the matching engine's
+// existing connect ceremony (the SAME one the GUI Setup page runs). The engine
+// self-roots on the active client (envPath() -> activeRoot()), so the credential
+// lands in the active client's .env regardless of where this is run from. Extra
+// flags (--client-id, --client-secret, --system-user-token, ...) pass straight through.
+if (arg === 'connect') {
+  // alias -> [engine script, connect subcommand]. youtube/linkedin/x mint via an
+  // interactive browser OAuth (auth); meta exchanges a long-lived token (setup-system-user).
+  const LANES = {
+    youtube: ['yt-social.mjs', 'auth'], yt: ['yt-social.mjs', 'auth'],
+    linkedin: ['linkedin-social.mjs', 'auth'], li: ['linkedin-social.mjs', 'auth'],
+    x: ['x-social.mjs', 'auth'], twitter: ['x-social.mjs', 'auth'],
+    meta: ['meta-social.mjs', 'setup-system-user'], facebook: ['meta-social.mjs', 'setup-system-user'],
+    fb: ['meta-social.mjs', 'setup-system-user'], instagram: ['meta-social.mjs', 'setup-system-user'],
+    ig: ['meta-social.mjs', 'setup-system-user'],
+  };
+  const platform = String(process.argv[3] || '').toLowerCase();
+  const lane = LANES[platform];
+  if (!lane) {
+    console.log(`pendpost connect <platform> - connect a platform from any folder.
+
+Platforms: youtube | meta | linkedin | x
+
+  pendpost connect youtube     mint a YouTube credential (opens your browser)
+  pendpost connect meta        connect Facebook + Instagram (paste a System User token)
+  pendpost connect linkedin    mint a LinkedIn credential (opens your browser)
+  pendpost connect x           mint an X credential (opens your browser)
+
+Credentials are written to your ACTIVE client's .env on this machine - never sent anywhere.
+Pass portal values directly, e.g. pendpost connect youtube --client-id ... --client-secret ...`);
+    process.exit(platform ? 1 : 0);
+  }
+  const [script, subcommand] = lane;
+  const passthrough = process.argv.slice(4); // anything after the platform name
+  const res = spawnSync(process.execPath, [path.join(INSTALL_ROOT, 'scripts', script), subcommand, ...passthrough], { stdio: 'inherit' });
+  process.exit(res.status == null ? 1 : res.status);
 }
 
 // `--stdio`: speak MCP over stdio (the one-click .mcpb path) IN ADDITION to the
