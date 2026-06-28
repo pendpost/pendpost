@@ -37,11 +37,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand, platformEnabled } from '../lib/mode.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
+import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Workspace-aware paths: a separate PENDPOST_ROOT (npx/docker) holds .env + data;
-// default is the install dir, so a plain checkout resolves under itself.
-const ENV_PATH = process.env.PENDPOST_ROOT ? path.join(process.env.PENDPOST_ROOT, '.env') : path.resolve(__dirname, '../.env');
+// The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
+// (lib/util.mjs -> activeRoot()): when the app spawns us it sets PENDPOST_ROOT to
+// that client root; a bare CLI run resolves the active client from data/clients.json.
+// Either way we read/write the SAME file the app reads - no orphan repo-root .env.
+const ENV_PATH = envPath();
 const DATA_ROOT = process.env.PENDPOST_ROOT ? path.join(process.env.PENDPOST_ROOT, 'data') : path.resolve(__dirname, '../data');
 // The active client's posting config (config.json lives at the client root, the
 // same PENDPOST_ROOT the engine is spawned under). Read directly here - the
@@ -433,6 +436,7 @@ function fmtLocal(iso, tz) {
 // ---------- commands ----------
 
 async function cmdSetup(args) {
+  console.log(`[info] Connecting Meta (Facebook + Instagram) - credentials will be written to ${ENV_PATH}`);
   if (!args.token) {
     console.error('Usage: node scripts/meta-social.mjs setup --token <short-lived-user-token> [--app-id X --app-secret Y] [--page-id P]');
     process.exit(2);
@@ -506,6 +510,7 @@ async function cmdSetup(args) {
 // + IG are assigned to it, and the page token derived from it is non-expiring
 // while that assignment stands.
 async function cmdSetupSystemUser(args) {
+  console.log(`[info] Connecting Meta (Facebook + Instagram) - credentials will be written to ${ENV_PATH}`);
   const token = args['system-user-token'] || args.token;
   if (!token) {
     console.error('Usage: node scripts/meta-social.mjs setup-system-user --system-user-token <SYSTEM_USER_TOKEN> [--page-id P] [--app-id X --app-secret Y]');

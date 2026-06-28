@@ -3,9 +3,10 @@
 // status (connected | skipped | incomplete). Every card surfaces the FULL editable
 // identifier set for its platform, pre-filled from config - inline on an incomplete
 // card, behind a collapsed 'Edit identifiers' disclosure on a connected one - each an
-// input + Save (config_set set.identifiers). A missing secret shows the exact CLI
-// command with a Copy button (NEVER an input: tokens are a terminal ceremony, never
-// entered here). A
+// input + Save (config_set set.identifiers). A missing secret shows a GUI Connect
+// panel (ConnectPanel -> POST /api/connect, which delegates to the engine's own
+// connect command; the server never persists the secret), with the equivalent CLI
+// kept under a demoted "prefer your terminal?" disclosure. A
 // Skip / Un-skip control maps to config_set set.posting.skippedPlatforms, and
 // Meta (Facebook is deny-by-default) gets an enable/disable policy toggle mapped
 // to config_set set.posting.platforms. A locale picker maps to
@@ -15,11 +16,11 @@
 // no all-caps prose - it mirrors Settings.jsx / Clients.jsx verbatim.
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock } from 'lucide-react';
-import { usePendpostHealth, useConfig, saveConfig, recheckHealth, useAccounts, setMetaLane } from '../lib/api.js';
+import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock, Lock } from 'lucide-react';
+import { usePendpostHealth, useConfig, saveConfig, recheckHealth, connectPlatform, connectStatus, useAccounts, setMetaLane } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { fmtFull } from '../lib/format.js';
-import { INNER_SURFACE, Skeleton, EYEBROW } from './ui.jsx';
+import { INNER_SURFACE, Skeleton, EYEBROW, PLATFORM_META } from './ui.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
@@ -64,6 +65,26 @@ const PLATFORM_IDENTIFIERS = {
   ],
 };
 
+// The identifier fields split into a required-first / muted-"Optional" group (less-is-
+// more): only these keys are required for the connection itself - everything else is a
+// public-profile nicety under the Optional divider. FALLBACK dims a field that a richer
+// sibling supersedes (the YouTube handle dims once a channel ID is set); AUTO_KEYS marks
+// a field pendpost fills on connect (the X handle), so each carries a soft fallback hint.
+const REQUIRED_KEYS = new Set(['metaPageId', 'linkedinOrgUrn']);
+const FALLBACK = { ytHandle: 'ytChannelId' };
+const AUTO_KEYS = new Set(['xHandle']);
+
+// The SECRET inputs the GUI Connect panel collects per platform, posted to the
+// engine-delegating /api/connect (the server never persists them; the engine writes
+// the active client's .env). youtube/linkedin/x mint via a browser OAuth (interactive);
+// meta exchanges a System User token (no browser). Keys match the /api/connect body.
+const CONNECT_FIELDS = {
+  youtube: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.youtube' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
+  linkedin: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.linkedin' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
+  x: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.x' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
+  meta: { interactive: false, fields: [{ key: 'systemUserToken', labelKey: 'connect.systemUserToken', secret: true }] },
+};
+
 // buildSetupPrompt - assemble a self-contained Claude-for-Chrome browser-driving
 // prompt for ONE lane from the card's in-scope playbook (lib/playbooks.mjs, arriving
 // via pendpost_health). Pure string build: no fetch, NO secrets. It reads only the
@@ -102,6 +123,45 @@ function buildSetupPrompt(label, playbook) {
   return L.join('\n');
 }
 
+// The single source of truth for a lane's STATUS TONE, lifted so both the StatusChip
+// (in the opened body) and the collapsed-row status dot read the same lane:
+//   connected + live     -> ok       connected + failed -> err
+//   connected + other    -> warn     skipped            -> neutral
+//   incomplete           -> warn
+function statusTone(status, validation) {
+  if (status === 'connected') {
+    if (validation?.state === 'live') return 'ok';
+    if (validation?.state === 'failed') return 'err';
+    return 'warn';
+  }
+  if (status === 'skipped') return 'neutral';
+  return 'warn';
+}
+
+const dotClass = (tone) => ({ ok: 'bg-emerald-500', warn: 'bg-amber-500', err: 'bg-red-500', neutral: 'bg-zinc-400' }[tone] || 'bg-zinc-400');
+
+// The brand glyph(s) each setup lane shows in its collapsed row (keyed to PLATFORM_META).
+const SETUP_PLATFORM_ICONS = { meta: ['facebook', 'instagram'], linkedin: ['linkedin'], youtube: ['youtube'], x: ['x'] };
+
+// The collapsed-row identity: the lane's brand logo(s) with a colored status dot
+// overlaid (mirrors Sidebar's AccountChip) - the dot carries status, so no status
+// text rides the collapsed header. Wholly decorative (aria-hidden): the trigger's
+// accessible name stays exactly the platform label.
+function PlatformGlyphs({ platformId, tone }) {
+  const keys = SETUP_PLATFORM_ICONS[platformId] || [];
+  return (
+    <span className="relative inline-flex items-center gap-0.5">
+      {keys.map((k) => {
+        const meta = PLATFORM_META[k];
+        if (!meta) return null;
+        const { Icon } = meta;
+        return <Icon key={k} size={16} className={meta.color} aria-hidden="true" />;
+      })}
+      <span className={`absolute -right-1 -top-1 h-2 w-2 rounded-full ring-2 ring-white dark:ring-zinc-900 ${dotClass(tone)}`} aria-hidden="true" />
+    </span>
+  );
+}
+
 // Non-color status carrier: an icon + readable text chip via the shared IconBadge,
 // FOLDED with the live-probe validation (C1). The structural status picks the lane
 // and the nested validation.state refines a connected lane into proven / failed /
@@ -114,20 +174,22 @@ function buildSetupPrompt(label, playbook) {
 //   incomplete           -> warn  / AlertCircle  'Incomplete'
 function StatusChip({ status, validation, t }) {
   const detail = validation?.detail || null;
+  const tone = statusTone(status, validation);
   if (status === 'connected') {
     const state = validation?.state;
-    if (state === 'live') return <IconBadge icon={CheckCircle2} tone="ok" text={t('setup.status.connected')} label={detail} />;
-    if (state === 'failed') return <IconBadge icon={AlertCircle} tone="err" text={t('setup.status.failed')} label={detail} />;
-    return <IconBadge icon={AlertCircle} tone="warn" text={t('setup.status.notVerified')} label={detail} />;
+    if (state === 'live') return <IconBadge icon={CheckCircle2} tone={tone} text={t('setup.status.connected')} label={detail} />;
+    if (state === 'failed') return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.failed')} label={detail} />;
+    return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.notVerified')} label={detail} />;
   }
-  if (status === 'skipped') return <IconBadge icon={MinusCircle} tone="neutral" text={t('setup.status.skipped')} label={detail} />;
-  return <IconBadge icon={AlertCircle} tone="warn" text={t('setup.status.incomplete')} label={detail} />;
+  if (status === 'skipped') return <IconBadge icon={MinusCircle} tone={tone} text={t('setup.status.skipped')} label={detail} />;
+  return <IconBadge icon={AlertCircle} tone={tone} text={t('setup.status.incomplete')} label={detail} />;
 }
 
-// A missing secret: the exact CLI command + a Copy button. NEVER an input - a
-// token is minted in the terminal (OAuth / portal step), never typed into the UI.
-// Mirrors Sidebar's TokenAction copy machine, with a clipboard fallback to a
-// read-only prompt when navigator.clipboard is unavailable (test / insecure ctx).
+// The terminal alternative to the GUI Connect panel: the exact CLI command + a Copy
+// button (the same credential, minted in your terminal instead). Demoted under the
+// "prefer your terminal?" disclosure (TerminalAlternative). Mirrors Sidebar's
+// TokenAction copy machine, with a clipboard fallback to a read-only prompt when
+// navigator.clipboard is unavailable (test / insecure ctx).
 function SecretRow({ label, action }) {
   const t = useT();
   const prompt = usePrompt();
@@ -165,15 +227,197 @@ function SecretRow({ label, action }) {
   );
 }
 
-// One editable identifier: a labelled input (pre-filled from the current config) with
-// a field-help tip and a field-scoped Save -> config_set set.identifiers. Save is
-// enabled only for a NON-EMPTY, CHANGED value: the server validator rejects an empty
-// identifier (lib/config.mjs validateIdentifier) and a no-op diff is pointless. The
-// help button sits BESIDE the label (htmlFor ties the input to its own name) so the
-// Tooltip is keyboard/SR-reachable without stripping the input's accessible name
-// (WCAG 4.1.2). The save echoes the config rev (optimistic concurrency) and
-// invalidates the setup signal + config + accounts so the owning card re-derives at once.
-function IdentifierRow({ field, savedValue, configRev }) {
+// The GUI Connect panel for an incomplete lane: collect the platform's secret(s) and
+// kick off the engine connect ceremony (POST /api/connect). The server never persists
+// the secret - the ENGINE writes the active client's .env (a 127.0.0.1 POST, stays on
+// this machine). States: idle -> connecting (POST) -> waiting -> error. While 'waiting'
+// it polls BOTH the liveness probe (recheckHealth - the parent unmounts us once the lane
+// flips Connected) AND the connect ceremony's own status (GET /api/connect/status) so it
+// is NEVER a dead-end: it surfaces the consent link (when the browser did not auto-open),
+// a "Check again" + a "Cancel" out, and flips to an actionable error on a hard failure or
+// a soft 180s cap. On 'error' a Retry re-runs connect(); the terminal path stays below
+// via TerminalAlternative ("prefer your terminal?").
+function ConnectPanel({ platform, fields, interactive }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [values, setValues] = useState({});
+  const [state, setState] = useState('idle'); // idle | connecting | waiting | error
+  const [error, setError] = useState(null);
+  const [status, setStatus] = useState(null); // latest /api/connect/status payload
+  const set = (k, v) => setValues((p) => ({ ...p, [k]: v }));
+  const ready = fields.every((f) => (values[f.key] || '').trim());
+
+  // Apply one connect-status payload: record it, and if the ceremony has FAILED, flip to a
+  // terminal error (the detail rides the alert). Shared by the immediate post-connect fetch
+  // and every poll tick so a failure surfaces at once, never only after a timer.
+  const applyStatus = (next) => {
+    setStatus(next);
+    if (next?.state === 'failed') { setState('error'); setError(next.detail || t('connect.failed')); }
+  };
+
+  // One poll tick: re-run the liveness probe (the parent unmounts us when the lane flips
+  // Connected) AND read the connect ceremony's own status so the consent link / a hard
+  // failure surface without waiting for a flip.
+  const pollOnce = async () => {
+    try { await recheckHealth(platform); } catch { /* keep polling on a probe hiccup */ }
+    queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
+    queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    try {
+      applyStatus(await connectStatus(platform));
+    } catch { /* a status hiccup is non-fatal; the next tick retries */ }
+  };
+
+  // While 'waiting', poll every 3s. The interval is cleaned up on unmount/state change,
+  // and 'alive' guards any late resolve. A soft cap (interactive lanes allow time for the
+  // browser consent) flips a still-waiting panel into a CLEAR, actionable error.
+  useEffect(() => {
+    if (state !== 'waiting') return undefined;
+    let alive = true;
+    const started = Date.now();
+    const limit = interactive ? 180000 : 30000;
+    const iv = setInterval(async () => {
+      if (!alive) return;
+      await pollOnce();
+      if (!alive) return;
+      if (Date.now() - started > limit) { setState('error'); setError(t('connect.timeout')); }
+    }, 3000);
+    return () => { alive = false; clearInterval(iv); };
+    // pollOnce closes over stable setters/queryClient/t; re-running per state/platform is enough.
+  }, [state, platform, interactive, queryClient, t]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const connect = async () => {
+    setState('connecting');
+    setError(null);
+    setStatus(null);
+    try {
+      const creds = {};
+      for (const f of fields) creds[f.key] = (values[f.key] || '').trim();
+      await connectPlatform(platform, creds); // 200 started, or throws on a 400 validation reject
+      setState('waiting');
+      // Fetch the ceremony status ONCE immediately so the consent link (or an already-
+      // failed start) appears without waiting for the first 3s poll tick.
+      connectStatus(platform).then(applyStatus).catch(() => {});
+    } catch (err) {
+      setState('error');
+      setError(err.message || t('connect.failed'));
+    }
+  };
+
+  // "Check again": run one poll right now instead of waiting for the next tick.
+  const checkAgain = () => { pollOnce(); };
+  // "Cancel": stop polling and restore the form (back to idle).
+  const cancel = () => { setState('idle'); setError(null); };
+
+  const busy = state === 'connecting' || state === 'waiting';
+  return (
+    <div className={`space-y-2 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`} aria-busy={busy}>
+      {fields.map((f) => {
+        const id = `setup-connect-${platform}-${f.key}`;
+        return (
+          <div key={f.key} className="space-y-1">
+            <label htmlFor={id} className="text-[11px] text-zinc-500 dark:text-zinc-400">{t(f.labelKey)}</label>
+            <input
+              id={id}
+              type={f.secret ? 'password' : 'text'}
+              autoComplete="off"
+              spellCheck={false}
+              value={values[f.key] || ''}
+              onChange={(e) => set(f.key, e.target.value)}
+              placeholder={f.placeholderKey ? t(f.placeholderKey) : t(`${f.labelKey}.placeholder`)}
+              disabled={busy}
+              className={FIELD}
+            />
+          </div>
+        );
+      })}
+      <p className="flex items-center gap-1.5 text-[11px] text-zinc-400 dark:text-zinc-500">
+        <Lock size={11} aria-hidden="true" />
+        {t('connect.localNote')}
+      </p>
+
+      {state === 'waiting' ? (
+        // Never a lone disabled spinner: the browser hint, the consent link (when the
+        // browser did not auto-open), and an explicit Check-again / Cancel out are all
+        // present so the owner can always make progress or back out.
+        <div className="space-y-2">
+          {interactive ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('connect.browserHint')}</p> : null}
+          {status?.authUrl ? (
+            <p>
+              <a
+                href={status.authUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] font-bold underline decoration-zinc-400 underline-offset-2 hover:decoration-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:decoration-zinc-500 dark:hover:decoration-zinc-300"
+              >
+                <ExternalLink size={12} aria-hidden="true" />
+                {t('connect.openSignIn')}
+              </a>
+            </p>
+          ) : null}
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+              <Loader2 size={14} className="inline animate-spin" aria-hidden="true" />
+              {t('connect.waiting')}
+            </span>
+            <button type="button" onClick={checkAgain} className={BTN_GHOST}>{t('connect.checkAgain')}</button>
+            <button type="button" onClick={cancel} className={BTN_GHOST}>{t('connect.cancel')}</button>
+          </div>
+        </div>
+      ) : state === 'error' ? (
+        <div className="space-y-2">
+          <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p>
+          <button type="button" onClick={connect} disabled={!ready} className={BTN_BRAND}>{t('connect.retry')}</button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={connect} disabled={busy || !ready} aria-busy={busy} className={BTN_BRAND}>
+            {state === 'connecting' ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
+            {state === 'connecting' ? t('connect.connecting') : t('connect.button')}
+          </button>
+        </div>
+      )}
+
+      {/* Announce the state transition for assistive tech (the visible copy carries the detail). */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {state === 'waiting' ? t('connect.waiting') : state === 'error' ? (error || t('connect.failed')) : ''}
+      </span>
+    </div>
+  );
+}
+
+// The terminal path, kept but demoted under a collapsed "prefer your terminal?"
+// disclosure (mirrors HowToConnect): the GUI Connect panel above is the primary flow,
+// but the same credential can still be minted in a terminal. Wraps the existing SecretRows.
+function TerminalAlternative({ secrets }) {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+  if (!secrets.length) return null;
+  return (
+    <div className={`rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-center gap-1.5 text-left text-[11px] text-zinc-500 dark:text-zinc-400">
+        <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        {t('connect.terminalAlt')}
+      </button>
+      {open ? (
+        <div className="mt-2 space-y-2">
+          {secrets.map((item, i) => <SecretRow key={`secret-${i}`} label={item.label} action={item.action} />)}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// One editable identifier: a labelled input (pre-filled from the current config) that
+// AUTO-SAVES on blur + Enter -> config_set set.identifiers (no Save button). The commit
+// fires only for a NON-EMPTY, CHANGED value: the server validator rejects an empty
+// identifier (lib/config.mjs validateIdentifier) and a no-op diff is pointless; Escape
+// reverts. Feedback is glyph-only (spinner -> a green check that fades, red alert on
+// error), no "saved"/"saving" prose. The help button sits BESIDE the label (htmlFor ties
+// the input to its own name) so the Tooltip is keyboard/SR-reachable without stripping
+// the input's accessible name (WCAG 4.1.2). The save echoes the config rev (optimistic
+// concurrency) and invalidates the setup signal + config + accounts so the owning card
+// re-derives at once. `hint` adds a muted helper line; `dimmed` softens a superseded row.
+function IdentifierRow({ field, savedValue, configRev, hint, dimmed }) {
   const t = useT();
   const queryClient = useQueryClient();
   const label = t(`setup.${field.labelKey}`);
@@ -205,10 +449,18 @@ function IdentifierRow({ field, savedValue, configRev }) {
     }
   };
 
-  const saving = state === 'saving';
+  // Commit on blur / Enter (dirty only); a pristine-or-cleared blur restores savedValue
+  // so a half-edit never lingers, and Escape always reverts.
+  const onBlur = () => { if (dirty) save(); else setValue(savedValue); };
+  const onKeyDown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    else if (e.key === 'Escape') { e.preventDefault(); setValue(savedValue); }
+  };
+
   const inputId = `setup-idf-${field.key}`;
+  const hintId = hint ? `${inputId}-hint` : undefined;
   return (
-    <div className="space-y-1">
+    <div className={`space-y-1 ${dimmed ? 'opacity-50' : ''}`}>
       <div className="flex items-center gap-1.5">
         <label htmlFor={inputId} className="text-[11px] text-zinc-500 dark:text-zinc-400">{label}</label>
         <Tip label={t(`setup.${field.tipKey}`)}>
@@ -217,19 +469,26 @@ function IdentifierRow({ field, savedValue, configRev }) {
           </button>
         </Tip>
       </div>
-      <span className="flex items-center gap-2">
+      <span className="relative block">
         <input
           id={inputId}
           value={value}
           onChange={(e) => setValue(e.target.value)}
+          onBlur={onBlur}
+          onKeyDown={onKeyDown}
           placeholder={t(`setup.${field.placeholderKey}`)}
-          className={state === 'error' ? FIELD_ERR : FIELD}
+          className={`pr-9 font-mono text-[13px] ${state === 'error' ? FIELD_ERR : FIELD}`}
           aria-invalid={state === 'error' ? 'true' : undefined}
+          aria-describedby={hintId}
         />
-        <button type="button" onClick={save} disabled={saving || !dirty} aria-busy={saving} aria-label={t('setup.identifier.saveField', { field: label })} className={`shrink-0 ${BTN_BRAND}`}>
-          {saving ? <Loader2 size={14} className="inline animate-spin" aria-hidden="true" /> : state === 'saved' ? <Check size={14} className="inline" aria-hidden="true" /> : t('setup.identifier.save')}
-        </button>
+        <span className="absolute right-3 top-1/2 -translate-y-1/2" aria-hidden="true">
+          {state === 'saving' ? <Loader2 size={15} className="animate-spin text-zinc-400 dark:text-zinc-500" />
+            : state === 'saved' ? <Check size={15} className="text-emerald-600 dark:text-emerald-300" />
+            : state === 'error' ? <AlertCircle size={15} className="text-red-600 dark:text-red-300" />
+            : null}
+        </span>
       </span>
+      {hint ? <p id={hintId} className="text-[11px] text-zinc-400 dark:text-zinc-500">{hint}</p> : null}
       {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
       <span className="sr-only" role="status" aria-live="polite">{state === 'saved' ? t('setup.identifier.saved', { label }) : ''}</span>
     </div>
@@ -237,42 +496,42 @@ function IdentifierRow({ field, savedValue, configRev }) {
 }
 
 // A platform's full identifier set as editable rows, pre-filled from the current
-// config. Rendered inline on an incomplete card and inside the connected card's
-// 'Edit identifiers' disclosure. Renders nothing for a platform with no identifiers.
+// config. Required-for-connection identifiers render first (unlabeled group); the
+// public-profile niceties follow under a muted "Optional" divider. An optional field
+// that a richer sibling supersedes dims with a soft fallback hint (ytHandle once a
+// channel ID is set); an auto-filled field (xHandle) carries a "filled on connect"
+// hint. Rendered inline on an incomplete card AND on a connected one (the card collapse
+// replaces the old per-card disclosure). Renders nothing for a platform with none.
+const GRID = 'grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3';
 function IdentifierFields({ platformId, identifiers, configRev }) {
+  const t = useT();
   const fields = PLATFORM_IDENTIFIERS[platformId] || [];
   if (!fields.length) return null;
+  const required = fields.filter((f) => REQUIRED_KEYS.has(f.key));
+  const optional = fields.filter((f) => !REQUIRED_KEYS.has(f.key));
+  const ids = identifiers || {};
   return (
-    <div className="space-y-2.5">
-      {fields.map((field) => (
-        <IdentifierRow key={field.key} field={field} savedValue={identifiers?.[field.key] ?? ''} configRev={configRev} />
-      ))}
-    </div>
-  );
-}
-
-// On a CONNECTED card the identifiers are already set, so tuck the editable set behind
-// a collapsed-by-default disclosure (mirrors HowToConnect) - the lane stays uncluttered
-// while every field is one click away. Hidden when the platform models no identifiers.
-function EditIdentifiers({ platformId, identifiers, configRev }) {
-  const t = useT();
-  const [open, setOpen] = useState(false);
-  if (!(PLATFORM_IDENTIFIERS[platformId]?.length)) return null;
-  return (
-    <div className={`rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50"
-      >
-        <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
-        {t('setup.editIdentifiers')}
-      </button>
-      {open ? (
-        <div className="mt-2">
-          <IdentifierFields platformId={platformId} identifiers={identifiers} configRev={configRev} />
+    <div className="space-y-3">
+      {required.length ? (
+        <div className={GRID}>
+          {required.map((field) => (
+            <IdentifierRow key={field.key} field={field} savedValue={ids[field.key] ?? ''} configRev={configRev} />
+          ))}
         </div>
+      ) : null}
+      {optional.length ? (
+        <>
+          <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{t('setup.zone.optional')}</p>
+          <div className={GRID}>
+            {optional.map((field) => {
+              const dimmed = field.key in FALLBACK && Boolean(ids[FALLBACK[field.key]]);
+              const hint = (field.key in FALLBACK && dimmed) ? t('setup.field.fallbackHint')
+                : AUTO_KEYS.has(field.key) ? t('setup.field.autoHint')
+                : undefined;
+              return <IdentifierRow key={field.key} field={field} savedValue={ids[field.key] ?? ''} configRev={configRev} hint={hint} dimmed={dimmed} />;
+            })}
+          </div>
+        </>
       ) : null}
     </div>
   );
@@ -535,11 +794,16 @@ function MetaLaneControls() {
   );
 }
 
-// One platform card: the connection status chip, the missing inputs (when incomplete)
-// or the credential vault (when connected), and the skip / un-skip + Meta controls.
+// One platform card: a WAI-ARIA disclosure (collapsed by default) whose collapsed row
+// is the brand logo(s) + a colored status dot + the platform name + a chevron - the dot
+// alone carries status, so no status text rides the header. Expanding reveals the
+// StatusChip, the missing inputs (when incomplete) or the editable fields (when
+// connected), and the skip / un-skip + Validate + Meta controls.
 function PlatformCard({ platform, configRev, identifiers, posting, onWrite }) {
   const t = useT();
   const { platform: id, label, status, missing = [], validation, playbook } = platform;
+  const [open, setOpen] = useState(false);
+  const tone = statusTone(status, validation);
   const secrets = missing.filter((m) => m.kind === 'secret');
   // A connected lane that has not proven itself live (no/failed probe) gets a per-card
   // Validate; live/skipped/incomplete lanes do not (see ValidateButton's contract).
@@ -566,47 +830,71 @@ function PlatformCard({ platform, configRev, identifiers, posting, onWrite }) {
   const toggleFacebook = () => onWrite({ platforms: { ...policy, facebook: !fbEnabled } }).catch(() => {});
 
   return (
-    <section aria-labelledby={`setup-${id}`} className={`space-y-3 rounded-2xl p-4 ${INNER_SURFACE}`}>
-      <div className="flex flex-wrap items-center gap-2.5">
-        <h3 id={`setup-${id}`} className="font-display text-sm font-bold">{label}</h3>
-        <span className="ml-auto"><StatusChip status={status} validation={validation} t={t} /></span>
-      </div>
+    <section aria-labelledby={`setup-${id}`} className={`rounded-2xl p-4 ${INNER_SURFACE} ${open ? 'space-y-3' : ''}`}>
+      {/* The trigger's accessible name is EXACTLY the platform label: the glyphs, dot,
+          and chevron are all aria-hidden and {label} is the only text node. Mirrors the
+          file's other disclosures: aria-expanded only, no aria-controls. */}
+      <h3 id={`setup-${id}`} className="m-0">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          className="flex w-full items-center gap-2.5 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        >
+          <PlatformGlyphs platformId={id} tone={tone} />
+          <span className="font-display text-sm font-bold">{label}</span>
+          <ChevronDown size={16} aria-hidden="true" className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
+        </button>
+      </h3>
 
-      {status === 'incomplete' ? (
-        <div className="space-y-2.5">
-          <IdentifierFields platformId={id} identifiers={identifiers} configRev={configRev} />
-          {secrets.map((item, i) => (
-            <SecretRow key={`secret-${i}`} label={item.label} action={item.action} />
-          ))}
-          <HowToConnect playbook={playbook} />
+      {open ? (
+        <div className="space-y-3">
+          <StatusChip status={status} validation={validation} t={t} />
+
+          {status === 'incomplete' ? (
+            <div className="space-y-2.5">
+              <IdentifierFields platformId={id} identifiers={identifiers} configRev={configRev} />
+              {/* GUI connect (primary) when a secret is still missing; the terminal path is
+                  kept but demoted. A lane missing only an identifier shows neither. */}
+              {secrets.length && CONNECT_FIELDS[id] ? (
+                <>
+                  <ConnectPanel platform={id} fields={CONNECT_FIELDS[id].fields} interactive={CONNECT_FIELDS[id].interactive} />
+                  <TerminalAlternative secrets={secrets} />
+                </>
+              ) : (
+                secrets.map((item, i) => <SecretRow key={`secret-${i}`} label={item.label} action={item.action} />)
+              )}
+              <HowToConnect playbook={playbook} />
+            </div>
+          ) : status === 'skipped' ? (
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.skippedNote')}</p>
+          ) : (
+            <div className="space-y-2.5">
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.connectedNote')}</p>
+              <IdentifierFields platformId={id} identifiers={identifiers} configRev={configRev} />
+            </div>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2">
+            {status === 'incomplete' && playbook ? <CopySetupPromptButton label={label} playbook={playbook} /> : null}
+            {canValidate ? <ValidateButton platform={id} /> : null}
+            {status === 'connected' ? null : (
+              <button type="button" onClick={toggleSkip} className={BTN_GHOST}>
+                {status === 'skipped' ? t('setup.unskip') : t('setup.skip')}
+              </button>
+            )}
+            {id === 'meta' ? (
+              <button type="button" onClick={toggleFacebook} className={BTN_GHOST} aria-pressed={fbEnabled}>
+                {fbEnabled ? t('setup.facebook.disable') : t('setup.facebook.enable')}
+              </button>
+            ) : null}
+          </div>
+
+          {/* The Meta publishing kill-switch + cadence floor live at the bottom of the
+              Meta card - the single home for everything Meta (folded in from Settings). */}
+          {id === 'meta' ? <MetaLaneControls /> : null}
         </div>
-      ) : status === 'skipped' ? (
-        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.skippedNote')}</p>
-      ) : (
-        <div className="space-y-2.5">
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.connectedNote')}</p>
-          <EditIdentifiers platformId={id} identifiers={identifiers} configRev={configRev} />
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-center gap-2">
-        {status === 'incomplete' && playbook ? <CopySetupPromptButton label={label} playbook={playbook} /> : null}
-        {canValidate ? <ValidateButton platform={id} /> : null}
-        {status === 'connected' ? null : (
-          <button type="button" onClick={toggleSkip} className={BTN_GHOST}>
-            {status === 'skipped' ? t('setup.unskip') : t('setup.skip')}
-          </button>
-        )}
-        {id === 'meta' ? (
-          <button type="button" onClick={toggleFacebook} className={BTN_GHOST} aria-pressed={fbEnabled}>
-            {fbEnabled ? t('setup.facebook.disable') : t('setup.facebook.enable')}
-          </button>
-        ) : null}
-      </div>
-
-      {/* The Meta publishing kill-switch + cadence floor live at the bottom of the
-          Meta card - the single home for everything Meta (folded in from Settings). */}
-      {id === 'meta' ? <MetaLaneControls /> : null}
+      ) : null}
     </section>
   );
 }
@@ -657,7 +945,7 @@ export default function Setup() {
   };
 
   return (
-    <div className="mx-auto max-w-2xl space-y-6">
+    <div className="mx-auto max-w-3xl space-y-6">
       <header>
         <h2 className="font-display text-lg font-bold">{t('setup.title')}</h2>
         <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.subtitle')}</p>

@@ -252,6 +252,21 @@ export const setMetaLane = (body) => postJson('/api/state/meta-lane', { ...body,
 // Secrets are display-only and never sent. set = { identifiers?, posting? }.
 export const saveConfig = (ifRev, set) => postJson('/api/config', { ifRev, set, actor: ACTOR });
 
+// Operator-only connect ceremony (POST /api/connect). Kicks off the engine's connect
+// command for one platform against the active client; the ENGINE writes the .env (the
+// server never persists the secret). creds carry the public Client ID + the secret/token
+// the operator entered (youtube/linkedin/x: clientId+clientSecret; meta: systemUserToken).
+// Resolves { started, interactive } - the caller then polls recheckHealth until the lane
+// flips. The secret stays on this machine (a 127.0.0.1 POST into the local .env).
+export const connectPlatform = (platform, creds = {}) => postJson('/api/connect', { platform, ...creds });
+
+// Imperative read of the engine connect ceremony's live state for one platform
+// (GET /api/connect/status?platform=<p>). Resolves { ok, state:'idle'|'running'|
+// 'failed'|'connected', detail, authUrl, at }. The ConnectPanel polls this while
+// 'waiting' so it can surface the consent link and a hard failure instead of a
+// dead-end spinner. Mirrors the file's other GETs (getJson throws on a non-2xx).
+export const connectStatus = (platform) => getJson('/api/connect/status?platform=' + encodeURIComponent(platform));
+
 // --- Covers (Phase C surface, UI face lands with the composer) ---
 export const setCoverFrame = (campaign, postId, frameSec) => postJson(`/api/plans/${campaign}/posts/${postId}/cover`, { frameSec });
 export const clearCover = (campaign, postId) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}/cover`, undefined);

@@ -55,6 +55,16 @@ rebuild the operator's working tree, so no `confirm` gate can make it safe to
 expose; it stays deliberately UI-only (triggered from the in-app "update available"
 prompt).
 
+`POST /api/connect` is the OPERATOR-ONLY platform connect ceremony. It kicks off the
+engine's own connect command (`yt/linkedin/x-social.mjs auth`, or `meta-social.mjs
+setup-system-user`) against the active client, passing the user's Client ID / Client
+Secret / System User token straight to the engine as spawn args. The engine writes the
+credential into the active client's `.env`; the server itself never persists a secret.
+Because the request body bears the client secret and the action mints a credential, it
+is deliberately NOT an agent tool - the same stance as the no-secrets-through-the-agent
+guarantee. The dashboard collects the value and the GUI polls `health_recheck` for the
+outcome.
+
 The `POST /api/cloud/*` routes (`connect`, `enabled`, `push`, `eject`, `hand-tokens`,
 `migrate`, `enable/start`, `clients/always-on`, `checkout`, `billing-portal`, `spend-cap`) are the OPTIONAL managed-cloud (pendpost-cloud) operator
 ceremonies. They are operator-only and deliberately NOT agent tools: connecting,
@@ -79,6 +89,7 @@ and need no exemption.)
 {
   "routes": [
     "/api/dashboard-update",
+    "/api/connect",
     "/api/cloud/connect",
     "/api/cloud/enabled",
     "/api/cloud/push",

@@ -61,9 +61,10 @@ Exercise everything here before connecting a real platform.
 ## Secrets never flow through you
 
 You NEVER read, type, paste, or write a raw secret or token. \`config_set\` can
-set non-secret identifiers only, never a secret. Secrets are minted ONLY by the
-per-engine CLI ceremony the owner runs locally (it writes \`.env\` at mode 0600);
-the token never passes through the agent, the chat, or the dashboard.
+set non-secret identifiers only, never a secret. Secrets are entered ONLY by the
+owner, in a local ceremony the owner runs themselves - the per-engine CLI or the
+dashboard Setup page - which writes \`.env\` at mode 0600; the token never passes
+through the agent or the chat.
 
 ## Per-platform setup loop
 
