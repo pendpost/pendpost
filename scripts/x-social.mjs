@@ -787,7 +787,7 @@ async function verifyCredentials() {
 // The wrong-account guard: refuse to mutate unless the LIVE account matches the
 // X_HANDLE this client's .env expects. The active client can flip (desktop app) and
 // creds are PENDPOST_ROOT-scoped, so this proves we are editing the intended account
-// and never a sibling client's (e.g. bondigoo). Throws on mismatch / unset handle.
+// and never a sibling client's (e.g. acme). Throws on mismatch / unset handle.
 async function assertSelf() {
   const expected = (readEnv('X_HANDLE') || '').replace(/^@/, '').trim().toLowerCase();
   if (!expected) throw new Error('X_HANDLE is not set in .env - refusing to edit a profile I cannot identify (set X_HANDLE to the expected @handle).');

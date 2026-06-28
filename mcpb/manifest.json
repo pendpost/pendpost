@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "pendpost",
   "display_name": "pendpost",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "An AI agent drafts and schedules your social media posts; you approve before anything publishes. Local-first, MIT.",
   "author": { "name": "Nomadik GmbH", "url": "https://pendpost.com" },
   "homepage": "https://pendpost.com",
