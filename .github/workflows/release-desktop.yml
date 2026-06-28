@@ -35,14 +35,16 @@ permissions:
 jobs:
   # ---------------------------------------------------------------- macOS -----
   macos:
-    # Self-hosted on the owner's always-on Mac: macOS-hosted runners bill 10x
-    # included minutes; the self-hosted runner is free. Safe on a PRIVATE repo.
-    runs-on: [self-hosted, macOS]
+    # GitHub-hosted macOS: free + unlimited on this PUBLIC repo, so there is no
+    # self-hosted runner to register or keep online. The Developer ID cert is
+    # imported from secrets into an ephemeral keychain below, so hosted signing
+    # works without a pre-provisioned Mac.
+    runs-on: macos-14
     # Must exceed the notarize step's `notarytool --wait --timeout 45m`, else a
     # slow-but-working Apple notary queue trips the JOB cap and cancels the run
     # before stapling (happened on the first real release: Apple took ~28m+, the
-    # old 30m job cap killed it mid-wait). Self-hosted minutes are free, so give
-    # the 45m notary budget ~13m of headroom for bundle/sign/staple/upload.
+    # old 30m job cap killed it mid-wait). Hosted minutes are free on this public
+    # repo, so give the 45m notary budget ~13m of headroom for sign/staple/upload.
     timeout-minutes: 58
     if: github.repository == 'pendpost/pendpost'
     steps:
