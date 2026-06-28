@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-06-28
+
+### Fixed
+- Docker/container startup: the one-time multi-client boot migration no longer crashes with `EXDEV: cross-device link not permitted` when `data/` is baked into a read-only image layer (e.g. running `pendpost --stdio` inside a container, the form MCP registries use to introspect the server). The migration now falls back to a copy + delete across the mount boundary, keeping its zero-loss, crash-safe re-entry behavior.
+
 ## [1.1.0] - 2026-06-28
 
 ### Added
