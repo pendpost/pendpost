@@ -13,6 +13,13 @@ import { dirname, join } from 'node:path';
 
 const DOCS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'site-docs', 'credentials');
 
+// site-docs/ is private and not shipped to the public OSS repo, so this site-only
+// docs guard is N/A there — skip cleanly. It still runs in full on the site repo.
+if (!existsSync(DOCS_DIR)) {
+  console.log('  skip - site-docs/credentials absent (public checkout); credential-docs guard is site-only');
+  process.exit(0);
+}
+
 // platform -> a primary env var name the doc MUST mention (any one of the alternates).
 const PRIMARY_ENV = {
   meta: ['META_SYSTEM_USER_TOKEN', 'META_PAGE_TOKEN'],
