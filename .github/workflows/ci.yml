@@ -54,6 +54,9 @@ jobs:
         working-directory: app
 
   build-web:
+    # site-only: web/ is private (not shipped to the public OSS repo). Gate by
+    # repo so the public pendpost/pendpost CI doesn't try to build a missing web/.
+    if: github.repository == 'pendpost/site'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
