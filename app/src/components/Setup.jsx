@@ -16,15 +16,15 @@
 // no all-caps prose - it mirrors Settings.jsx / Clients.jsx verbatim.
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock, Lock } from 'lucide-react';
-import { usePendpostHealth, useConfig, saveConfig, recheckHealth, connectPlatform, connectStatus, useAccounts, setMetaLane } from '../lib/api.js';
+import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck } from 'lucide-react';
+import { usePendpostHealth, useConfig, saveConfig, recheckHealth, connectPlatform, connectStatus, useAccounts, setMetaLane, disconnectPlatform } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { fmtFull } from '../lib/format.js';
 import { INNER_SURFACE, Skeleton, EYEBROW, PLATFORM_META } from './ui.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
-import { usePrompt } from './ui/confirm.jsx';
+import { usePrompt, useConfirm } from './ui/confirm.jsx';
 
 const FIELD = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 const FIELD_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} ring-1 ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
@@ -341,6 +341,12 @@ function ConnectPanel({ platform, fields, interactive }) {
         // present so the owner can always make progress or back out.
         <div className="space-y-2">
           {interactive ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('connect.browserHint')}</p> : null}
+          {platform === 'youtube' ? (
+            <p className="flex items-start gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              <ShieldCheck size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+              {t('connect.youtubeUnverified')}
+            </p>
+          ) : null}
           {status?.authUrl ? (
             <p>
               <a
@@ -633,6 +639,49 @@ function ValidateButton({ platform }) {
   );
 }
 
+// Disconnect ONE connected lane: a quiet single-tone action (NOT a red danger zone)
+// beside Validate. Click -> a useConfirm gate ("clear all credentials for <label>?")
+// -> disconnectPlatform(id) -> invalidate the derived queries so the card flips to
+// incomplete. A failure surfaces inline (role=alert); no secret is ever shown. States
+// mirror ConnectPanel: idle | working | error.
+function DisconnectButton({ platform, label }) {
+  const t = useT();
+  const confirm = useConfirm();
+  const queryClient = useQueryClient();
+  const [state, setState] = useState('idle'); // idle | working | error
+  const [error, setError] = useState(null);
+  const run = async () => {
+    const okGo = await confirm({
+      title: t('setup.disconnect.confirmTitle', { label }),
+      body: t('setup.disconnect.confirmBody', { label }),
+      confirmLabel: t('setup.disconnect.confirmLabel'),
+      danger: true,
+    });
+    if (!okGo) return;
+    setState('working');
+    setError(null);
+    try {
+      await disconnectPlatform(platform);
+      setState('idle');
+      queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    } catch (err) {
+      setState('error');
+      setError(err.message || t('setup.disconnect.error'));
+    }
+  };
+  return (
+    <>
+      <button type="button" onClick={run} disabled={state === 'working'} aria-busy={state === 'working'} className={BTN_GHOST}>
+        {state === 'working' ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
+        {t('setup.disconnect.button')}
+      </button>
+      {error ? <p role="alert" className="w-full text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+    </>
+  );
+}
+
 // "Copy AI prompt": copy a self-contained Claude-for-Chrome browser-driving prompt
 // for this lane, assembled client-side from the card's playbook (buildSetupPrompt).
 // Only shown on an INCOMPLETE card (portal-app creation + first mint); a
@@ -878,7 +927,7 @@ function PlatformCard({ platform, configRev, identifiers, posting, onWrite }) {
           <div className="flex flex-wrap items-center gap-2">
             {status === 'incomplete' && playbook ? <CopySetupPromptButton label={label} playbook={playbook} /> : null}
             {canValidate ? <ValidateButton platform={id} /> : null}
-            {status === 'connected' ? null : (
+            {status === 'connected' ? <DisconnectButton platform={id} label={label} /> : (
               <button type="button" onClick={toggleSkip} className={BTN_GHOST}>
                 {status === 'skipped' ? t('setup.unskip') : t('setup.skip')}
               </button>

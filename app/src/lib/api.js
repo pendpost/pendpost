@@ -267,6 +267,13 @@ export const connectPlatform = (platform, creds = {}) => postJson('/api/connect'
 // dead-end spinner. Mirrors the file's other GETs (getJson throws on a non-2xx).
 export const connectStatus = (platform) => getJson('/api/connect/status?platform=' + encodeURIComponent(platform));
 
+// Operator-only platform disconnect (POST /api/disconnect): clear ALL stored
+// credentials for the platform from the active client's .env - the inverse of connect.
+// confirm:true rides the body (the human's confirm-dialog click IS the confirmation),
+// satisfying the server's fail-closed needs_confirm gate. Resolves { ok, platform,
+// cleared } or throws (sendJson surfaces the server message).
+export const disconnectPlatform = (platform) => postJson('/api/disconnect', { platform, confirm: true, actor: ACTOR });
+
 // --- Covers (Phase C surface, UI face lands with the composer) ---
 export const setCoverFrame = (campaign, postId, frameSec) => postJson(`/api/plans/${campaign}/posts/${postId}/cover`, { frameSec });
 export const clearCover = (campaign, postId) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}/cover`, undefined);

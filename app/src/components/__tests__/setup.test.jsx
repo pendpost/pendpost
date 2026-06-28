@@ -43,6 +43,7 @@ const connectStatus = vi.fn(() => Promise.resolve({ ok: true, state: 'running', 
 const setMetaLane = vi.fn(() => Promise.resolve({ ok: true }));
 const refreshLinkedinToken = vi.fn(() => Promise.resolve({ ok: true }));
 const refreshXToken = vi.fn(() => Promise.resolve({ ok: true }));
+const disconnectPlatform = vi.fn(() => Promise.resolve({ ok: true, platform: 'linkedin', cleared: 7 }));
 const CONFIG_REV = 'rev-abc123';
 
 let setup;
@@ -70,6 +71,7 @@ vi.mock('../../lib/api.js', () => ({
   setMetaLane: (...args) => setMetaLane(...args),
   refreshLinkedinToken: (...args) => refreshLinkedinToken(...args),
   refreshXToken: (...args) => refreshXToken(...args),
+  disconnectPlatform: (...args) => disconnectPlatform(...args),
 }));
 
 function renderSetup() {
@@ -196,6 +198,8 @@ beforeEach(() => {
   setMetaLane.mockClear();
   refreshLinkedinToken.mockClear();
   refreshXToken.mockClear();
+  disconnectPlatform.mockClear();
+  disconnectPlatform.mockResolvedValue({ ok: true, platform: 'linkedin', cleared: 7 });
   setup = makeSetup();
   configIdentifiers = {};
   configSecrets = {};
@@ -614,6 +618,43 @@ describe('Setup Meta publishing lane (folded in from Settings, C1)', () => {
     renderSetup();
     await expandCard(user, 'Meta (Instagram)');
     expect(screen.getAllByLabelText(/posts per 24/i)).toHaveLength(1);
+  });
+});
+
+// Disconnect: a quiet single-tone action on CONNECTED cards only, clearing the lane's
+// stored credentials via a useConfirm gate -> disconnectPlatform(platform). The card
+// flips to incomplete on success (query invalidation); a failure surfaces inline.
+describe('Setup disconnect (connected cards only)', () => {
+  it('shows Disconnect ONLY on a connected card, not on incomplete/skipped', async () => {
+    const user = userEvent.setup();
+    renderSetup();
+    const linkedin = await expandCard(user, 'LinkedIn'); // connected
+    expect(within(linkedin).getByRole('button', { name: /disconnect/i })).toBeInTheDocument();
+    const meta = await expandCard(user, 'Meta (Instagram)'); // incomplete
+    expect(within(meta).queryByRole('button', { name: /disconnect/i })).not.toBeInTheDocument();
+    const x = await expandCard(user, 'X'); // skipped
+    expect(within(x).queryByRole('button', { name: /disconnect/i })).not.toBeInTheDocument();
+  });
+
+  it('confirming Disconnect calls disconnectPlatform(platform)', async () => {
+    const user = userEvent.setup();
+    renderSetup();
+    const linkedin = await expandCard(user, 'LinkedIn');
+    await user.click(within(linkedin).getByRole('button', { name: /disconnect/i }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /^disconnect$/i }));
+    await waitFor(() => expect(disconnectPlatform).toHaveBeenCalledWith('linkedin'));
+  });
+
+  it('shows an inline error when disconnect rejects (no crash, no secret)', async () => {
+    disconnectPlatform.mockRejectedValueOnce(new Error('Could not disconnect - please try again.'));
+    const user = userEvent.setup();
+    renderSetup();
+    const linkedin = await expandCard(user, 'LinkedIn');
+    await user.click(within(linkedin).getByRole('button', { name: /disconnect/i }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /^disconnect$/i }));
+    expect(await within(linkedin).findByRole('alert')).toHaveTextContent(/could not disconnect/i);
   });
 });
 

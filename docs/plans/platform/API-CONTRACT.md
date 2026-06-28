@@ -65,6 +65,13 @@ is deliberately NOT an agent tool - the same stance as the no-secrets-through-th
 guarantee. The dashboard collects the value and the GUI polls `health_recheck` for the
 outcome.
 
+`POST /api/disconnect` is the OPERATOR-ONLY inverse of the connect ceremony. It clears
+every stored credential for one platform (secrets, identifiers, public handle, OAuth
+client id) from the active client's `.env` via `removeEnvVars` (the per-platform key set
+is `PLATFORM_ENV_KEYS` in `lib/config.mjs`), returning the lane to `incomplete`. Like
+connect it handles a credential surface and so is deliberately NOT an agent tool (no
+`mcpTool`); it is fail-closed on `confirm: true` and never echoes a cleared value.
+
 The `POST /api/cloud/*` routes (`connect`, `enabled`, `push`, `eject`, `hand-tokens`,
 `migrate`, `enable/start`, `clients/always-on`, `checkout`, `billing-portal`, `spend-cap`) are the OPTIONAL managed-cloud (pendpost-cloud) operator
 ceremonies. They are operator-only and deliberately NOT agent tools: connecting,
@@ -90,6 +97,7 @@ and need no exemption.)
   "routes": [
     "/api/dashboard-update",
     "/api/connect",
+    "/api/disconnect",
     "/api/cloud/connect",
     "/api/cloud/enabled",
     "/api/cloud/push",
