@@ -37,9 +37,14 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
+import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ENV_PATH = process.env.PENDPOST_ROOT ? path.join(process.env.PENDPOST_ROOT, '.env') : path.resolve(__dirname, '../.env');
+// The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
+// (lib/util.mjs -> activeRoot()): when the app spawns us it sets PENDPOST_ROOT to
+// that client root; a bare CLI run resolves the active client from data/clients.json.
+// Either way we read/write the SAME file the app reads - no orphan repo-root .env.
+const ENV_PATH = envPath();
 
 const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -401,6 +406,7 @@ function buildMeta(post, { withPublishAt = false, privacy = 'private' } = {}) {
 // ---------- commands ----------
 
 async function cmdAuth(args) {
+  console.log(`[info] Connecting YouTube - credentials will be written to ${ENV_PATH}`);
   const clientId = args['client-id'] || readEnv('YT_CLIENT_ID');
   const clientSecret = args['client-secret'] || readEnv('YT_CLIENT_SECRET');
   if (!clientId || !clientSecret) {
