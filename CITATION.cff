@@ -5,7 +5,7 @@ abstract: "pendpost is agent-operated social ops with a human approval gate; loc
 type: software
 authors:
   - name: "Nomadik GmbH"
-version: 1.1.0
+version: 1.1.1
 date-released: "2026-06-28"
 license: MIT
 repository-code: "https://github.com/pendpost/pendpost"

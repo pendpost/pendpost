@@ -51,7 +51,7 @@ test('completeEnableConnect refuses an unknown CSRF state (no fetch)', async () 
   }
 });
 
-test('completeEnableConnect claims the key, writes .env + cloud.json, auto-lifts, and never returns the key', async () => {
+test('completeEnableConnect claims the key, writes .env + cloud.json, LINKS ONLY (no auto-enable), and never returns the key', async () => {
   const API_KEY = 'ppc_super_secret_key_value';
   const calls = mockFetch([
     { match: '/v1/connect/claim', method: 'POST', body: { apiKey: API_KEY, workspaceId: 'ws_7', baseUrl: 'https://cloud.test' } },
@@ -71,14 +71,14 @@ test('completeEnableConnect claims the key, writes .env + cloud.json, auto-lifts
     // It was written to .env (0600) and the workspace persisted to cloud.json.
     const env = fs.readFileSync(path.join(ROOT, '.env'), 'utf8');
     assert.ok(env.includes(`PENDPOST_CLOUD_API_KEY=${API_KEY}`));
-    // The connection is install-global (data/cloud.json); the connecting client's
-    // brand is turned always-on (per-client cloud-managed).
+    // The connection is install-global (data/cloud.json). CONNECT LINKS ONLY: it never
+    // auto-enables the connecting client's brand (that is an explicit, billable toggle).
     const cloudJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'cloud.json'), 'utf8'));
     assert.equal(cloudJson.workspaceId, 'ws_7');
     assert.equal(cloudJson.baseUrl, 'https://cloud.test');
-    assert.equal(cloudJson.brands.default.alwaysOn, true);
+    assert.notEqual(cloudJson.brands?.default?.alwaysOn, true, 'connect must NOT auto-enable the active brand');
 
-    // The claim and the connect health-check both ran (auto-lift reached).
+    // The claim and the connect health-check both ran.
     assert.ok(calls.some((c) => c.url.includes('/v1/connect/claim') && c.method === 'POST'));
     assert.ok(calls.some((c) => c.url.includes('/v1/health')));
 
@@ -86,16 +86,12 @@ test('completeEnableConnect claims the key, writes .env + cloud.json, auto-lifts
     // and the Authorization header, never a url).
     assert.ok(!calls.some((c) => c.url.includes(API_KEY)), 'the api key must never be in a url');
 
-    // The freshly-connected workspace gets every brand's always-on FLAG reconciled, so
-    // billing + the worker fence match local intent with no manual per-brand toggle.
-    assert.ok(
-      calls.some((c) => c.url.includes('/v1/brands/') && c.method === 'PUT'),
-      'connect reconciles brand flags to the cloud (PUT /v1/brands/:id)',
-    );
+    // A fresh connect has no local brand flags to push, and crucially it never syncs the
+    // connecting brand as always-on (no auto-bill).
     assert.ok(result.brands && Array.isArray(result.brands.synced), 'the result carries the brand-flag sync summary');
     assert.ok(
-      result.brands.synced.some((b) => b.clientId === 'default' && b.alwaysOn === true),
-      'the connecting (active) brand is synced always-on',
+      !result.brands.synced.some((b) => b.clientId === 'default' && b.alwaysOn === true),
+      'the connecting (active) brand is NOT synced always-on',
     );
 
     // A second completion with the same (now consumed) state is refused.

@@ -1166,8 +1166,22 @@ function CloudClients() {
   // brand is switched on. The rate comes from the view's own field.
   const extraBrandCents = sub && sub.extraBrandCents ? sub.extraBrandCents : 0;
   const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
+  // A brand only runs in the cloud under an active paid plan. Without one, turning a brand ON
+  // is gated: we point to the plan picker just below instead of silently enabling (and billing)
+  // it. Turning OFF is always allowed. Mirrors the file's isPaid/canManage convention.
+  const hasPlan = Boolean(sub && (sub.status === 'active' || sub.status === 'past_due'));
 
   const toggle = async (c, next) => {
+    // Enabling a brand needs an active plan: don't silently switch it on (the billable event),
+    // point to the "start your plan" checkout rendered directly below this list.
+    if (next && !hasPlan) {
+      await confirm({
+        title: t('cloud.clients.needPlan.title'),
+        body: t('cloud.clients.needPlan.body'),
+        confirmLabel: t('cloud.clients.needPlan.confirm'),
+      });
+      return;
+    }
     // Confirm both directions with the consequences (item 2): turning Cloud on pauses local
     // firing + may add a per-brand charge; turning it off hands publishing back to this Mac.
     const ok = await confirm({

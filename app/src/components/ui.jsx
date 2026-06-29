@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2 } from 'lucide-react';
-import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, postStatusKey, mediaAspect } from '../lib/format.js';
+import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, postDisplayStatusKey, mediaAspect } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
 import { MediaLightbox } from './ui/MediaLightbox.jsx';
@@ -100,7 +100,7 @@ export function ApprovalPill({ approval }) {
 // axes legitimately matter.
 export function PostStatusPill({ post }) {
   const t = useT();
-  const key = postStatusKey(post);
+  const key = postDisplayStatusKey(post);
   const meta = STATUS_PILL_META[key] || STATUS_PILL_META.scheduled;
   const Icon = meta.Icon;
   // Power-off legibility (W1): the planner card collapses scheduled-native and

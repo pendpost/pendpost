@@ -31,6 +31,7 @@ fs.writeFileSync(path.join(WS, '.env'), `PENDPOST_CLOUD_API_KEY=${API_KEY}\n`);
 const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
 const cloud = await import('../lib/cloud-client.mjs');
+const { setCloudEnabled } = await import('../lib/cloud-config.mjs');
 
 const CAMP = 'rollout';
 const mkPost = async (id, actor) => createPost({ campaign: CAMP, post: { id, type: 'reel', platforms: ['instagram'], scheduledAt: '2020-01-01T00:00:00Z', path: 'data/media/clip.mp4', caption: `clip ${id}` }, actor });
@@ -87,15 +88,18 @@ try {
   await assert.rejects(() => cloud.pushApprovedJobs(), (e) => e.name === 'CloudError' && e.code === 'disabled');
   ok(true, 'pushApprovedJobs refuses with code "disabled" when cloud.enabled is false');
 
-  // --- (2) connect persists cloud.json (api key never written) -----------------
+  // --- (2) connect persists cloud.json (api key never written); LINKS ONLY -----
   installFetch();
   const status = await cloud.connectWorkspace({ baseUrl: 'https://cloud.test', workspaceId: 'ws_test' });
-  ok(status.enabled === true && status.workspaceId === 'ws_test', 'connectWorkspace enables + records the workspace');
+  ok(status.workspaceId === 'ws_test' && status.enabled !== true, 'connectWorkspace records the workspace WITHOUT auto-enabling a brand (links only)');
   ok(status.apiKey.present === true && status.apiKey.tail === '...6789' && !('value' in status.apiKey), 'status reports api-key PRESENCE + tail only, never the value');
   const cloudJson = JSON.parse(fs.readFileSync(path.join(WS, 'data', 'cloud.json'), 'utf8'));
   ok(!JSON.stringify(cloudJson).includes(API_KEY), 'cloud.json never contains the api key (it stays in .env)');
 
   // --- (3) push: only the approved, non-self post ships ------------------------
+  // The active brand must be explicitly enabled before its jobs push (connect links only).
+  const enabledStatus = setCloudEnabled(true);
+  ok(enabledStatus.enabled === true, 'enabling the active brand is the explicit step that lets its jobs push');
   calls.length = 0;
   const res = await cloud.pushApprovedJobs();
   ok(res.ok === true, 'pushApprovedJobs returns ok');

@@ -136,5 +136,40 @@ function inChild(ws, code) {
   fs.rmSync(WS, { recursive: true, force: true });
 }
 
+// ---- Scenario F: EXDEV on the move -> copy+delete fallback still migrates ----
+// Reproduces the Docker-overlay bug: a legacy `data/*` baked into a read-only
+// image layer is moved to the writable upper layer, so the cross-layer rename
+// throws EXDEV (e.g. `npx pendpost --stdio` in a container the way Glama and
+// other MCP registries introspect it). The migration must still complete.
+{
+  const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-mig-exdev-'));
+  fs.writeFileSync(path.join(WS, '.env'), 'META_PAGE_ID=42\n', { mode: 0o600 });
+  fs.writeFileSync(path.join(WS, 'config.json'), JSON.stringify({ defaultTimezone: 'Europe/Zurich' }, null, 2));
+  fs.mkdirSync(path.join(WS, 'data', 'plans'), { recursive: true });
+  fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
+  const r = inChild(WS, `
+    import fs from 'node:fs';
+    // Force EXDEV only on the cross-layer migration moves (dest under
+    // clients/default); atomic temp-file renames (the registry write) keep
+    // working via the real rename, exactly as on a real overlay filesystem.
+    const realRename = fs.renameSync.bind(fs);
+    fs.renameSync = (src, dest) => {
+      if (String(dest).replaceAll('\\\\', '/').includes('clients/default')) {
+        const e = new Error('EXDEV: cross-device link not permitted'); e.code = 'EXDEV'; throw e;
+      }
+      return realRename(src, dest);
+    };
+    const { initMultiClient } = await import('./lib/multi-client.mjs');
+    const out = initMultiClient();
+    console.log(JSON.stringify({ migrated: out.migrated }));
+  `);
+  ok(r.migrated === true, 'EXDEV: migration still succeeds via the copy+delete fallback');
+  const def = path.join(WS, 'data', 'clients', 'default');
+  ok(fs.existsSync(path.join(def, 'data', 'plans', 'active-plans.json')), 'EXDEV: data/plans copied under clients/default despite EXDEV');
+  ok(fs.existsSync(path.join(def, '.env')), 'EXDEV: .env moved under clients/default despite EXDEV');
+  ok(!fs.existsSync(path.join(WS, 'data', 'plans')), 'EXDEV: legacy data/plans removed after the copy (source deleted)');
+  fs.rmSync(WS, { recursive: true, force: true });
+}
+
 console.log(`[migration] OK - zero-loss, idempotent, crash-safe multi-client boot migration (${pass} assertions).`);
 process.exit(0);
