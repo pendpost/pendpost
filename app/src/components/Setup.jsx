@@ -63,6 +63,12 @@ const PLATFORM_IDENTIFIERS = {
     { key: 'xHandle', labelKey: 'idField.xHandle.label', placeholderKey: 'idField.xHandle.placeholder', tipKey: 'idField.xHandle.tip' },
     { key: 'xRedirectUri', labelKey: 'idField.xRedirectUri.label', placeholderKey: 'idField.xRedirectUri.placeholder', tipKey: 'idField.xRedirectUri.tip' },
   ],
+  reddit: [
+    { key: 'redditSubreddit', labelKey: 'idField.redditSubreddit.label', placeholderKey: 'idField.redditSubreddit.placeholder', tipKey: 'idField.redditSubreddit.tip' },
+  ],
+  pinterest: [
+    { key: 'pinterestBoardId', labelKey: 'idField.pinterestBoardId.label', placeholderKey: 'idField.pinterestBoardId.placeholder', tipKey: 'idField.pinterestBoardId.tip' },
+  ],
 };
 
 // The identifier fields split into a required-first / muted-"Optional" group (less-is-
@@ -70,7 +76,7 @@ const PLATFORM_IDENTIFIERS = {
 // public-profile nicety under the Optional divider. FALLBACK dims a field that a richer
 // sibling supersedes (the YouTube handle dims once a channel ID is set); AUTO_KEYS marks
 // a field pendpost fills on connect (the X handle), so each carries a soft fallback hint.
-const REQUIRED_KEYS = new Set(['metaPageId', 'linkedinOrgUrn']);
+const REQUIRED_KEYS = new Set(['metaPageId', 'linkedinOrgUrn', 'redditSubreddit', 'pinterestBoardId']);
 const FALLBACK = { ytHandle: 'ytChannelId' };
 const AUTO_KEYS = new Set(['xHandle']);
 
@@ -83,6 +89,11 @@ const CONNECT_FIELDS = {
   linkedin: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.linkedin' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
   x: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.x' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
   meta: { interactive: false, fields: [{ key: 'systemUserToken', labelKey: 'connect.systemUserToken', secret: true }] },
+  telegram: { interactive: false, fields: [{ key: 'botToken', labelKey: 'connect.botToken', secret: true }, { key: 'channelId', labelKey: 'connect.channelId' }] },
+  discord: { interactive: false, fields: [{ key: 'webhookUrl', labelKey: 'connect.webhookUrl', secret: true }] },
+  reddit: { interactive: false, fields: [{ key: 'redditClientId', labelKey: 'connect.redditClientId' }, { key: 'redditClientSecret', labelKey: 'connect.clientSecret', secret: true }, { key: 'redditUsername', labelKey: 'connect.redditUsername' }, { key: 'redditPassword', labelKey: 'connect.redditPassword', secret: true }] },
+  pinterest: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.pinterest' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
+  tiktok: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.tiktok' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
 };
 
 // buildSetupPrompt - assemble a self-contained Claude-for-Chrome browser-driving
@@ -97,8 +108,17 @@ function buildSetupPrompt(label, playbook) {
   if (!playbook) return null;
   const { portalUrl, appToCreate, productsToAdd = [], scopes = [], steps = [] } = playbook;
   const mint = steps.map((s) => s.cli).filter(Boolean);
+  // A STATIC-credential lane (telegram bot token, discord webhook, reddit app
+  // password) has no OAuth: the only step CLI is a `... auth` validate, no browser
+  // scopes, no products. There is nothing to MINT - the owner creates the bot/webhook/
+  // app, copies the token/URL, and pastes it into the card. An OAuth lane mints the
+  // credential via a localhost callback, so its prose stays unchanged.
+  const isStatic = !scopes.length && !productsToAdd.length
+    && mint.every((cli) => /\bauth\b/.test(cli));
   const L = [];
-  L.push(`You are helping me connect my ${label} account to pendpost, a local-first social media planner. Drive my browser to create the developer app, then I will run one terminal command that mints the credential locally.`);
+  L.push(isStatic
+    ? `You are helping me connect my ${label} account to pendpost, a local-first social media planner. Drive my browser to create the bot/webhook/app and reach the screen that shows its token or URL, then I will copy that value and paste it into the ${label} card in pendpost Setup myself.`
+    : `You are helping me connect my ${label} account to pendpost, a local-first social media planner. Drive my browser to create the developer app, then I will run one terminal command that mints the credential locally.`);
   L.push('');
   L.push('Credential safety (read first):');
   L.push('- NEVER read, type, paste, screenshot, or store any access token, client secret, refresh token, or system-user token. The secret is exchanged ONLY by the pendpost local CLI on my machine; it must never pass through you or this chat.');
@@ -113,6 +133,14 @@ function buildSetupPrompt(label, playbook) {
   if (steps.length) {
     L.push(`${n++}. Work through these portal steps in order:`);
     steps.forEach((s, i) => L.push(`   ${i + 1}. ${s.title}${s.detail ? ` - ${s.detail}` : ''}`));
+  }
+  if (isStatic) {
+    // No mint, no public client id to read separately: the owner copies the token/URL
+    // and pastes it into the card. The agent must NOT read or capture the value.
+    L.push(`${n++}. When the screen shows the bot token / webhook URL, stop and hand control back to me so I copy it myself. Do not read, type, screenshot, or store the value - it is a secret.`);
+    L.push(`${n++}. Tell me to paste what I copied into the ${label} card in pendpost Setup and press Connect.`);
+    L.push(`${n++}. After I connect, tell me to click "Validate" on the ${label} card in pendpost (or call health_recheck). Confirm the card flips to Connected and verified. If it shows failed, the value is wrong or expired - I create a fresh one, re-paste, then we re-validate.`);
+    return L.join('\n');
   }
   L.push(`${n++}. When the portal shows a public App ID / Client ID (NOT a secret), tell me the value so I can paste it into the pendpost Setup page. Do not capture any secret.`);
   if (mint.length) {
@@ -141,7 +169,7 @@ function statusTone(status, validation) {
 const dotClass = (tone) => ({ ok: 'bg-emerald-500', warn: 'bg-amber-500', err: 'bg-red-500', neutral: 'bg-zinc-400' }[tone] || 'bg-zinc-400');
 
 // The brand glyph(s) each setup lane shows in its collapsed row (keyed to PLATFORM_META).
-const SETUP_PLATFORM_ICONS = { meta: ['facebook', 'instagram'], linkedin: ['linkedin'], youtube: ['youtube'], x: ['x'] };
+const SETUP_PLATFORM_ICONS = { meta: ['facebook', 'instagram'], linkedin: ['linkedin'], youtube: ['youtube'], x: ['x'], telegram: ['telegram'], discord: ['discord'], reddit: ['reddit'], pinterest: ['pinterest'], tiktok: ['tiktok'] };
 
 // The collapsed-row identity: the lane's brand logo(s) with a colored status dot
 // overlaid (mirrors Sidebar's AccountChip) - the dot carries status, so no status
@@ -850,7 +878,7 @@ function MetaLaneControls() {
 // connected), and the skip / un-skip + Validate + Meta controls.
 function PlatformCard({ platform, configRev, identifiers, posting, onWrite }) {
   const t = useT();
-  const { platform: id, label, status, missing = [], validation, playbook } = platform;
+  const { platform: id, label, status, missing = [], validation, playbook, beta } = platform;
   const [open, setOpen] = useState(false);
   const tone = statusTone(status, validation);
   const secrets = missing.filter((m) => m.kind === 'secret');
@@ -898,7 +926,13 @@ function PlatformCard({ platform, configRev, identifiers, posting, onWrite }) {
 
       {open ? (
         <div className="space-y-3">
-          <StatusChip status={status} validation={validation} t={t} />
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusChip status={status} validation={validation} t={t} />
+            {/* A beta lane is built but not yet live-verified: an honest, single-tone
+                note beside the status chip. It promises nothing - the live probe still
+                governs the real connection state. */}
+            {beta ? <IconBadge icon={AlertCircle} tone="warn" text={t('setup.beta.badge')} label={t('setup.beta.hint')} /> : null}
+          </div>
 
           {status === 'incomplete' ? (
             <div className="space-y-2.5">

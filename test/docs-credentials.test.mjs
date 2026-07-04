@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // test/docs-credentials.test.mjs - the hand-written credential docs under
-// site-docs/credentials/ must exist for ALL four platforms and each must name its
-// platform's primary env var, so the prose never silently drops a lane (the 'x' doc
-// is the gap this unit closes). We assert existence + the load-bearing env var name
-// ONLY - no prose/structural coupling, so the docs stay free to evolve.
+// site-docs/credentials/ must exist for ALL NINE publish lanes and each must name
+// its platform's primary env var, so the prose never silently drops a lane. We
+// assert existence + the load-bearing env var name ONLY - no prose/structural
+// coupling, so the docs stay free to evolve (including the beta lanes' caveats).
 //
 // Zero-dep node:assert + node:fs (mirrors test/playbooks.test.mjs).
 import assert from 'node:assert';
@@ -13,12 +13,24 @@ import { dirname, join } from 'node:path';
 
 const DOCS_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'site-docs', 'credentials');
 
+// site-docs/ is private and not shipped to the public OSS repo, so this site-only
+// docs guard is N/A there — skip cleanly. It still runs in full on the site repo.
+if (!existsSync(DOCS_DIR)) {
+  console.log('  skip - site-docs/credentials absent (public checkout); credential-docs guard is site-only');
+  process.exit(0);
+}
+
 // platform -> a primary env var name the doc MUST mention (any one of the alternates).
 const PRIMARY_ENV = {
   meta: ['META_SYSTEM_USER_TOKEN', 'META_PAGE_TOKEN'],
   linkedin: ['LINKEDIN_ACCESS_TOKEN'],
   youtube: ['YT_REFRESH_TOKEN'],
   x: ['X_ACCESS_TOKEN_SECRET'],
+  telegram: ['TELEGRAM_BOT_TOKEN'],
+  discord: ['DISCORD_WEBHOOK_URL'],
+  reddit: ['REDDIT_CLIENT_ID'],
+  pinterest: ['PINTEREST_APP_ID'],
+  tiktok: ['TIKTOK_CLIENT_KEY'],
 };
 
 let failures = 0;
@@ -48,5 +60,5 @@ if (failures) {
   console.error(`[docs-credentials] FAIL - ${failures} assertion(s) failed`);
   process.exit(1);
 }
-console.log('[docs-credentials] OK - all four credential docs exist (incl. x) and name their primary env var.');
+console.log('[docs-credentials] OK - all nine credential docs exist and name their primary env var.');
 process.exit(0);

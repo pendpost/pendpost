@@ -20,10 +20,10 @@ permissions:
 
 jobs:
   publish:
-    # Self-hosted (the owner's Mac) so publishing costs no GitHub-hosted minutes
-    # while the repo is private/Free. Switch back to ubuntu-latest once the repo
-    # is public (hosted minutes are then free and --provenance becomes available).
-    runs-on: [self-hosted, macOS]
+    # GitHub-hosted (free + unlimited on this PUBLIC repo). Hosted runners are
+    # required for npm --provenance, which attaches a verifiable build attestation
+    # via OIDC (needs the `id-token: write` permission above + a public repo).
+    runs-on: ubuntu-latest
     if: github.repository == 'pendpost/pendpost'
     steps:
       - uses: actions/checkout@v7
@@ -43,7 +43,9 @@ jobs:
             echo "Release tag ($tag) does not match package.json version ($pkg)." >&2
             exit 1
           fi
-      # No --provenance: it requires a public repo. Re-add it when the repo is public.
-      - run: npm publish --access public
+      # --provenance attaches a verifiable build attestation (the repo is public and
+      # `id-token: write` is granted above). It links the published tarball to this
+      # exact workflow run + commit.
+      - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -20,6 +20,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
 
+// site-docs/ is private and not shipped to the public OSS repo, so this site-only
+// doc tool-count guard is N/A there — skip cleanly. It still runs on the site repo.
+if (!fs.existsSync(path.join(ROOT, 'site-docs'))) {
+  console.log('  skip - site-docs absent (public checkout); doc tool-count guard is site-only');
+  process.exit(0);
+}
+
 let pass = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); pass += 1; };
 

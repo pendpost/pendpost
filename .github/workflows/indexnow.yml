@@ -21,6 +21,9 @@ permissions:
 
 jobs:
   ping:
+    # site-only: pings search engines about the marketing site; web/ is private,
+    # so this never applies to the public OSS repo.
+    if: github.repository == 'pendpost/site'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

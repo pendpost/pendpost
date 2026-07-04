@@ -276,6 +276,12 @@ export const STATUS_PILL_META = {
   pending: { cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30', bar: 'bg-amber-500', strip: 'bg-amber-500/10', dot: 'bg-amber-500', Icon: Clock },
   rejected: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', bar: 'bg-red-500', strip: 'bg-red-500/10', dot: 'bg-red-500', Icon: OctagonX },
   overdue: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', bar: 'bg-red-500', strip: 'bg-red-500/10', dot: 'bg-red-500', Icon: OctagonX },
+  // verify-failed filters under the 'overdue' "needs attention" bucket (postStatusKey)
+  // but keeps its OWN visible treatment (postDisplayStatusKey): a post that fired and
+  // read back not-live is not "pendpost wasn't running", so the planner card must not
+  // mislabel it the red "Overdue". Mirrors STATE_META's verify-failed orange so the
+  // calendar pill/accent/dot match the StatusPill on the detail + run-now surfaces.
+  'verify-failed': { cls: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 ring-orange-500/30', bar: 'bg-orange-500', strip: 'bg-orange-500/10', dot: 'bg-orange-500', Icon: AlertTriangle },
   scheduled: { cls: 'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-sky-500', Icon: CalendarClock },
   posted: { cls: 'bg-zinc-500/10 text-emerald-700/80 dark:text-emerald-400/70 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-emerald-500', Icon: CheckCircle },
   parked: { cls: 'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-zinc-400', Icon: PauseCircle },
@@ -289,12 +295,24 @@ export function postIsDimmed(post) {
   return k === 'parked' || k === 'rejected';
 }
 
-// Month-cell status dot, derived from the SAME collapsed bucket as the card pill
+// The VISIBLE status bucket for the planner surfaces (card pill, accent, month dot).
+// Identical to postStatusKey EXCEPT verify-failed is NOT folded into 'overdue': it
+// still FILTERS as overdue ("needs attention"), but a fired-then-read-back-not-live
+// post (e.g. a YouTube video left private past its publishAt) is not the same as
+// "past due, pendpost wasn't running". Showing the red "Overdue" pill + tip there is
+// actively wrong; this keeps the calendar in step with the StatusPill (which already
+// renders verify-failed directly) on the detail + run-now surfaces. Filtering stays
+// on postStatusKey, so the Status filter is unchanged.
+export function postDisplayStatusKey(post) {
+  return post.derivedState === 'verify-failed' ? 'verify-failed' : postStatusKey(post);
+}
+
+// Month-cell status dot, derived from the SAME visible bucket as the card pill
 // (STATUS_PILL_META) so the month view and the week/list cards never disagree on a
 // post's status - the previous overdue-first precedence painted a draft-that-is-also
 // -past-due red on the dot while the card read it as a quiet "draft".
 export function postDot(post) {
-  return STATUS_PILL_META[postStatusKey(post)]?.dot || 'bg-zinc-400';
+  return STATUS_PILL_META[postDisplayStatusKey(post)]?.dot || 'bg-zinc-400';
 }
 
 // Title-case a campaign id's base segment: "meta-rollout" -> "Meta Rollout".
@@ -375,7 +393,60 @@ export const RES_ASPECT = {
 export function mediaAspect(post) {
   return RES_ASPECT[post?.media?.resolution] || coverAspect(post?.type);
 }
-export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x'];
+export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok'];
+
+// The SETUP id a DISPLAY platform keys off for connection + skip. Facebook and
+// Instagram are two display entities behind ONE Meta connector, so both resolve to
+// 'meta'; every other display platform maps to itself. Single source of truth so
+// visiblePlatforms and platformEnabled agree on which account/skip slot to read.
+const SETUP_ID = { facebook: 'meta', instagram: 'meta' };
+function setupIdOf(platform) {
+  return SETUP_ID[platform] || platform;
+}
+
+// A display platform is CONNECTED when its accountStatus slot authenticates. Meta
+// (facebook/instagram) reports `configured` (a Page token + id); reddit accepts
+// either authenticated OR configured (script-app creds == both); every other lane
+// reports `authenticated`. Mirrors lib/setup.mjs hasCredential / accountStatus.
+function platformConnected(platform, accounts) {
+  const slot = accounts?.[setupIdOf(platform)];
+  if (!slot) return false;
+  if (platform === 'facebook' || platform === 'instagram') return Boolean(slot.configured);
+  if (platform === 'reddit') return Boolean(slot.authenticated || slot.configured);
+  return Boolean(slot.authenticated);
+}
+
+// The POLICY half of "show this logo": is the platform turned ON in posting policy?
+// Deny-by-default for Facebook (the one Meta lane that ships off - only Instagram
+// shows by default), default-ON for everything else (hidden only by an explicit
+// posting.platforms[p] === false). Mirrors lib/mode.mjs / lib/writes.mjs.
+export function platformEnabled(platform, posting) {
+  const policy = posting?.platforms || {};
+  if (platform === 'facebook') return policy.facebook === true;
+  return policy[platform] !== false;
+}
+
+// The SINGLE source of truth for "show only the relevant platform logos": a display
+// platform appears ONLY where it is connected AND enabled AND not skipped. Returns
+// the matching display ids in PLATFORMS order (facebook conditionally present).
+// "Not skipped" reads posting.skippedPlatforms (SETUP ids), so a skipped Meta hides
+// both facebook AND instagram. The skip is checked BEFORE connection so the rule
+// reads literally, but it can only ever bite an UNCONNECTED lane: exactly mirroring
+// lib/setup.mjs (isSkipped = !connected && skipped.includes(p)), a skip on a live
+// lane is stale and never hides it. Pure - undefined accounts/posting yields [].
+export function visiblePlatforms(accounts, posting) {
+  if (!accounts) return [];
+  const skipped = Array.isArray(posting?.skippedPlatforms) ? posting.skippedPlatforms : [];
+  return PLATFORMS.filter((platform) => {
+    const connected = platformConnected(platform, accounts);
+    // A stale skip only counts while the lane is NOT connected (lib/setup.mjs); a
+    // connected lane is simply connected, never hidden by a leftover skip flag.
+    if (!connected && skipped.includes(setupIdOf(platform))) return false;
+    if (!connected) return false;
+    if (!platformEnabled(platform, posting)) return false;
+    return true;
+  });
+}
 
 // The platforms whose OWN scheduler fires a future post (Facebook
 // scheduled_publish_time, YouTube publishAt), so it publishes on time even when
@@ -407,18 +478,31 @@ export function postStatusKey(post) {
   return 'scheduled';
 }
 
-// A post the scheduler would publish RIGHT NOW, mirroring runDue's gate
-// (lib/scheduler.mjs): approved, past its due time with a pending lane
-// (derivedState 'overdue' already implies not posted/parked/future/native), and
-// - for any non-text type - a local render present. 'overdue' is time-derived
-// upstream (deriveState), so no `now` arg is needed. Single source of truth for
-// both the planner's due count and the run-now review dialog's list.
+// A post the scheduler would act on RIGHT NOW, mirroring runDue's gate
+// (lib/scheduler.mjs lanesFor). Two cases, both requiring approval:
+//   1. PUBLISH: derivedState 'overdue' (past due, a pending lane still owed -
+//      already implies not posted/parked/future/native) with - for any non-text
+//      type - a local render present.
+//   2. RELEASE: a natively-scheduled YouTube video YouTube left PRIVATE past its
+//      publishAt (read-back state 'private-overdue', surfaced as derivedState
+//      'verify-failed'). Run-now flips it public (no re-upload); the video is
+//      already on YouTube, so no local render is required.
+// State is time-derived upstream (deriveState), so no `now` arg is needed. Single
+// source of truth for both the planner's due count and the run-now dialog's list.
 export function isDueNow(post) {
   if (!post) return false;
-  if (post.derivedState !== 'overdue') return false;
   if (post.approval !== 'approved') return false;
-  if (post.type !== 'text' && !post.media?.exists) return false;
-  return true;
+  if (post.derivedState === 'overdue') return post.type === 'text' || Boolean(post.media?.exists);
+  if (isYouTubeReleaseDue(post)) return true;
+  return false;
+}
+
+// The RELEASE subcase of isDueNow: a natively-scheduled YouTube video YouTube left
+// private past its publishAt. Run-now flips it public rather than publishing. The
+// dialog uses it to label the row "make public" instead of a generic publish.
+export function isYouTubeReleaseDue(post) {
+  return post?.derivedState === 'verify-failed'
+    && post?.verify?.platforms?.youtube?.state === 'private-overdue';
 }
 
 // Status-filter chips, in owner-priority order, each with an IconBadge tone. The

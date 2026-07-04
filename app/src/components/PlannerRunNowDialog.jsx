@@ -21,7 +21,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Rocket, Inbox } from 'lucide-react';
 import { runPublishDue } from '../lib/api.js';
-import { fmtFull, campaignBaseLabel, isDueNow } from '../lib/format.js';
+import { fmtFull, campaignBaseLabel, isDueNow, isYouTubeReleaseDue } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
 import { useConfirm } from './ui/confirm.jsx';
 import { Modal, CloseButton, CoverThumb, StatusPill, PlatformIcons, INNER_SURFACE } from './ui.jsx';
@@ -62,6 +62,10 @@ function SelectAllControl({ total, selectedCount, onToggle }) {
 function DueRow({ post, selected, onToggle }) {
   const t = useT();
   const headline = (post.title && post.title.trim()) || firstLine(post.caption) || t('approvals.card.untitled');
+  // A release row is a YouTube video already on YouTube but left private past its
+  // publishAt: run-now will make it public, not publish. Its derivedState pill reads
+  // "Ungeprüft", so a quiet brand hint makes the actual action legible.
+  const release = isYouTubeReleaseDue(post);
   return (
     <li className={`flex gap-3 rounded-xl p-3 ${INNER_SURFACE}`}>
       <span className="flex shrink-0 items-start pt-1">
@@ -77,7 +81,14 @@ function DueRow({ post, selected, onToggle }) {
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <div className="flex items-start justify-between gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-bold">{headline}</span>
-          <StatusPill state={post.derivedState} short />
+          <span className="flex shrink-0 items-center gap-1.5">
+            {release ? (
+              <span className="rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-bold text-brand">
+                {t('planner.runDialog.releaseHint')}
+              </span>
+            ) : null}
+            <StatusPill state={post.derivedState} short />
+          </span>
         </div>
         <span className="block text-xs font-bold text-zinc-600 dark:text-zinc-300">
           {t('planner.runDialog.scheduledFor', { when: fmtFull(post.scheduledAt) })}

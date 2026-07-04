@@ -162,8 +162,10 @@ describe('Cloud', () => {
     expect(screen.getByRole('button', { name: /cancel/i })).toBeInTheDocument();
   });
 
-  it('CONNECTED: the cloud-clients view lists clients and toggles one always-on', async () => {
+  it('CONNECTED: the cloud-clients view lists clients and toggles one always-on (with an active plan)', async () => {
     cloudState = connected();
+    // An active paid plan: enabling a brand is allowed (gated only when there is no plan).
+    subState = { data: { ok: true, status: 'active', tier: 'starter', extraBrandCents: 900, brandsBilled: 0, postsIncluded: 50, postsUsed: 0, billingMode: 'live', action: 'fire' } };
     withClients([
       { clientId: 'acme', name: 'Acme', active: true, alwaysOn: true },
       { clientId: 'globex', name: 'Globex', active: false, alwaysOn: false },
@@ -176,6 +178,20 @@ describe('Cloud', () => {
     await user.click(screen.getByRole('switch', { name: /24\/7 cloud for globex/i }));
     await user.click(await screen.findByRole('button', { name: /switch to cloud/i }));
     await waitFor(() => expect(setClientAlwaysOn).toHaveBeenCalledWith('globex', true));
+  });
+
+  it('CONNECTED (no plan): enabling a brand is GATED - it prompts to start a plan and never silently enables', async () => {
+    cloudState = connected();
+    // Trialing / no paid tier: the toggle must NOT bill a brand silently.
+    subState = { data: { ok: true, status: 'trialing', tier: null, extraBrandCents: 0, brandsBilled: 0, postsIncluded: 20, postsUsed: 0, billingMode: 'live', action: 'fire' } };
+    withClients([{ clientId: 'globex', name: 'Globex', active: true, alwaysOn: false }]);
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('switch', { name: /24\/7 cloud for globex/i }));
+    // The "start your plan first" dialog appears...
+    expect(await screen.findByRole('button', { name: /got it/i })).toBeInTheDocument();
+    // ...and the brand is NEVER enabled (no silent quantity bump / auto-bill).
+    expect(setClientAlwaysOn).not.toHaveBeenCalled();
   });
 
   it('CONNECTED: a single client still shows its always-on switch (no hidden active-client)', () => {

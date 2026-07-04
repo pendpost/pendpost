@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music } from 'lucide-react';
 import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, createPost, updatePost, lintText } from '../lib/api.js';
 import { useT, useLocale } from '../lib/i18n.js';
-import { PLATFORMS, prettyCampaign, suggestPostId } from '../lib/format.js';
+import { PLATFORMS, prettyCampaign, suggestPostId, visiblePlatforms } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
@@ -385,7 +385,7 @@ export function InteractiveFields({
 
 // Create + edit composer as a full page. Edit mode never touches approval/cover/
 // publish fields - those have their own controls in PostDetail.
-export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate }) {
+export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting }) {
   const t = useT();
   const locale = useLocale();
   const queryClient = useQueryClient();
@@ -483,6 +483,17 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const globalHashtags = useMemo(() => configData?.posting?.hashtagPresets || [], [configData]);
   const selectedAsset = useMemo(() => assets.find((a) => `${assetsDir}/${a.file}` === mediaPath), [assets, assetsDir, mediaPath]);
   const campaignPosts = useMemo(() => campaigns.find((c) => c.id === campaign)?.posts || [], [campaigns, campaign]);
+  // The picker offers only connected + enabled + not-skipped lanes, EXCEPT it always
+  // keeps any lane the post being edited already targets so a real target is never
+  // silently dropped. Union of visiblePlatforms(accounts, posting) and the current
+  // selection, in PLATFORMS order. Falls back to the full list when accounts/posting
+  // are unavailable, so the picker is never empty on any render path.
+  const pickerPlatforms = useMemo(() => {
+    if (!accounts) return PLATFORMS;
+    const visible = visiblePlatforms(accounts, posting);
+    const allowed = new Set([...visible, ...platforms]);
+    return PLATFORMS.filter((p) => allowed.has(p));
+  }, [accounts, posting, platforms]);
   const isLinkedinArticle = platforms.includes('linkedin') && type === 'text';
   const needsMedia = type !== 'text';
   const showFirstComment = platforms.includes('instagram') && type !== 'story';
@@ -723,8 +734,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           <fieldset ref={platformsFieldsetRef} className="space-y-1.5">
             <legend className={EYEBROW}>{t('composer.field.platforms')}</legend>
             <div className="flex flex-wrap gap-1.5">
-              {PLATFORMS.map((p) => {
+              {pickerPlatforms.map((p) => {
                 const meta = PLATFORM_META[p];
+                if (!meta) return null;
                 const active = platforms.includes(p);
                 const { Icon } = meta;
                 return (

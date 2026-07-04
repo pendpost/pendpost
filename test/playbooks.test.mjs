@@ -15,7 +15,7 @@ import assert from 'node:assert';
 import { PLAYBOOKS } from '../lib/playbooks.mjs';
 
 // The canonical platform list - MUST match lib/setup.mjs PLATFORMS exactly.
-const PLATFORMS = ['meta', 'linkedin', 'x', 'youtube'];
+const PLATFORMS = ['meta', 'linkedin', 'x', 'youtube', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok'];
 
 let failures = 0;
 function check(name, fn) {
@@ -53,8 +53,9 @@ for (const p of PLATFORMS) {
     // productsToAdd: array
     assert.ok(Array.isArray(pb.productsToAdd), 'productsToAdd is an array');
 
-    // scopes: non-empty array
-    assert.ok(Array.isArray(pb.scopes) && pb.scopes.length > 0, 'scopes is a non-empty array');
+    // scopes: an array (may be empty for static-credential lanes like Telegram /
+    // Discord that use no OAuth scopes; OAuth lanes list theirs).
+    assert.ok(Array.isArray(pb.scopes), 'scopes is an array');
 
     // steps: array of { title, detail } with optional env/field/cli
     assert.ok(Array.isArray(pb.steps) && pb.steps.length > 0, 'steps is a non-empty array');
@@ -90,5 +91,5 @@ if (failures) {
   console.error(`[playbooks] FAIL - ${failures} assertion(s) failed`);
   process.exit(1);
 }
-console.log('[playbooks] OK - playbook prose covers all four platforms (incl. x) with the frozen field set.');
+console.log('[playbooks] OK - playbook prose covers all platforms with the frozen field set.');
 process.exit(0);

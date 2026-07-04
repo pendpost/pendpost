@@ -39,6 +39,25 @@ const duePost = (id, over = {}) => ({
   image: null,
   ...over,
 });
+// A YouTube video already uploaded but left private past its publishAt: run-now
+// flips it public (derivedState 'verify-failed' + verify youtube 'private-overdue').
+const releasePost = (id, over = {}) => ({
+  campaign: 'c',
+  id,
+  type: 'youtube-short',
+  approval: 'approved',
+  derivedState: 'verify-failed',
+  platforms: ['youtube'],
+  scheduledAt: '2026-06-29T07:00:00.000Z',
+  title: null,
+  caption: `Caption ${id}`,
+  media: { exists: true, cover: null, url: null },
+  image: null,
+  verify: { platforms: { youtube: { live: false, state: 'private-overdue' } } },
+  ...over,
+});
+// Approved but scheduled in the FUTURE (waiting-due) - "ready" but NOT due now.
+const futurePost = (id) => duePost(id, { derivedState: 'waiting-due', scheduledAt: '2099-01-01T09:00:00.000Z' });
 const campaignsWith = (...posts) => [{ id: 'c', active: true, posts }];
 
 function renderRunNow({ pendpostHealth, campaigns = [], onCheckReadiness = vi.fn(), clientName } = {}) {
@@ -182,6 +201,30 @@ describe('PlannerRunNow', () => {
       expect(spy).toHaveBeenCalledWith({ queryKey: ['plans'] });
     });
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('lists a private-overdue YouTube video as a release row and runs it (the run-now recovery)', async () => {
+    const user = userEvent.setup();
+    renderRunNow({ pendpostHealth: HEALTHY, campaigns: campaignsWith(releasePost('yt1')) });
+
+    await openDialog(user);
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent('Caption yt1');
+    // The row is labelled as a make-public action, not a generic publish.
+    expect(dialog).toHaveTextContent(/make public/i);
+
+    await user.click(runBtn());
+    await waitFor(() => expect(runPublishDue).toHaveBeenCalledWith({ campaign: 'c', postId: 'yt1' }));
+  });
+
+  it('does NOT count future waiting-due posts (the old tooltip overcount): empty dialog', async () => {
+    const user = userEvent.setup();
+    renderRunNow({ pendpostHealth: HEALTHY, campaigns: campaignsWith(futurePost('a'), futurePost('b')) });
+
+    await openDialog(user);
+    await screen.findByRole('dialog');
+    expect(screen.getByText(/nothing due/i)).toBeInTheDocument();
+    expect(runBtn()).toBeDisabled();
   });
 
   it('has no axe violations (healthy, dialog closed)', async () => {

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List } from 'lucide-react';
-import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, recheckHealth } from './lib/api.js';
+import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, recheckHealth } from './lib/api.js';
 import { useT, useLocale, useSetLocale } from './lib/i18n.js';
 import { applyAccent, clientAccent } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
 import { useInvalidateCloud } from './lib/cloud.js';
-import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, PLATFORMS, matchesFilters, STATUS_FILTERS, moveToDayTarget, activeCampaigns } from './lib/format.js';
+import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, visiblePlatforms, matchesFilters, STATUS_FILTERS, moveToDayTarget, activeCampaigns } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './components/ui/Popover.jsx';
@@ -82,6 +82,11 @@ export default function App() {
   // One readiness read shared (react-query dedupes by key) with the embedded
   // checklist; drives the quiet planner readiness panel below (US-ONB-05).
   const { data: pendpostHealth } = usePendpostHealth();
+  // Posting policy (config.posting): drives visiblePlatforms so only connected +
+  // enabled + not-skipped lanes are offered as filters / surfaced downstream. Same
+  // ['config'] react-query key as Settings, so this dedupes (no extra fetch).
+  const { data: configData } = useConfig(true);
+  const posting = configData?.posting;
   const reschedule = useReschedule();
   const invalidateCloud = useInvalidateCloud();
   const [page, setPage] = useState(() => {
@@ -337,6 +342,7 @@ export default function App() {
         <div className="relative z-10 mx-auto flex min-h-dvh max-w-none gap-4 p-4">
           <Sidebar
             accounts={accounts}
+            posting={posting}
             pendingCount={pendingCount}
             nextPost={nextPost}
             overdueCount={overdueCount}
@@ -477,8 +483,9 @@ export default function App() {
             {showFilterBar ? (
               <div className="glass-panel flex flex-wrap items-center gap-1.5 rounded-2xl px-4 py-2" role="group" aria-labelledby="filter-bar-label">
                 <span id="filter-bar-label" className={`mr-1 ${EYEBROW}`}>{t('app.filter.label')}</span>
-                {PLATFORMS.map((p) => {
+                {visiblePlatforms(accounts, posting).map((p) => {
                   const meta = PLATFORM_META[p];
+                  if (!meta) return null;
                   return (
                     <FilterChip
                       key={p}
@@ -632,6 +639,8 @@ export default function App() {
                   post={composer.post}
                   seed={composer.seed}
                   campaigns={campaigns}
+                  accounts={accounts}
+                  posting={posting}
                   onClose={closeComposer}
                   onSaved={(campaign, id) => setSelectedKey({ campaign, id })}
                   onNavigate={(p) => { setComposer(null); setPage(p); }}

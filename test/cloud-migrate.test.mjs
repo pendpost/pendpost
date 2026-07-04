@@ -86,9 +86,13 @@ try {
   await approvePost({ campaign: CAMP, postId: 'good', actor: 'owner' });
 
   // ---- (1) the local-firing safeguard ----------------------------------------
+  // Post-incident contract: local stands down for a cloud lane only while the cloud
+  // PROVABLY has the job (a fresh push-ack inside the backstop grace). The mock cloud
+  // is up, so the tick pushes + acks - and the local walk defers to the cloud.
+  installFetch();
   setCloud({ enabled: true, baseUrl: 'https://cloud.test', workspaceId: 'ws_x' });
   const managed = await runDueExclusive('owner');
-  ok(managed.code === 'cloud_managed' && managed.ran.length === 0, 'a cloud-managed client does NOT fire locally (safeguard returns cloud_managed, ran=[])');
+  ok(managed.code === 'cloud_managed' && managed.ran.length === 0, 'a cloud-managed client does NOT fire a freshly-acked cloud-lane job locally (the cloud owns its grace window)');
 
   setCloud({ enabled: false, baseUrl: '', workspaceId: '' });
   const local = await runDueExclusive('owner', { campaign: 'no-such-campaign' });
