@@ -24,13 +24,20 @@ const SERVICES_URL = 'https://pendpost.com/services?from=app';
 // The merged state -> the icon, the status-dot colour (null = neutral / not
 // highlighted), and the status-line key. Two orthogonal signals, no redundancy:
 // the GLYPH encodes the delivery channel (a cloud = managed 24/7 runtime; a
-// monitor = your own computer), the DOT encodes activity (emerald = delivering
-// now, amber = paused). So 24/7-cloud and computer-is-on no longer look identical
-// at a glance - they share the emerald dot but differ in shape. Cloud-on wins over
-// the local scheduler; an unknown scheduler flag stays neutral (no dot) so there
-// is no false "off" on first paint.
-function deriveStatus({ running, cloudOn }) {
-  if (cloudOn) return { Icon: CloudIcon, dot: 'bg-emerald-500', key: 'connection.status.cloud' };
+// monitor = your own computer), the DOT encodes activity. Cloud-on carries the
+// GUARANTEE roll-up (GET /api/cloud `sync`): emerald = every approved cloud-lane
+// post is confirmed on the cloud and will fire; amber = approved posts still
+// syncing; red = the guarantee is broken (unreachable / overdue / failed / sync
+// stopped) - the engine's local backstop is already covering, but the owner
+// should look. A missing roll-up (older engine, loading) stays emerald as before.
+// Cloud-on wins over the local scheduler; an unknown scheduler flag stays neutral
+// (no dot) so there is no false "off" on first paint.
+function deriveStatus({ running, cloudOn, sync }) {
+  if (cloudOn) {
+    if (sync?.state === 'red') return { Icon: CloudIcon, dot: 'bg-red-500', key: 'connection.sync.broken' };
+    if (sync?.state === 'yellow') return { Icon: CloudIcon, dot: 'bg-amber-500', key: 'connection.sync.pending' };
+    return { Icon: CloudIcon, dot: 'bg-emerald-500', key: 'connection.status.cloud' };
+  }
   if (running === true) return { Icon: Monitor, dot: 'bg-emerald-500', key: 'connection.status.local' };
   if (running === false) return { Icon: MonitorOff, dot: 'bg-amber-500', key: 'connection.status.off' };
   return { Icon: CloudIcon, dot: null, key: 'connection.status.unknown' };
@@ -56,8 +63,11 @@ export default function ConnectionStatus({ running, onNavigate }) {
   const cloudOn = cloudConnected && Boolean(cloud?.enabled) && activeAlwaysOn;
   const { data: sub } = useCloudSubscription(cloudConnected);
 
-  const { Icon, dot, key } = deriveStatus({ running, cloudOn });
-  const status = t(key);
+  const sync = cloud?.sync || null;
+  const { Icon, dot, key } = deriveStatus({ running, cloudOn, sync });
+  const status = t(key, key === 'connection.sync.pending' ? { n: sync?.pendingCount ?? 0 } : undefined);
+  // The red dot's one-line WHY (the machine reason from the guarantee roll-up).
+  const syncReason = cloudOn && sync?.state === 'red' ? t(`connection.sync.reason.${sync.reason}`) : null;
 
   // Controlled so the in-app "manage cloud" button can navigate AND close the popover.
   // (Wrapping that button in Radix <PopoverClose> swallowed its onClick, so the nav
@@ -90,6 +100,9 @@ export default function ConnectionStatus({ running, onNavigate }) {
             {t('connection.title')}
           </p>
           <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{status}</p>
+          {syncReason ? (
+            <p className="text-[11px] leading-relaxed text-red-600 dark:text-red-400">{syncReason}</p>
+          ) : null}
           {sub && sub.postsIncluded > 0 ? (
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
               <span className="font-bold text-zinc-600 dark:text-zinc-300">{sub.tier ? t(`cloud.tier.${sub.tier}`) : t('cloud.tier.trial')}</span>

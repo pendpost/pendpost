@@ -42,6 +42,11 @@ function platformState(post, platform, t) {
   if (platform === 'linkedin' && ids.liPostId) return { text: t('postDetail.platform.published', { id: ids.liPostId }), tier: 'done' };
   if (platform === 'x' && ids.xPostId) return { text: t('postDetail.platform.published', { id: ids.xPostId }), tier: 'done' };
   if (platform === 'youtube' && ids.ytVideoId) return { text: t('postDetail.platform.scheduledNatively', { id: ids.ytVideoId }), tier: 'warn', warn: nativeWarn };
+  if (platform === 'telegram' && ids.tgMessageId) return { text: t('postDetail.platform.published', { id: ids.tgMessageId }), tier: 'done' };
+  if (platform === 'discord' && ids.dcMessageId) return { text: t('postDetail.platform.published', { id: ids.dcMessageId }), tier: 'done' };
+  if (platform === 'reddit' && ids.redditPostId) return { text: t('postDetail.platform.published', { id: ids.redditPostId }), tier: 'done' };
+  if (platform === 'pinterest' && ids.pinId) return { text: t('postDetail.platform.published', { id: ids.pinId }), tier: 'done' };
+  if (platform === 'tiktok' && ids.tiktokVideoId) return { text: t('postDetail.platform.published', { id: ids.tiktokVideoId }), tier: 'done' };
   return { text: t('postDetail.platform.pending'), tier: 'pending' };
 }
 

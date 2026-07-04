@@ -393,7 +393,60 @@ export const RES_ASPECT = {
 export function mediaAspect(post) {
   return RES_ASPECT[post?.media?.resolution] || coverAspect(post?.type);
 }
-export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x'];
+export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok'];
+
+// The SETUP id a DISPLAY platform keys off for connection + skip. Facebook and
+// Instagram are two display entities behind ONE Meta connector, so both resolve to
+// 'meta'; every other display platform maps to itself. Single source of truth so
+// visiblePlatforms and platformEnabled agree on which account/skip slot to read.
+const SETUP_ID = { facebook: 'meta', instagram: 'meta' };
+function setupIdOf(platform) {
+  return SETUP_ID[platform] || platform;
+}
+
+// A display platform is CONNECTED when its accountStatus slot authenticates. Meta
+// (facebook/instagram) reports `configured` (a Page token + id); reddit accepts
+// either authenticated OR configured (script-app creds == both); every other lane
+// reports `authenticated`. Mirrors lib/setup.mjs hasCredential / accountStatus.
+function platformConnected(platform, accounts) {
+  const slot = accounts?.[setupIdOf(platform)];
+  if (!slot) return false;
+  if (platform === 'facebook' || platform === 'instagram') return Boolean(slot.configured);
+  if (platform === 'reddit') return Boolean(slot.authenticated || slot.configured);
+  return Boolean(slot.authenticated);
+}
+
+// The POLICY half of "show this logo": is the platform turned ON in posting policy?
+// Deny-by-default for Facebook (the one Meta lane that ships off - only Instagram
+// shows by default), default-ON for everything else (hidden only by an explicit
+// posting.platforms[p] === false). Mirrors lib/mode.mjs / lib/writes.mjs.
+export function platformEnabled(platform, posting) {
+  const policy = posting?.platforms || {};
+  if (platform === 'facebook') return policy.facebook === true;
+  return policy[platform] !== false;
+}
+
+// The SINGLE source of truth for "show only the relevant platform logos": a display
+// platform appears ONLY where it is connected AND enabled AND not skipped. Returns
+// the matching display ids in PLATFORMS order (facebook conditionally present).
+// "Not skipped" reads posting.skippedPlatforms (SETUP ids), so a skipped Meta hides
+// both facebook AND instagram. The skip is checked BEFORE connection so the rule
+// reads literally, but it can only ever bite an UNCONNECTED lane: exactly mirroring
+// lib/setup.mjs (isSkipped = !connected && skipped.includes(p)), a skip on a live
+// lane is stale and never hides it. Pure - undefined accounts/posting yields [].
+export function visiblePlatforms(accounts, posting) {
+  if (!accounts) return [];
+  const skipped = Array.isArray(posting?.skippedPlatforms) ? posting.skippedPlatforms : [];
+  return PLATFORMS.filter((platform) => {
+    const connected = platformConnected(platform, accounts);
+    // A stale skip only counts while the lane is NOT connected (lib/setup.mjs); a
+    // connected lane is simply connected, never hidden by a leftover skip flag.
+    if (!connected && skipped.includes(setupIdOf(platform))) return false;
+    if (!connected) return false;
+    if (!platformEnabled(platform, posting)) return false;
+    return true;
+  });
+}
 
 // The platforms whose OWN scheduler fires a future post (Facebook
 // scheduled_publish_time, YouTube publishAt), so it publishes on time even when
