@@ -70,7 +70,7 @@ try {
   // ---- 1. resolveEnginePath: shipped when unset, override when set ----
   delete process.env[ENGINE_VAR];
   ok(mode.engineEnvVar('meta') === 'PENDPOST_META_ENGINE', 'engineEnvVar uppercases the lane (meta -> PENDPOST_META_ENGINE)');
-  ok(mode.engineEnvVar('tiktok') === 'PENDPOST_TIKTOK_ENGINE', 'engineEnvVar uppercases a registered lane (tiktok -> PENDPOST_TIKTOK_ENGINE)');
+  ok(mode.engineEnvVar('mastodon') === 'PENDPOST_MASTODON_ENGINE', 'engineEnvVar uppercases a registered lane (mastodon -> PENDPOST_MASTODON_ENGINE)');
   ok(mode.resolveEnginePath('meta', 'scripts/meta-social.mjs') === 'scripts/meta-social.mjs',
     'override unset: meta resolves to the SHIPPED scripts/meta-social.mjs');
   ok(mode.resolveEnginePath('linkedin', 'scripts/linkedin-social.mjs') === 'scripts/linkedin-social.mjs',

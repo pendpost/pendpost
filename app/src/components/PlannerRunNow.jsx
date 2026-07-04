@@ -14,9 +14,10 @@
 //
 // Anti-slop: single accent tone, font-bold max, no all-caps prose; the disabled
 // blocker line uses icon + text (not color alone). Passes jest-axe.
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Rocket, AlertCircle, ListChecks } from 'lucide-react';
 import { useT } from '../lib/i18n.js';
+import { isDueNow } from '../lib/format.js';
 import PlannerRunNowDialog from './PlannerRunNowDialog.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 
@@ -38,16 +39,15 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
 
   const blocker368 = find368Blocker(pendpostHealth);
 
-  // Mandate E: scope + count for the tooltip and confirm. A post is publishable now
-  // when it has neither an approval nor a media blocker; the informational
-  // "overdue - due time already passed" blocker does NOT exclude it (an approved,
-  // overdue post still publishes). nextDue is horizon-clamped to <= 20 (lib/writes.mjs
-  // pendpostHealth), so render "N+" at the cap rather than a false exact total.
-  const nextDue = pendpostHealth?.nextDue || [];
-  const dueCount = nextDue.filter(
-    (p) => !(p.blockers || []).some((b) => b.startsWith('approval:') || b === 'media missing'),
-  ).length;
-  const dueLabel = nextDue.length >= 20 ? `${dueCount}+` : String(dueCount);
+  // Tooltip count = EXACTLY what run-now will act on: isDueNow over the full client
+  // plan (the dialog's own predicate, lib/format.js), so the badge can never diverge
+  // from the dialog's list the way the old pendpost_health.nextDue count did (that
+  // counted the whole horizon, incl. future waiting-due posts, and missed YouTube
+  // private-overdue releases). Memoized like the dialog's dueItems.
+  const dueCount = useMemo(
+    () => campaigns.flatMap((c) => c.posts || []).filter(isDueNow).length,
+    [campaigns],
+  );
   const client = clientName || '';
 
   // BLOCKED: never poke the lane. Show the verbatim blocker line and a
@@ -89,11 +89,11 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
 
   // The header button now OPENS the review dialog rather than publishing on
   // click - the dialog owns the post list, the multiselect, and the real publish
-  // loop. It carries the live due-count badge so the owner sees the scope before
-  // opening (nextDue-derived, clamped to N+ at the horizon cap).
+  // loop. It carries the live due-count badge (isDueNow over campaigns) so the
+  // owner sees the exact scope - identical to the dialog's list - before opening.
   return (
     <div className="flex items-center gap-2">
-      <Tip label={t('planner.runNow.tip.run', { client, count: dueLabel })}>
+      <Tip label={t('planner.runNow.tip.run', { client, count: dueCount })}>
         <button
           type="button"
           onClick={() => setOpen(true)}

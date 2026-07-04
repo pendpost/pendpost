@@ -3,10 +3,10 @@
 // #3). A downstream operator drops a drivers/registry.json next to the shipped
 // engines to register a NEW publish lane WITHOUT forking core. This proves:
 //
-//   1. a registry with a fake "tiktok" lane is RECOGNIZED - merged into the lane
+//   1. a registry with a fake "mastodon" lane is RECOGNIZED - merged into the lane
 //      set, its platform accepted by post-platform validation, its script
 //      resolvable, and its credentialEnvKeys PROBED by AUTO mode resolution;
-//   2. an ABSENT registry falls back to the three built-ins with no crash;
+//   2. an ABSENT registry falls back to the built-ins with no crash;
 //   3. a MALFORMED registry (bad JSON, wrong shape, built-in collision) falls
 //      back to the built-ins with no crash;
 //   4. parity is UNAFFECTED (no route/tool added by a lane - it sits below the
@@ -54,44 +54,44 @@ const { validateFieldValues } = await import('../lib/writes.mjs');
 const { writeEnvVars } = await import('../lib/util.mjs');
 
 try {
-  const BUILTIN_LANES = ['meta', 'linkedin', 'youtube', 'x'];
+  const BUILTIN_LANES = ['meta', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok'];
 
   // ---- 1. ABSENT registry: built-ins only, no crash ----
   removeRegistry();
   ok(Object.keys(iface.registeredLanes()).length === 0, 'absent registry: registeredLanes() is empty');
-  ok(BUILTIN_LANES.every((l) => l in iface.allLanes()), 'absent registry: the three built-in lanes are present');
-  ok(!('tiktok' in iface.allLanes()), 'absent registry: no phantom lane');
-  ok(iface.allPostPlatforms().sort().join(',') === 'facebook,instagram,linkedin,x,youtube',
-    'absent registry: post platforms are exactly the five built-ins');
+  ok(BUILTIN_LANES.every((l) => l in iface.allLanes()), 'absent registry: the built-in lanes are present');
+  ok(!('mastodon' in iface.allLanes()), 'absent registry: no phantom lane');
+  ok(iface.allPostPlatforms().sort().join(',') === 'discord,facebook,instagram,linkedin,pinterest,reddit,telegram,tiktok,x,youtube',
+    'absent registry: post platforms are exactly the built-ins');
   // validateFieldValues uses the merged platform set; an unknown lane is rejected.
-  ok(validateFieldValues({ platforms: ['tiktok'] }) !== null && validateFieldValues({ platforms: ['tiktok'] }).code === 'invalid_input',
-    'absent registry: a post targeting "tiktok" is rejected (not a known platform)');
+  ok(validateFieldValues({ platforms: ['mastodon'] }) !== null && validateFieldValues({ platforms: ['mastodon'] }).code === 'invalid_input',
+    'absent registry: a post targeting "mastodon" is rejected (not a known platform)');
   ok(validateFieldValues({ platforms: ['instagram'] }) === null, 'absent registry: a built-in platform still validates');
 
-  // ---- 2. REGISTERED fake "tiktok" lane is recognized + probed ----
+  // ---- 2. REGISTERED fake "mastodon" lane is recognized + probed ----
   writeRegistry({
-    tiktok: {
-      script: 'scripts/tiktok-social.mjs',
-      platforms: ['tiktok'],
-      credentialEnvKeys: ['TIKTOK_ACCESS_TOKEN'],
+    mastodon: {
+      script: 'scripts/mastodon-social.mjs',
+      platforms: ['mastodon'],
+      credentialEnvKeys: ['MASTODON_TOKEN'],
     },
   });
   const reg = iface.registeredLanes();
-  ok('tiktok' in reg, 'registry: the tiktok lane is registered');
-  ok(reg.tiktok.script === 'scripts/tiktok-social.mjs', 'registry: tiktok carries its declared script path');
-  ok(iface.laneScript('tiktok') === 'scripts/tiktok-social.mjs', 'registry: laneScript resolves the registered engine path');
-  ok(BUILTIN_LANES.every((l) => l in iface.allLanes()) && 'tiktok' in iface.allLanes(),
-    'registry: built-ins AND tiktok are all in the merged lane set');
-  ok(iface.allPostPlatforms().includes('tiktok'), 'registry: post-platform set now accepts tiktok');
-  ok(validateFieldValues({ platforms: ['tiktok'] }) === null, 'registry: a post targeting tiktok now validates');
+  ok('mastodon' in reg, 'registry: the mastodon lane is registered');
+  ok(reg.mastodon.script === 'scripts/mastodon-social.mjs', 'registry: mastodon carries its declared script path');
+  ok(iface.laneScript('mastodon') === 'scripts/mastodon-social.mjs', 'registry: laneScript resolves the registered engine path');
+  ok(BUILTIN_LANES.every((l) => l in iface.allLanes()) && 'mastodon' in iface.allLanes(),
+    'registry: built-ins AND mastodon are all in the merged lane set');
+  ok(iface.allPostPlatforms().includes('mastodon'), 'registry: post-platform set now accepts mastodon');
+  ok(validateFieldValues({ platforms: ['mastodon'] }) === null, 'registry: a post targeting mastodon now validates');
 
   // mode resolution: a registered lane behaves like the built-ins - LIVE by default
   // (real instances never auto-mock), forced onto the mock fixture only when
   // PENDPOST_MODE=mock. Credentials no longer affect mode.
-  ok(mode.resolveMode('tiktok') === 'live', 'registry: AUTO resolves a registered lane live, like the built-ins');
+  ok(mode.resolveMode('mastodon') === 'live', 'registry: AUTO resolves a registered lane live, like the built-ins');
   ok(mode.resolveMode('meta') === 'live', 'registry: a built-in lane (meta) also resolves live under AUTO');
   process.env.PENDPOST_MODE = 'mock';
-  ok(mode.resolveMode('tiktok') === 'mock' && mode.resolveMode('meta') === 'mock',
+  ok(mode.resolveMode('mastodon') === 'mock' && mode.resolveMode('meta') === 'mock',
     'registry: PENDPOST_MODE=mock forces both registered and built-in lanes onto the mock fixture');
   process.env.PENDPOST_MODE = '';
 
@@ -126,14 +126,14 @@ try {
   ok(iface.allPostPlatforms().filter((p) => p === 'instagram').length === 1, 'collision: instagram is not duplicated in the platform set');
 
   // ---- 4. PARITY unaffected: adding a lane adds no route, no tool ----
-  // Run the static parity check as a subprocess with the tiktok registry present.
-  writeRegistry({ tiktok: { script: 'scripts/tiktok-social.mjs', platforms: ['tiktok'], credentialEnvKeys: ['TIKTOK_ACCESS_TOKEN'] } });
+  // Run the static parity check as a subprocess with the mastodon registry present.
+  writeRegistry({ mastodon: { script: 'scripts/mastodon-social.mjs', platforms: ['mastodon'], credentialEnvKeys: ['MASTODON_TOKEN'] } });
   const { execFileSync } = await import('node:child_process');
   const parityOut = execFileSync(process.execPath, [path.join(REPO, 'test', 'parity-check.mjs')], { encoding: 'utf8' });
   ok(/67 routes, 43 tools.*0 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 66/43 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 67/43 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

@@ -12,17 +12,17 @@
   <img src="brand/github/readme-hero-preview.png" alt="pendpost: an AI agent drafts and schedules posts; a human approval gate decides what publishes" width="820">
 </p>
 
-pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, and X behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
+pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, and Discord behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
 
 ## Why pendpost is different (not just a scheduler)
 
 Most "AI social" tools are schedulers with an agent bolted on. pendpost is the opposite. It is an operations layer designed around the agent-plus-human workflow, and these are the parts a scheduler does not give you:
 
 <p align="center">
-  <img src="brand/github/approval-gate-diagram-preview.png" alt="The approval gate: an agent drafts, but cannot approve its own draft; a human approves; only then does it publish" width="820">
+  <img src="brand/github/approval-gate-diagram-preview.png" alt="The approval gate: an agent drafts, you approve by default, and only then does it publish" width="820">
 </p>
 
-- **Human approval gate.** Every post carries an approval state (`draft`, `approved`, `rejected`) and is fail-closed: a post with no approval will not publish. `plan_create_post` always creates a draft, and only `approve_post` or `reject_post` can flip it. There is no self-approval, so the actor who created a post can never approve it (an agent cannot bless its own draft); the owner is exempt.
+- **Human approval gate.** Every post carries an approval state (`draft`, `approved`, `rejected`) and is fail-closed: a post with no approval will not publish. `plan_create_post` always creates a draft, and only `approve_post` or `reject_post` can flip it. Nothing publishes until it's approved. By default that's you; auto-approve is owner-only and revocable.
 - **Anti-ban circuit breakers.** A Meta error 368 (an action block) trips a breaker that halts the Meta lane and never auto-resumes, because 368 carries no machine-readable clear time. Health probes send zero Graph traffic while blocked. A cadence cap defers bursts rather than dropping them, and a lane pause kill switch is always available.
 - **Humanizer brand-lint.** Captions are checked before publish against editable rules in `rules.json`. The humanizer layer flags English AI-writing tells. Errors block publish; warnings are advisory.
 - **Honest native scheduling.** Where a platform supports it (Facebook scheduled posts, YouTube `publishAt`), pendpost uses native scheduling, so those posts fire even when your computer is off. Instagram, LinkedIn, and X have no native scheduling, so pendpost must be running to publish them; run it on an [always-on host](https://docs.pendpost.com/always-on) to cover those too. It stays honest about which cover/thumbnail mechanics actually apply per platform.
@@ -96,7 +96,7 @@ Every capability is an MCP tool, and the dashboard mirrors it. Read-only tools c
 
 - **Read and inspect:** `plan_list`, `plan_get`, `account_status`, `assets_list`, `activity_log`, `validate_media`, `platform_validate`, `pendpost_health`, `publish_preview`, `brand_lint`, `generate_digest`, `config_get`, `clients_overview`.
 - **Compose:** `plan_create_post`, `plan_update_post`, `plan_delete_post`, `campaign_create`, `campaign_set_active`.
-- **Approve (the human gate):** `approve_post`, `reject_post`. An agent can never approve its own draft.
+- **Approve (the human gate):** `approve_post`, `reject_post`. Nothing publishes until it's approved; by default that's you.
 - **Schedule and publish:** `scheduler_set`, `publish_due_run`, `reschedule`, `unschedule`, `mark_posted`, `verify_post`.
 - **Covers and assets:** `set_cover`, `clear_cover`, `asset_upload`, `rename_asset`, `delete_asset`.
 - **Insights and safety:** `fetch_insights`, `token_refresh`, `pendpost_record_block`, `health_recheck`, `meta_lane_set`.

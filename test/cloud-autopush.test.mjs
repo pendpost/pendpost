@@ -116,13 +116,21 @@ try {
   ok(t4.code === 'cloud_managed', 'the tick is still cloud-managed when sync is stopped');
   ok(!pushedJobIds.includes(JOB2), 'a syncStopped subscription SKIPS the push (the gate holds)');
 
-  // --- (5) the gate releases: once sync resumes, the same post IS pushed --------------
+  // --- (5) the backstop: a gated-but-overdue post fires LOCALLY, never silently rots ---
+  // The post-incident contract: syncStopped gates the CLOUD (no push spam), but the
+  // owner's machine still owes the post. r11 is grossly overdue with NO push-ack (the
+  // push was gated), so the same t4 tick fired it locally via the backstop. Once
+  // posted, a resumed sync does NOT push it (eligibleDuePosts excludes posted).
+  ok(readPost(POST2).status === 'posted', 'the gated overdue post was fired LOCALLY by the backstop (never silently stuck)');
+  ok(t4.ran.some((r) => r.postId === POST2 && r.lane === 'meta'), "the backstop fire is reported in the tick's ran[]");
+  const { getActivity } = await import('../lib/scheduler.mjs');
+  ok(getActivity(50).some((e) => e.postId === POST2 && e.action === 'cloud-backstop'), 'the backstop left its cloud-backstop audit entry');
   subStopped = false;
   pushedJobIds.length = 0;
   await runDueExclusive('scheduler');
-  ok(pushedJobIds.includes(JOB2), 'once sync resumes the previously-gated job IS pushed');
+  ok(!pushedJobIds.includes(JOB2), 'after the backstop fire the post is posted - a resumed sync does NOT re-push it');
 
-  console.log(`[cloud-autopush] OK - tick pushes the approved/overdue job, reconciles done->posted, idempotent, stop-sync gate holds + releases (${pass} assertions).`);
+  console.log(`[cloud-autopush] OK - tick pushes the approved/overdue job, reconciles done->posted, idempotent, stop-sync gate holds + backstop rescues the gated overdue post (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

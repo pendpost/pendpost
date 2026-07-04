@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Square, RefreshCw, ClipboardCopy, Check, Plus, Settings, ChevronRight, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, Monitor } from 'lucide-react';
 import { setSchedulerRunning, refreshLinkedinToken, clearMetaBlock, recheckHealth } from '../lib/api.js';
 import { useCloud, useCloudClients } from '../lib/cloud.js';
-import { fmtTime, fmtDayShort, fmtFull, dateLocale } from '../lib/format.js';
+import { fmtTime, fmtDayShort, fmtFull, dateLocale, visiblePlatforms } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
 import { EYEBROW, INNER_SURFACE, PLATFORM_META } from './ui.jsx';
 import ClientSwitcher from './ClientSwitcher.jsx';
@@ -300,13 +300,22 @@ function MetaBlockAction() {
   );
 }
 
-export default function Sidebar({ accounts, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, onNavigate, onNew, onOpenPost, onShowOverdue }) {
+export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, onNavigate, onNew, onOpenPost, onShowOverdue }) {
   const t = useT();
   const [showFeedback, setShowFeedback] = useState(false);
+  // Show only the relevant logos: the same connected+enabled+not-skipped rule the
+  // dashboard uses (lib/format.js). The set holds DISPLAY ids (facebook/instagram
+  // separately), so a chip renders only when its id is in `visible`.
+  const visible = new Set(visiblePlatforms(accounts, posting));
   const meta = accounts?.meta;
   const li = accounts?.linkedin;
   const yt = accounts?.youtube;
   const x = accounts?.x;
+  const tg = accounts?.telegram;
+  const dc = accounts?.discord;
+  const rd = accounts?.reddit;
+  const pin = accounts?.pinterest;
+  const tk = accounts?.tiktok;
   const block = meta?.block;
   const blocked = Boolean(block?.tracked && block.blockedUntil);
   const pastAnchor = blocked && Date.parse(block.blockedUntil) < Date.now();
@@ -356,6 +365,29 @@ export default function Sidebar({ accounts, pendingCount, nextPost, overdueCount
     : xExpSoon
       ? t('sidebar.tokenExpires', { date: new Date(x.tokenExpiresAt).toLocaleDateString(dateLocale()) })
       : liveSub(t, xLive, x.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), x.authenticated);
+
+  // Telegram + Discord: static-credential lanes (no token expiry), so the tone is
+  // simply off / not-connected / live-failed / ok - the YouTube-style derivation.
+  const tgLive = tg?.live;
+  const tgTone = !tg ? 'off' : !tg.authenticated ? 'warn' : tgLive?.ok === false ? 'err' : 'ok';
+  const tgSub = !tg ? t('sidebar.noData') : liveSub(t, tgLive, tg.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), tg.authenticated);
+  const dcLive = dc?.live;
+  const dcTone = !dc ? 'off' : !dc.authenticated ? 'warn' : dcLive?.ok === false ? 'err' : 'ok';
+  const dcSub = !dc ? t('sidebar.noData') : liveSub(t, dcLive, dc.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), dc.authenticated);
+
+  // Reddit / Pinterest / TikTok: the same static-lane derivation as Telegram +
+  // Discord (off / not-connected / live-failed / ok). Reddit accepts script-app
+  // creds, so its connection flag reads authenticated OR configured.
+  const rdConnected = Boolean(rd?.authenticated || rd?.configured);
+  const rdLive = rd?.live;
+  const rdTone = !rd ? 'off' : !rdConnected ? 'warn' : rdLive?.ok === false ? 'err' : 'ok';
+  const rdSub = !rd ? t('sidebar.noData') : liveSub(t, rdLive, rdConnected ? t('setup.status.connected') : t('sidebar.notConnected'), rdConnected);
+  const pinLive = pin?.live;
+  const pinTone = !pin ? 'off' : !pin.authenticated ? 'warn' : pinLive?.ok === false ? 'err' : 'ok';
+  const pinSub = !pin ? t('sidebar.noData') : liveSub(t, pinLive, pin.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), pin.authenticated);
+  const tkLive = tk?.live;
+  const tkTone = !tk ? 'off' : !tk.authenticated ? 'warn' : tkLive?.ok === false ? 'err' : 'ok';
+  const tkSub = !tk ? t('sidebar.noData') : liveSub(t, tkLive, tk.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), tk.authenticated);
 
   const schedulerRunning = Boolean(accounts?.scheduler?.running);
   // Surface the last sweep so an EMPTY sweep (nothing was due) is still visible
@@ -496,22 +528,70 @@ export default function Sidebar({ accounts, pendingCount, nextPost, overdueCount
             no always-on status line. Click a chip to open Setup, where any reconnect /
             clear-block action lives. Healthy = logo + emerald dot; attention = amber/red. */}
         <div className="flex flex-wrap items-center gap-0.5 px-1">
-          <span className="flex items-center">
-            <AccountChip icons={[PLATFORM_META.facebook, PLATFORM_META.instagram]} tone={metaTone} title="Facebook + Instagram" status={metaSub} onClick={() => onNavigate('setup')} />
-            {blocked ? <MetaBlockAction /> : null}
-          </span>
-          <span className="flex items-center">
-            <AccountChip icons={[PLATFORM_META.linkedin]} tone={liTone} title="LinkedIn" status={liSub} onClick={() => onNavigate('setup')} />
-            {li && liTone !== 'ok' ? <TokenAction authenticated={li.authenticated} refreshable authCommand="node scripts/linkedin-social.mjs auth" /> : null}
-          </span>
-          <span className="flex items-center">
-            <AccountChip icons={[PLATFORM_META.youtube]} tone={ytTone} title="YouTube" status={ytSub} onClick={() => onNavigate('setup')} />
-            {yt && !yt.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/yt-social.mjs auth" /> : null}
-          </span>
-          <span className="flex items-center">
-            <AccountChip icons={[PLATFORM_META.x]} tone={xTone} title="X" status={xSub} onClick={() => onNavigate('setup')} />
-            {x && !x.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/x-social.mjs auth" /> : null}
-          </span>
+          {(() => {
+            // Meta is two display lanes behind one connector: build the glyph row
+            // from whichever of facebook/instagram is visible (Instagram-only by
+            // default), and render the chip only if at least one is shown.
+            const metaIcons = [];
+            if (visible.has('facebook')) metaIcons.push(PLATFORM_META.facebook);
+            if (visible.has('instagram')) metaIcons.push(PLATFORM_META.instagram);
+            if (metaIcons.length === 0) return null;
+            const metaTitle = [visible.has('facebook') ? 'Facebook' : null, visible.has('instagram') ? 'Instagram' : null].filter(Boolean).join(' + ');
+            return (
+              <span className="flex items-center">
+                <AccountChip icons={metaIcons} tone={metaTone} title={metaTitle} status={metaSub} onClick={() => onNavigate('setup')} />
+                {blocked ? <MetaBlockAction /> : null}
+              </span>
+            );
+          })()}
+          {visible.has('linkedin') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.linkedin]} tone={liTone} title="LinkedIn" status={liSub} onClick={() => onNavigate('setup')} />
+              {li && liTone !== 'ok' ? <TokenAction authenticated={li.authenticated} refreshable authCommand="node scripts/linkedin-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('youtube') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.youtube]} tone={ytTone} title="YouTube" status={ytSub} onClick={() => onNavigate('setup')} />
+              {yt && !yt.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/yt-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('x') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.x]} tone={xTone} title="X" status={xSub} onClick={() => onNavigate('setup')} />
+              {x && !x.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/x-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('telegram') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.telegram]} tone={tgTone} title="Telegram" status={tgSub} onClick={() => onNavigate('setup')} />
+              {tg && !tg.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/telegram-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('discord') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.discord]} tone={dcTone} title="Discord" status={dcSub} onClick={() => onNavigate('setup')} />
+              {dc && !dc.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/discord-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('reddit') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.reddit]} tone={rdTone} title="Reddit" status={rdSub} onClick={() => onNavigate('setup')} />
+              {rd && !rdConnected ? <TokenAction authenticated={false} authCommand="node scripts/reddit-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('pinterest') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.pinterest]} tone={pinTone} title="Pinterest" status={pinSub} onClick={() => onNavigate('setup')} />
+              {pin && !pin.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/pinterest-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('tiktok') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.tiktok]} tone={tkTone} title="TikTok" status={tkSub} onClick={() => onNavigate('setup')} />
+              {tk && !tk.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/tiktok-social.mjs auth" /> : null}
+            </span>
+          ) : null}
         </div>
         {/* Delivery (item 11): cloud-aware. A cloud-managed active client shows a calm 24/7
             row (no local toggle); otherwise the local scheduler label + start/stop control. */}

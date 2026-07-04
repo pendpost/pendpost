@@ -20,6 +20,11 @@ const AUTO_PLATFORMS = [
   { id: 'linkedin', label: 'LinkedIn' },
   { id: 'youtube', label: 'YouTube' },
   { id: 'x', label: 'X' },
+  { id: 'telegram', label: 'Telegram' },
+  { id: 'discord', label: 'Discord' },
+  { id: 'reddit', label: 'Reddit' },
+  { id: 'pinterest', label: 'Pinterest' },
+  { id: 'tiktok', label: 'TikTok' },
 ];
 
 // A label with a beside-it help tooltip (keyboard/SR reachable; the control keeps its

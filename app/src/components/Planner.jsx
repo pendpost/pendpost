@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronUp, ChevronDown, Plus, PauseCircle } from 'lucide-react';
-import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postStatusKey } from '../lib/format.js';
+import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { unschedulePost } from '../lib/api.js';
 import { useQueryClient } from '@tanstack/react-query';
@@ -114,7 +114,7 @@ export function PostCard({ post, onSelect, draggable, onDragStart, lane }) {
   // status band ('strip', a display preference) - the dimmed set-aside cards get no
   // accent, they simply fade back.
   const accent = getCardAccent();
-  const meta = STATUS_PILL_META[postStatusKey(post)] || STATUS_PILL_META.scheduled;
+  const meta = STATUS_PILL_META[postDisplayStatusKey(post)] || STATUS_PILL_META.scheduled;
   const dim = postIsDimmed(post);
   const flag = needsAttention(post) && !dim; // active attention -> show the accent
   const showBar = flag && accent === 'bar' && meta.bar;

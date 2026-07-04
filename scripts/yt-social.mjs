@@ -22,6 +22,7 @@
  *   validate  --plan <post-plan.json> [--only <id>] | --file <path> side-effect-free: upload PRIVATE + delete
  *   publish   --file <path> [--title --description --tags --unlisted] immediate upload, PUBLIC (or unlisted)
  *   schedule  --plan <post-plan.json> [--only <id>] [--dry-run]     natively schedule (private + publishAt)
+ *   release   --plan <post-plan.json> [--only <id>]                 make a private-overdue scheduled video public now (no re-upload)
  *   status    --plan <post-plan.json>                               per-entry live state
  *   delete    --id <videoId>                                        delete a video (cleanup / unschedule)
  *
@@ -997,6 +998,68 @@ async function cmdVerify(args) {
   console.log(`[done] verify complete - ${RUN.results.length} checked.`);
 }
 
+// Recover a natively-scheduled video YouTube left PRIVATE past its publishAt
+// (verify read-back state 'private-overdue'): flip it public via a metadata-only
+// videos.update - NEVER a re-upload (the bytes are already on YouTube; re-running
+// `schedule` would mint a duplicate). The pendpost scheduler owes this 'release'
+// only once the id exists AND the read-back says private-overdue (lib/scheduler.mjs
+// lanesFor), so in normal operation the GET-status guard below just confirms the
+// state; the guard also keeps a bare CLI `release --plan X` idempotent and safe -
+// an already-public video is a no-op, a still-future schedule is left untouched.
+async function cmdRelease(args) {
+  const { abs, plan } = loadPlan(args.plan);
+  const token = await getAccessToken();
+  const targets = (plan.posts || []).filter((p) => (!args.only || p.id === args.only) && isYouTube(p) && p.ytVideoId);
+  if (!targets.length) { console.log('[done] release complete - no posts with a ytVideoId.'); return; }
+  let items = [];
+  try {
+    const data = await api('GET', '/videos', { query: { part: 'status', id: targets.map((p) => p.ytVideoId).join(',') }, token });
+    items = data.items || [];
+  } catch (err) {
+    for (const post of targets) RUN.results.push({ postId: post.id, platform: 'youtube', action: 'release', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+    console.error(`[err] videos.list failed - ${err.message}`);
+    return;
+  }
+  const now = Date.now();
+  for (const post of targets) {
+    const v = items.find((i) => i.id === post.ytVideoId);
+    const permalink = `https://youtu.be/${post.ytVideoId}`;
+    if (!v) {
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'release', ok: false, errorCode: 'engine_failure', errorMessage: `video ${post.ytVideoId} not found (deleted?)` });
+      console.log(`[warn] ${post.id}: video ${post.ytVideoId} missing - cannot release.`);
+      continue;
+    }
+    const privacy = v.status?.privacyStatus;
+    const publishAt = v.status?.publishAt ? Date.parse(v.status.publishAt) : NaN;
+    if (privacy === 'public') {
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'release', ok: true, id: post.ytVideoId, live: true, state: 'public', permalink });
+      console.log(`[ok] ${post.id}: already public - no action.`);
+      continue;
+    }
+    if (!Number.isNaN(publishAt) && publishAt > now) {
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'release', ok: false, errorCode: 'invalid_input', errorMessage: `still natively scheduled for ${v.status.publishAt} - not releasing early` });
+      console.log(`[skip] ${post.id}: still scheduled (publishAt ${v.status.publishAt}) - not releasing early.`);
+      continue;
+    }
+    // private-overdue: YouTube did NOT auto-publish at publishAt. Make it public now.
+    // part=status REPLACES the status part, so selfDeclaredMadeForKids must be re-sent
+    // (mirrors buildMeta) and publishAt is omitted to clear the (passed) schedule.
+    try {
+      await api('PUT', '/videos', { query: { part: 'status' }, body: { id: post.ytVideoId, status: { privacyStatus: 'public', selfDeclaredMadeForKids: false } }, token });
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'release', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'release', ok: true, id: post.ytVideoId, live: true, state: 'public', permalink });
+      console.log(`[ok] ${post.id}: released - video ${post.ytVideoId} is now public.`);
+    } catch (err) {
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'release', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'release', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+      console.error(`[err] ${post.id}: release failed - ${err.message}`);
+    }
+  }
+  console.log('[done] release complete.');
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 2; i < argv.length; i++) {
@@ -1018,6 +1081,7 @@ const COMMANDS = {
   validate: cmdValidate,
   publish: cmdPublish,
   schedule: cmdSchedule,
+  release: cmdRelease,
   status: cmdStatus,
   verify: cmdVerify,
   delete: cmdDelete,
@@ -1054,7 +1118,7 @@ async function main() {
     console.error(`Usage: node scripts/yt-social.mjs <${Object.keys(COMMANDS).join('|')}> [options]`);
     process.exit(2);
   }
-  if (['schedule', 'status', 'set-thumbnail', 'caption', 'comment', 'insights', 'verify'].includes(args._[0]) && !args.plan) {
+  if (['schedule', 'release', 'status', 'set-thumbnail', 'caption', 'comment', 'insights', 'verify'].includes(args._[0]) && !args.plan) {
     console.error(`[err] ${args._[0]} requires --plan <post-plan.json>`);
     process.exit(2);
   }
