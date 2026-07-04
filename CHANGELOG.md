@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-04
+
+### Added
+- Cloud sync guarantee status: `GET /api/cloud` now returns a `sync` roll-up (`green` — every approved cloud-lane post is confirmed accepted by the cloud; `yellow` — a push is still pending; `red` — the guarantee is broken: cloud unreachable, an approved post overdue-unpublished, a failed cloud publish, or sync stopped). The header cloud icon surfaces it as a green/amber/red dot with a localized reason line (en + de-CH).
+- Push acknowledgements, the last successful cloud contact, and the subscription view are now persisted per client (`state.cloudAccepted` / `state.cloudContact` / `state.cloudSubView`), so the status is computable offline and survives restarts.
+
+### Fixed
+- Cloud-managed brands never silently miss a post again. The scheduler no longer hands off blindly to the cloud: lanes the managed cloud does not fire (YouTube incl. the release-recovery lane, Telegram, Discord, Reddit, Pinterest, TikTok) always run on the normal local schedule, and cloud lanes (Meta, LinkedIn, X, Bluesky) get a 20-minute liveness backstop — a post the cloud provably has not fired past that grace publishes locally, with a `cloud-backstop` activity entry. Reconcile runs first each tick and the cloud worker's claim guard holds, so the backstop cannot double-post.
+- A brand the cloud wrongly reports as paused while it is on locally now re-asserts its always-on flag every tick (the mirror of the existing off-flag self-heal).
+- A stale cached cloud-failure entry for a post that has since published no longer holds the sync status red.
+
 ## [1.1.1] - 2026-06-28
 
 ### Fixed
