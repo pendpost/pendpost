@@ -1,0 +1,49 @@
+name: publish mcp registry
+
+# Update pendpost's entry in the official MCP registry
+# (registry.modelcontextprotocol.io) when a GitHub Release is published, or on a
+# manual dispatch. This never runs on a normal push, so the registry entry only
+# moves on an explicit release - the same owner-gated posture as release-npm.yml.
+#
+# Auth is GitHub Actions OIDC (`mcp-publisher login github-oidc`): the workflow's
+# repo identity (pendpost/pendpost) maps to the io.github.pendpost/* namespace, so
+# no secret, no interactive device-code flow, and no personal account is involved.
+# Needs `id-token: write` and runs only on the public repo (this file also lives in
+# the private site mirror, where it must stay inert).
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: github.repository == 'pendpost/pendpost'
+    env:
+      # Pin the publisher CLI so a registry-tooling release can never silently
+      # change what this workflow executes. Bump deliberately.
+      MCP_PUBLISHER_VERSION: v1.7.9
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install mcp-publisher (pinned)
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" \
+            | tar xz mcp-publisher
+          ./mcp-publisher --version
+      - name: Verify server.json matches package.json
+        run: |
+          srv="$(node -p "require('./server.json').version")"
+          pkg="$(node -p "require('./package.json').version")"
+          if [ "$srv" != "$pkg" ]; then
+            echo "server.json version ($srv) does not match package.json ($pkg)." >&2
+            exit 1
+          fi
+      - name: Validate + publish server.json
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
