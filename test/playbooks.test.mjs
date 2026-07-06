@@ -15,7 +15,7 @@ import assert from 'node:assert';
 import { PLAYBOOKS } from '../lib/playbooks.mjs';
 
 // The canonical platform list - MUST match lib/setup.mjs PLATFORMS exactly.
-const PLATFORMS = ['meta', 'linkedin', 'x', 'youtube', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok'];
+const PLATFORMS = ['meta', 'linkedin', 'x', 'youtube', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'];
 
 let failures = 0;
 function check(name, fn) {

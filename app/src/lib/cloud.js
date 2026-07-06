@@ -36,11 +36,16 @@ const postJson = (path, body) => sendJson('POST', path, body);
 // GET /api/cloud -> { ok, enabled, baseUrl, workspaceId, apiKey: { present, tail } }.
 // The api-key VALUE is never returned (presence + 4-char tail only). Read-only,
 // so it is safe to poll lightly; the connection state changes rarely.
+// refetchInterval keeps the header cloud dot HONEST: the `sync` roll-up embeds a
+// contact-freshness signal that goes stale on its own clock, so without a poll the
+// dot would show a pre-sleep red until a manual reload. Mirrors usePendpostHealth
+// (api.js) - every other status query in the app already polls; this was the one gap.
 export function useCloud() {
   return useQuery({
     queryKey: ['cloud'],
     queryFn: () => getJson('/api/cloud'),
     staleTime: 30_000,
+    refetchInterval: 60_000,
   });
 }
 
@@ -98,6 +103,22 @@ export function useCloudClients(enabled = true) {
     queryFn: () => getJson('/api/cloud/clients'),
     enabled,
     staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+// GET /api/cloud/capabilities -> { ok, source, lanes, cloudLanes, nativeLanes,
+// localOnlyLanes, fetchedAt }. The lane-capability map the UI badges lanes with
+// (cloud 24/7 / native / local-only) - pre-purchase honesty, so it needs NO
+// workspace and NO api key. The server proxies the cloud's public endpoint and
+// degrades to a baked-in fallback offline, so this read never fails; source
+// tells a live map ('cloud') from the conservative baked one ('fallback').
+export function useCapabilities() {
+  return useQuery({
+    queryKey: ['cloud', 'capabilities'],
+    queryFn: () => getJson('/api/cloud/capabilities'),
+    staleTime: 300_000, // mirrors the endpoint's public, max-age=300
+    retry: false,
   });
 }
 
@@ -117,6 +138,7 @@ export function useCloudSubscription(enabled = true) {
     queryFn: () => getJson('/api/cloud/subscription'),
     enabled,
     staleTime: 30_000,
+    refetchInterval: 60_000,
     retry: false,
   });
 }

@@ -22,6 +22,11 @@ function accountsWith(...connected) {
     reddit: { authenticated: set.has('reddit'), configured: set.has('reddit') },
     pinterest: { authenticated: set.has('pinterest') },
     tiktok: { authenticated: set.has('tiktok') },
+    mastodon: { authenticated: set.has('mastodon') },
+    wordpress: { authenticated: set.has('wordpress') },
+    ghost: { authenticated: set.has('ghost') },
+    nostr: { authenticated: set.has('nostr') },
+    gbp: { authenticated: set.has('gbp') },
   };
 }
 
@@ -78,6 +83,16 @@ describe('visiblePlatforms', () => {
     expect(v).toEqual(expect.arrayContaining(['reddit', 'pinterest', 'tiktok']));
   });
 
+  it('omits mastodon / wordpress / ghost / nostr / gbp when unconnected', () => {
+    const v = visiblePlatforms(accountsWith('linkedin'), {});
+    for (const p of ['mastodon', 'wordpress', 'ghost', 'nostr', 'gbp']) expect(v).not.toContain(p);
+  });
+
+  it('includes mastodon / wordpress / ghost / nostr / gbp when connected (authenticated)', () => {
+    const v = visiblePlatforms(accountsWith('mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'), {});
+    expect(v).toEqual(expect.arrayContaining(['mastodon', 'wordpress', 'ghost', 'nostr', 'gbp']));
+  });
+
   it('hides a skipped + UNCONNECTED lane (the only case skip+visibility interact)', () => {
     // A skip flag only matters while the lane is NOT connected (lib/setup.mjs
     // isSkipped). An unconnected lane is already absent, so adding it to
@@ -100,7 +115,7 @@ describe('visiblePlatforms', () => {
 
   it('returns ids in PLATFORMS order', () => {
     const v = visiblePlatforms(
-      accountsWith('meta', 'linkedin', 'x', 'youtube', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok'),
+      accountsWith('meta', 'linkedin', 'x', 'youtube', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'),
       { platforms: { facebook: true } },
     );
     const order = PLATFORMS.filter((p) => v.includes(p));

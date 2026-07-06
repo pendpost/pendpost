@@ -32,6 +32,19 @@ vi.mock('../../lib/cloud.js', () => ({
   useCloudClients: () => clientsState,
   setClientAlwaysOn: (...a) => setClientAlwaysOn(...a),
   useCloudSubscription: () => subState,
+  // The lane-capability map (fallback-shaped): reddit/tiktok local-only, the
+  // native four - what the LanesHonestyNote renders at every buy decision point.
+  useCapabilities: () => ({
+    data: {
+      ok: true,
+      source: 'fallback',
+      lanes: { meta: 'cloud', linkedin: 'cloud', x: 'cloud', youtube: 'native', mastodon: 'native', wordpress: 'native', ghost: 'native', reddit: 'local_only', tiktok: 'local_only' },
+      cloudLanes: ['meta', 'linkedin', 'x'],
+      nativeLanes: ['youtube', 'mastodon', 'wordpress', 'ghost'],
+      localOnlyLanes: ['reddit', 'tiktok'],
+    },
+    isLoading: false,
+  }),
   startCheckout: (...a) => startCheckout(...a),
   startBillingPortal: (...a) => startBillingPortal(...a),
   setSpendCap: (...a) => setSpendCap(...a),

@@ -7,8 +7,9 @@
 //   2. A post the cloud already fired (reconcile marks posted) is NEVER re-fired.
 //   3. A freshly-acked overdue post stays the cloud's job (grace anchored on the
 //      FIRST push-ack, not scheduledAt) - no local fire inside the window.
-//   4. A LOCAL-ONLY lane (telegram) fires on the normal schedule under cloud
-//      management - the old early-return stranded these lanes entirely.
+//   4. A LOCAL-ONLY lane (reddit) fires on the normal schedule under cloud
+//      management - the old early-return stranded these lanes entirely. (telegram
+//      is now a CLOUD lane, so reddit is the local-only exemplar here.)
 // Mock mode + a mocked global.fetch; no network, no real cloud, never publishes.
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -22,7 +23,7 @@ fs.mkdirSync(path.join(WS, 'data', 'plans'), { recursive: true });
 fs.mkdirSync(path.join(WS, 'data', 'media'), { recursive: true });
 fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
 fs.writeFileSync(path.join(WS, 'data', 'media', 'clip.mp4'), Buffer.from([0, 0, 0, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]));
-fs.writeFileSync(path.join(WS, '.env'), 'PENDPOST_CLOUD_API_KEY=ppc_test_secret_abcdef0123456789\nTELEGRAM_BOT_TOKEN=tg_test\nTELEGRAM_CHAT_ID=42\n');
+fs.writeFileSync(path.join(WS, '.env'), 'PENDPOST_CLOUD_API_KEY=ppc_test_secret_abcdef0123456789\n');
 
 const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
@@ -113,11 +114,11 @@ try {
   ok(readPost('p-fresh').status !== 'posted' && !t3.ran.some((r) => r.postId === 'p-fresh'), 'inside the ack grace the cloud lane is NOT fired locally (the cloud owns the window)');
 
   // --- (4) a LOCAL-ONLY lane fires on the normal schedule under cloud management ------
-  await createPost({ campaign: CAMP, post: { id: 'p-tg', type: 'text', platforms: ['telegram'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a quiet telegram note' }, actor: 'agent:a' });
-  await approvePost({ campaign: CAMP, postId: 'p-tg', actor: 'owner' });
+  await createPost({ campaign: CAMP, post: { id: 'p-rd', type: 'text', platforms: ['reddit'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a quiet reddit note' }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: 'p-rd', actor: 'owner' });
   const t4 = await runDueExclusive('scheduler');
   ok(t4.code === 'cloud_managed', 'the tick is cloud-managed');
-  ok(t4.ran.some((r) => r.postId === 'p-tg' && r.lane === 'telegram'), 'the telegram (local-only) lane fired locally IMMEDIATELY - no grace, not stranded');
+  ok(t4.ran.some((r) => r.postId === 'p-rd' && r.lane === 'reddit'), 'the reddit (local-only) lane fired locally IMMEDIATELY - no grace, not stranded');
 
   console.log(`[cloud-backstop] OK - backstop fires on dead cloud, never double-fires, respects the ack grace, local-only lanes unstranded (${pass} assertions).`);
 } finally {

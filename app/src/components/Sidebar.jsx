@@ -316,6 +316,11 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
   const rd = accounts?.reddit;
   const pin = accounts?.pinterest;
   const tk = accounts?.tiktok;
+  const ma = accounts?.mastodon;
+  const wp = accounts?.wordpress;
+  const gh = accounts?.ghost;
+  const no = accounts?.nostr;
+  const gb = accounts?.gbp;
   const block = meta?.block;
   const blocked = Boolean(block?.tracked && block.blockedUntil);
   const pastAnchor = blocked && Date.parse(block.blockedUntil) < Date.now();
@@ -388,6 +393,25 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
   const tkLive = tk?.live;
   const tkTone = !tk ? 'off' : !tk.authenticated ? 'warn' : tkLive?.ok === false ? 'err' : 'ok';
   const tkSub = !tk ? t('sidebar.noData') : liveSub(t, tkLive, tk.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), tk.authenticated);
+
+  // Wave 2: Mastodon / WordPress / Ghost / Nostr are static-credential lanes and GBP
+  // is an OAuth lane - all report `authenticated`, so the same off / not-connected /
+  // live-failed / ok derivation as Telegram + Discord covers all five.
+  const maLive = ma?.live;
+  const maTone = !ma ? 'off' : !ma.authenticated ? 'warn' : maLive?.ok === false ? 'err' : 'ok';
+  const maSub = !ma ? t('sidebar.noData') : liveSub(t, maLive, ma.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), ma.authenticated);
+  const wpLive = wp?.live;
+  const wpTone = !wp ? 'off' : !wp.authenticated ? 'warn' : wpLive?.ok === false ? 'err' : 'ok';
+  const wpSub = !wp ? t('sidebar.noData') : liveSub(t, wpLive, wp.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), wp.authenticated);
+  const ghLive = gh?.live;
+  const ghTone = !gh ? 'off' : !gh.authenticated ? 'warn' : ghLive?.ok === false ? 'err' : 'ok';
+  const ghSub = !gh ? t('sidebar.noData') : liveSub(t, ghLive, gh.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), gh.authenticated);
+  const noLive = no?.live;
+  const noTone = !no ? 'off' : !no.authenticated ? 'warn' : noLive?.ok === false ? 'err' : 'ok';
+  const noSub = !no ? t('sidebar.noData') : liveSub(t, noLive, no.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), no.authenticated);
+  const gbLive = gb?.live;
+  const gbTone = !gb ? 'off' : !gb.authenticated ? 'warn' : gbLive?.ok === false ? 'err' : 'ok';
+  const gbSub = !gb ? t('sidebar.noData') : liveSub(t, gbLive, gb.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), gb.authenticated);
 
   const schedulerRunning = Boolean(accounts?.scheduler?.running);
   // Surface the last sweep so an EMPTY sweep (nothing was due) is still visible
@@ -590,6 +614,36 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
             <span className="flex items-center">
               <AccountChip icons={[PLATFORM_META.tiktok]} tone={tkTone} title="TikTok" status={tkSub} onClick={() => onNavigate('setup')} />
               {tk && !tk.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/tiktok-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('mastodon') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.mastodon]} tone={maTone} title="Mastodon" status={maSub} onClick={() => onNavigate('setup')} />
+              {ma && !ma.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/mastodon-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('wordpress') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.wordpress]} tone={wpTone} title="WordPress" status={wpSub} onClick={() => onNavigate('setup')} />
+              {wp && !wp.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/wordpress-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('ghost') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.ghost]} tone={ghTone} title="Ghost" status={ghSub} onClick={() => onNavigate('setup')} />
+              {gh && !gh.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/ghost-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('nostr') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.nostr]} tone={noTone} title="Nostr" status={noSub} onClick={() => onNavigate('setup')} />
+              {no && !no.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/nostr-social.mjs auth" /> : null}
+            </span>
+          ) : null}
+          {visible.has('gbp') ? (
+            <span className="flex items-center">
+              <AccountChip icons={[PLATFORM_META.gbp]} tone={gbTone} title="Google Business Profile" status={gbSub} onClick={() => onNavigate('setup')} />
+              {gb && !gb.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/gbp-social.mjs auth" /> : null}
             </span>
           ) : null}
         </div>

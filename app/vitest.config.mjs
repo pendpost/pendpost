@@ -17,7 +17,19 @@ export default defineConfig({
     // timed out.") under load, so parallelism is safe. Radix-bearing trees
     // (Tooltip/Popover) are heavy to mount in jsdom, hence the generous timeouts.
     pool: 'forks',
-    testTimeout: 20000,
-    hookTimeout: 20000,
+    // Cap fork parallelism. The heaviest suites (full-Composer axe scans,
+    // assets-mutate) push a single jsdom worker to ~21s — right at the old 20s
+    // budget — and under a full-fan-out run on an 8GB machine, memory contention
+    // starved a different file into a timeout on each run. Capping to 4 forks
+    // halves peak memory pressure so no worker is starved, and the 60s per-test
+    // budget leaves headroom for the slowest Radix trees on a loaded machine.
+    poolOptions: {
+      forks: {
+        maxForks: 4,
+        minForks: 1,
+      },
+    },
+    testTimeout: 60000,
+    hookTimeout: 60000,
   },
 });

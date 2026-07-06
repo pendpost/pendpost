@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-06
+
+### Added
+- Six new publishing lanes. Mastodon, WordPress, Ghost, and Nostr each get a first-class publish engine wired through every seam (connect, validate, schedule, publish), plus Google Business Profile as a beta lane. The connect panel, sidebar account chips, and setup cards surface all of them.
+- Native platform scheduling for Mastodon, WordPress, and Ghost: like YouTube, an approved post is handed to the platform's own scheduler instead of waiting on the local clock, so it fires even when the app is closed.
+- Content-type-aware composer. WordPress and Ghost posts get a long-form article editor (title + body); Mastodon and Nostr get a note override; Google Business Profile gets its own post fields. The composer adapts to the platforms a post targets rather than showing one flat text box.
+- Capability badges before you pay. Each lane is tagged by how it runs — cloud 24/7, native platform scheduling, or local-only — driven by the cloud's live capability map, so the trade-off is visible on the Cloud page before a plan is chosen.
+- Cloud always-on now covers Telegram, Discord, and Nostr for managed brands, on top of the existing Meta / LinkedIn / X / Bluesky lanes.
+- X reply-chain threading. A post can reference an earlier X post (`xReplyTo`) to publish as a threaded reply; the dashboard surfaces the chain and the composer has a set/clear affordance for it.
+- Per-platform model overrides for the Telegram, Discord, TikTok, Reddit, and Pinterest lanes, matching the override support the other lanes already had.
+
+### Fixed
+- `platform_validate` now catches half-configured Mastodon and Nostr identifiers (and the other wave-2 lanes) instead of letting an incomplete setup reach publish time.
+- Cloud hand-off is scoped to the lanes the cloud actually fires: local-only lanes are no longer pushed to the cloud, and Bluesky — which has no publish engine anywhere yet — was dropped from the cloud lane set so a deferred post can no longer land nowhere.
+
 ## [1.2.0] - 2026-07-04
 
 ### Added

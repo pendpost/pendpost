@@ -73,6 +73,57 @@ function TiktokLogo({ size = 16, className = '', ...props }) {
     </svg>
   );
 }
+// Wave-2 brand marks (same inline pattern). Mastodon + WordPress are the official
+// simple-icons glyphs; Ghost has no fill-friendly brand mark (its logo is a wordmark),
+// so a plain ghost silhouette stands in; Nostr has no canonical logo at all, so a
+// minimal asterisk-node emblem (the protocol's relay-fanout shape) stands in; GBP
+// uses a storefront (Material `storefront`, Apache-2.0) - the product's own icon.
+function MastodonLogo({ size = 16, className = '', ...props }) {
+  const labelled = props['aria-label'];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
+      <path d="M23.268 5.313c-.35-2.578-2.617-4.61-5.304-5.004C17.51.242 15.792 0 11.813 0h-.03c-3.98 0-4.835.242-5.288.309C3.882.692 1.496 2.518.917 5.127.64 6.412.61 7.837.661 9.143c.074 1.874.088 3.745.26 5.611.118 1.24.325 2.47.62 3.68.55 2.237 2.777 4.098 4.96 4.857 2.336.792 4.849.923 7.256.38.265-.061.527-.132.786-.213.585-.184 1.27-.39 1.774-.753a.057.057 0 0 0 .023-.043v-1.809a.052.052 0 0 0-.02-.041.053.053 0 0 0-.046-.01 20.282 20.282 0 0 1-4.709.545c-2.73 0-3.463-1.284-3.674-1.818a5.593 5.593 0 0 1-.319-1.433.053.053 0 0 1 .066-.054c1.517.363 3.072.546 4.632.546.376 0 .75 0 1.125-.01 1.57-.044 3.224-.124 4.768-.422.038-.008.077-.015.11-.024 2.435-.464 4.753-1.92 4.989-5.604.008-.145.03-1.52.03-1.67.002-.512.167-3.63-.024-5.545zm-3.748 9.195h-2.561V8.29c0-1.309-.55-1.976-1.67-1.976-1.23 0-1.846.79-1.846 2.35v3.403h-2.546V8.663c0-1.56-.617-2.35-1.848-2.35-1.112 0-1.668.668-1.67 1.977v6.218H4.822V8.102c0-1.31.337-2.35 1.011-3.12.696-.77 1.608-1.164 2.74-1.164 1.311 0 2.302.5 2.962 1.498l.638 1.06.638-1.06c.66-.999 1.65-1.498 2.96-1.498 1.13 0 2.043.395 2.74 1.164.675.77 1.012 1.81 1.012 3.12z" />
+    </svg>
+  );
+}
+function WordPressLogo({ size = 16, className = '', ...props }) {
+  const labelled = props['aria-label'];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
+      <path d="M21.469 6.825c.84 1.537 1.318 3.3 1.318 5.175 0 3.979-2.156 7.456-5.363 9.325l3.295-9.527c.615-1.54.82-2.771.82-3.864 0-.405-.026-.78-.07-1.11m-7.981.105c.647-.03 1.232-.105 1.232-.105.582-.075.514-.93-.067-.899 0 0-1.755.135-2.88.135-1.064 0-2.85-.15-2.85-.15-.585-.03-.661.855-.075.885 0 0 .54.061 1.125.09l1.68 4.605-2.37 7.08L5.354 6.9c.649-.03 1.234-.1 1.234-.1.585-.075.516-.93-.065-.896 0 0-1.746.138-2.874.138-.2 0-.438-.008-.69-.015C4.911 3.15 8.235 1.215 12 1.215c2.809 0 5.365 1.072 7.286 2.833-.046-.003-.091-.009-.141-.009-1.06 0-1.812.923-1.812 1.914 0 .89.513 1.643 1.06 2.531.411.72.89 1.643.89 2.977 0 .915-.354 1.994-.821 3.479l-1.075 3.585-3.9-11.61.001.014zM12 22.784c-1.059 0-2.081-.153-3.048-.437l3.237-9.406 3.315 9.087c.024.053.05.101.078.149-1.12.393-2.325.609-3.582.609M1.211 12c0-1.564.336-3.05.935-4.39L7.29 21.709C3.694 19.96 1.212 16.271 1.211 12M12 0C5.385 0 0 5.385 0 12s5.385 12 12 12 12-5.385 12-12S18.615 0 12 0" />
+    </svg>
+  );
+}
+function GhostLogo({ size = 16, className = '', ...props }) {
+  const labelled = props['aria-label'];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
+      <path fillRule="evenodd" d="M12 2a9 9 0 0 1 9 9v9.5a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0V11a9 9 0 0 1 9-9Zm-3 7.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm6 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z" />
+    </svg>
+  );
+}
+function NostrLogo({ size = 16, className = '', ...props }) {
+  const labelled = props['aria-label'];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
+      {[0, 60, 120, 180, 240, 300].map((a) => (
+        <g key={a} transform={`rotate(${a} 12 12)`}>
+          <rect x="11.25" y="3.9" width="1.5" height="6.4" rx="0.75" />
+          <circle cx="12" cy="3.4" r="1.6" />
+        </g>
+      ))}
+      <circle cx="12" cy="12" r="2.3" />
+    </svg>
+  );
+}
+function GbpLogo({ size = 16, className = '', ...props }) {
+  const labelled = props['aria-label'];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
+      <path d="m21.9 8.89-1.05-4.37c-.22-.9-1-1.52-1.91-1.52H5.05c-.9 0-1.69.63-1.9 1.52L2.1 8.89c-.24 1.02-.02 2.06.62 2.88.08.11.19.19.28.29V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-6.94c.09-.09.2-.18.28-.28.64-.82.87-1.87.62-2.89zm-2.99-3.9 1.05 4.37c.1.42.01.84-.25 1.17-.14.18-.44.47-.94.47-.61 0-1.14-.49-1.21-1.14L16.98 5l1.93-.01zM13 5h1.96l.54 4.52c.05.39-.07.78-.33 1.07-.22.26-.54.41-.95.41-.67 0-1.22-.59-1.22-1.31V5zM8.49 9.52 9.04 5H11v4.69c0 .72-.55 1.31-1.29 1.31-.34 0-.65-.15-.89-.41a1.42 1.42 0 0 1-.33-1.07zm-4.45-.16L5.05 5h1.97l-.58 4.86c-.08.65-.6 1.14-1.21 1.14-.49 0-.8-.29-.93-.47-.27-.32-.36-.75-.26-1.17zM5 19v-6.03c.08.01.15.03.23.03.87 0 1.66-.36 2.24-.95.6.6 1.4.95 2.31.95.87 0 1.65-.36 2.23-.93.59.57 1.39.93 2.29.93.84 0 1.64-.35 2.24-.95.58.59 1.37.95 2.24.95.08 0 .15-.02.23-.03V19H5z" />
+    </svg>
+  );
+}
 
 export const PLATFORM_META = {
   facebook: { Icon: Facebook, color: 'text-[#1877F2]', label: 'Facebook' },
@@ -85,6 +136,11 @@ export const PLATFORM_META = {
   reddit: { Icon: RedditLogo, color: 'text-[#FF4500]', label: 'Reddit' },
   pinterest: { Icon: PinterestLogo, color: 'text-[#E60023]', label: 'Pinterest' },
   tiktok: { Icon: TiktokLogo, color: 'text-zinc-900 dark:text-zinc-100', label: 'TikTok' },
+  mastodon: { Icon: MastodonLogo, color: 'text-[#6364FF]', label: 'Mastodon' },
+  wordpress: { Icon: WordPressLogo, color: 'text-[#21759B]', label: 'WordPress' },
+  ghost: { Icon: GhostLogo, color: 'text-zinc-900 dark:text-zinc-100', label: 'Ghost' },
+  nostr: { Icon: NostrLogo, color: 'text-[#8E30EB]', label: 'Nostr' },
+  gbp: { Icon: GbpLogo, color: 'text-[#4285F4]', label: 'Google Business Profile' },
 };
 
 export function PlatformIcons({ platforms, size = 13 }) {
@@ -250,6 +306,31 @@ export function LinkCardPreview({ image, title, link }) {
   );
 }
 
+// Read-only article-card preview for the wordpress/ghost lanes: hero image +
+// title + excerpt, mirroring LinkCardPreview's chrome. Deliberately NO markdown
+// body rendering (v1): the card previews the listing shape, not the article.
+export function ArticleCardPreview({ image, title, excerpt }) {
+  const t = useT();
+  return (
+    <div className="space-y-1.5">
+      <p className={EYEBROW}>{t('ui.articleCard.title')}</p>
+      <div className={`overflow-hidden rounded-xl ring-1 ring-zinc-900/10 dark:ring-white/10 ${INNER_SURFACE}`}>
+        {image ? (
+          <img src={image} alt="" className="aspect-[1.91/1] w-full object-cover" />
+        ) : (
+          <div className="flex aspect-[1.91/1] w-full items-center justify-center border-b border-dashed border-zinc-300 bg-zinc-200/40 px-3 text-center text-[11px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/40 dark:text-zinc-400">
+            {t('ui.articleCard.noImage')}
+          </div>
+        )}
+        <div className="space-y-0.5 p-3">
+          <p className="text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || t('ui.articleCard.noTitle')}</p>
+          {excerpt ? <p className="text-xs leading-snug text-zinc-500 dark:text-zinc-400">{excerpt}</p> : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function YoutubeMeta({ title, description, tags }) {
   const t = useT();
   return (
@@ -276,6 +357,11 @@ export function PostPreview({ post, videoRef }) {
   const localRef = useRef(null);
   const vRef = videoRef || localRef;
   if (post.type === 'text') {
+    // A text post targeting a blog lane previews as its article card (hero +
+    // title + excerpt); every other text post keeps the LinkedIn link card.
+    if (post.platforms?.includes('wordpress') || post.platforms?.includes('ghost')) {
+      return <ArticleCardPreview image={post.image} title={post.title} excerpt={post.excerpt} />;
+    }
     return <LinkCardPreview image={post.image} title={post.title} link={post.link} />;
   }
   if (post.media?.url) {

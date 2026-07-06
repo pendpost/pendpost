@@ -367,9 +367,10 @@ async function pollMediaStatus(mediaId, token, firstWaitSecs, timeoutMs = 5 * 60
 
 // ---------- tweet creation ----------
 
-async function createTweet(text, mediaId, token) {
+async function createTweet(text, mediaId, token, replyToTweetId = null) {
   const body = { text };
   if (mediaId) body.media = { media_ids: [String(mediaId)] };
+  if (replyToTweetId) body.reply = { in_reply_to_tweet_id: String(replyToTweetId) };
   const data = await api('POST', '/tweets', { body, token });
   const id = data?.data?.id;
   if (!id) throw new Error(`create tweet returned no id: ${JSON.stringify(data).slice(0, 200)}`);
@@ -632,6 +633,19 @@ async function cmdPublishDue(args) {
       if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
     }
 
+    // Reply-chain (xReplyTo): this post replies to a sibling post in the SAME
+    // plan. Fail-closed: until the parent has published (xPostId set), skip
+    // this tick and let the next one retry - never publish an orphan reply.
+    // In a catch-up run the parent publishes first (plan order), so its fresh
+    // in-memory xPostId is already visible to children within the same loop.
+    let replyToTweetId = null;
+    if (post.xReplyTo) {
+      const parent = (plan.posts || []).find((p) => p.id === post.xReplyTo);
+      if (!parent) { console.log(`[warn] ${post.id}: xReplyTo "${post.xReplyTo}" not found in this plan - skipping.`); continue; }
+      if (!parent.xPostId) { console.log(`[skip] ${post.id}: waiting for parent "${post.xReplyTo}" to publish before threading.`); continue; }
+      replyToTweetId = String(parent.xPostId);
+    }
+
     if (args['dry-run']) {
       console.log(textPost
         ? `[dry] ${post.id}: would create a text tweet (${text.length} chars).`
@@ -642,7 +656,7 @@ async function cmdPublishDue(args) {
     console.log(`[info] ${post.id}: publishing ${textPost ? 'text tweet' : 'video tweet'} to X...`);
     try {
       const mediaId = textPost ? null : await uploadMedia(mediaPath, token);
-      const tweetId = await createTweet(text, mediaId, token);
+      const tweetId = await createTweet(text, mediaId, token, replyToTweetId);
 
       post.xPostId = tweetId;
       post.status = 'posted';

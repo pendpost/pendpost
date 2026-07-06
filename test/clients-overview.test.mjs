@@ -164,7 +164,8 @@ try {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const parityOut = execFileSync('node', [path.join(__dirname, 'parity-check.mjs')], { encoding: 'utf8' });
   ok(/\bOK\b/.test(parityOut), `parity-check exits 0 / OK: ${parityOut.trim()}`);
-  ok(/67 routes, 43 tools/.test(parityOut), `parity is 67 routes / 43 tools: ${parityOut.trim()}`);
+  // 68 = 67 + GET /api/cloud/capabilities (the lane-capability badge read).
+  ok(/68 routes, 43 tools/.test(parityOut), `parity is 68 routes / 43 tools: ${parityOut.trim()}`);
 
   console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 66/43 (${pass} assertions).`);
 } finally {

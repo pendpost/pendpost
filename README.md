@@ -12,7 +12,7 @@
   <img src="brand/github/readme-hero-preview.png" alt="pendpost: an AI agent drafts and schedules posts; a human approval gate decides what publishes" width="820">
 </p>
 
-pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, and Discord behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
+pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr - and long-form blogs on WordPress and Ghost (with newsletter send) - behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
 
 ## Why pendpost is different (not just a scheduler)
 
@@ -124,6 +124,15 @@ node scripts/yt-social.mjs auth
 
 # X (Twitter), OAuth 2.0 PKCE (browser). OAuth 1.0a needs no command - see below.
 node scripts/x-social.mjs auth
+
+# Static-credential lanes (no browser): paste the credential into .env (or use
+# the dashboard Setup form), then validate with the engine's auth command.
+node scripts/telegram-social.mjs auth   # TELEGRAM_BOT_TOKEN + TELEGRAM_CHANNEL_ID
+node scripts/discord-social.mjs auth    # DISCORD_WEBHOOK_URL
+node scripts/mastodon-social.mjs auth   # MASTODON_INSTANCE_URL + MASTODON_ACCESS_TOKEN
+node scripts/wordpress-social.mjs auth  # WORDPRESS_SITE_URL + _USERNAME + _APP_PASSWORD
+node scripts/ghost-social.mjs auth      # GHOST_SITE_URL + GHOST_ADMIN_API_KEY
+node scripts/nostr-social.mjs keygen --save && node scripts/nostr-social.mjs auth  # + NOSTR_RELAYS
 ```
 
 **X (Twitter)** supports two auth paths; **OAuth 1.0a is recommended** because it needs no browser and sidesteps the `ERR_TOO_MANY_REDIRECTS` that some apps hit on X's OAuth 2.0 consent screen.

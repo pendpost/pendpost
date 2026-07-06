@@ -16,8 +16,9 @@
 // no all-caps prose - it mirrors Settings.jsx / Clients.jsx verbatim.
 import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck } from 'lucide-react';
+import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck, Cloud, CalendarClock, Laptop } from 'lucide-react';
 import { usePendpostHealth, useConfig, saveConfig, recheckHealth, connectPlatform, connectStatus, useAccounts, setMetaLane, disconnectPlatform } from '../lib/api.js';
+import { useCapabilities } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
 import { fmtFull } from '../lib/format.js';
 import { INNER_SURFACE, Skeleton, EYEBROW, PLATFORM_META } from './ui.jsx';
@@ -69,6 +70,10 @@ const PLATFORM_IDENTIFIERS = {
   pinterest: [
     { key: 'pinterestBoardId', labelKey: 'idField.pinterestBoardId.label', placeholderKey: 'idField.pinterestBoardId.placeholder', tipKey: 'idField.pinterestBoardId.tip' },
   ],
+  gbp: [
+    { key: 'gbpAccountId', labelKey: 'idField.gbpAccountId.label', placeholderKey: 'idField.gbpAccountId.placeholder', tipKey: 'idField.gbpAccountId.tip' },
+    { key: 'gbpLocationId', labelKey: 'idField.gbpLocationId.label', placeholderKey: 'idField.gbpLocationId.placeholder', tipKey: 'idField.gbpLocationId.tip' },
+  ],
 };
 
 // The identifier fields split into a required-first / muted-"Optional" group (less-is-
@@ -76,7 +81,7 @@ const PLATFORM_IDENTIFIERS = {
 // public-profile nicety under the Optional divider. FALLBACK dims a field that a richer
 // sibling supersedes (the YouTube handle dims once a channel ID is set); AUTO_KEYS marks
 // a field pendpost fills on connect (the X handle), so each carries a soft fallback hint.
-const REQUIRED_KEYS = new Set(['metaPageId', 'linkedinOrgUrn', 'redditSubreddit', 'pinterestBoardId']);
+const REQUIRED_KEYS = new Set(['metaPageId', 'linkedinOrgUrn', 'redditSubreddit', 'pinterestBoardId', 'gbpAccountId', 'gbpLocationId']);
 const FALLBACK = { ytHandle: 'ytChannelId' };
 const AUTO_KEYS = new Set(['xHandle']);
 
@@ -94,6 +99,12 @@ const CONNECT_FIELDS = {
   reddit: { interactive: false, fields: [{ key: 'redditClientId', labelKey: 'connect.redditClientId' }, { key: 'redditClientSecret', labelKey: 'connect.clientSecret', secret: true }, { key: 'redditUsername', labelKey: 'connect.redditUsername' }, { key: 'redditPassword', labelKey: 'connect.redditPassword', secret: true }] },
   pinterest: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.pinterest' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
   tiktok: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.tiktok' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
+  // Wave-2 static lanes (field keys match lib/api.mjs STATIC_LANES exactly) + GBP OAuth.
+  mastodon: { interactive: false, fields: [{ key: 'instanceUrl', labelKey: 'connect.instanceUrl' }, { key: 'accessToken', labelKey: 'connect.accessToken', secret: true }] },
+  wordpress: { interactive: false, fields: [{ key: 'siteUrl', labelKey: 'connect.siteUrl', placeholderKey: 'connect.siteUrl.wordpress' }, { key: 'username', labelKey: 'connect.wpUsername' }, { key: 'appPassword', labelKey: 'connect.appPassword', secret: true }] },
+  ghost: { interactive: false, fields: [{ key: 'siteUrl', labelKey: 'connect.siteUrl', placeholderKey: 'connect.siteUrl.ghost' }, { key: 'adminApiKey', labelKey: 'connect.adminApiKey', secret: true }] },
+  nostr: { interactive: false, fields: [{ key: 'privateKey', labelKey: 'connect.nostrPrivateKey', secret: true }, { key: 'relays', labelKey: 'connect.nostrRelays' }] },
+  gbp: { interactive: true, fields: [{ key: 'oauthClientId', labelKey: 'connect.clientId', placeholderKey: 'connect.clientId.gbp' }, { key: 'clientSecret', labelKey: 'connect.clientSecret', secret: true }] },
 };
 
 // buildSetupPrompt - assemble a self-contained Claude-for-Chrome browser-driving
@@ -151,6 +162,24 @@ function buildSetupPrompt(label, playbook) {
   return L.join('\n');
 }
 
+// The lane-capability badge: WHERE a lane fires from, sourced from the cloud's
+// public /v1/capabilities via useCapabilities (baked fallback offline). One quiet
+// neutral chip per card - the honesty surface, not an alarm: 'cloud' fires 24/7
+// from the cloud when the brand is always-on, 'native' is scheduled by the
+// platform itself, 'local_only' fires only while THIS machine runs pendpost
+// (reddit: non-commercial API terms; tiktok: unaudited apps post private-only).
+// An unknown/disabled capability renders nothing rather than guess.
+const CAPABILITY_BADGE = {
+  cloud: { icon: Cloud, textKey: 'setup.capability.cloud', hintKey: 'setup.capability.cloud.hint' },
+  native: { icon: CalendarClock, textKey: 'setup.capability.native', hintKey: 'setup.capability.native.hint' },
+  local_only: { icon: Laptop, textKey: 'setup.capability.localOnly', hintKey: 'setup.capability.localOnly.hint' },
+};
+function CapabilityBadge({ capability, t }) {
+  const def = CAPABILITY_BADGE[capability];
+  if (!def) return null;
+  return <IconBadge icon={def.icon} tone="neutral" text={t(def.textKey)} label={t(def.hintKey)} />;
+}
+
 // The single source of truth for a lane's STATUS TONE, lifted so both the StatusChip
 // (in the opened body) and the collapsed-row status dot read the same lane:
 //   connected + live     -> ok       connected + failed -> err
@@ -169,7 +198,7 @@ function statusTone(status, validation) {
 const dotClass = (tone) => ({ ok: 'bg-emerald-500', warn: 'bg-amber-500', err: 'bg-red-500', neutral: 'bg-zinc-400' }[tone] || 'bg-zinc-400');
 
 // The brand glyph(s) each setup lane shows in its collapsed row (keyed to PLATFORM_META).
-const SETUP_PLATFORM_ICONS = { meta: ['facebook', 'instagram'], linkedin: ['linkedin'], youtube: ['youtube'], x: ['x'], telegram: ['telegram'], discord: ['discord'], reddit: ['reddit'], pinterest: ['pinterest'], tiktok: ['tiktok'] };
+const SETUP_PLATFORM_ICONS = { meta: ['facebook', 'instagram'], linkedin: ['linkedin'], youtube: ['youtube'], x: ['x'], telegram: ['telegram'], discord: ['discord'], reddit: ['reddit'], pinterest: ['pinterest'], tiktok: ['tiktok'], mastodon: ['mastodon'], wordpress: ['wordpress'], ghost: ['ghost'], nostr: ['nostr'], gbp: ['gbp'] };
 
 // The collapsed-row identity: the lane's brand logo(s) with a colored status dot
 // overlaid (mirrors Sidebar's AccountChip) - the dot carries status, so no status
@@ -369,7 +398,9 @@ function ConnectPanel({ platform, fields, interactive }) {
         // present so the owner can always make progress or back out.
         <div className="space-y-2">
           {interactive ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('connect.browserHint')}</p> : null}
-          {platform === 'youtube' ? (
+          {/* Both Google lanes (YouTube, GBP) run the same self-owned-app consent
+              screen, so both get the "Google hasn't verified this app" heads-up. */}
+          {platform === 'youtube' || platform === 'gbp' ? (
             <p className="flex items-start gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
               <ShieldCheck size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
               {t('connect.youtubeUnverified')}
@@ -876,7 +907,7 @@ function MetaLaneControls() {
 // alone carries status, so no status text rides the header. Expanding reveals the
 // StatusChip, the missing inputs (when incomplete) or the editable fields (when
 // connected), and the skip / un-skip + Validate + Meta controls.
-function PlatformCard({ platform, configRev, identifiers, posting, onWrite }) {
+function PlatformCard({ platform, capability, configRev, identifiers, posting, onWrite }) {
   const t = useT();
   const { platform: id, label, status, missing = [], validation, playbook, beta } = platform;
   const [open, setOpen] = useState(false);
@@ -932,6 +963,9 @@ function PlatformCard({ platform, configRev, identifiers, posting, onWrite }) {
                 note beside the status chip. It promises nothing - the live probe still
                 governs the real connection state. */}
             {beta ? <IconBadge icon={AlertCircle} tone="warn" text={t('setup.beta.badge')} label={t('setup.beta.hint')} /> : null}
+            {/* WHERE this lane fires from (cloud 24/7 / native / local-only) - the
+                pre-purchase honesty badge, driven by the cloud capability map. */}
+            <CapabilityBadge capability={capability} t={t} />
           </div>
 
           {status === 'incomplete' ? (
@@ -987,6 +1021,10 @@ export default function Setup() {
   const queryClient = useQueryClient();
   const { data: health, isLoading } = usePendpostHealth(true);
   const { data: config } = useConfig(true);
+  // The lane-capability map (cloud 24/7 / native / local-only) badging every card.
+  // The server read never fails (baked fallback offline); while it is still in
+  // flight the cards simply render without a capability chip.
+  const { data: capabilities } = useCapabilities();
   const setup = health?.setup;
 
   // A shared writer for the posting policy fields (skip / facebook / locale): one
@@ -1075,7 +1113,7 @@ export default function Setup() {
 
           <section className="space-y-3">
             {setup.platforms.map((p) => (
-              <PlatformCard key={p.platform} platform={p} configRev={config?.rev} identifiers={config?.identifiers} posting={config?.posting} onWrite={writePosting} />
+              <PlatformCard key={p.platform} platform={p} capability={capabilities?.lanes?.[p.platform] || null} configRev={config?.rev} identifiers={config?.identifiers} posting={config?.posting} onWrite={writePosting} />
             ))}
           </section>
         </>
