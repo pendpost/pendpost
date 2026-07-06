@@ -47,6 +47,16 @@ const cffMatch = cffSrc.match(/^version:\s*["']?([^"'\s]+)["']?\s*$/m);
 ok(Boolean(cffMatch), 'CITATION.cff carries a version field');
 ok(cffMatch[1] === pkgVersion, `CITATION.cff version (${cffMatch[1]}) matches package.json (${pkgVersion})`);
 
+// server.json (MCP registry manifest): both the top-level server version AND the
+// npm package entry's version must equal package.json. The registry-publish
+// workflow hard-fails on this mismatch AT PUBLISH TIME - catch it locally instead
+// (the 1.2.1 release shipped with server.json still at 1.2.0 and only the workflow caught it).
+const serverJson = JSON.parse(read('server.json'));
+ok(serverJson.version === pkgVersion, `server.json version (${serverJson.version}) matches package.json (${pkgVersion})`);
+const npmPkgEntry = (serverJson.packages || []).find((p) => p.registryType === 'npm');
+ok(Boolean(npmPkgEntry), 'server.json declares an npm package entry');
+ok(npmPkgEntry.version === pkgVersion, `server.json npm package version (${npmPkgEntry.version}) matches package.json (${pkgVersion})`);
+
 // CHANGELOG.md: the latest RELEASED heading is the first "## [x.y.z]" that is
 // not the "[Unreleased]" placeholder. That heading's version must match.
 const changelog = read('CHANGELOG.md');
