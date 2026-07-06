@@ -25,6 +25,11 @@ const AUTO_PLATFORMS = [
   { id: 'reddit', label: 'Reddit' },
   { id: 'pinterest', label: 'Pinterest' },
   { id: 'tiktok', label: 'TikTok' },
+  { id: 'mastodon', label: 'Mastodon' },
+  { id: 'wordpress', label: 'WordPress' },
+  { id: 'ghost', label: 'Ghost' },
+  { id: 'nostr', label: 'Nostr' },
+  { id: 'gbp', label: 'Google Business Profile' },
 ];
 
 // A label with a beside-it help tooltip (keyboard/SR reachable; the control keeps its

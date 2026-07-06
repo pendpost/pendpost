@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CalendarDays, ChevronUp, ChevronDown, Plus, PauseCircle } from 'lucide-react';
+import { CalendarDays, ChevronUp, ChevronDown, Plus, PauseCircle, CornerUpLeft } from 'lucide-react';
 import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { unschedulePost } from '../lib/api.js';
@@ -458,6 +458,14 @@ function ListRow({ post, onSelect, lane }) {
             {campaignBaseLabel(post.campaign)} · {post.id} · {t(`type.${post.type}`)}
           </p>
         </div>
+        {/* X thread glyph (xReplyTo): marks a chained post so it is never
+            mistaken for a standalone one; the detail panel names the parent. */}
+        {post.xReplyTo ? (
+          <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
+            <CornerUpLeft size={13} aria-hidden="true" />
+            <span className="sr-only">{t('planner.list.replyChain', { id: post.xReplyTo })}</span>
+          </span>
+        ) : null}
         <PlatformIcons platforms={post.platforms} />
         <span className="hidden items-center md:flex">
           <PostStatusPill post={post} />

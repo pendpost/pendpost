@@ -41,7 +41,7 @@ export function srtToText(raw) {
 // to pick the single most-permissive platform when several are co-selected, so a
 // multi-target caption is not over-flagged for the laxest target (A4). The server
 // remains the source of truth; this map just orders the choice.
-const CAPTION_CAPS = { instagram: 2200, facebook: 63206, linkedin: 3000, youtube: 5000, x: 280 };
+const CAPTION_CAPS = { instagram: 2200, facebook: 63206, linkedin: 3000, youtube: 5000, x: 280, mastodon: 500, gbp: 1500 };
 
 // Derive ONE representative platform for the live lint from the multi-select.
 // The server brandLint takes a single platform, so when several are selected we
@@ -383,6 +383,134 @@ export function InteractiveFields({
   );
 }
 
+// Shared over-limit counter idiom (r2-1/r2-3), used by the X (280) and Mastodon
+// (500) note overrides. Over limit it pairs the red color with a lucide
+// AlertTriangle icon + an over-limit word + an sr-only severity prefix (never
+// color alone - WCAG 1.4.1). NOT a live region: the count stays reachable via
+// aria-describedby on focus; the over/under TRANSITION is announced separately
+// (useOverLimitAnnounce), so a screen reader is not spammed per keystroke.
+function CharCounter({ id, len, max, over }) {
+  const t = useT();
+  return (
+    <p
+      id={id}
+      className={`flex items-center gap-1 text-[11px] font-bold tabular-nums ${over ? 'text-red-600 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}`}
+    >
+      {over ? <AlertTriangle size={12} className="shrink-0" aria-hidden="true" /> : null}
+      {over ? <span className="sr-only">{t('composer.field.xCounterSeverity')} </span> : null}
+      {over
+        ? t('composer.field.xCounterOver', { count: len, max })
+        : t('composer.field.xCounter', { count: len, max })}
+    </p>
+  );
+}
+
+// The polite announce half of the counter idiom: returns the message for a
+// separate sr-only role=status region, populated ONLY on the over/under
+// transition (r2-3) - never a fresh count per keystroke.
+function useOverLimitAnnounce(over, len, max) {
+  const t = useT();
+  const [announce, setAnnounce] = useState('');
+  const wasOverRef = useRef(false);
+  useEffect(() => {
+    if (over === wasOverRef.current) return;
+    wasOverRef.current = over;
+    setAnnounce(over ? t('composer.field.xCounterOver', { count: len, max }) : '');
+  }, [over, len, max, t]);
+  return announce;
+}
+
+// Google Business Profile local-post intent (mirrors lib/writes.mjs GBP_TOPICS /
+// GBP_CTA_TYPES). The '' CTA value is the UI's "none" - it never reaches the
+// payload. CALL uses the location's phone number, so it carries no URL.
+const GBP_TOPICS = ['standard', 'offer', 'event'];
+const GBP_CTA_KEYS = { '': 'none', BOOK: 'book', ORDER: 'order', SHOP: 'shop', LEARN_MORE: 'learnMore', SIGN_UP: 'signUp', CALL: 'call' };
+
+// The flat GBP form state: every field present (controlled inputs), seeded from
+// a saved post.gbp on edit. Date-only slices keep the <input type=date> happy
+// even if a stored value carries a time part.
+const GBP_EMPTY = { topic: 'standard', ctaType: '', ctaUrl: '', eventTitle: '', eventStart: '', eventEnd: '', couponCode: '', redeemUrl: '', terms: '' };
+function gbpFormState(g) {
+  const out = { ...GBP_EMPTY, ...(g || {}) };
+  out.eventStart = String(out.eventStart || '').slice(0, 10);
+  out.eventEnd = String(out.eventEnd || '').slice(0, 10);
+  return out;
+}
+
+// The GBP authoring section, shown only when the gbp lane is targeted. Topic
+// gates the event/offer field groups; the CTA URL hides for "none" (nothing to
+// link) and CALL (uses the location's phone number).
+function GbpFields({ gbp, onChange }) {
+  const t = useT();
+  const set = (patch) => onChange({ ...gbp, ...patch });
+  const showCtaUrl = Boolean(gbp.ctaType) && gbp.ctaType !== 'CALL';
+  return (
+    <section className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+      <h3 className={EYEBROW}>{t('composer.gbp.heading')}</h3>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <label className={EYEBROW} htmlFor="composer-gbp-topic">{t('composer.gbp.topic')}</label>
+          <select id="composer-gbp-topic" value={gbp.topic} onChange={(e) => set({ topic: e.target.value })} className={FIELD_CLS}>
+            {GBP_TOPICS.map((k) => (
+              <option key={k} value={k}>{t(`composer.gbp.topic.${k}`)}</option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <label className={EYEBROW} htmlFor="composer-gbp-cta">{t('composer.gbp.ctaType')}</label>
+          <select id="composer-gbp-cta" value={gbp.ctaType} onChange={(e) => set({ ctaType: e.target.value })} className={FIELD_CLS}>
+            {Object.entries(GBP_CTA_KEYS).map(([value, key]) => (
+              <option key={key} value={value}>{t(`composer.gbp.cta.${key}`)}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+      {showCtaUrl ? (
+        <div className="space-y-1.5">
+          <label className={EYEBROW} htmlFor="composer-gbp-cta-url">{t('composer.gbp.ctaUrl')}</label>
+          <input id="composer-gbp-cta-url" value={gbp.ctaUrl} onChange={(e) => set({ ctaUrl: e.target.value })} placeholder="https://example.com/book" className={FIELD_CLS} />
+        </div>
+      ) : null}
+      {gbp.topic === 'event' ? (
+        <>
+          <div className="space-y-1.5">
+            <label className={EYEBROW} htmlFor="composer-gbp-event-title">{t('composer.gbp.eventTitle')}</label>
+            <input id="composer-gbp-event-title" value={gbp.eventTitle} onChange={(e) => set({ eventTitle: e.target.value })} className={FIELD_CLS} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-gbp-event-start">{t('composer.gbp.eventStart')}</label>
+              <input id="composer-gbp-event-start" type="date" value={gbp.eventStart} onChange={(e) => set({ eventStart: e.target.value })} className={FIELD_CLS} />
+            </div>
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-gbp-event-end">{t('composer.gbp.eventEnd')}</label>
+              <input id="composer-gbp-event-end" type="date" value={gbp.eventEnd} onChange={(e) => set({ eventEnd: e.target.value })} className={FIELD_CLS} />
+            </div>
+          </div>
+        </>
+      ) : null}
+      {gbp.topic === 'offer' ? (
+        <>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-gbp-coupon">{t('composer.gbp.couponCode')}</label>
+              <input id="composer-gbp-coupon" value={gbp.couponCode} onChange={(e) => set({ couponCode: e.target.value })} className={FIELD_CLS} />
+            </div>
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-gbp-redeem">{t('composer.gbp.redeemUrl')}</label>
+              <input id="composer-gbp-redeem" value={gbp.redeemUrl} onChange={(e) => set({ redeemUrl: e.target.value })} placeholder="https://example.com/offer" className={FIELD_CLS} />
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className={EYEBROW} htmlFor="composer-gbp-terms">{t('composer.gbp.terms')}</label>
+            <textarea id="composer-gbp-terms" value={gbp.terms} onChange={(e) => set({ terms: e.target.value })} rows={2} className={`${FIELD_CLS} resize-y`} />
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
 // Create + edit composer as a full page. Edit mode never touches approval/cover/
 // publish fields - those have their own controls in PostDetail.
 export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting }) {
@@ -423,8 +551,26 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [liDescription, setLiDescription] = useState(isEdit ? post.liDescription || '' : '');
   // X per-platform tweet-text override (capped 280); empty falls back to caption.
   const [xCaption, setXCaption] = useState(isEdit ? post.xCaption || '' : '');
+  // X reply-chain intent: the same-campaign post id this tweet threads under.
+  // Empty saves as null - the escape hatch for a dangling reference (parent
+  // deleted -> the fail-closed X lane holds the child forever).
+  const [xReplyTo, setXReplyTo] = useState(isEdit ? post.xReplyTo || '' : '');
   const [tags, setTags] = useState(isEdit ? post.tags || '' : '');
   const [blogSlug, setBlogSlug] = useState(isEdit ? post.blogSlug || '' : '');
+  // Wave-2 article fields (wordpress/ghost): markdown body (falls back to the
+  // caption when empty), short excerpt, Ghost's canonical source URL + the
+  // "also send as newsletter" opt-in.
+  const [body, setBody] = useState(isEdit ? post.body || '' : '');
+  const [excerpt, setExcerpt] = useState(isEdit ? post.excerpt || '' : '');
+  const [canonicalUrl, setCanonicalUrl] = useState(isEdit ? post.canonicalUrl || '' : '');
+  const [ghostEmail, setGhostEmail] = useState(isEdit ? post.ghostEmail === true : false);
+  // Per-platform note overrides (additive xCaption pattern); empty falls back
+  // to the shared caption.
+  const [mastodonCaption, setMastodonCaption] = useState(isEdit ? post.mastodonCaption || '' : '');
+  const [nostrCaption, setNostrCaption] = useState(isEdit ? post.nostrCaption || '' : '');
+  // GBP local-post intent as flat form state; serialized back to a post.gbp
+  // object (or null when it says nothing) at save time.
+  const [gbp, setGbp] = useState(isEdit ? gbpFormState(post.gbp) : gbpFormState(null));
   // FR4: interactive-story stickers + per-post hashtags override. hashtagsMode
   // 'global' inherits the global presets (hashtags payload = null); 'custom' sends
   // the typed list. On edit, an existing post.hashtags array switches to custom.
@@ -435,6 +581,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [error, setError] = useState(null);
   const [showPreview, setShowPreview] = useState(false);
   const idRef = useRef(null);
+  const xReplyToRef = useRef(null);
   // Focus targets for the no-platforms / no-campaign save() guards, mirroring
   // idRef so a keyboard user lands on the blocking field, not just an alert.
   const platformsFieldsetRef = useRef(null);
@@ -462,8 +609,16 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     description: isEdit ? post.description || '' : '',
     liDescription: isEdit ? post.liDescription || '' : '',
     xCaption: isEdit ? post.xCaption || '' : '',
+    xReplyTo: isEdit ? post.xReplyTo || '' : '',
     tags: isEdit ? post.tags || '' : '',
     blogSlug: isEdit ? post.blogSlug || '' : '',
+    body: isEdit ? post.body || '' : '',
+    excerpt: isEdit ? post.excerpt || '' : '',
+    canonicalUrl: isEdit ? post.canonicalUrl || '' : '',
+    ghostEmail: isEdit ? post.ghostEmail === true : false,
+    mastodonCaption: isEdit ? post.mastodonCaption || '' : '',
+    nostrCaption: isEdit ? post.nostrCaption || '' : '',
+    gbp: isEdit ? gbpFormState(post.gbp) : gbpFormState(null),
     stickers: isEdit ? post.interactiveStory?.stickers || [] : [],
     hashtagsMode: isEdit && Array.isArray(post.hashtags) ? 'custom' : 'global',
     hashtags: isEdit && Array.isArray(post.hashtags) ? post.hashtags.join(' ') : '',
@@ -495,38 +650,39 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     return PLATFORMS.filter((p) => allowed.has(p));
   }, [accounts, posting, platforms]);
   const isLinkedinArticle = platforms.includes('linkedin') && type === 'text';
+  // Article authoring (wave 2): the long-form fields apply whenever a blog lane
+  // is targeted - WordPress and Ghost publish title + markdown body (falling
+  // back to the caption), excerpt, hero image and tags.
+  const isArticle = platforms.includes('wordpress') || platforms.includes('ghost');
+  const isGhost = platforms.includes('ghost');
+  const showGbp = platforms.includes('gbp');
   const needsMedia = type !== 'text';
   const showFirstComment = platforms.includes('instagram') && type !== 'story';
   // FR4: interactive-story authoring applies only to an Instagram story - there is
   // no story surface to attach stickers to for any other type or platform.
   const showInteractive = type === 'story' && platforms.includes('instagram');
 
-  // X tweet-text counter (findings r2-1/r2-3): the effective tweet length is the X
-  // override else the shared caption. `xOver` is the single over-limit truth used
-  // by BOTH the inline visible counter (color + AlertTriangle icon + over-limit
-  // word + sr-only severity, never color alone - WCAG 1.4.1) and the separate
-  // polite announce region below. The visible count is NOT a live region (it stays
-  // reachable via aria-describedby on focus); only the over/under TRANSITION is
-  // announced, so a screen reader is not spammed with a fresh count per keystroke.
+  // Note-override counters (findings r2-1/r2-3): the effective text is the
+  // per-platform override else the shared caption; CharCounter +
+  // useOverLimitAnnounce carry the shared accessibility contract (icon +
+  // sr-only severity, transition-only announce). X caps at 280, Mastodon at 500.
   const xLen = (xCaption || caption).length;
   const xOver = xLen > CAPTION_CAPS.x;
-  const [xOverAnnounce, setXOverAnnounce] = useState('');
-  const xWasOverRef = useRef(false);
-  useEffect(() => {
-    if (xOver === xWasOverRef.current) return;
-    xWasOverRef.current = xOver;
-    setXOverAnnounce(xOver ? t('composer.field.xCounterOver', { count: xLen, max: CAPTION_CAPS.x }) : '');
-  }, [xOver, xLen, t]);
+  const xOverAnnounce = useOverLimitAnnounce(xOver, xLen, CAPTION_CAPS.x);
+  const mastodonLen = (mastodonCaption || caption).length;
+  const mastodonOver = mastodonLen > CAPTION_CAPS.mastodon;
+  const mastodonOverAnnounce = useOverLimitAnnounce(mastodonOver, mastodonLen, CAPTION_CAPS.mastodon);
 
   // Unsaved-changes guard (finding #12): diff the live editable fields against the
   // mount snapshot; the close handler confirms before discarding a dirty draft.
   const isDirty = useMemo(
     () => JSON.stringify({
       campaign, id, type, platforms, scheduledIso, caption, firstComment, title,
-      link, image, mediaPath, description, liDescription, xCaption, tags, blogSlug,
+      link, image, mediaPath, description, liDescription, xCaption, xReplyTo, tags, blogSlug,
+      body, excerpt, canonicalUrl, ghostEmail, mastodonCaption, nostrCaption, gbp,
       stickers, hashtagsMode, hashtags,
     }) !== initialSnapshot,
-    [campaign, id, type, platforms, scheduledIso, caption, firstComment, title, link, image, mediaPath, description, liDescription, xCaption, tags, blogSlug, stickers, hashtagsMode, hashtags, initialSnapshot],
+    [campaign, id, type, platforms, scheduledIso, caption, firstComment, title, link, image, mediaPath, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, canonicalUrl, ghostEmail, mastodonCaption, nostrCaption, gbp, stickers, hashtagsMode, hashtags, initialSnapshot],
   );
 
   const requestClose = async () => {
@@ -617,6 +773,30 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const hashtagsPayload = hashtagsMode === 'custom'
     ? hashtags.split(/[\s,]+/).map((h) => h.trim()).filter(Boolean)
     : null;
+  // GBP intent, serialized from the flat form state: only the fields the chosen
+  // topic/CTA actually use, and null when it says nothing at all (topic
+  // standard, no CTA) - a plain "What's new" post needs no gbp object.
+  const gbpPayload = (() => {
+    if (!showGbp) return null;
+    const hasCta = Boolean(gbp.ctaType);
+    if (gbp.topic === 'standard' && !hasCta) return null;
+    const out = { topic: gbp.topic };
+    if (hasCta) {
+      out.ctaType = gbp.ctaType;
+      if (gbp.ctaType !== 'CALL' && gbp.ctaUrl) out.ctaUrl = gbp.ctaUrl;
+    }
+    if (gbp.topic === 'event') {
+      if (gbp.eventTitle) out.eventTitle = gbp.eventTitle;
+      if (gbp.eventStart) out.eventStart = gbp.eventStart;
+      if (gbp.eventEnd) out.eventEnd = gbp.eventEnd;
+    }
+    if (gbp.topic === 'offer') {
+      if (gbp.couponCode) out.couponCode = gbp.couponCode;
+      if (gbp.redeemUrl) out.redeemUrl = gbp.redeemUrl;
+      if (gbp.terms) out.terms = gbp.terms;
+    }
+    return out;
+  })();
 
   const previewPost = {
     type,
@@ -625,6 +805,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     caption,
     link,
     image,
+    excerpt,
     description,
     liDescription,
     xCaption,
@@ -638,6 +819,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     if (!isEdit && !/^[a-zA-Z0-9_-]+$/.test(id)) {
       setError(t('composer.error.idFormat'));
       idRef.current?.focus();
+      return;
+    }
+    // Reply-chain target: same charset as post ids (mirrors lib/writes.mjs
+    // ID_RE) and never the post itself - a self-thread can never publish.
+    const xReplyToClean = xReplyTo.trim();
+    if (xReplyToClean && (!/^[a-zA-Z0-9_-]+$/.test(xReplyToClean) || xReplyToClean === (isEdit ? post.id : id))) {
+      setError(t('composer.error.xReplyToFormat'));
+      xReplyToRef.current?.focus();
       return;
     }
     if (!platforms.length) {
@@ -669,8 +858,16 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           description: description || null,
           liDescription: liDescription || null,
           xCaption: xCaption || null,
+          xReplyTo: xReplyToClean || null,
           tags: tags || null,
           blogSlug: blogSlug || null,
+          body: body || null,
+          excerpt: excerpt || null,
+          canonicalUrl: canonicalUrl || null,
+          ghostEmail: ghostEmail === true ? true : null,
+          mastodonCaption: mastodonCaption || null,
+          nostrCaption: nostrCaption || null,
+          gbp: gbpPayload,
           interactiveStory: interactiveStoryPayload,
           hashtags: hashtagsPayload,
         });
@@ -689,8 +886,16 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           description: description || undefined,
           liDescription: liDescription || undefined,
           xCaption: xCaption || undefined,
+          xReplyTo: xReplyToClean || undefined,
           tags: tags || undefined,
           blogSlug: blogSlug || undefined,
+          body: body || undefined,
+          excerpt: excerpt || undefined,
+          canonicalUrl: canonicalUrl || undefined,
+          ghostEmail: ghostEmail === true ? true : undefined,
+          mastodonCaption: mastodonCaption || undefined,
+          nostrCaption: nostrCaption || undefined,
+          gbp: gbpPayload || undefined,
           interactiveStory: interactiveStoryPayload || undefined,
           hashtags: hashtagsPayload || undefined,
         });
@@ -824,23 +1029,66 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 aria-describedby="composer-x-counter"
                 className={`${FIELD_CLS} resize-y leading-relaxed`}
               />
-              {/* r2-1: over limit is signalled by color + icon + an over-limit
-                  word (never hue alone), with an sr-only severity prefix so a
-                  non-sighted operator hears the warning. r2-3: this is no longer a
-                  live region - the count stays reachable via aria-describedby on
-                  focus; the transition is announced separately below. */}
-              <p
-                id="composer-x-counter"
-                className={`flex items-center gap-1 text-[11px] font-bold tabular-nums ${xOver ? 'text-red-600 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}`}
-              >
-                {xOver ? <AlertTriangle size={12} className="shrink-0" aria-hidden="true" /> : null}
-                {xOver ? <span className="sr-only">{t('composer.field.xCounterSeverity')} </span> : null}
-                {xOver
-                  ? t('composer.field.xCounterOver', { count: xLen, max: CAPTION_CAPS.x })
-                  : t('composer.field.xCounter', { count: xLen, max: CAPTION_CAPS.x })}
-              </p>
+              <CharCounter id="composer-x-counter" len={xLen} max={CAPTION_CAPS.x} over={xOver} />
               {/* r2-3: announce ONLY the over/under transition, not every keystroke. */}
               <p role="status" aria-live="polite" className="sr-only">{xOverAnnounce}</p>
+            </div>
+          ) : null}
+
+          {/* X reply-chain (xReplyTo): thread this tweet under a same-campaign
+              post. The X lane resolves the id to the parent's live tweet at
+              publish time and fail-closes while the parent has not posted, so
+              clearing the field (-> null) releases a post held by a dangling
+              reference. The datalist offers sibling X posts; free text stays
+              allowed for ids the campaign list does not carry yet. */}
+          {platforms.includes('x') ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-x-reply-to">{t('composer.field.xReplyTo')}</label>
+              <input
+                id="composer-x-reply-to"
+                ref={xReplyToRef}
+                value={xReplyTo}
+                onChange={(e) => setXReplyTo(e.target.value)}
+                list="composer-x-reply-to-posts"
+                placeholder={t('composer.field.xReplyToPlaceholder')}
+                className={FIELD_CLS}
+              />
+              <datalist id="composer-x-reply-to-posts">
+                {campaignPosts
+                  .filter((p) => p.id !== (isEdit ? post.id : id) && (p.platforms || []).includes('x'))
+                  .map((p) => <option key={p.id} value={p.id} />)}
+              </datalist>
+            </div>
+          ) : null}
+
+          {platforms.includes('mastodon') ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-mastodon-caption">{t('composer.field.mastodonCaption')}</label>
+              <textarea
+                id="composer-mastodon-caption"
+                value={mastodonCaption}
+                onChange={(e) => setMastodonCaption(e.target.value)}
+                rows={3}
+                placeholder={t('composer.field.mastodonCaptionPlaceholder')}
+                aria-describedby="composer-mastodon-counter"
+                className={`${FIELD_CLS} resize-y leading-relaxed`}
+              />
+              <CharCounter id="composer-mastodon-counter" len={mastodonLen} max={CAPTION_CAPS.mastodon} over={mastodonOver} />
+              <p role="status" aria-live="polite" className="sr-only">{mastodonOverAnnounce}</p>
+            </div>
+          ) : null}
+
+          {platforms.includes('nostr') ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-nostr-caption">{t('composer.field.nostrCaption')}</label>
+              <textarea
+                id="composer-nostr-caption"
+                value={nostrCaption}
+                onChange={(e) => setNostrCaption(e.target.value)}
+                rows={3}
+                placeholder={t('composer.field.nostrCaptionPlaceholder')}
+                className={`${FIELD_CLS} resize-y leading-relaxed`}
+              />
             </div>
           ) : null}
 
@@ -863,28 +1111,70 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             />
           ) : null}
 
-          {platforms.includes('youtube') || platforms.includes('linkedin') ? (
+          {platforms.includes('youtube') || platforms.includes('linkedin') || isArticle ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-title">{t('composer.field.title')}</label>
               <input id="composer-title" value={title} onChange={(e) => setTitle(e.target.value)} className={FIELD_CLS} />
+              {isArticle ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.titleArticleHint')}</p> : null}
             </div>
           ) : null}
 
-          {isLinkedinArticle ? (
+          {/* Wave-2 article fields (wordpress/ghost): markdown body + excerpt;
+              the shared image field below doubles as the article hero. */}
+          {isArticle ? (
             <>
               <div className="space-y-1.5">
-                <label className={EYEBROW} htmlFor="composer-link">{t('composer.field.link')}</label>
-                <input id="composer-link" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://example.com/blog/..." className={FIELD_CLS} />
+                <label className={EYEBROW} htmlFor="composer-body">{t('composer.field.body')}</label>
+                <textarea id="composer-body" value={body} onChange={(e) => setBody(e.target.value)} rows={10} className={`${FIELD_CLS} resize-y font-mono leading-relaxed`} />
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.bodyHint')}</p>
               </div>
               <div className="space-y-1.5">
-                <label className={EYEBROW} htmlFor="composer-image">{t('composer.field.image')}</label>
-                <input id="composer-image" value={image} onChange={(e) => setImage(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={FIELD_CLS} />
-              </div>
-              <div className="space-y-1.5">
-                <label className={EYEBROW} htmlFor="composer-li-description">{t('composer.field.liDescription')}</label>
-                <textarea id="composer-li-description" value={liDescription} onChange={(e) => setLiDescription(e.target.value)} rows={3} className={`${FIELD_CLS} resize-y leading-relaxed`} />
+                <label className={EYEBROW} htmlFor="composer-excerpt">{t('composer.field.excerpt')}</label>
+                <textarea id="composer-excerpt" value={excerpt} onChange={(e) => setExcerpt(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.excerptHint')}</p>
               </div>
             </>
+          ) : null}
+
+          {isLinkedinArticle ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-link">{t('composer.field.link')}</label>
+              <input id="composer-link" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://example.com/blog/..." className={FIELD_CLS} />
+            </div>
+          ) : null}
+
+          {/* ONE image field serves both cards: the LinkedIn link-preview
+              thumbnail and the wordpress/ghost article hero (same post.image). */}
+          {isLinkedinArticle || isArticle ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-image">{isArticle ? t('composer.field.imageArticle') : t('composer.field.image')}</label>
+              <input id="composer-image" value={image} onChange={(e) => setImage(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={FIELD_CLS} />
+            </div>
+          ) : null}
+
+          {isGhost ? (
+            <>
+              <div className="space-y-1.5">
+                <label className={EYEBROW} htmlFor="composer-canonical-url">{t('composer.field.canonicalUrl')}</label>
+                <input id="composer-canonical-url" value={canonicalUrl} onChange={(e) => setCanonicalUrl(e.target.value)} placeholder="https://example.com/original-post" className={FIELD_CLS} />
+              </div>
+              <label className="flex items-center gap-2 text-xs font-bold">
+                <input
+                  type="checkbox"
+                  checked={ghostEmail}
+                  onChange={(e) => setGhostEmail(e.target.checked)}
+                  className="h-4 w-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                />
+                {t('composer.field.ghostEmail')}
+              </label>
+            </>
+          ) : null}
+
+          {isLinkedinArticle ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-li-description">{t('composer.field.liDescription')}</label>
+              <textarea id="composer-li-description" value={liDescription} onChange={(e) => setLiDescription(e.target.value)} rows={3} className={`${FIELD_CLS} resize-y leading-relaxed`} />
+            </div>
           ) : null}
 
           {platforms.includes('youtube') ? (
@@ -897,15 +1187,21 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 </div>
               </div>
               <div className="space-y-1.5">
-                <label className={EYEBROW} htmlFor="composer-tags">{t('composer.field.tags')}</label>
-                <input id="composer-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t('composer.field.tagsPlaceholder')} className={FIELD_CLS} />
-              </div>
-              <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-blogslug">{t('composer.field.blogSlug')}</label>
                 <input id="composer-blogslug" value={blogSlug} onChange={(e) => setBlogSlug(e.target.value)} placeholder={t('composer.field.blogSlugPlaceholder')} className={FIELD_CLS} />
               </div>
             </>
           ) : null}
+
+          {/* Tags serve YouTube (video tags) and the article lanes (post tags). */}
+          {platforms.includes('youtube') || isArticle ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-tags">{t('composer.field.tags')}</label>
+              <input id="composer-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t('composer.field.tagsPlaceholder')} className={FIELD_CLS} />
+            </div>
+          ) : null}
+
+          {showGbp ? <GbpFields gbp={gbp} onChange={setGbp} /> : null}
 
           {/* Small-viewport preview (finding #56): the sticky <aside> is hidden
               below lg, so surface the same preview behind a toggle here. */}

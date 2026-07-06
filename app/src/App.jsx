@@ -454,7 +454,7 @@ export default function App() {
                     SchedulerChip): a persistent symbol next to the language/theme
                     toggles whose popover folds the keep-open status and the managed
                     cloud upsell. Present on every page. */}
-                <ConnectionStatus running={accounts?.scheduler?.running} onNavigate={setPage} />
+                <ConnectionStatus running={accounts?.scheduler?.running} onNavigate={setPage} onShowAtRisk={showOverdue} />
                 <Tip label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}>
                   <button
                     type="button"
@@ -600,6 +600,18 @@ export default function App() {
             {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} /> : null}
 
             <div className="glass-panel min-h-0 flex-1 overflow-x-auto rounded-2xl p-4">
+              {/* At-risk framing: when the overdue filter is active (e.g. arrived via
+                  the cloud dot's "view in planner" route or the sidebar Overdue jump),
+                  a slim strip names the miss count and points at the per-post routes.
+                  The batch "run due now" action lives in the toolbar directly above, so
+                  this is framing, not a duplicate control. */}
+              {page === 'planner' && !isError && statusFilter.includes('overdue') && overdueCount > 0 ? (
+                <div role="status" className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl bg-red-500/10 px-3 py-2 ring-1 ring-red-500/20">
+                  <TriangleAlert size={15} className="shrink-0 text-red-600 dark:text-red-400" aria-hidden="true" />
+                  <p className="text-xs font-bold text-red-700 dark:text-red-300">{t('planner.atRisk.title', { n: overdueCount })}</p>
+                  <p className="text-[11px] text-red-600/80 dark:text-red-300/70">{t('planner.atRisk.hint')}</p>
+                </div>
+              ) : null}
               {isError ? (
                 <div className="grid h-full place-items-center">
                   <div className="max-w-sm space-y-2 text-center">
@@ -663,9 +675,11 @@ export default function App() {
         {selectedPost ? (
           <PostDetail
             post={selectedPost}
+            posts={allPosts}
             onClose={() => setSelectedKey(null)}
             onEdit={editComposer}
             onNavigate={(p) => { setSelectedKey(null); setPage(p); }}
+            onOpenPost={openPost}
           />
         ) : null}
         {selectedKey && !selectedPost && !isLoading ? (

@@ -94,7 +94,7 @@ try {
   ok(isSelfApproved('agent:claude', 'agent:claude') === true && isSelfApproved('agent:claude', 'owner') === false && isSelfApproved(null, null) === false, 'isSelfApproved mirrors lib/writes.mjs: creator==approver and approver!=owner');
 
   // ---- (7) unknown lane is refused -------------------------------------------
-  ok(throwsWith(() => buildPublishJob(basePost, 'mastodon', metaCtx), 'unknown_lane'), 'an unknown lane is refused (code unknown_lane)');
+  ok(throwsWith(() => buildPublishJob(basePost, 'acmesocial', metaCtx), 'unknown_lane'), 'an unknown lane is refused (code unknown_lane)');
 
   // ---- (8) validator parity (the cloud re-check) -----------------------------
   ok(validatePublishJob(job).ok === true, 'validatePublishJob accepts a well-formed approved job');

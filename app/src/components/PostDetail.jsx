@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, PauseCircle, CheckCheck, Send, ExternalLink, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power } from 'lucide-react';
+import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, PauseCircle, CheckCheck, Send, ExternalLink, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft } from 'lucide-react';
 import { fmtFull, fmtBytes, campaignBaseLabel, deliveryMode } from '../lib/format.js';
 import {
   useAccounts, usePlatformValidate, useValidateMedia, useActiveClient,
@@ -47,6 +47,11 @@ function platformState(post, platform, t) {
   if (platform === 'reddit' && ids.redditPostId) return { text: t('postDetail.platform.published', { id: ids.redditPostId }), tier: 'done' };
   if (platform === 'pinterest' && ids.pinId) return { text: t('postDetail.platform.published', { id: ids.pinId }), tier: 'done' };
   if (platform === 'tiktok' && ids.tiktokVideoId) return { text: t('postDetail.platform.published', { id: ids.tiktokVideoId }), tier: 'done' };
+  if (platform === 'mastodon' && ids.mastodonStatusId) return { text: t('postDetail.platform.published', { id: ids.mastodonStatusId }), tier: 'done' };
+  if (platform === 'wordpress' && ids.wordpressPostId) return { text: t('postDetail.platform.published', { id: ids.wordpressPostId }), tier: 'done' };
+  if (platform === 'ghost' && ids.ghostPostId) return { text: t('postDetail.platform.published', { id: ids.ghostPostId }), tier: 'done' };
+  if (platform === 'nostr' && ids.nostrEventId) return { text: t('postDetail.platform.published', { id: ids.nostrEventId }), tier: 'done' };
+  if (platform === 'gbp' && ids.gbpPostId) return { text: t('postDetail.platform.published', { id: ids.gbpPostId }), tier: 'done' };
   return { text: t('postDetail.platform.pending'), tier: 'pending' };
 }
 
@@ -83,7 +88,7 @@ function coverChips(post, t) {
   return chips;
 }
 
-export default function PostDetail({ post, onClose, onEdit, onNavigate }) {
+export default function PostDetail({ post, posts = [], onClose, onEdit, onNavigate, onOpenPost }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: accounts } = useAccounts();
@@ -133,6 +138,15 @@ export default function PostDetail({ post, onClose, onEdit, onNavigate }) {
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['plans'] });
 
+  // X reply-chain context (xReplyTo): the sibling post this one threads under,
+  // and any posts that thread under THIS one. Same-campaign only - the engine
+  // resolves the reference within one plan and fail-closes when the parent is
+  // gone (scripts/x-social.mjs), so a dangling reference means "held forever".
+  const threadParent = post.xReplyTo
+    ? posts.find((p) => p.campaign === post.campaign && p.id === post.xReplyTo) || null
+    : null;
+  const threadReplies = posts.filter((p) => p.campaign === post.campaign && p.xReplyTo === post.id);
+
   // Meta lane pause notice (finding #2): the owner-controlled kill switch
   // (accounts.meta.paused) stops every Meta write, so a FB/IG post will not
   // publish until the lane is resumed.
@@ -180,9 +194,14 @@ export default function PostDetail({ post, onClose, onEdit, onNavigate }) {
   };
   const onDelete = async () => {
     setError(null);
+    // Thread guard: deleting a post other posts reply to (xReplyTo) strands
+    // them - the X lane holds a child forever once its parent is gone.
+    const deleteBody = threadReplies.length
+      ? `${t('postDetail.delete.body', { id: post.id })}\n\n${t('postDetail.delete.threadWarn', { count: threadReplies.length, ids: threadReplies.map((r) => r.id).join(', ') })}`
+      : t('postDetail.delete.body', { id: post.id });
     const ok = await confirm({
       title: t('postDetail.delete.title'),
-      body: withClientLine(t('postDetail.delete.body', { id: post.id })),
+      body: withClientLine(deleteBody),
       confirmLabel: t('postDetail.delete.confirmLabel'),
       danger: true,
     });
@@ -341,6 +360,24 @@ export default function PostDetail({ post, onClose, onEdit, onNavigate }) {
           <p className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
             {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id, type: t(`type.${post.type}`) })}
           </p>
+          {/* X thread line (xReplyTo): link to the parent post, or an explicit
+              missing note - a dangling reference never publishes on X. */}
+          {post.xReplyTo ? (
+            <p className="mt-1 flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+              <CornerUpLeft size={11} className="shrink-0" aria-hidden="true" />
+              {threadParent ? (
+                <button
+                  type="button"
+                  onClick={() => onOpenPost?.(threadParent)}
+                  className="rounded text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                >
+                  {t('postDetail.thread.repliesTo', { id: post.xReplyTo })}
+                </button>
+              ) : (
+                <span className="text-amber-600 dark:text-amber-300">{t('postDetail.thread.parentMissing', { id: post.xReplyTo })}</span>
+              )}
+            </p>
+          ) : null}
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             <StatusPill state={post.derivedState} />
             <ApprovalPill approval={post.approval} />

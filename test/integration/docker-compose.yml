@@ -1,0 +1,143 @@
+# docker-compose.yml - the pendpost publish-lane sandboxes.
+#
+# Local, signup-free instances of the wave-2 platforms so the mastodon /
+# wordpress / ghost / nostr lanes can be LIVE-verified (a real publish + a real
+# read-back) without creating an account anywhere. Everything binds to
+# 127.0.0.1 only, every credential is a fixed local dummy, and the whole stack
+# is disposable (`node test/integration/sandbox.mjs down` removes the volumes).
+#
+# Driven by test/integration/sandbox.mjs (up | provision | verify | down) -
+# see test/integration/README.md. Not part of `npm run check` (needs Docker).
+#
+# Ports (loopback only):
+#   127.0.0.1:8083  mastodon web
+#   127.0.0.1:8085  wordpress
+#   127.0.0.1:8086  ghost
+#   127.0.0.1:8087  nostr relay (websocket)
+
+name: pendpost-sandbox
+
+services:
+  # ---- WordPress (application-password REST publishing) ----------------------
+  wordpress:
+    image: wordpress:6.7-apache
+    ports:
+      - "127.0.0.1:8085:80"
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress-sandbox
+      WORDPRESS_DB_NAME: wordpress
+    volumes:
+      - wp-data:/var/www/html
+    depends_on:
+      - wp-db
+    restart: unless-stopped
+
+  wp-db:
+    image: mariadb:11
+    environment:
+      MYSQL_ROOT_PASSWORD: root-sandbox
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: wordpress-sandbox
+    volumes:
+      - wp-db-data:/var/lib/mysql
+    restart: unless-stopped
+
+  # One-off provisioning shell (sandbox.mjs runs `docker compose run --rm wp-cli ...`).
+  wp-cli:
+    image: wordpress:cli
+    profiles: ["tools"]
+    user: "33:33" # www-data, so wp-cli writes with the same owner as apache
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress-sandbox
+      WORDPRESS_DB_NAME: wordpress
+    volumes:
+      - wp-data:/var/www/html
+    depends_on:
+      - wp-db
+
+  # ---- Ghost (Admin API custom-integration publishing) -----------------------
+  # NODE_ENV=development keeps Ghost on its bundled sqlite - no extra database.
+  ghost:
+    image: ghost:5-alpine
+    ports:
+      - "127.0.0.1:8086:2368"
+    environment:
+      url: http://127.0.0.1:8086
+      NODE_ENV: development
+    volumes:
+      - ghost-data:/var/lib/ghost/content
+    restart: unless-stopped
+
+  # ---- Nostr relay (websocket EVENT/REQ) --------------------------------------
+  # strfry via dockurr (multi-arch incl. arm64 - scsibug/nostr-rs-relay is
+  # amd64-only and segfaults under qemu on Apple Silicon).
+  nostr-relay:
+    image: dockurr/strfry:latest
+    ports:
+      - "127.0.0.1:8087:7777"
+    volumes:
+      - nostr-data:/app/strfry-db
+      # nofiles = 0: strfry's 1M NOFILES default exceeds the colima VM hard cap.
+      - ./strfry.conf:/etc/strfry.conf:ro
+    restart: unless-stopped
+
+  # ---- Mastodon (rails web + sidekiq + postgres + redis) ----------------------
+  # The heavyweight. Its rails secrets (SECRET_KEY_BASE, VAPID pair, the three
+  # ActiveRecord encryption keys) are minted ONCE by `sandbox.mjs up` into
+  # .mastodon.env (gitignored - local dummies, but minted keys stay out of git).
+  mastodon-db:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: mastodon
+      POSTGRES_DB: mastodon_production
+    volumes:
+      - mastodon-db-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  mastodon-redis:
+    image: redis:7-alpine
+    volumes:
+      - mastodon-redis-data:/data
+    restart: unless-stopped
+
+  mastodon-web:
+    image: ghcr.io/mastodon/mastodon:v4.3
+    env_file: .mastodon.env
+    command: bundle exec puma -C config/puma.rb
+    ports:
+      - "127.0.0.1:8083:3000"
+    depends_on:
+      - mastodon-db
+      - mastodon-redis
+    volumes:
+      - mastodon-system:/mastodon/public/system
+      # Sandbox-only initializer (written by sandbox.mjs): drops the production
+      # force_ssl redirect so the lane verifier can talk plain http on loopback.
+      - ./mastodon-sandbox.rb:/opt/mastodon/config/initializers/zzz_pendpost_sandbox.rb:ro
+    restart: unless-stopped
+
+  mastodon-sidekiq:
+    image: ghcr.io/mastodon/mastodon:v4.3
+    env_file: .mastodon.env
+    command: bundle exec sidekiq
+    depends_on:
+      - mastodon-db
+      - mastodon-redis
+    volumes:
+      - mastodon-system:/mastodon/public/system
+    restart: unless-stopped
+
+volumes:
+  wp-data:
+  wp-db-data:
+  ghost-data:
+  nostr-data:
+  mastodon-db-data:
+  mastodon-redis-data:
+  mastodon-system:

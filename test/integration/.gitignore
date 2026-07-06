@@ -1,0 +1,5 @@
+# Sandbox-local state: minted (dummy) secrets and proof artifacts stay out of git.
+.mastodon.env
+.sandbox-creds.json
+.proofs/
+mastodon-sandbox.rb

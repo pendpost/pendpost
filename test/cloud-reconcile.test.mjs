@@ -10,6 +10,9 @@
 //      rewrite the plan file (byte-identical).
 //   3. A `refused` cloud result never mutates the plan (the post legitimately stays
 //      due); it only surfaces in the summary.
+//   4. A `failed` cloud result (fired but published nothing) likewise never mutates the
+//      plan - the post stays due for the local backstop - but its sanitized
+//      failureMessage is cached to state.cloudFailures so pendpost_health surfaces WHY.
 // Mock mode + a mocked global.fetch; no network, no real cloud.
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -29,6 +32,7 @@ fs.writeFileSync(path.join(WS, '.env'), `PENDPOST_CLOUD_API_KEY=${API_KEY}\n`);
 
 const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
+const { loadState } = await import('../lib/state.mjs');
 const { activeClientId } = await import('../lib/multi-client.mjs');
 const { setBrandAlwaysOn } = await import('../lib/cloud-config.mjs');
 const cloud = await import('../lib/cloud-client.mjs');
@@ -64,6 +68,13 @@ const doneResult = (postId, id) => ({
 const refusedResult = (postId) => ({
   jobId: `${CLIENT}:${CAMP}:${postId}:meta`, clientId: CLIENT, campaign: CAMP, postId, lane: 'meta', state: 'refused',
   firedAt: null, refusedCode: 'self_approved', results: [],
+});
+// A cloud fire that RAN but published nothing (e.g. telegram against an invalid bot
+// token): the cloud now records state:'failed' with a sanitized failureMessage and an
+// empty results[] (previously a false state:'done'). firedAt is the backoff anchor.
+const failedResult = (postId, message) => ({
+  jobId: `${CLIENT}:${CAMP}:${postId}:telegram`, clientId: CLIENT, campaign: CAMP, postId, lane: 'telegram', state: 'failed',
+  firedAt: FIRED_AT, refusedCode: null, results: [], failureMessage: message,
 });
 
 const derived = (postId) => loadPlanStore().campaigns.find((c) => c.id === CAMP).posts.find((p) => p.id === postId).derivedState;
@@ -124,7 +135,46 @@ try {
   ok(r4.refused.some((x) => x.postId === 'ref'), 'the refused "ref" still surfaces through the loop');
   ok(readPost('br').igMediaId === 'IG_MINTED_BR' && readPost('br').status === 'posted', 'the loop wrote "br"’s minted id + posted status to the plan');
 
-  console.log(`[cloud-reconcile] OK - done patches + clears overdue, idempotent, refused is a no-op, brand loop reconciles (${pass} assertions).`);
+  // --- (5) a cloud-fired TELEGRAM done result flips the post to posted (the double-post
+  //         guard for the lanes the cloud started firing 2026-07-05). Without idFieldFor
+  //         mapping telegram->tgMessageId, the post would never post and the local backstop
+  //         would double-fire it.
+  await createPost({ campaign: CAMP, post: { id: 'tg', type: 'text', platforms: ['telegram'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a cloud-fired telegram note' }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: 'tg', actor: 'owner' });
+  ok(derived('tg') === 'overdue', 'precondition: the past-due telegram post derives as "overdue"');
+  resultsPayload = [{
+    jobId: `${CLIENT}:${CAMP}:tg:telegram`, clientId: CLIENT, campaign: CAMP, postId: 'tg', lane: 'telegram', state: 'done',
+    firedAt: FIRED_AT, refusedCode: null,
+    results: [{ platform: 'telegram', id: 'TG_MSG_42', action: 'publish', ok: true }],
+  }];
+  const r5 = await cloud.reconcileCloudResults();
+  ok(r5.patched.some((p) => p.postId === 'tg'), 'the cloud-fired telegram post is patched');
+  ok(readPost('tg').tgMessageId === 'TG_MSG_42', 'the minted telegram message id is written (tgMessageId)');
+  ok(readPost('tg').status === 'posted', 'the telegram post flips to "posted" so the local backstop stands down (no double-post)');
+  ok(derived('tg') === 'posted', 'the telegram post no longer derives as "overdue"');
+
+  // --- (6) a `failed` cloud result (fired but published nothing, e.g. an invalid bot
+  //         token) NEVER mutates the plan - the post legitimately stays due so the local
+  //         20-min backstop can still recover it - but the failure is made VISIBLE
+  //         locally: it surfaces in the summary AND caches state.cloudFailures[camp:post]
+  //         so pendpost_health names WHY the post is stuck (no more silent wait).
+  await createPost({ campaign: CAMP, post: { id: 'fail', type: 'text', platforms: ['telegram'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a cloud-fired note against a bad token' }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: 'fail', actor: 'owner' });
+  ok(derived('fail') === 'overdue', 'precondition: the past-due telegram post derives as "overdue"');
+  const failBefore = readPost('fail');
+  const FAIL_MSG = 'telegram: unauthorized (invalid bot token)';
+  resultsPayload = [failedResult('fail', FAIL_MSG)];
+  const r6 = await cloud.reconcileCloudResults();
+  ok(r6.failed.some((f) => f.postId === 'fail' && f.failureMessage === FAIL_MSG && f.jobId === `${CLIENT}:${CAMP}:fail:telegram` && f.firedAt === FIRED_AT),
+    'the failed post surfaces in the summary with its jobId + firedAt + sanitized failureMessage');
+  const failAfter = readPost('fail');
+  ok(failAfter.status === failBefore.status && !('tgMessageId' in failAfter), 'the failed post is NOT mutated (no id, status unchanged) - it stays due for the local backstop to recover');
+  ok(derived('fail') === 'overdue', 'the failed post still derives as "overdue" (recoverable by the backstop, not silently done)');
+  const cf = loadState().cloudFailures || {};
+  ok(cf[`${CAMP}:fail`] && cf[`${CAMP}:fail`].message === FAIL_MSG && cf[`${CAMP}:fail`].lane === 'telegram',
+    'state.cloudFailures caches the reason keyed campaign:postId so pendpost_health surfaces WHY the post is stuck');
+
+  console.log(`[cloud-reconcile] OK - done patches + clears overdue, idempotent, refused is a no-op, brand loop reconciles, cloud-fired telegram flips to posted, a failed fire stays due but surfaces its reason (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

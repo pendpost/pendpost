@@ -18,7 +18,7 @@ export const FLAGGED_ATTRS = new Set([
 
 // Brand / proper nouns + the few non-translatable tokens. A literal made ENTIRELY
 // of these (plus punctuation/URLs/digits) is not an offender ("Facebook + Instagram").
-const BRANDS = ['pendpost', 'Meta', 'Facebook', 'Instagram', 'LinkedIn', 'YouTube', 'Telegram', 'Discord', 'Reddit', 'Pinterest', 'TikTok', 'MCP', 'Cmd', 'OK', 'X'];
+const BRANDS = ['pendpost', 'Meta', 'Facebook', 'Instagram', 'LinkedIn', 'YouTube', 'Telegram', 'Discord', 'Reddit', 'Pinterest', 'TikTok', 'Mastodon', 'WordPress', 'Ghost', 'Nostr', 'Google Business Profile', 'MCP', 'Cmd', 'OK', 'X'];
 // The locale selector lists each language in its own name on purpose - never t()'d.
 const ENDONYMS = new Set(['English', 'Deutsch (Schweiz)']);
 

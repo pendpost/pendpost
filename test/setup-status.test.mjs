@@ -62,10 +62,10 @@ const clearHealth = () => {
 const byPlatform = (s) => Object.fromEntries(s.platforms.map((p) => [p.platform, p]));
 
 try {
-  // ===== (1) nothing configured -> all nine incomplete, every validation unproven =====
+  // ===== (1) nothing configured -> all fourteen incomplete, every validation unproven =====
   let s = setupStatus();
   ok(s.ready === false, 'a fresh instance is not ready (nothing connected or skipped)');
-  ok(s.summary.incomplete === 9 && s.summary.total === 9, 'all nine platforms start incomplete');
+  ok(s.summary.incomplete === 14 && s.summary.total === 14, 'all fourteen platforms start incomplete');
   ok(s.summary.validated === 0, 'summary.validated is 0 with no live lane');
   const meta0 = byPlatform(s).meta;
   ok(meta0.status === 'incomplete', 'meta starts incomplete');
@@ -75,10 +75,12 @@ try {
   // PENDPOST_MODE=mock with NO creds -> EVERY validation.state is 'unproven', never 'failed'.
   ok(s.platforms.every((p) => p.validation && p.validation.state === 'unproven'), 'mock + no creds: every validation.state is unproven (no/partial/forced-mock is NEVER failed)');
   ok(meta0.validation.fix && /setup-system-user/.test(meta0.validation.fix), 'an unproven lane with no credential points its fix at the connectAction');
-  // BETA honesty: reddit/pinterest/tiktok are built but not live-proven (beta:true);
-  // a live-verified lane (telegram) is beta:false.
+  // BETA honesty: reddit/pinterest/tiktok/gbp are built but not live-proven (beta:true);
+  // a live-verified lane (telegram) is beta:false. The wave-2 static lanes
+  // (mastodon/wordpress/ghost/nostr) flip to beta:false with their sandbox proof.
   const bp0 = byPlatform(s);
   ok(bp0.reddit.beta === true && bp0.pinterest.beta === true && bp0.tiktok.beta === true, 'reddit/pinterest/tiktok carry beta:true (built, not yet live-proven)');
+  ok(bp0.gbp.beta === true, 'gbp carries beta:true (built + mock-verified, live-verify deferred)');
   ok(bp0.telegram.beta === false, 'a live-verified lane (telegram) is beta:false');
 
   // ===== (2) a credential present (simulated CLI ceremony) -> connected, but still UNPROVEN until probed =====
@@ -87,7 +89,7 @@ try {
   ok(byPlatform(s).linkedin.status === 'connected', 'LinkedIn becomes connected once its access token is present');
   ok(byPlatform(s).linkedin.validation.state === 'unproven', 'present-but-unprobed credential is unproven (connected does not imply live)');
   ok(s.ready === false, 'a connected-but-unproven lane keeps the instance not-ready (live-gated)');
-  ok(s.summary.connected === 1 && s.summary.incomplete === 8, 'summary reflects 1 connected, 8 incomplete');
+  ok(s.summary.connected === 1 && s.summary.incomplete === 13, 'summary reflects 1 connected, 13 incomplete');
   ok(s.summary.validated === 0, 'summary.validated stays 0 while the only credentialed lane is unproven');
 
   // ===== (3) inject a passing probe row -> validation.state live; validated counts it =====
@@ -110,14 +112,14 @@ try {
   setHealth('linkedin', { ok: true }); // restore a live linkedin lane
   // Skip the static-credential + new lanes too so the "ready" sections below can reach
   // every-lane-live-or-skipped without standing up their creds.
-  skip(['x', 'youtube', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok']);
+  skip(['x', 'youtube', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp']);
   s = setupStatus();
   ok(byPlatform(s).x.status === 'skipped' && byPlatform(s).youtube.status === 'skipped', 'config_set skippedPlatforms marks x + youtube as skipped');
   ok(byPlatform(s).x.validation.state === 'skipped' && byPlatform(s).youtube.validation.state === 'skipped', 'a skipped lane has validation.state skipped (and a null fix)');
   ok(byPlatform(s).x.validation.fix === null, 'a skipped lane carries no fix');
   ok(byPlatform(s).meta.status === 'incomplete', 'meta (no creds, not skipped) stays incomplete');
   ok(s.ready === false, 'not ready while meta is still unproven');
-  ok(s.summary.connected === 1 && s.summary.skipped === 7 && s.summary.incomplete === 1, 'summary: 1 connected, 7 skipped, 1 incomplete');
+  ok(s.summary.connected === 1 && s.summary.skipped === 12 && s.summary.incomplete === 1, 'summary: 1 connected, 12 skipped, 1 incomplete');
 
   // ===== (6) connect + PROVE the last lane -> ready (every lane live-or-skipped) =====
   setEnv(['LINKEDIN_ACCESS_TOKEN=ey_fake_li_token', 'LINKEDIN_ORG_URN=urn:li:organization:1', 'META_PAGE_TOKEN=fake_page_token', 'META_PAGE_ID=12345']);
@@ -158,7 +160,7 @@ try {
 
   // ===== (9) pendpost_health carries setup; overview/preview omit it =====
   const sh = pendpostHealth();
-  ok(sh.setup && Array.isArray(sh.setup.platforms) && sh.setup.platforms.length === 9, 'pendpost_health embeds the setup breakdown for the agent + UI');
+  ok(sh.setup && Array.isArray(sh.setup.platforms) && sh.setup.platforms.length === 14, 'pendpost_health embeds the setup breakdown for the agent + UI');
   ok(pendpostHealth({ includeSetup: false }).setup === undefined, 'the includeSetup:false path (overview/preview) omits the setup compute');
 
   // ===== (10) config_set validates skippedPlatforms shape =====

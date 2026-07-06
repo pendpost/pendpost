@@ -32,9 +32,16 @@ const SERVICES_URL = 'https://pendpost.com/services?from=app';
 // should look. A missing roll-up (older engine, loading) stays emerald as before.
 // Cloud-on wins over the local scheduler; an unknown scheduler flag stays neutral
 // (no dot) so there is no false "off" on first paint.
+// The `sync` roll-up is now a THREE-severity signal so a real miss never looks like a
+// mere hiccup: red = a post is at risk RIGHT NOW (overdue-unpublished / failed fire /
+// unreadable plan); amber ('degraded') = delivery is degraded (cloud unreachable / its
+// worker wedged / sync stopped / on-flag drift) but the local backstop covers it while
+// the Mac is awake - attention, not failure; amber ('pending') = approved posts still
+// syncing (normal for <=1 tick); emerald = all cloud-lane posts confirmed.
 function deriveStatus({ running, cloudOn, sync }) {
   if (cloudOn) {
     if (sync?.state === 'red') return { Icon: CloudIcon, dot: 'bg-red-500', key: 'connection.sync.broken' };
+    if (sync?.state === 'amber') return { Icon: CloudIcon, dot: 'bg-amber-500', key: 'connection.sync.degraded' };
     if (sync?.state === 'yellow') return { Icon: CloudIcon, dot: 'bg-amber-500', key: 'connection.sync.pending' };
     return { Icon: CloudIcon, dot: 'bg-emerald-500', key: 'connection.status.cloud' };
   }
@@ -43,7 +50,7 @@ function deriveStatus({ running, cloudOn, sync }) {
   return { Icon: CloudIcon, dot: null, key: 'connection.status.unknown' };
 }
 
-export default function ConnectionStatus({ running, onNavigate }) {
+export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) {
   const t = useT();
   const { data: cloud } = useCloud();
   // OPERATIONAL requires a workspace AND the api key - identical to Cloud.jsx's `connected`
@@ -66,8 +73,12 @@ export default function ConnectionStatus({ running, onNavigate }) {
   const sync = cloud?.sync || null;
   const { Icon, dot, key } = deriveStatus({ running, cloudOn, sync });
   const status = t(key, key === 'connection.sync.pending' ? { n: sync?.pendingCount ?? 0 } : undefined);
-  // The red dot's one-line WHY (the machine reason from the guarantee roll-up).
-  const syncReason = cloudOn && sync?.state === 'red' ? t(`connection.sync.reason.${sync.reason}`) : null;
+  // Amber (degraded) and red (broken) both carry a one-line WHY (the machine reason from
+  // the guarantee roll-up); red additionally names how many posts are at risk right now.
+  const degraded = cloudOn && (sync?.state === 'red' || sync?.state === 'amber');
+  const isBroken = cloudOn && sync?.state === 'red';
+  const syncReason = degraded ? t(`connection.sync.reason.${sync.reason}`) : null;
+  const missedCount = (sync?.overdueCount ?? 0) + (sync?.failedCount ?? 0);
 
   // Controlled so the in-app "manage cloud" button can navigate AND close the popover.
   // (Wrapping that button in Radix <PopoverClose> swallowed its onClick, so the nav
@@ -101,7 +112,10 @@ export default function ConnectionStatus({ running, onNavigate }) {
           </p>
           <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{status}</p>
           {syncReason ? (
-            <p className="text-[11px] leading-relaxed text-red-600 dark:text-red-400">{syncReason}</p>
+            <p className={`text-[11px] leading-relaxed ${isBroken ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>{syncReason}</p>
+          ) : null}
+          {isBroken && missedCount > 0 ? (
+            <p className="text-[11px] font-bold text-red-600 dark:text-red-400">{t('connection.sync.missedCount', { n: missedCount })}</p>
           ) : null}
           {sub && sub.postsIncluded > 0 ? (
             <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -121,10 +135,20 @@ export default function ConnectionStatus({ running, onNavigate }) {
           </div>
         ) : null}
         <div className="flex flex-col gap-1.5 pt-0.5">
+          {isBroken && missedCount > 0 && onShowAtRisk ? (
+            <button
+              type="button"
+              onClick={() => { onShowAtRisk(); setOpen(false); }}
+              className="flex items-center justify-between gap-2 rounded-xl bg-brand px-3 py-2 text-xs font-bold text-white transition hover:opacity-90 dark:bg-brand-light dark:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            >
+              {t('connection.viewAtRisk')}
+              <ArrowRight size={13} aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => { onNavigate?.('cloud'); setOpen(false); }}
-            className="flex items-center justify-between gap-2 rounded-xl bg-brand px-3 py-2 text-xs font-bold text-white transition hover:opacity-90 dark:bg-brand-light dark:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${isBroken && missedCount > 0 && onShowAtRisk ? 'bg-zinc-200/60 text-zinc-700 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60' : 'bg-brand text-white hover:opacity-90 dark:bg-brand-light dark:text-zinc-900'}`}
           >
             {cloudConnected ? t('connection.manage') : t('connection.setup')}
             <ArrowRight size={13} aria-hidden="true" />

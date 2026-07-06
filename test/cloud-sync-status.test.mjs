@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 // test/cloud-sync-status.test.mjs - cloudSyncStatus(), the guarantee roll-up behind
-// the header cloud dot (lib/cloud-client.mjs). Contract:
+// the header cloud dot (lib/cloud-client.mjs). Three-severity contract:
 //   green  - every approved post owing a CLOUD lane is ack'd, contact fresh, no failure
 //   yellow - an owed cloud-lane job has no push-ack yet (push pending)
-//   red    - broken: stale contact / overdue-unpublished / cloud failure / syncStopped
+//   amber  - delivery DEGRADED but nothing missed yet: cloud unreachable / its worker
+//            wedged / syncStopped / on-flag drift - the local backstop covers it
+//   red    - a post is at risk RIGHT NOW: overdue-unpublished / a cloud failure /
+//            an unreadable plan - the owner must act
 //   null   - the active brand is not cloud-managed (no claim, dot falls back to local)
-// Includes the incident's exact shape: ACKED but OVERDUE must be red - an ack proves
-// acceptance, never that the job will fire. Pure reads; mocked fetch; mock mode.
+// A genuine miss (red) must OUTRANK a mere connectivity blip (amber): overdue wins over
+// unreachable. Includes the incident's exact shape: ACKED but OVERDUE must be red - an
+// ack proves acceptance, never that the job will fire. Pure reads; mocked fetch; mock mode.
 import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -104,25 +108,46 @@ try {
   ok(g3.state !== 'red' && g3.failedCount === 0, 'a stale failure for a posted/absent post is ignored (no eternal red)');
   { const s = loadState(); s.cloudFailures = {}; saveState(); }
 
-  // --- red: subscription sync stopped --------------------------------------------------
+  // --- amber: subscription sync stopped (degraded, but the local backstop covers it) ---
   { const s = loadState(); s.cloudSubView = { alwaysOn: true, syncStopped: true, stopReason: 'spend_cap_reached', at: new Date().toISOString() }; saveState(); }
   const r3 = cloud.cloudSyncStatus();
-  ok(r3.state === 'red' && r3.reason === 'sync_stopped', 'syncStopped subscription -> red');
+  ok(r3.state === 'amber' && r3.reason === 'sync_stopped', 'syncStopped subscription -> amber (covered locally, attention not failure)');
   { const s = loadState(); s.cloudSubView = { alwaysOn: true, syncStopped: false, stopReason: null, at: new Date().toISOString() }; saveState(); }
 
-  // --- red: stale contact trumps everything --------------------------------------------
+  // --- amber: stale contact = cloud unreachable (nothing missed yet -> covered) ---------
   { const s = loadState(); s.cloudContact = { okAt: '2020-01-01T00:00:00.000Z' }; saveState(); }
   const r4 = cloud.cloudSyncStatus();
-  ok(r4.state === 'red' && r4.reason === 'cloud_unreachable', 'stale cloud contact -> red (cloud_unreachable headline)');
+  ok(r4.state === 'amber' && r4.reason === 'cloud_unreachable', 'stale cloud contact -> amber (cloud_unreachable, backstop covers)');
+
+  // --- red OUTRANKS amber: an overdue post while ALSO unreachable is still red ----------
+  // The whole point of the split - a genuine miss must never hide behind "unreachable".
+  {
+    const plan = path.join(WS, 'data', 'plans', CAMP, 'post-plan.json');
+    const j = JSON.parse(fs.readFileSync(plan, 'utf8'));
+    j.posts.find((p) => p.id === 'p1').scheduledAt = '2020-01-01T00:00:00Z'; // overdue again
+    fs.writeFileSync(plan, JSON.stringify(j, null, 2));
+    // contact is STILL stale from r4 above
+  }
+  const r5 = cloud.cloudSyncStatus();
+  ok(r5.state === 'red' && r5.reason === 'overdue_unpublished', 'overdue post + unreachable cloud -> red (miss outranks connectivity)');
+  { const plan = path.join(WS, 'data', 'plans', CAMP, 'post-plan.json'); const j = JSON.parse(fs.readFileSync(plan, 'utf8')); j.posts.find((p) => p.id === 'p1').scheduledAt = FUTURE; fs.writeFileSync(plan, JSON.stringify(j, null, 2)); }
+  freshContact();
+
+  // --- amber: cloud reachable but its publisher worker is wedged (silent-drop class) ----
+  { const s = loadState(); s.cloudContact = { okAt: new Date().toISOString(), workerStale: true }; saveState(); }
+  const r6 = cloud.cloudSyncStatus();
+  ok(r6.state === 'amber' && r6.reason === 'worker_stale', 'reachable but worker wedged -> amber (worker_stale)');
   freshContact();
 
   // --- local-only lanes never colour the cloud dot -------------------------------------
-  await createPost({ campaign: CAMP, post: { id: 'p-tg', type: 'text', platforms: ['telegram'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a quiet telegram note' }, actor: 'agent:a' });
-  await approvePost({ campaign: CAMP, postId: 'p-tg', actor: 'owner' });
+  // reddit is a LOCAL-ONLY lane (telegram is now a CLOUD lane), so an overdue reddit-only
+  // post is the local scheduler's job and must not touch the cloud guarantee dot.
+  await createPost({ campaign: CAMP, post: { id: 'p-rd', type: 'text', platforms: ['reddit'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a quiet reddit note' }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: 'p-rd', actor: 'owner' });
   const g2 = cloud.cloudSyncStatus();
-  ok(g2.state === 'green', 'an overdue TELEGRAM (local-only) post does not colour the cloud dot (cloud lanes only)');
+  ok(g2.state === 'green', 'an overdue REDDIT (local-only) post does not colour the cloud dot (cloud lanes only)');
 
-  console.log(`[cloud-sync-status] OK - null/green/yellow/red matrix incl. the acked-but-overdue incident shape (${pass} assertions).`);
+  console.log(`[cloud-sync-status] OK - null/green/yellow/amber/red matrix incl. miss-outranks-unreachable + worker-stale + the acked-but-overdue incident shape (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

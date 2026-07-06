@@ -393,7 +393,7 @@ export const RES_ASPECT = {
 export function mediaAspect(post) {
   return RES_ASPECT[post?.media?.resolution] || coverAspect(post?.type);
 }
-export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok'];
+export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'];
 
 // The SETUP id a DISPLAY platform keys off for connection + skip. Facebook and
 // Instagram are two display entities behind ONE Meta connector, so both resolve to
@@ -407,7 +407,8 @@ function setupIdOf(platform) {
 // A display platform is CONNECTED when its accountStatus slot authenticates. Meta
 // (facebook/instagram) reports `configured` (a Page token + id); reddit accepts
 // either authenticated OR configured (script-app creds == both); every other lane
-// reports `authenticated`. Mirrors lib/setup.mjs hasCredential / accountStatus.
+// reports `authenticated` (the wave-2 static lanes mastodon/wordpress/ghost/nostr
+// and OAuth gbp all set it). Mirrors lib/setup.mjs hasCredential / accountStatus.
 function platformConnected(platform, accounts) {
   const slot = accounts?.[setupIdOf(platform)];
   if (!slot) return false;
@@ -449,11 +450,12 @@ export function visiblePlatforms(accounts, posting) {
 }
 
 // The platforms whose OWN scheduler fires a future post (Facebook
-// scheduled_publish_time, YouTube publishAt), so it publishes on time even when
-// the user's machine is off. Mirrors lib/plans.mjs NATIVE_SCHEDULING_PLATFORMS
+// scheduled_publish_time, YouTube publishAt, Mastodon scheduled_at, WordPress
+// status 'future', Ghost scheduled + published_at), so it publishes on time even
+// when the user's machine is off. Mirrors lib/plans.mjs NATIVE_SCHEDULING_PLATFORMS
 // (the app bundle cannot import the core, so the set is restated here next to the
 // existing PLATFORMS list). Every other lane needs pendpost running at the due time.
-export const NATIVE_SCHEDULING_PLATFORMS = new Set(['facebook', 'youtube']);
+export const NATIVE_SCHEDULING_PLATFORMS = new Set(['facebook', 'youtube', 'mastodon', 'wordpress', 'ghost']);
 
 // Presentational only: 'native' = the platform publishes it even with the computer
 // off; 'local' = pendpost must be running. Used for the per-platform delivery hint
