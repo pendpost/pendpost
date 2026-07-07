@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-07
+
+### Added
+- Thread composer for X. Plan a whole X thread as one artifact — draft every reply in a single editor, reorder the tweets, and schedule the chain as one unit instead of stitching separate `xReplyTo` posts by hand.
+- Platform-aware post detail. The detail dialog now shows only the fields each network actually publishes — no more editing a caption a platform will never use. It opens as a centered two-column layout with state-aware actions and keyboard triage, supports inline caption editing, and surfaces platform specifics like a YouTube first comment and the LinkedIn card description.
+- Redesigned accounts sidebar. A compact logo cluster with a clean per-account status list replaces the old chip list; the sidebar is a static full-height rail that stays in view while the whole content column scrolls.
+- Fail-closed approval trust gate. Editing a post after it was approved now revokes the approval instead of silently keeping the green light, so an approved-then-changed post can never ship un-reviewed.
+- Server-side video cover JPEGs. The asset scan generates video cover thumbnails on the server, so the dashboard always has a real cover — `CoverThumb` no longer flashes an empty grey square, and cover generation stays binary-free in mock mode.
+- Archived projects sink to the bottom of the clients list, greyed, with one-click restore.
+- One-click "Fix in Setup" on actionable activity errors, deep-linking straight to the relevant Setup card.
+
+### Fixed
+- Link/article preview is now a contained, expandable card with a slim dialog scrollbar, instead of overflowing the composer.
+- The composer hides the "Vorschau" label and toggle when a text-only post has nothing to preview.
+- The delivery line reads as one honest, cloud-aware sentence with the repeats stripped.
+- 35 missing composer and article-card keys are now translated for de-CH.
+
 ## [1.2.1] - 2026-07-06
 
 ### Added

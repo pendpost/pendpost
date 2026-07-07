@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Search, FileText, CalendarDays, CheckCircle2, Activity, BarChart3, FolderOpen, Settings as SettingsIcon, Plus, Moon, Sun, RefreshCw, CornerDownLeft, Users, Check, Send, Wrench } from 'lucide-react';
+import { Search, FileText, CalendarDays, CheckCircle2, Activity, BarChart3, FolderOpen, Settings as SettingsIcon, Plus, Moon, Sun, RefreshCw, CornerDownLeft, CornerUpLeft, Users, Check, Send, Wrench } from 'lucide-react';
 import { prettyCampaign } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
 
@@ -52,7 +52,7 @@ const PAGE_COMMANDS = [
   { key: 'setup', labelKey: 'nav.setup', icon: Wrench },
 ];
 
-export default function CommandPalette({ posts, onNavigate, onNew, onToggleTheme, onRecheckHealth, onOpenPost, dark, clients, activeClientId, onSwitchClient }) {
+export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, onToggleTheme, onRecheckHealth, onOpenPost, dark, clients, activeClientId, onSwitchClient }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -113,10 +113,11 @@ export default function CommandPalette({ posts, onNavigate, onNew, onToggleTheme
     return [
       ...pages,
       { id: 'new', label: t('composer.newPost'), hint: t('palette.hintAction'), icon: Plus, run: () => onNew() },
+      { id: 'new-thread', label: t('threadComposer.new'), hint: t('palette.hintAction'), icon: CornerUpLeft, run: () => onNewThread?.() },
       { id: 'theme', label: dark ? t('palette.lightTheme') : t('palette.darkTheme'), hint: t('palette.hintAction'), icon: dark ? Sun : Moon, run: () => onToggleTheme() },
       { id: 'health', label: t('palette.recheckStatus'), hint: t('palette.hintAction'), icon: RefreshCw, run: () => { onRecheckHealth().catch(() => {}); } },
     ];
-  }, [dark, onNavigate, onNew, onToggleTheme, onRecheckHealth, t]);
+  }, [dark, onNavigate, onNew, onNewThread, onToggleTheme, onRecheckHealth, t]);
 
   // Post commands: open the post detail; searchable on id + first caption line +
   // title + campaign via a precomputed haystack string.

@@ -7,7 +7,8 @@ import { I18nProvider } from '../../lib/i18n.js';
 
 // A5: the Published account strip deactivates Facebook (dropped even when its
 // public URL is set) and surfaces the active platforms - Instagram, YouTube,
-// LinkedIn, and X - whose env-derived public URL exists.
+// LinkedIn, and X - whose env-derived public URL exists AND that this workspace
+// has actually published to (so it never links a platform never posted to).
 vi.mock('../../lib/api.js', () => ({
   useAccounts: () => ({
     data: {
@@ -29,7 +30,21 @@ function renderPublished() {
     <QueryClientProvider client={qc}>
       <I18nProvider locale="en">
         <TooltipProvider>
-          <Published campaigns={[{ id: 'c', active: true, posts: [] }]} onOpen={() => {}} />
+          <Published
+            campaigns={[{
+              id: 'c',
+              active: true,
+              // A published post touching every strip platform (+ facebook) so the
+              // "only platforms actually published to" gate is satisfied.
+              posts: [{
+                id: 'p1', campaign: 'c', derivedState: 'posted', type: 'reel',
+                platforms: ['facebook', 'instagram', 'youtube', 'linkedin', 'x'],
+                scheduledAt: '2026-07-01T10:00:00Z', postedAt: '2026-07-01T10:00:00Z',
+                media: {}, ids: {}, verify: null,
+              }],
+            }]}
+            onOpen={() => {}}
+          />
         </TooltipProvider>
       </I18nProvider>
     </QueryClientProvider>,

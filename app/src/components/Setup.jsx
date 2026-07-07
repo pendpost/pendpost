@@ -14,7 +14,7 @@
 // concurrency) and invalidates pendpost-health + config so the page reflects the
 // new state at once. Anti-slop: single-tone copy, font-bold max, tight tracking,
 // no all-caps prose - it mirrors Settings.jsx / Clients.jsx verbatim.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ExternalLink, RefreshCw, HelpCircle, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck, Cloud, CalendarClock, Laptop } from 'lucide-react';
 import { usePendpostHealth, useConfig, saveConfig, recheckHealth, connectPlatform, connectStatus, useAccounts, setMetaLane, disconnectPlatform } from '../lib/api.js';
@@ -907,10 +907,19 @@ function MetaLaneControls() {
 // alone carries status, so no status text rides the header. Expanding reveals the
 // StatusChip, the missing inputs (when incomplete) or the editable fields (when
 // connected), and the skip / un-skip + Validate + Meta controls.
-function PlatformCard({ platform, capability, configRev, identifiers, posting, onWrite }) {
+function PlatformCard({ platform, capability, configRev, identifiers, posting, onWrite, focus }) {
   const t = useT();
   const { platform: id, label, status, missing = [], validation, playbook, beta } = platform;
   const [open, setOpen] = useState(false);
+  // Deep-link target (from an Activity error's "Fix in Setup"): auto-expand this
+  // card and scroll it into view when the focus id matches this lane.
+  const cardRef = useRef(null);
+  useEffect(() => {
+    if (focus && focus === id) {
+      setOpen(true);
+      cardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [focus, id]);
   const tone = statusTone(status, validation);
   const secrets = missing.filter((m) => m.kind === 'secret');
   // A connected lane that has not proven itself live (no/failed probe) gets a per-card
@@ -938,7 +947,7 @@ function PlatformCard({ platform, capability, configRev, identifiers, posting, o
   const toggleFacebook = () => onWrite({ platforms: { ...policy, facebook: !fbEnabled } }).catch(() => {});
 
   return (
-    <section aria-labelledby={`setup-${id}`} className={`rounded-2xl p-4 ${INNER_SURFACE} ${open ? 'space-y-3' : ''}`}>
+    <section ref={cardRef} aria-labelledby={`setup-${id}`} className={`scroll-mt-4 rounded-2xl p-4 ${INNER_SURFACE} ${open ? 'space-y-3' : ''}`}>
       {/* The trigger's accessible name is EXACTLY the platform label: the glyphs, dot,
           and chevron are all aria-hidden and {label} is the only text node. Mirrors the
           file's other disclosures: aria-expanded only, no aria-controls. */}
@@ -1016,7 +1025,7 @@ function PlatformCard({ platform, capability, configRev, identifiers, posting, o
   );
 }
 
-export default function Setup() {
+export default function Setup({ focus = null }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: health, isLoading } = usePendpostHealth(true);
@@ -1113,7 +1122,7 @@ export default function Setup() {
 
           <section className="space-y-3">
             {setup.platforms.map((p) => (
-              <PlatformCard key={p.platform} platform={p} capability={capabilities?.lanes?.[p.platform] || null} configRev={config?.rev} identifiers={config?.identifiers} posting={config?.posting} onWrite={writePosting} />
+              <PlatformCard key={p.platform} platform={p} capability={capabilities?.lanes?.[p.platform] || null} configRev={config?.rev} identifiers={config?.identifiers} posting={config?.posting} onWrite={writePosting} focus={focus} />
             ))}
           </section>
         </>

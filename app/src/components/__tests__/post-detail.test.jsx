@@ -82,14 +82,18 @@ describe('PostDetail i18n migration (en)', () => {
     renderDetail();
     expect(screen.getByText('Platforms')).toBeInTheDocument();
     expect(screen.getByText('Caption')).toBeInTheDocument();
+    // First comment / Approval note / File are shown inline (no disclosure toggle).
     expect(screen.getByText('First comment')).toBeInTheDocument();
     expect(screen.getByText('Approval note')).toBeInTheDocument();
     expect(screen.getByText('File')).toBeInTheDocument();
   });
 
-  it('renders the Approve/Reject/Delete actions with English labels from t()', () => {
+  it('renders the Approve/Reject/Delete actions with English labels from t()', async () => {
+    const user = userEvent.setup();
     renderDetail();
+    // Approve is the one visible primary; Reject + Delete live in the ⋯ overflow.
     expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
     expect(screen.getByRole('button', { name: /reject/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /delete post/i })).toBeInTheDocument();
   });
@@ -103,8 +107,10 @@ describe('PostDetail i18n migration (en)', () => {
   it('the delete confirm NAMES the active client (B4 criterion 4)', async () => {
     const user = userEvent.setup();
     renderDetail();
+    // Delete lives in the ⋯ overflow now: open it, then click the menu item.
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
     await user.click(screen.getByRole('button', { name: /delete post/i }));
-    // PostDetail itself is a SlideOver (role=dialog "Post p1"); target the CONFIRM
+    // PostDetail itself is a Modal (role=dialog "Post p1"); target the CONFIRM
     // dialog specifically (its title is the accessible name) so we assert the
     // delete confirmation - not the panel behind it - names the active client.
     const dialog = await screen.findByRole('dialog', { name: /delete post/i });
@@ -146,11 +152,11 @@ describe('PostDetail i18n migration (de-CH)', () => {
 
   it('renders the de-CH backfill for every postDetail section and never a raw key id', () => {
     renderDetail({ locale: 'de-CH' });
-    // Every postDetail.* section title is backfilled in de-CH (ASCII transliteration),
-    // so the German string renders - never blank, never a raw key id. (The generic
-    // missing-key -> English fallback path itself is covered in i18n.test.js.)
-    expect(screen.getByText('Erster Kommentar')).toBeInTheDocument(); // postDetail.section.firstComment
+    // Every postDetail.* section title is backfilled in de-CH, so the German
+    // string renders - never blank, never a raw key id. Caption and the inline
+    // detail rows (first comment) are shown directly - no disclosure toggle.
     expect(screen.getByText('Bildtext')).toBeInTheDocument(); // postDetail.section.caption
+    expect(screen.getByText('Erster Kommentar')).toBeInTheDocument(); // postDetail.section.firstComment
     expect(screen.queryByText(/postDetail\./)).toBeNull();
   });
 

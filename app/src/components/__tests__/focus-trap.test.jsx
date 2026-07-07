@@ -115,7 +115,7 @@ describe('Confirm dialog focus trap', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Ask' }));
     const dialog = await screen.findByRole('dialog');
-    const panel = dialog.querySelector('.glass-panel');
+    const panel = dialog.querySelector('[data-dialog-panel]');
     const [cancelBtn, confirmBtn] = within(panel).getAllByRole('button');
 
     confirmBtn.focus();

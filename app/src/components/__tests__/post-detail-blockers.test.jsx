@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
@@ -13,6 +14,9 @@ import { I18nProvider } from '../../lib/i18n.js';
 // no rows. We mock the new read-only hooks usePlatformValidate / useValidateMedia.
 const platformValidateState = { data: undefined };
 const validateMediaState = { data: undefined };
+// Controls the cloud-aware delivery statement. resolved:false by default so the
+// unrelated tests below see NO delivery line (only the delivery-specific tests opt in).
+const cloudDeliveryState = { cloudOn: false, cloudLanes: [], resolved: false };
 
 const lintText = vi.fn(() =>
   Promise.resolve({ ok: true, clean: true, errors: 0, warnings: 0, findings: [] }),
@@ -34,6 +38,16 @@ vi.mock('../../lib/api.js', () => ({
   setCoverFrame: vi.fn(),
   uploadCover: vi.fn(),
   clearCover: vi.fn(),
+  runPublishDue: vi.fn(),
+  updatePost: (...a) => updatePost(...a),
+}));
+const updatePost = vi.fn(() => Promise.resolve({ ok: true }));
+
+// Keep every real cloud export (so nothing in the tree hits a missing-export), but
+// pin the delivery derivation to a controllable value - no real /api/cloud fetch.
+vi.mock('../../lib/cloud.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  useCloudDelivery: () => cloudDeliveryState,
 }));
 
 const basePost = {
@@ -73,6 +87,10 @@ beforeEach(() => {
   lintText.mockClear();
   platformValidateState.data = undefined;
   validateMediaState.data = undefined;
+  cloudDeliveryState.cloudOn = false;
+  cloudDeliveryState.cloudLanes = [];
+  cloudDeliveryState.resolved = false;
+  updatePost.mockClear();
 });
 
 describe('PostDetail platform-validate blocker rows', () => {
@@ -144,18 +162,20 @@ describe('PostDetail platform-validate blocker rows', () => {
     expect(screen.getByText(/faststart/i)).toBeInTheDocument();
   });
 
-  it('shows a connected draft as a neutral "waiting for approval" line, never a red blocker', () => {
-    // A connected lane (no problems) on a draft post: the panel explains the
-    // pending state in ONE neutral line; the Entwurf status badge carries the rest.
+  it('does not restate the approval state in the platforms panel (header pill owns it)', () => {
+    // A connected lane (no problems) on a draft post: the panel must NOT repeat the
+    // approval state - the header ApprovalPill ("Draft") is the single source. So the
+    // blocker block does not render at all here.
     platformValidateState.data = {
       ok: true,
       postId: 'p1',
       platforms: { instagram: { ready: false, problems: [], warnings: [], needsSetup: false } },
     };
     renderDetail({ ...basePost, approval: 'draft' });
-    expect(screen.getByText('waiting for your approval')).toBeInTheDocument();
-    // The old red "approval is draft - only approved posts publish" blocker is gone.
-    expect(screen.queryByText(/only approved posts publish/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('waiting for your approval')).not.toBeInTheDocument();
+    expect(screen.queryByText('Before publishing')).not.toBeInTheDocument();
+    // The approval axis is shown once, by the header pill.
+    expect(screen.getByText('Draft')).toBeInTheDocument();
   });
 
   it('collapses a disconnected lane to one amber "Set up <lane>" link', () => {
@@ -183,8 +203,70 @@ describe('PostDetail platform-validate blocker rows', () => {
       platforms: { instagram: { ready: true, problems: [], warnings: [], needsSetup: false } },
     };
     renderDetail(); // basePost is approved
-    expect(screen.queryByText("Won't publish yet")).not.toBeInTheDocument();
+    expect(screen.queryByText('Before publishing')).not.toBeInTheDocument();
     expect(screen.queryByText('waiting for your approval')).not.toBeInTheDocument();
+  });
+
+  it('states one calm "Publishes automatically" when the cloud fires every pending lane', () => {
+    cloudDeliveryState.cloudOn = true;
+    cloudDeliveryState.cloudLanes = ['meta', 'linkedin', 'x'];
+    cloudDeliveryState.resolved = true;
+    platformValidateState.data = {
+      ok: true,
+      postId: 'p1',
+      platforms: { instagram: { ready: true, problems: [], warnings: [] } },
+    };
+    renderDetail(); // instagram -> setup id 'meta' is in cloudLanes -> cloud-fired
+    expect(screen.getByText('Publishes automatically')).toBeInTheDocument();
+    expect(screen.queryByText(/Needs pendpost running/)).not.toBeInTheDocument();
+  });
+
+  it('names the lane that still needs the local machine (cloud does not cover it)', () => {
+    cloudDeliveryState.cloudOn = true;
+    cloudDeliveryState.cloudLanes = ['meta', 'linkedin', 'x'];
+    cloudDeliveryState.resolved = true;
+    platformValidateState.data = {
+      ok: true,
+      postId: 'p1',
+      platforms: { reddit: { ready: true, problems: [], warnings: [] } },
+    };
+    renderDetail({ ...basePost, platforms: ['reddit'] }); // reddit is local-only
+    expect(screen.getByText(/Needs pendpost running:/)).toHaveTextContent('Reddit');
+    expect(screen.queryByText('Publishes automatically')).not.toBeInTheDocument();
+  });
+
+  it('caption is editable inline; editing reveals Save which calls updatePost with the new caption', async () => {
+    const user = userEvent.setup();
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { instagram: { ready: true, problems: [], warnings: [] } } };
+    renderDetail(); // basePost is approved + scheduled -> editable
+    const textarea = screen.getByLabelText('Caption');
+    expect(textarea.tagName).toBe('TEXTAREA');
+    expect(textarea).toHaveValue('A caption');
+    // Clean: no Save button yet.
+    expect(screen.queryByRole('button', { name: /save changes/i })).not.toBeInTheDocument();
+    await user.type(textarea, ' edited');
+    const save = await screen.findByRole('button', { name: /save changes/i });
+    await user.click(save);
+    expect(updatePost).toHaveBeenCalledWith('spring', 'p1', 1, { caption: 'A caption edited' });
+  });
+
+  it('shows a text tile in the right column for a pure-text post (no link/image)', () => {
+    // Two-column layout for every post: a pure text post (no card to preview) gets
+    // a calm "Text only" tile on the right instead of a stranded single column.
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { x: { ready: true, problems: [], warnings: [] } } };
+    renderDetail({ ...basePost, type: 'text', platforms: ['x'], link: null, image: null });
+    expect(screen.getByText('Text only')).toBeInTheDocument();
+  });
+
+  it('warns the lane needs the machine when the cloud is off', () => {
+    cloudDeliveryState.resolved = true; // cloudOn stays false
+    platformValidateState.data = {
+      ok: true,
+      postId: 'p1',
+      platforms: { x: { ready: true, problems: [], warnings: [] } },
+    };
+    renderDetail({ ...basePost, platforms: ['x'] });
+    expect(screen.getByText(/Needs pendpost running:/)).toBeInTheDocument();
   });
 
   it('has no axe violations with blocker rows present', async () => {

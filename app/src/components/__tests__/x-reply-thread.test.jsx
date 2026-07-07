@@ -114,6 +114,7 @@ describe('PostDetail delete confirm thread warning', () => {
   it('warns with the reply ids when other posts thread under this one', async () => {
     const user = userEvent.setup();
     renderDetail({ post: parent, posts: [parent, child] });
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
     await user.click(screen.getByRole('button', { name: /delete post/i }));
     const dialog = await screen.findByRole('dialog', { name: /delete post/i });
     expect(dialog).toHaveTextContent(/launch-thread-2/);
@@ -123,6 +124,7 @@ describe('PostDetail delete confirm thread warning', () => {
   it('stays plain when nothing references the post', async () => {
     const user = userEvent.setup();
     renderDetail({ post: child, posts: [child] });
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
     await user.click(screen.getByRole('button', { name: /delete post/i }));
     const dialog = await screen.findByRole('dialog', { name: /delete post/i });
     expect(dialog).not.toHaveTextContent(/will not publish/i);

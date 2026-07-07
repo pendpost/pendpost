@@ -138,7 +138,87 @@ try {
   ok(emptyRes.code === 'invalid_input', 'an empty raw-bytes upload is rejected as invalid_input');
   ok(!fs.existsSync(path.join(MEDIA, 'empty.mp4')), 'a rejected empty upload writes no file');
 
-  console.log(`[asset-scan] OK - bounded ffprobe concurrency (peak ${peak}<=cap ${CAP}), shape+order parity, error isolation, raw-bytes upload byte-identical to base64 (${pass} assertions).`);
+  // ---- (7) US-ASSET-13: server-side cover generation for cover-less videos ----
+  // scanAssets must GENERATE a real <base>.jpg cover for any video that lacks a
+  // fresh one, so media.cover is reliably populated WITHOUT a client-side <video>
+  // seek. The ffmpeg extraction is injected via the 2nd scanAssets arg (the SAME
+  // seam probeMedia uses); PENDPOST_MODE=mock keeps the DEFAULT path binary-free.
+  const ROOT = path.resolve(MEDIA, '..', '..'); // MEDIA = activeRoot()/data/media
+  const coverUrlFor = (absCover) => `/media?p=${encodeURIComponent(path.relative(ROOT, absCover))}`;
+  // A probe that reports a real video (kind:'video'); reused across (7).
+  const videoProbe = async () => ({ kind: 'video', width: 1080, height: 1920, videoCodec: 'h264', pixFmt: 'yuv420p', audioCodec: 'aac', fps: 30, durationSec: 10, bitrate: 1000, faststart: true });
+
+  // A tracking extractor that writes a sibling JPEG exactly as ffmpeg would and
+  // records which media it was asked to cover. File-specific assertions below keep
+  // (7) robust to the OTHER cover-less videos the shared data/media holds (the
+  // seeded reels, prior uploads) - only the freshly-created clips are asserted on.
+  const mkExtract = (calls) => async (absMedia, absCover) => {
+    calls.push(absMedia);
+    fs.writeFileSync(absCover, Buffer.from([0xff, 0xd8, 0xff, 0xd9])); // minimal JPEG bytes
+    return true;
+  };
+
+  // (7a) a cover-less video: scanAssets asks the extractor to write <base>.jpg and
+  // reports that path as media.cover. Fresh state so the video is a cache-miss.
+  { const s = loadState(); s.assets = {}; saveState(); }
+  const vidName = 'coverless-clip.mp4';
+  const vidAbs = path.join(MEDIA, vidName);
+  fs.writeFileSync(vidAbs, Buffer.alloc(64, 0x63));
+  const coverAbs = vidAbs.replace(/\.mp4$/, '.jpg');
+  fs.rmSync(coverAbs, { force: true });
+  const genCalls = [];
+  const gen = await scanAssets(videoProbe, mkExtract(genCalls));
+  ok(genCalls.includes(vidAbs),
+    'scanAssets asks the injected extractor to generate the <base>.jpg cover for a cover-less video');
+  ok(fs.existsSync(coverAbs), 'a real cover JPEG is written next to the video asset');
+  const genAsset = gen.assets.find((a) => a.file === vidName);
+  ok(genAsset && genAsset.cover === coverUrlFor(coverAbs),
+    `media.cover points at the generated sibling (${genAsset && genAsset.cover})`);
+  ok(!gen.assets.some((a) => a.file === 'coverless-clip.jpg'),
+    'the generated cover is paired to its video, never listed as its own asset');
+
+  // (7b) idempotent: a cover that is newer-or-equal to its source is NOT
+  // re-extracted. Fresh cache so the skip is driven by on-disk freshness, not the
+  // probe cache. (Other cover-less videos may still be extracted - we only assert
+  // the fresh clip is skipped.)
+  { const s = loadState(); s.assets = {}; saveState(); }
+  const reCalls = [];
+  const gen2 = await scanAssets(videoProbe, mkExtract(reCalls));
+  ok(!reCalls.includes(vidAbs),
+    'a video whose cover is newer than its source is NOT re-extracted (idempotent)');
+  const genAsset2 = gen2.assets.find((a) => a.file === vidName);
+  ok(genAsset2 && genAsset2.cover === coverUrlFor(coverAbs),
+    'the fresh cover is still reported');
+
+  // (7c) stale: bump the SOURCE mtime past the cover -> the next scan regenerates.
+  const future = new Date(Date.now() + 5000);
+  fs.utimesSync(vidAbs, future, future);
+  { const s = loadState(); s.assets = {}; saveState(); }
+  const staleCalls = [];
+  await scanAssets(videoProbe, mkExtract(staleCalls));
+  ok(staleCalls.includes(vidAbs),
+    'a cover older than its source video is regenerated (stale -> re-extract)');
+
+  // (7d) mock-mode default: with NO injected extractor, PENDPOST_MODE=mock keeps
+  // the DEFAULT path binary-free -> a cover-less video stays cover:null (the
+  // frontend degrades to its text tile) and no ffmpeg is spawned, no file written.
+  const mockName = 'mock-only-clip.mp4';
+  const mockAbs = path.join(MEDIA, mockName);
+  fs.writeFileSync(mockAbs, Buffer.alloc(32, 0x64));
+  const mockCoverAbs = mockAbs.replace(/\.mp4$/, '.jpg');
+  fs.rmSync(mockCoverAbs, { force: true });
+  { const s = loadState(); s.assets = {}; saveState(); }
+  const gen4 = await scanAssets(videoProbe); // default extractor, mock mode
+  const mockAsset = gen4.assets.find((a) => a.file === mockName);
+  ok(mockAsset && mockAsset.cover === null,
+    'PENDPOST_MODE=mock: the default extractor no-ops, a cover-less video stays cover:null');
+  ok(!fs.existsSync(mockCoverAbs),
+    'mock mode writes no cover JPEG without an injected extractor (binary-free)');
+  fs.rmSync(vidAbs, { force: true });
+  fs.rmSync(coverAbs, { force: true });
+  fs.rmSync(mockAbs, { force: true });
+
+  console.log(`[asset-scan] OK - bounded ffprobe concurrency (peak ${peak}<=cap ${CAP}), shape+order parity, error isolation, raw-bytes upload byte-identical to base64, server-side video cover generation (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

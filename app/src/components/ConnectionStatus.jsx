@@ -12,6 +12,7 @@
 import { useState } from 'react';
 import { Cloud as CloudIcon, Monitor, MonitorOff, ExternalLink, ArrowRight } from 'lucide-react';
 import { useCloud, useCloudClients, useCloudSubscription } from '../lib/cloud.js';
+import { LanesHonestyNote } from './CloudLanesNote.jsx';
 import { useT } from '../lib/i18n.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
@@ -125,6 +126,10 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
               {sub.checkoutEligible ? <span className="ml-1.5 font-bold text-amber-600 dark:text-amber-400">{t('connection.needsPayment')}</span> : null}
             </p>
           ) : null}
+          {/* Coverage, once on: WHICH lanes the cloud does (and does not) fire, so an
+              always-on subscriber knows exactly what still needs their machine. Same
+              single-source note as the /cloud page - no second copy of the lane map. */}
+          {cloudOn ? <LanesHonestyNote className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400" /> : null}
         </div>
         <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">{t('connection.fact')}</p>
         <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">{t('connection.pitch')}</p>

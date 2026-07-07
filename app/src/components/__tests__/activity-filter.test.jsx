@@ -243,3 +243,40 @@ describe('Activity run-collapsing + Meta throttle regrouping', () => {
     expect(screen.getByText('Reel published')).toBeInTheDocument();
   });
 });
+
+// WS4 — a failed row with a specific, actionable cause offers a one-click fix; a
+// generic failure keeps the whole-row-opens-the-post behavior (no dead ends).
+describe('Activity error remediation', () => {
+  it('a needsSetup error offers a "Fix in Setup" jump to that lane', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'publish', ok: false, platform: 'telegram', campaign: 'c', postId: 'p', errorMessage: 'Telegram channel not set (TELEGRAM_CHANNEL_ID)' },
+    ];
+    renderActivity({ onNavigate });
+    await user.click(screen.getByRole('button', { name: /fix in setup/i }));
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'telegram');
+  });
+
+  it('a Meta action block offers a Meta cadence jump', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'publish', ok: false, platform: 'instagram', campaign: 'c', postId: 'p', errorCode: 'blocked_368', errorMessage: 'Meta action block active' },
+    ];
+    renderActivity({ onNavigate });
+    await user.click(screen.getByRole('button', { name: /meta cadence/i }));
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'facebook');
+  });
+
+  it('a generic failure shows no wrench and still opens the post', () => {
+    const onNavigate = vi.fn();
+    const onOpenPost = vi.fn();
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'publish', ok: false, platform: 'linkedin', campaign: 'c', postId: 'p', errorMessage: 'boom' },
+    ];
+    renderActivity({ onNavigate, onOpenPost });
+    expect(screen.queryByRole('button', { name: /fix in setup/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /open c \/ p/i })).toBeInTheDocument();
+  });
+});

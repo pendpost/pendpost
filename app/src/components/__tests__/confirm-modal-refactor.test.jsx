@@ -33,7 +33,7 @@ describe('ConfirmProvider via shared Modal', () => {
     fireEvent.click(screen.getByText('Ask'));
     const dialog = await screen.findByRole('dialog');
     expect(dialog.parentElement).toBe(document.body);
-    expect(dialog.querySelector('.glass-panel').className).toContain('max-w-sm');
+    expect(dialog.querySelector('[data-dialog-panel]').className).toContain('max-w-sm');
   });
 
   it('default-focuses the confirm button (non-danger)', async () => {

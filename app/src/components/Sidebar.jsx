@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Square, RefreshCw, ClipboardCopy, Check, Plus, Settings, ChevronRight, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, Monitor } from 'lucide-react';
+import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Square, RefreshCw, ClipboardCopy, Check, Plus, Settings, ChevronRight, ChevronDown, Clock, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, Monitor, CornerUpLeft } from 'lucide-react';
 import { setSchedulerRunning, refreshLinkedinToken, clearMetaBlock, recheckHealth } from '../lib/api.js';
 import { useCloud, useCloudClients } from '../lib/cloud.js';
 import { fmtTime, fmtDayShort, fmtFull, dateLocale, visiblePlatforms } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
 import { EYEBROW, INNER_SURFACE, PLATFORM_META } from './ui.jsx';
 import ClientSwitcher from './ClientSwitcher.jsx';
+import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm, usePrompt } from './ui/confirm.jsx';
 import FeedbackDialog from './FeedbackDialog.jsx';
@@ -73,9 +74,9 @@ function RecheckButton() {
   );
 }
 
-function HealthDot({ tone }) {
+function HealthDot({ tone, className = 'mt-1' }) {
   const cls = tone === 'ok' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : tone === 'err' ? 'bg-red-500' : 'bg-zinc-400';
-  return <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${cls}`} aria-hidden="true" />;
+  return <span className={`${className} h-2 w-2 shrink-0 rounded-full ${cls}`} aria-hidden="true" />;
 }
 
 export function HealthTile({ tone, title, sub, action, onClick }) {
@@ -112,30 +113,6 @@ export function HealthTile({ tone, title, sub, action, onClick }) {
   );
 }
 
-// A compact account chip (item 10): the platform's brand glyph(s) + a status dot, with
-// the full status carried in the tooltip AND the accessible name - logo + colour + hover
-// are enough, no always-on status line. Clicking deep-links to Setup. A healthy lane is
-// just the logo + an emerald dot; attention shows amber/red, with the detail one hover away.
-function AccountChip({ icons, tone, title, status, onClick }) {
-  const label = status ? `${title} · ${status}` : title;
-  const dot = tone === 'ok' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : tone === 'err' ? 'bg-red-500' : 'bg-zinc-400';
-  return (
-    <Tip label={label}>
-      <button
-        type="button"
-        onClick={onClick}
-        aria-label={label}
-        className="relative grid place-items-center rounded-xl p-2 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
-      >
-        <span className="flex items-center gap-0.5">
-          {icons.map(({ Icon, color }, i) => <Icon key={i} size={15} className={color} aria-hidden="true" />)}
-        </span>
-        <span className={`absolute right-0.5 top-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-zinc-900 ${dot}`} aria-hidden="true" />
-      </button>
-    </Tip>
-  );
-}
-
 export function NavItem({ icon: Icon, label, active, badge, badgeLabel, disabled, onClick }) {
   const cls = active
     ? 'bg-brand text-white shadow-lg shadow-brand/20 font-bold dark:bg-brand-light dark:text-zinc-900'
@@ -148,7 +125,7 @@ export function NavItem({ icon: Icon, label, active, badge, badgeLabel, disabled
       onClick={onClick}
       disabled={disabled}
       aria-current={active ? 'page' : undefined}
-      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm focus-visible:ring-2 focus-visible:ring-brand ${cls}`}
+      className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-left text-sm focus-visible:ring-2 focus-visible:ring-brand ${cls}`}
     >
       <Icon size={16} aria-hidden="true" />
       <span className="flex-1">{label}</span>
@@ -300,9 +277,10 @@ function MetaBlockAction() {
   );
 }
 
-export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, onNavigate, onNew, onOpenPost, onShowOverdue }) {
+export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue }) {
   const t = useT();
   const [showFeedback, setShowFeedback] = useState(false);
+  const [accountsOpen, setAccountsOpen] = useState(false);
   // Show only the relevant logos: the same connected+enabled+not-skipped rule the
   // dashboard uses (lib/format.js). The set holds DISPLAY ids (facebook/instagram
   // separately), so a chip renders only when its id is in `visible`.
@@ -413,6 +391,33 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
   const gbTone = !gb ? 'off' : !gb.authenticated ? 'warn' : gbLive?.ok === false ? 'err' : 'ok';
   const gbSub = !gb ? t('sidebar.noData') : liveSub(t, gbLive, gb.authenticated ? t('setup.status.connected') : t('sidebar.notConnected'), gb.authenticated);
 
+  // Connected lanes as data (item 10): one connected lane == one row, so Meta folds
+  // fb+ig into a single entry (primary glyph = the first visible of the two). Built
+  // once so the rail summary (logo cluster + roll-up dot) and the detail list stay in
+  // sync and scale cleanly to 15-20 platforms without per-platform JSX. Each lane's
+  // `action` is the reconnect affordance, shown only in the open list when needed.
+  const metaGlyphs = [];
+  if (visible.has('facebook')) metaGlyphs.push(PLATFORM_META.facebook);
+  if (visible.has('instagram')) metaGlyphs.push(PLATFORM_META.instagram);
+  const lanes = [
+    metaGlyphs.length ? { id: 'meta', icon: metaGlyphs[0], label: metaGlyphs.map((g) => g.label).join(' + '), tone: metaTone, sub: metaSub, action: blocked ? <MetaBlockAction /> : null } : null,
+    visible.has('linkedin') ? { id: 'linkedin', icon: PLATFORM_META.linkedin, label: PLATFORM_META.linkedin.label, tone: liTone, sub: liSub, action: li && liTone !== 'ok' ? <TokenAction authenticated={li.authenticated} refreshable authCommand="node scripts/linkedin-social.mjs auth" /> : null } : null,
+    visible.has('youtube') ? { id: 'youtube', icon: PLATFORM_META.youtube, label: PLATFORM_META.youtube.label, tone: ytTone, sub: ytSub, action: yt && !yt.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/yt-social.mjs auth" /> : null } : null,
+    visible.has('x') ? { id: 'x', icon: PLATFORM_META.x, label: PLATFORM_META.x.label, tone: xTone, sub: xSub, action: x && !x.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/x-social.mjs auth" /> : null } : null,
+    visible.has('telegram') ? { id: 'telegram', icon: PLATFORM_META.telegram, label: PLATFORM_META.telegram.label, tone: tgTone, sub: tgSub, action: tg && !tg.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/telegram-social.mjs auth" /> : null } : null,
+    visible.has('discord') ? { id: 'discord', icon: PLATFORM_META.discord, label: PLATFORM_META.discord.label, tone: dcTone, sub: dcSub, action: dc && !dc.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/discord-social.mjs auth" /> : null } : null,
+    visible.has('reddit') ? { id: 'reddit', icon: PLATFORM_META.reddit, label: PLATFORM_META.reddit.label, tone: rdTone, sub: rdSub, action: rd && !rdConnected ? <TokenAction authenticated={false} authCommand="node scripts/reddit-social.mjs auth" /> : null } : null,
+    visible.has('pinterest') ? { id: 'pinterest', icon: PLATFORM_META.pinterest, label: PLATFORM_META.pinterest.label, tone: pinTone, sub: pinSub, action: pin && !pin.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/pinterest-social.mjs auth" /> : null } : null,
+    visible.has('tiktok') ? { id: 'tiktok', icon: PLATFORM_META.tiktok, label: PLATFORM_META.tiktok.label, tone: tkTone, sub: tkSub, action: tk && !tk.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/tiktok-social.mjs auth" /> : null } : null,
+    visible.has('mastodon') ? { id: 'mastodon', icon: PLATFORM_META.mastodon, label: PLATFORM_META.mastodon.label, tone: maTone, sub: maSub, action: ma && !ma.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/mastodon-social.mjs auth" /> : null } : null,
+    visible.has('wordpress') ? { id: 'wordpress', icon: PLATFORM_META.wordpress, label: PLATFORM_META.wordpress.label, tone: wpTone, sub: wpSub, action: wp && !wp.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/wordpress-social.mjs auth" /> : null } : null,
+    visible.has('ghost') ? { id: 'ghost', icon: PLATFORM_META.ghost, label: PLATFORM_META.ghost.label, tone: ghTone, sub: ghSub, action: gh && !gh.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/ghost-social.mjs auth" /> : null } : null,
+    visible.has('nostr') ? { id: 'nostr', icon: PLATFORM_META.nostr, label: PLATFORM_META.nostr.label, tone: noTone, sub: noSub, action: no && !no.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/nostr-social.mjs auth" /> : null } : null,
+    visible.has('gbp') ? { id: 'gbp', icon: PLATFORM_META.gbp, label: PLATFORM_META.gbp.label, tone: gbTone, sub: gbSub, action: gb && !gb.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/gbp-social.mjs auth" /> : null } : null,
+  ].filter(Boolean);
+  const accountCount = lanes.length;
+  const accountsRollup = lanes.some((l) => l.tone === 'err') ? 'err' : lanes.some((l) => l.tone === 'warn') ? 'warn' : lanes.some((l) => l.tone === 'ok') ? 'ok' : 'off';
+
   const schedulerRunning = Boolean(accounts?.scheduler?.running);
   // Surface the last sweep so an EMPTY sweep (nothing was due) is still visible
   // proof the scheduler ran - otherwise an idle "Aktiv" looks indistinguishable
@@ -434,7 +439,7 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
     : deliveryLocalState;
 
   return (
-    <aside className="glass-panel z-10 flex w-60 shrink-0 flex-col gap-5 rounded-2xl p-4">
+    <aside className="glass-panel z-10 flex w-60 shrink-0 flex-col gap-3 rounded-2xl p-4">
       <div>
         <p className="font-display text-lg font-bold text-brand dark:text-brand-light">pendpost</p>
         <p className="font-display text-xs text-zinc-500 dark:text-zinc-400">{t('sidebar.tagline')}</p>
@@ -446,17 +451,43 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
 
       {/* Primary action: always one click away. The tooltip surfaces the
           otherwise-undiscoverable Cmd-K palette; the kbd chip echoes it inline. */}
-      <Tip label={t('sidebar.commandPalette')}>
-        <button
-          type="button"
-          onClick={onNew}
-          className="flex items-center justify-center gap-1.5 rounded-xl bg-brand px-3 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900"
-        >
-          <Plus size={16} aria-hidden="true" />
-          <span className="flex-1 text-center">{t('composer.newPost')}</span>
-          <kbd className="rounded-md bg-white/20 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white/90 dark:bg-zinc-900/20 dark:text-zinc-900/90" aria-hidden="true">⌘K</kbd>
-        </button>
-      </Tip>
+      {/* Split primary action: the main click stays "New post" (one click away);
+          the caret opens a small menu to start a New post or a New X thread. */}
+      <div className="flex items-stretch gap-1">
+        <Tip label={t('sidebar.commandPalette')}>
+          <button
+            type="button"
+            onClick={onNew}
+            className="flex flex-1 items-center justify-center gap-1.5 rounded-l-xl rounded-r-md bg-brand px-3 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900"
+          >
+            <Plus size={16} aria-hidden="true" />
+            <span className="flex-1 text-center">{t('composer.newPost')}</span>
+            <kbd className="rounded-md bg-white/20 px-1.5 py-0.5 text-[10px] font-bold leading-none text-white/90 dark:bg-zinc-900/20 dark:text-zinc-900/90" aria-hidden="true">⌘K</kbd>
+          </button>
+        </Tip>
+        <Popover>
+          <Tip label={t('sidebar.newMenu')}>
+            <PopoverTrigger
+              className="grid place-items-center rounded-l-md rounded-r-xl bg-brand px-2 text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900"
+              aria-label={t('sidebar.newMenu')}
+            >
+              <ChevronDown size={16} aria-hidden="true" />
+            </PopoverTrigger>
+          </Tip>
+          <PopoverContent align="end" className="w-48">
+            <PopoverClose asChild>
+              <button type="button" onClick={onNew} className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm font-semibold transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+                <Plus size={15} aria-hidden="true" /> {t('composer.newPost')}
+              </button>
+            </PopoverClose>
+            <PopoverClose asChild>
+              <button type="button" onClick={() => onNewThread?.()} className="flex w-full items-center gap-2 rounded-xl px-2.5 py-2 text-left text-sm font-semibold transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+                <CornerUpLeft size={15} aria-hidden="true" /> {t('threadComposer.new')}
+              </button>
+            </PopoverClose>
+          </PopoverContent>
+        </Popover>
+      </div>
 
       {/* Nav order (item 9): the daily workflow on top - create -> approve -> see results ->
           monitor -> measure - then content + clients, then the system/config group (cloud,
@@ -509,15 +540,10 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
             })}
             className={`group flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
           >
-            <div className="min-w-0 flex-1">
-              <p className={EYEBROW}>{t('sidebar.nextPost')}</p>
-              <p className="truncate text-xs font-bold">
-                {fmtDayShort(new Date(nextPost.scheduledAt))} {fmtTime(nextPost.scheduledAt)} · {t(`type.${nextPost.type}`)}
-              </p>
-              <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
-                {nextPost.title || nextPost.caption?.split('\n')[0] || t(`type.${nextPost.type}`)}
-              </p>
-            </div>
+            <Clock size={15} className="shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" />
+            <p className="min-w-0 flex-1 truncate text-xs font-bold">
+              {fmtDayShort(new Date(nextPost.scheduledAt))} {fmtTime(nextPost.scheduledAt)} · {t(`type.${nextPost.type}`)}
+            </p>
             <ChevronRight size={14} className="shrink-0 text-zinc-400 transition group-hover:translate-x-0.5" aria-hidden="true" />
           </button>
         ) : null}
@@ -544,109 +570,57 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
       </div>
 
       <div className="mt-auto space-y-2">
-        <div className="flex items-center justify-between px-1">
-          <p className={EYEBROW}>{t('published.accounts')}</p>
-          {accounts ? <RecheckButton /> : null}
-        </div>
-        {/* Accounts as compact brand chips (item 10): logo + status dot + hover detail,
-            no always-on status line. Click a chip to open Setup, where any reconnect /
-            clear-block action lives. Healthy = logo + emerald dot; attention = amber/red. */}
-        <div className="flex flex-wrap items-center gap-0.5 px-1">
-          {(() => {
-            // Meta is two display lanes behind one connector: build the glyph row
-            // from whichever of facebook/instagram is visible (Instagram-only by
-            // default), and render the chip only if at least one is shown.
-            const metaIcons = [];
-            if (visible.has('facebook')) metaIcons.push(PLATFORM_META.facebook);
-            if (visible.has('instagram')) metaIcons.push(PLATFORM_META.instagram);
-            if (metaIcons.length === 0) return null;
-            const metaTitle = [visible.has('facebook') ? 'Facebook' : null, visible.has('instagram') ? 'Instagram' : null].filter(Boolean).join(' + ');
-            return (
-              <span className="flex items-center">
-                <AccountChip icons={metaIcons} tone={metaTone} title={metaTitle} status={metaSub} onClick={() => onNavigate('setup')} />
-                {blocked ? <MetaBlockAction /> : null}
-              </span>
-            );
-          })()}
-          {visible.has('linkedin') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.linkedin]} tone={liTone} title="LinkedIn" status={liSub} onClick={() => onNavigate('setup')} />
-              {li && liTone !== 'ok' ? <TokenAction authenticated={li.authenticated} refreshable authCommand="node scripts/linkedin-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('youtube') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.youtube]} tone={ytTone} title="YouTube" status={ytSub} onClick={() => onNavigate('setup')} />
-              {yt && !yt.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/yt-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('x') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.x]} tone={xTone} title="X" status={xSub} onClick={() => onNavigate('setup')} />
-              {x && !x.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/x-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('telegram') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.telegram]} tone={tgTone} title="Telegram" status={tgSub} onClick={() => onNavigate('setup')} />
-              {tg && !tg.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/telegram-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('discord') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.discord]} tone={dcTone} title="Discord" status={dcSub} onClick={() => onNavigate('setup')} />
-              {dc && !dc.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/discord-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('reddit') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.reddit]} tone={rdTone} title="Reddit" status={rdSub} onClick={() => onNavigate('setup')} />
-              {rd && !rdConnected ? <TokenAction authenticated={false} authCommand="node scripts/reddit-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('pinterest') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.pinterest]} tone={pinTone} title="Pinterest" status={pinSub} onClick={() => onNavigate('setup')} />
-              {pin && !pin.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/pinterest-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('tiktok') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.tiktok]} tone={tkTone} title="TikTok" status={tkSub} onClick={() => onNavigate('setup')} />
-              {tk && !tk.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/tiktok-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('mastodon') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.mastodon]} tone={maTone} title="Mastodon" status={maSub} onClick={() => onNavigate('setup')} />
-              {ma && !ma.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/mastodon-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('wordpress') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.wordpress]} tone={wpTone} title="WordPress" status={wpSub} onClick={() => onNavigate('setup')} />
-              {wp && !wp.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/wordpress-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('ghost') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.ghost]} tone={ghTone} title="Ghost" status={ghSub} onClick={() => onNavigate('setup')} />
-              {gh && !gh.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/ghost-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('nostr') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.nostr]} tone={noTone} title="Nostr" status={noSub} onClick={() => onNavigate('setup')} />
-              {no && !no.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/nostr-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-          {visible.has('gbp') ? (
-            <span className="flex items-center">
-              <AccountChip icons={[PLATFORM_META.gbp]} tone={gbTone} title="Google Business Profile" status={gbSub} onClick={() => onNavigate('setup')} />
-              {gb && !gb.authenticated ? <TokenAction authenticated={false} authCommand="node scripts/gbp-social.mjs auth" /> : null}
-            </span>
-          ) : null}
-        </div>
+        {/* Accounts (item 10): the resting rail shows a calm roll-up dot + a cluster of
+            the connected platform glyphs (the "collected icon"), capped with +N so 15-20
+            platforms stay tidy. The full per-lane status + reconnect lives in a popover
+            that floats up over the content, so opening never disturbs the rail height. */}
+        {accounts && accountCount > 0 ? (
+          <Popover open={accountsOpen} onOpenChange={setAccountsOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                aria-label={accountsOpen ? t('sidebar.accounts.collapseAria') : t('sidebar.accounts.expandAria')}
+                className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left transition hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
+              >
+                <HealthDot tone={accountsRollup} className="" />
+                <span className="flex min-w-0 flex-1 items-center gap-2">
+                  {lanes.slice(0, 5).map((l) => {
+                    const Glyph = l.icon.Icon;
+                    return <Glyph key={l.id} size={15} className={`shrink-0 ${l.icon.color}`} aria-hidden="true" />;
+                  })}
+                  {accountCount > 5 ? <span className="text-[11px] font-bold tabular-nums text-zinc-400 dark:text-zinc-500">+{accountCount - 5}</span> : null}
+                </span>
+                <ChevronDown size={14} className={`shrink-0 text-zinc-400 transition ${accountsOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+              </button>
+            </PopoverTrigger>
+            <PopoverContent side="top" align="start" sideOffset={8} className="w-[15.5rem] p-1.5" aria-label={t('sidebar.accounts.expandAria')}>
+              <div className="mb-0.5 flex items-center justify-between gap-2 px-1.5">
+                <p className={EYEBROW}>{t('sidebar.accounts.summary', { count: accountCount })}</p>
+                {accounts ? <RecheckButton /> : null}
+              </div>
+              <ul className="max-h-[min(50vh,20rem)] space-y-px overflow-y-auto scrollbar-soft" role="list">
+                {lanes.map((l) => {
+                  const Glyph = l.icon.Icon;
+                  return (
+                    <li key={l.id} className="flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => { setAccountsOpen(false); onNavigate('setup'); }}
+                        title={l.sub}
+                        className="group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-left transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+                      >
+                        <Glyph size={16} className={`shrink-0 ${l.icon.color}`} aria-hidden="true" />
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium">{l.label}</span>
+                        <HealthDot tone={l.tone} className="" />
+                      </button>
+                      {l.action}
+                    </li>
+                  );
+                })}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        ) : null}
         {/* Delivery (item 11): cloud-aware. A cloud-managed active client shows a calm 24/7
             row (no local toggle); otherwise the local scheduler label + start/stop control. */}
         {activeOnCloud ? (

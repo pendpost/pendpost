@@ -123,7 +123,7 @@ export default function ClientSwitcher({ onManage }) {
         <button
           type="button"
           aria-label={t('clientSwitcher.aria.switch', { name: active?.displayName || t('clientSwitcher.noClient') })}
-          className={`relative flex w-full items-center gap-2.5 overflow-hidden rounded-xl py-2 pl-3 pr-2 text-left transition hover:bg-zinc-200/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-800/50 ${INNER_SURFACE}`}
+          className={`relative flex w-full shrink-0 items-center gap-2.5 overflow-hidden rounded-xl py-2 pl-3 pr-2 text-left transition hover:bg-zinc-200/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-800/50 ${INNER_SURFACE}`}
         >
           {/* 4px accent rail: the supplementary, color-only signal. */}
           <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: activeAccent }} />

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronUp, ChevronDown, Plus, PauseCircle, CornerUpLeft } from 'lucide-react';
-import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey } from '../lib/format.js';
+import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { unschedulePost } from '../lib/api.js';
 import { useQueryClient } from '@tanstack/react-query';
@@ -129,7 +129,7 @@ export function PostCard({ post, onSelect, draggable, onDragStart, lane }) {
       // stuttering pile of fragments to a SR; carry ONE clean accessible name
       // (post + type + time, like the Month/List views - the column header already
       // reads the day) so the control announces itself once.
-      aria-label={`${post.title || post.caption?.split('\n')[0] || t('planner.list.untitled')} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}`}
+      aria-label={`${postDisplayTitle(post, t('planner.list.untitled'))} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}`}
       className={`group relative w-full overflow-hidden rounded-xl text-left bg-white/80 dark:bg-zinc-900/70 ring-1 ring-zinc-900/[0.06] dark:ring-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.05)] transition hover:-translate-y-1 motion-reduce:hover:translate-y-0 hover:shadow-xl hover:bg-white/90 dark:hover:bg-zinc-800/80 focus-visible:ring-2 focus-visible:ring-brand ${dim ? 'opacity-60 hover:opacity-100' : ''}`}
     >
       {showBar ? <span aria-hidden="true" className={`pointer-events-none absolute left-0 top-0 bottom-0 z-10 w-1 ${meta.bar}`} /> : null}
@@ -347,7 +347,7 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
                   // So the button carries ONE clean accessible name (day + post +
                   // time, like the List/Week views) and the inner pieces are
                   // aria-hidden to avoid a stuttering double read-out.
-                  aria-label={`${fmtDayAria(day)} - ${post.title || post.caption?.split('\n')[0] || t('planner.list.untitled')} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}`}
+                  aria-label={`${fmtDayAria(day)} - ${postDisplayTitle(post, t('planner.list.untitled'))} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}`}
                   className="flex w-full items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-left text-[10px] ring-1 ring-zinc-900/10 transition hover:bg-white dark:bg-zinc-800/70 dark:ring-white/10 dark:hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-brand"
                 >
                   {/* Status dot so attention states read at month zoom (UX-05). The
@@ -394,7 +394,7 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
 // surface): day-grouped, dense full-width rows, primary title/time over muted
 // meta. Two sibling affordances per row (no nested buttons): the time opens an
 // inline reschedule picker (non-published posts only), the rest opens the detail.
-function ListRow({ post, onSelect, lane }) {
+function ListRow({ post, posts = [], onSelect, lane }) {
   const t = useT();
   const reschedule = useReschedule();
   const park = usePark();
@@ -402,8 +402,12 @@ function ListRow({ post, onSelect, lane }) {
   // Park = take a scheduled post off the queue. Only meaningful for a non-published
   // post that is still scheduled (has a time and is not already parked).
   const canPark = !published && !!post.scheduledAt && post.derivedState !== 'parked';
+  // X thread folding: a reply whose parent is also visible is indented under it;
+  // a parent shows how many replies thread beneath it. Same-campaign only.
+  const { parent: threadParent, replies: threadReplies } = deriveThread(post, posts);
+  const isReply = Boolean(post.xReplyTo && threadParent);
   return (
-    <li className="group flex items-center gap-3 rounded-xl p-2 ring-1 ring-transparent transition hover:bg-white/70 dark:hover:bg-zinc-800/50">
+    <li className={`group flex items-center gap-3 rounded-xl p-2 ring-1 ring-transparent transition hover:bg-white/70 dark:hover:bg-zinc-800/50 ${isReply ? 'ml-5 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700' : ''}`}>
       {published ? (
         <span className="w-11 shrink-0 text-center font-display text-sm font-bold">
           {post.scheduledAt ? fmtTime(post.scheduledAt) : EMPTY_TIME}
@@ -452,7 +456,7 @@ function ListRow({ post, onSelect, lane }) {
         <CoverThumb media={post.media} image={post.image} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-bold">
-            {post.title || post.caption?.split('\n')[0] || t('planner.list.untitled')}
+            {postDisplayTitle(post, t('planner.list.untitled'))}
           </p>
           <p className="truncate text-[11px] text-zinc-400 dark:text-zinc-500">
             {campaignBaseLabel(post.campaign)} · {post.id} · {t(`type.${post.type}`)}
@@ -464,6 +468,12 @@ function ListRow({ post, onSelect, lane }) {
           <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
             <CornerUpLeft size={13} aria-hidden="true" />
             <span className="sr-only">{t('planner.list.replyChain', { id: post.xReplyTo })}</span>
+          </span>
+        ) : null}
+        {/* Thread head: how many replies thread beneath this opener. */}
+        {threadReplies.length ? (
+          <span className="shrink-0 rounded-full bg-zinc-500/10 px-1.5 py-0.5 text-[10px] font-bold text-zinc-500 dark:text-zinc-400">
+            {t('planner.list.threadCount', { count: threadReplies.length })}
           </span>
         ) : null}
         <PlatformIcons platforms={post.platforms} />
@@ -482,6 +492,10 @@ export function ListView({ posts, onSelect, loading, lane }) {
     [posts],
   );
   const undated = useMemo(() => posts.filter((p) => !p.scheduledAt), [posts]);
+  // The visible render order (dated groups first, then undated), threaded into
+  // onSelect so the detail dialog can triage prev/next through this exact list.
+  const ordered = useMemo(() => [...dated, ...undated], [dated, undated]);
+  const selectInList = (post) => onSelect(post, ordered);
   const groups = useMemo(() => {
     const out = [];
     let cur = null;
@@ -531,7 +545,7 @@ export function ListView({ posts, onSelect, loading, lane }) {
     <section key={g.key}>
       <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{fmtDayAria(g.date)}</h3>
       <ul className="space-y-1">
-        {g.posts.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} onSelect={onSelect} lane={lane} />)}
+        {g.posts.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} lane={lane} />)}
       </ul>
     </section>
   );
@@ -556,7 +570,7 @@ export function ListView({ posts, onSelect, loading, lane }) {
         <section>
           <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{t('planner.list.noSchedule')}</h3>
           <ul className="space-y-1">
-            {undated.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} onSelect={onSelect} lane={lane} />)}
+            {undated.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} lane={lane} />)}
           </ul>
         </section>
       ) : null}

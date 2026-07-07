@@ -87,6 +87,22 @@ export function fmtFull(iso) {
   }).format(new Date(iso));
 }
 
+// Relative schedule label for the triage/detail identity line ("in 2 days",
+// "tomorrow", "5 minutes ago") so an operator reads urgency at a glance instead
+// of parsing an absolute date. Localizes itself via Intl.RelativeTimeFormat (no
+// manual strings) and pairs with fmtTime for the exact clock time. numeric:'auto'
+// yields "tomorrow"/"yesterday" where the locale has a word for it.
+export function fmtRelative(iso) {
+  const ms = Date.parse(iso) - Date.now();
+  if (Number.isNaN(ms)) return '';
+  const rtf = new Intl.RelativeTimeFormat(dateLocale(), { numeric: 'auto' });
+  const abs = Math.abs(ms);
+  const MIN = 60000, HOUR = 3600000, DAY = 86400000;
+  if (abs < HOUR) return rtf.format(Math.round(ms / MIN), 'minute');
+  if (abs < DAY) return rtf.format(Math.round(ms / HOUR), 'hour');
+  return rtf.format(Math.round(ms / DAY), 'day');
+}
+
 // Dense stamp for compact rows: 2-digit DD.MM.YY (locale-ordered, so de-CH reads
 // 29.06.26) joined to the time. KISS - no weekday, no "scheduled for" prefix.
 export function fmtStampShort(iso) {
@@ -345,6 +361,20 @@ export function fmtDayAria(date) {
   return new Intl.DateTimeFormat(dateLocale(), { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long' }).format(date);
 }
 
+// A safe display title for a post: never surface a machine timestamp as a title.
+// If post.title looks like an ISO timestamp (…T12:01:55.124Z), skip it; fall back
+// to the first caption line (also timestamp-guarded), else the given fallback (or
+// the post id). One source of truth so Published/Planner never render raw ISO
+// noise - and it future-proofs against a noisy caption whose first line is a date.
+const ISO_TITLE_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+export function postDisplayTitle(post, fallback) {
+  const title = post?.title?.trim();
+  if (title && !ISO_TITLE_RE.test(title)) return title;
+  const firstLine = post?.caption?.split('\n')[0]?.trim();
+  if (firstLine && !ISO_TITLE_RE.test(firstLine)) return firstLine;
+  return fallback || post?.id || '';
+}
+
 // Mandate F: the shared "what belongs in the Active campaigns picker" rule. An
 // archived campaign (active !== true) must never appear in the top picker - it
 // stays reachable only through the "All campaigns" filter mode. One source of
@@ -395,12 +425,142 @@ export function mediaAspect(post) {
 }
 export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'];
 
+// ── Per-platform field relevance ──────────────────────────────────────────────
+// The SINGLE source of truth for "which content fields does this post actually
+// use", so the Composer (authoring) and the PostDetail dialog (review) render the
+// SAME field set and can never drift. Derived by reading each engine lane in
+// scripts/<lane>-social.mjs to see what it consumes:
+//   - `caption` is the shared base body text. Every chat/feed lane reads it
+//     (fb, ig, linkedin, telegram, discord, reddit, pinterest, tiktok, gbp), and
+//     x/mastodon/nostr read it as the FALLBACK behind their own note override.
+//     youtube + the blog lanes (wordpress/ghost) ignore it entirely — a YouTube
+//     video posts title+description, an article posts title+body — so a "caption"
+//     field there is pure noise (the "Kein Bildtext" bug this model fixes).
+//   - the per-platform note overrides REPLACE the caption for their one lane:
+//     xCaption (x), mastodonCaption (mastodon), nostrCaption (nostr).
+//   - youtube: title + description + tags + blogSlug (+ firstComment).
+//   - wordpress/ghost: title + body + excerpt + tags + image (ghost adds
+//     canonicalUrl + the newsletter opt-in ghostEmail).
+//   - linkedin text/article: title + liDescription + link + image.
+//   - instagram: firstComment (feed) OR interactiveStory + hashtags (story).
+//   - gbp: the local-post intent object.
+const CAPTION_PLATFORMS = ['facebook', 'instagram', 'linkedin', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'nostr', 'gbp'];
+
+// Which targeted platforms consume `field`, in PLATFORMS order (for the label
+// icons that show an operator exactly which networks a field feeds).
+const FIELD_PLATFORMS = {
+  caption: CAPTION_PLATFORMS,
+  xCaption: ['x'],
+  xReplyTo: ['x'],
+  mastodonCaption: ['mastodon'],
+  nostrCaption: ['nostr'],
+  // The pinned first comment: Instagram posts it under a feed post, YouTube pins
+  // it on the video (scripts/yt-social.mjs postComment). Stories have no comment.
+  firstComment: ['instagram', 'youtube'],
+  interactiveStory: ['instagram'],
+  hashtags: ['instagram'],
+  title: ['youtube', 'linkedin', 'wordpress', 'ghost'],
+  description: ['youtube'],
+  tags: ['youtube', 'wordpress', 'ghost'],
+  blogSlug: ['youtube'],
+  body: ['wordpress', 'ghost'],
+  excerpt: ['wordpress', 'ghost'],
+  canonicalUrl: ['ghost'],
+  ghostEmail: ['ghost'],
+  link: ['linkedin'],
+  image: ['linkedin', 'wordpress', 'ghost'],
+  liDescription: ['linkedin'],
+  gbp: ['gbp'],
+};
+
+// The pure relevance map for a post's (platforms, type): true iff at least one
+// targeted platform consumes the field. Mirrors the Composer's conditional-field
+// gates EXACTLY (verified line-by-line against Composer.jsx), so both surfaces
+// share one rule. Type-gated fields (firstComment/interactiveStory/hashtags/
+// link/liDescription) fold the type in.
+export function fieldRelevance(platforms = [], type = 'reel') {
+  const has = (p) => platforms.includes(p);
+  const anyBlog = has('wordpress') || has('ghost');
+  const liArticle = has('linkedin') && type === 'text'; // Composer isLinkedinArticle
+  return {
+    caption: CAPTION_PLATFORMS.some(has),
+    xCaption: has('x'),
+    xReplyTo: has('x'),
+    mastodonCaption: has('mastodon'),
+    nostrCaption: has('nostr'),
+    // Instagram: feed only (a story has no comment). YouTube: any video (pinned
+    // first comment). scripts/yt-social.mjs + meta-social.mjs both consume it.
+    firstComment: (has('instagram') && type !== 'story') || has('youtube'),
+    interactiveStory: has('instagram') && type === 'story',
+    hashtags: has('instagram') && type === 'story',
+    title: has('youtube') || has('linkedin') || anyBlog,
+    description: has('youtube'),
+    tags: has('youtube') || anyBlog,
+    blogSlug: has('youtube'),
+    body: anyBlog,
+    excerpt: anyBlog,
+    canonicalUrl: has('ghost'),
+    ghostEmail: has('ghost'),
+    link: liArticle,
+    image: liArticle || anyBlog,
+    liDescription: liArticle,
+    gbp: has('gbp'),
+  };
+}
+
+// The editable text fields for the detail dialog, in render order (primary text
+// leads: the platform's own body text first, then its supporting fields). `kind`
+// picks the control (textarea vs single-line input); `mono` flags the markdown
+// body. PostDetail resolves the i18n label + renders each; Composer reuses the
+// relevance map above for its own gating.
+const EDITABLE_FIELDS = [
+  { key: 'caption', kind: 'textarea' },
+  { key: 'xCaption', kind: 'textarea' },
+  { key: 'mastodonCaption', kind: 'textarea' },
+  { key: 'nostrCaption', kind: 'textarea' },
+  { key: 'title', kind: 'input' },
+  { key: 'description', kind: 'textarea' },
+  { key: 'body', kind: 'textarea', mono: true },
+  { key: 'excerpt', kind: 'textarea' },
+  { key: 'liDescription', kind: 'textarea' },
+  { key: 'tags', kind: 'input' },
+  { key: 'firstComment', kind: 'textarea' },
+];
+
+// The relevant-but-read-only extras (authored in the Composer, shown here for
+// review completeness): supporting URLs/flags + the structured intent objects.
+const EXTRA_FIELDS = ['link', 'image', 'canonicalUrl', 'blogSlug', 'ghostEmail', 'hashtags', 'gbp', 'interactiveStory'];
+
+// The platforms (in PLATFORMS order) that `field` feeds on THIS post — its
+// declared platform set intersected with the post's targets.
+function platformsForField(field, targeted) {
+  const set = FIELD_PLATFORMS[field] || [];
+  return set.filter((p) => targeted.includes(p));
+}
+
+// The full render model for the PostDetail dialog: the relevance map (also used
+// by tests + Composer), the ordered EDITABLE fields (each with the targeted
+// platforms that consume it), and the ordered read-only EXTRAS. Never lists a
+// field no targeted platform uses.
+export function fieldsForPost(post) {
+  const platforms = post?.platforms || [];
+  const type = post?.type || 'reel';
+  const rel = fieldRelevance(platforms, type);
+  const fields = EDITABLE_FIELDS
+    .filter((f) => rel[f.key])
+    .map((f) => ({ ...f, platforms: platformsForField(f.key, platforms) }));
+  const extras = EXTRA_FIELDS
+    .filter((k) => rel[k])
+    .map((k) => ({ key: k, platforms: platformsForField(k, platforms) }));
+  return { rel, fields, extras };
+}
+
 // The SETUP id a DISPLAY platform keys off for connection + skip. Facebook and
 // Instagram are two display entities behind ONE Meta connector, so both resolve to
 // 'meta'; every other display platform maps to itself. Single source of truth so
 // visiblePlatforms and platformEnabled agree on which account/skip slot to read.
 const SETUP_ID = { facebook: 'meta', instagram: 'meta' };
-function setupIdOf(platform) {
+export function setupIdOf(platform) {
   return SETUP_ID[platform] || platform;
 }
 
@@ -463,6 +623,17 @@ export const NATIVE_SCHEDULING_PLATFORMS = new Set(['facebook', 'youtube', 'mast
 // post (FB-native + IG-local) because deriveState collapses to one post-level state.
 export function deliveryMode(platform) {
   return NATIVE_SCHEDULING_PLATFORMS.has(platform) ? 'native' : 'local';
+}
+
+// The TRUE delivery mechanism once the cloud is accounted for: 'cloud' when the
+// always-on runtime publishes this lane (the platform's setup id is in the cloud's
+// covered set AND the cloud is on for this brand), else the base deliveryMode
+// ('native' self-schedules, 'local' needs pendpost running). Reuses setupIdOf so
+// facebook/instagram resolve to the 'meta' cloud lane - no second platform->lane map.
+// 'cloud' and 'native' both mean "fires without the user"; only 'local' needs action.
+export function effectiveDelivery(platform, { cloudOn = false, cloudLanes = [] } = {}) {
+  if (cloudOn && cloudLanes.includes(setupIdOf(platform))) return 'cloud';
+  return deliveryMode(platform);
 }
 
 // One filterable status per post. Approval states (draft/pending/rejected) take
@@ -539,4 +710,50 @@ export function suggestPostId(type, posts = []) {
     if (!used.has(`${prefix}${n}`)) return `${prefix}${n}`;
   }
   return `${prefix}${used.size + 1}`;
+}
+
+// X reply-chain (xReplyTo) context for a post, resolved WITHIN its own campaign:
+// the sibling post it threads under (parent) and the posts that thread under it
+// (replies). Same-campaign only - the engine resolves the reference within one
+// plan and fail-closes when the parent is gone (scripts/x-social.mjs), so a
+// dangling reference means "held forever". One rule, reused by PostDetail, the
+// planner list and the approvals queue so the three never drift.
+export function deriveThread(post, posts = []) {
+  const parent = post.xReplyTo
+    ? (posts || []).find((p) => p.campaign === post.campaign && p.id === post.xReplyTo) || null
+    : null;
+  const replies = (posts || []).filter((p) => p.campaign === post.campaign && p.xReplyTo === post.id);
+  return { parent, replies };
+}
+
+// The WHOLE thread `post` belongs to, root-first: walk xReplyTo up to the opener,
+// then collect every transitive reply beneath it. Handles the linked-list chaining
+// the thread composer produces (each reply threads under the previous tweet) as
+// well as a star. Same-campaign only; cycle-safe. Returns [post] when standalone.
+export function collectThread(post, posts = []) {
+  const inCampaign = (posts || []).filter((p) => p.campaign === post.campaign);
+  const byId = (id) => inCampaign.find((p) => p.id === id) || null;
+  // Walk up to the root opener.
+  let root = post;
+  const climbed = new Set([root.id]);
+  while (root.xReplyTo) {
+    const parent = byId(root.xReplyTo);
+    if (!parent || climbed.has(parent.id)) break;
+    climbed.add(parent.id);
+    root = parent;
+  }
+  // Collect the root + every transitive descendant (breadth-first, cycle-safe).
+  const out = [];
+  const seen = new Set();
+  const queue = [root];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (seen.has(cur.id)) continue;
+    seen.add(cur.id);
+    out.push(cur);
+    for (const p of inCampaign) {
+      if (p.xReplyTo === cur.id && !seen.has(p.id)) queue.push(p);
+    }
+  }
+  return out;
 }

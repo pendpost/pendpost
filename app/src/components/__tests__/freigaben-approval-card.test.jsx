@@ -116,3 +116,30 @@ describe('Freigaben ApprovalCard caption body + inline PostPreview', () => {
     expect(await axeClean(container)).toHaveNoViolations();
   });
 });
+
+// Trust gate: an approved post edited after approval (editedSinceApproval:true) must
+// read as NEEDING action (re-approve), not as a settled approved card. The publish
+// gate refuses it until re-approval, so the review surface must resurface it.
+describe('Freigaben edited-since-approval (trust gate)', () => {
+  const editedPost = {
+    ...mediaPost,
+    id: 'p9',
+    approval: 'approved',
+    editedSinceApproval: true,
+    derivedState: 'waiting-due',
+  };
+
+  it('surfaces an approved-but-edited post with a re-approve badge and an Approve action', () => {
+    renderFreigaben([editedPost]);
+    // The distinct amber pill (not the hidden green "Approved" pill).
+    expect(screen.getByText('Re-approve')).toBeInTheDocument();
+    // Actionable again: the card's Approve control (exact label) is present so the
+    // owner can re-bless it - distinct from the keyboard-hint "Approve post" entry.
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+
+  it('does NOT show a re-approve badge for a cleanly-approved post', () => {
+    renderFreigaben([{ ...mediaPost, id: 'p10', approval: 'approved', editedSinceApproval: false, derivedState: 'waiting-due' }]);
+    expect(screen.queryByText('Re-approve')).toBeNull();
+  });
+});

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft } from 'lucide-react';
 import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, createPost, updatePost, lintText } from '../lib/api.js';
 import { useT, useLocale } from '../lib/i18n.js';
-import { PLATFORMS, prettyCampaign, suggestPostId, visiblePlatforms } from '../lib/format.js';
+import { PLATFORMS, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
@@ -60,7 +60,7 @@ function representativePlatform(platforms) {
 // optional platform threads the target's caption/hashtag caps through so the
 // matchers do not fall back to the conservative default; it is part of the
 // debounce deps so re-selecting platforms re-lints.
-function useLint(text, platform) {
+export function useLint(text, platform) {
   const [result, setResult] = useState(null);
   useEffect(() => {
     if (!text) {
@@ -75,7 +75,7 @@ function useLint(text, platform) {
   return result;
 }
 
-function LintPanel({ lint }) {
+export function LintPanel({ lint }) {
   const t = useT();
   if (!lint) return null;
   if (lint.clean && !lint.warnings) {
@@ -389,7 +389,7 @@ export function InteractiveFields({
 // color alone - WCAG 1.4.1). NOT a live region: the count stays reachable via
 // aria-describedby on focus; the over/under TRANSITION is announced separately
 // (useOverLimitAnnounce), so a screen reader is not spammed per keystroke.
-function CharCounter({ id, len, max, over }) {
+export function CharCounter({ id, len, max, over }) {
   const t = useT();
   return (
     <p
@@ -513,7 +513,7 @@ function GbpFields({ gbp, onChange }) {
 
 // Create + edit composer as a full page. Edit mode never touches approval/cover/
 // publish fields - those have their own controls in PostDetail.
-export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting }) {
+export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting, onStartThread }) {
   const t = useT();
   const locale = useLocale();
   const queryClient = useQueryClient();
@@ -649,18 +649,27 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     const allowed = new Set([...visible, ...platforms]);
     return PLATFORMS.filter((p) => allowed.has(p));
   }, [accounts, posting, platforms]);
+  // The SHARED field-relevance model (lib/format.js), consumed identically by the
+  // PostDetail review dialog so the authoring form and the review view can never
+  // drift on which fields a post uses. Every conditional field below gates on
+  // `rel.<field>` instead of an ad-hoc inline check.
+  const rel = useMemo(() => fieldRelevance(platforms, type), [platforms, type]);
   const isLinkedinArticle = platforms.includes('linkedin') && type === 'text';
   // Article authoring (wave 2): the long-form fields apply whenever a blog lane
   // is targeted - WordPress and Ghost publish title + markdown body (falling
   // back to the caption), excerpt, hero image and tags.
   const isArticle = platforms.includes('wordpress') || platforms.includes('ghost');
-  const isGhost = platforms.includes('ghost');
-  const showGbp = platforms.includes('gbp');
+  const showGbp = rel.gbp;
   const needsMedia = type !== 'text';
-  const showFirstComment = platforms.includes('instagram') && type !== 'story';
+  // Nothing to preview: a pure text post with no link and no image, targeting
+  // neither a blog lane nor LinkedIn, renders no card (PostPreview returns null).
+  // Mirror that here so we hide the "Vorschau" label + toggle rather than leave
+  // an empty labelled region dangling over nothing.
+  const nothingToPreview = !isLinkedinArticle && !isArticle && type === 'text' && !link && !image;
+  const showFirstComment = rel.firstComment;
   // FR4: interactive-story authoring applies only to an Instagram story - there is
   // no story surface to attach stickers to for any other type or platform.
-  const showInteractive = type === 'story' && platforms.includes('instagram');
+  const showInteractive = rel.interactiveStory;
 
   // Note-override counters (findings r2-1/r2-3): the effective text is the
   // per-platform override else the shared caption; CharCounter +
@@ -964,6 +973,18 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           </fieldset>
 
+          {/* Discoverability: a single X post can grow into a real thread. This
+              hands the current caption to the thread composer as its opener. */}
+          {!isEdit && platforms.includes('x') && onStartThread ? (
+            <button
+              type="button"
+              onClick={() => onStartThread(caption)}
+              className="flex items-center gap-1.5 text-xs font-semibold text-brand transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+            >
+              <CornerUpLeft size={13} aria-hidden="true" /> {t('composer.threadHint')}
+            </button>
+          ) : null}
+
           {!isEdit ? (
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
@@ -1009,15 +1030,20 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
-          <div className="space-y-1.5">
-            <label className={EYEBROW} htmlFor="composer-caption">{t('composer.field.caption')}</label>
-            <textarea id="composer-caption" value={caption} onChange={(e) => setCaption(e.target.value)} rows={7} className={`${FIELD_CLS} resize-y leading-relaxed`} />
-            <div aria-live="polite">
-              <LintPanel lint={lint} />
+          {/* Caption gates on rel.caption: a YouTube-only or blog-only post posts
+              title+description / title+body, never a feed caption - so the field
+              disappears there instead of standing empty. */}
+          {rel.caption ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-caption">{t('composer.field.caption')}</label>
+              <textarea id="composer-caption" value={caption} onChange={(e) => setCaption(e.target.value)} rows={7} className={`${FIELD_CLS} resize-y leading-relaxed`} />
+              <div aria-live="polite">
+                <LintPanel lint={lint} />
+              </div>
             </div>
-          </div>
+          ) : null}
 
-          {platforms.includes('x') ? (
+          {rel.xCaption ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-x-caption">{t('composer.field.xCaption')}</label>
               <textarea
@@ -1041,7 +1067,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
               clearing the field (-> null) releases a post held by a dangling
               reference. The datalist offers sibling X posts; free text stays
               allowed for ids the campaign list does not carry yet. */}
-          {platforms.includes('x') ? (
+          {rel.xReplyTo ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-x-reply-to">{t('composer.field.xReplyTo')}</label>
               <input
@@ -1061,7 +1087,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
-          {platforms.includes('mastodon') ? (
+          {rel.mastodonCaption ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-mastodon-caption">{t('composer.field.mastodonCaption')}</label>
               <textarea
@@ -1078,7 +1104,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
-          {platforms.includes('nostr') ? (
+          {rel.nostrCaption ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-nostr-caption">{t('composer.field.nostrCaption')}</label>
               <textarea
@@ -1111,7 +1137,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             />
           ) : null}
 
-          {platforms.includes('youtube') || platforms.includes('linkedin') || isArticle ? (
+          {rel.title ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-title">{t('composer.field.title')}</label>
               <input id="composer-title" value={title} onChange={(e) => setTitle(e.target.value)} className={FIELD_CLS} />
@@ -1121,7 +1147,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
 
           {/* Wave-2 article fields (wordpress/ghost): markdown body + excerpt;
               the shared image field below doubles as the article hero. */}
-          {isArticle ? (
+          {rel.body ? (
             <>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-body">{t('composer.field.body')}</label>
@@ -1136,7 +1162,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </>
           ) : null}
 
-          {isLinkedinArticle ? (
+          {rel.link ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-link">{t('composer.field.link')}</label>
               <input id="composer-link" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://example.com/blog/..." className={FIELD_CLS} />
@@ -1145,14 +1171,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
 
           {/* ONE image field serves both cards: the LinkedIn link-preview
               thumbnail and the wordpress/ghost article hero (same post.image). */}
-          {isLinkedinArticle || isArticle ? (
+          {rel.image ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-image">{isArticle ? t('composer.field.imageArticle') : t('composer.field.image')}</label>
               <input id="composer-image" value={image} onChange={(e) => setImage(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={FIELD_CLS} />
             </div>
           ) : null}
 
-          {isGhost ? (
+          {rel.canonicalUrl ? (
             <>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-canonical-url">{t('composer.field.canonicalUrl')}</label>
@@ -1170,14 +1196,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </>
           ) : null}
 
-          {isLinkedinArticle ? (
+          {rel.liDescription ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-li-description">{t('composer.field.liDescription')}</label>
               <textarea id="composer-li-description" value={liDescription} onChange={(e) => setLiDescription(e.target.value)} rows={3} className={`${FIELD_CLS} resize-y leading-relaxed`} />
             </div>
           ) : null}
 
-          {platforms.includes('youtube') ? (
+          {rel.description ? (
             <>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-description">{t('composer.field.description')}</label>
@@ -1194,7 +1220,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           ) : null}
 
           {/* Tags serve YouTube (video tags) and the article lanes (post tags). */}
-          {platforms.includes('youtube') || isArticle ? (
+          {rel.tags ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-tags">{t('composer.field.tags')}</label>
               <input id="composer-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t('composer.field.tagsPlaceholder')} className={FIELD_CLS} />
@@ -1204,28 +1230,31 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {showGbp ? <GbpFields gbp={gbp} onChange={setGbp} /> : null}
 
           {/* Small-viewport preview (finding #56): the sticky <aside> is hidden
-              below lg, so surface the same preview behind a toggle here. */}
-          <div className="lg:hidden">
-            <button
-              type="button"
-              onClick={() => setShowPreview((v) => !v)}
-              aria-expanded={showPreview}
-              aria-controls="composer-preview-mobile"
-              className="flex items-center gap-1.5 rounded-xl bg-zinc-200/60 px-3 py-2 text-xs font-bold text-zinc-600 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60"
-            >
-              <Eye size={14} aria-hidden="true" />
-              {showPreview ? t('composer.hidePreview') : t('composer.showPreview')}
-            </button>
-            {showPreview ? (
-              <div id="composer-preview-mobile" className="mt-2 space-y-2">
-                {isLinkedinArticle ? (
-                  <LinkCardPreview image={image} title={title} link={link} />
-                ) : (
-                  <PostPreview post={previewPost} />
-                )}
-              </div>
-            ) : null}
-          </div>
+              below lg, so surface the same preview behind a toggle here. Hidden
+              entirely when there is nothing to preview - no toggle over nothing. */}
+          {nothingToPreview ? null : (
+            <div className="lg:hidden">
+              <button
+                type="button"
+                onClick={() => setShowPreview((v) => !v)}
+                aria-expanded={showPreview}
+                aria-controls="composer-preview-mobile"
+                className="flex items-center gap-1.5 rounded-xl bg-zinc-200/60 px-3 py-2 text-xs font-bold text-zinc-600 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60"
+              >
+                <Eye size={14} aria-hidden="true" />
+                {showPreview ? t('composer.hidePreview') : t('composer.showPreview')}
+              </button>
+              {showPreview ? (
+                <div id="composer-preview-mobile" className="mt-2 space-y-2">
+                  {isLinkedinArticle ? (
+                    <LinkCardPreview image={image} title={title} link={link} />
+                  ) : (
+                    <PostPreview post={previewPost} />
+                  )}
+                </div>
+              ) : null}
+            </div>
+          )}
 
           {/* B2: read-only publish-readiness blockers for the saved post, surfaced
               near the save action so the owner sees a bad post before publish.
@@ -1252,7 +1281,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
         {/* Live preview - the post's real shape as the owner edits. */}
         <aside className="hidden lg:block">
           <div className="sticky top-0 space-y-2">
-            <p className={EYEBROW}>{t('composer.preview')}</p>
+            {nothingToPreview ? null : <p className={EYEBROW}>{t('composer.preview')}</p>}
             {isLinkedinArticle ? (
               <LinkCardPreview image={image} title={title} link={link} />
             ) : (

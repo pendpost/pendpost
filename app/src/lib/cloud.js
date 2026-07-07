@@ -143,6 +143,30 @@ export function useCloudSubscription(enabled = true) {
   });
 }
 
+// The ONE derivation of "is the cloud actually firing this brand's posts, and which
+// lanes does it cover" - previously copy-pasted into ConnectionStatus (and Sidebar).
+// Returns { cloudOn, cloudLanes, resolved }: `cloudOn` requires a keyed connection AND
+// the global enable AND the ACTIVE client being always-on (identical gate to
+// ConnectionStatus's dot); `cloudLanes` is the capability map's cloud-published set
+// (setup ids like 'meta'/'linkedin'/'x'), []  until loaded so a consumer can never
+// over-promise the cloud; `resolved` is false until every query the answer depends on
+// has returned, so a caller can withhold a delivery claim rather than flash a wrong one.
+export function useCloudDelivery() {
+  const { data: cloud } = useCloud();
+  const cloudConnected = Boolean(cloud?.workspaceId && cloud?.apiKey?.present);
+  const { data: clientsData } = useCloudClients(cloudConnected);
+  const { data: caps } = useCapabilities();
+  const activeAlwaysOn = ((clientsData?.clients) || []).find((c) => c.active)?.alwaysOn === true;
+  const cloudOn = cloudConnected && Boolean(cloud?.enabled) && activeAlwaysOn;
+  const cloudLanes = Array.isArray(caps?.cloudLanes) ? caps.cloudLanes : [];
+  // Settled enough to speak: the connection read is back, and IF the cloud could be on
+  // (connected + enabled) we also have the clients (for always-on) and the capability
+  // map (for the lanes). An unconnected/disabled install resolves immediately as off.
+  const couldBeOn = cloudConnected && Boolean(cloud?.enabled);
+  const resolved = Boolean(cloud) && (!couldBeOn || (Boolean(clientsData) && Boolean(caps)));
+  return { cloudOn, cloudLanes, resolved };
+}
+
 // POST /api/cloud/checkout { plan, interval } -> { ok, url }. Opens a Stripe Checkout
 // (card 4242 in test) to subscribe to a tier; the server also opens the browser.
 export const startCheckout = (plan, interval) => postJson('/api/cloud/checkout', { plan, interval });

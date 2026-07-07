@@ -333,8 +333,14 @@ async function createPost(post, videoUrn, token, thumbnailUrn = null) {
     // preview crawler, which would otherwise read the SPA homepage og:title for
     // any /blog/* URL (the SSR limitation documented in CLAUDE.md). description +
     // thumbnail complete the card so no manual LinkedIn editing is needed.
+    // Card description precedence: the dedicated `liDescription` wins (it exists so
+    // a LinkedIn+YouTube post can carry a LinkedIn-specific card description without
+    // colliding with `description`, the YouTube video description); a LinkedIn-only
+    // article falls back to `description` (the original single-field convention that
+    // the live blog posts + article-fields.test.mjs still use).
+    const cardDescription = post.liDescription || post.description;
     const article = { source: post.link, title: post.title || 'pendpost' };
-    if (post.description) article.description = post.description;
+    if (cardDescription) article.description = cardDescription;
     if (thumbnailUrn) article.thumbnail = thumbnailUrn;
     body.content = { article };
   }
@@ -561,7 +567,9 @@ async function cmdValidate(args) {
       console.log(`[preview] author:       ${orgUrn()}`);
       if (post.link) console.log(`[preview] article:      ${post.link} (title: ${post.title || 'pendpost'})`);
       console.log(`[preview] thumbnail:    ${post.image || '(none - the article card will have no image)'}`);
-      if (post.description) console.log(`[preview] description:  ${post.description}`);
+      // Same precedence the real create uses: liDescription (LinkedIn-specific) else description.
+      const cardDescription = post.liDescription || post.description;
+      if (cardDescription) console.log(`[preview] description:  ${cardDescription}`);
       console.log('[preview] commentary (RAW):');
       console.log(post.caption || '');
       console.log('\n[preview] commentary (ESCAPED little-text - exactly what gets POSTed; # stays a hashtag):');

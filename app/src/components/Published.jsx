@@ -7,7 +7,7 @@ import { StatusPill, CoverThumb, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { MonthView } from './Planner.jsx';
-import { dayKey, fmtTime, fmtFull, fmtMonthYear, PLATFORMS } from '../lib/format.js';
+import { dayKey, fmtTime, fmtFull, fmtMonthYear, PLATFORMS, postDisplayTitle } from '../lib/format.js';
 
 // The handed-off / live states a published archive surfaces: actually posted,
 // believed live (fired-assumed), and the two verify outcomes.
@@ -37,8 +37,10 @@ function viewLink(post, platform) {
 // Facebook is deactivated - it is dropped from the strip even if a URL is set;
 // Instagram and YouTube surface as soon as their handle (IG_HANDLE / YT_CHANNEL_ID)
 // is configured.
-function AccountStrip({ publicUrls, t }) {
-  const entries = PLATFORMS.filter((p) => p !== 'facebook' && publicUrls?.[p]);
+function AccountStrip({ publicUrls, platforms, t }) {
+  // Only real live profiles: a public URL is configured AND this workspace has
+  // actually published to that platform. Facebook stays dropped by design.
+  const entries = PLATFORMS.filter((p) => p !== 'facebook' && publicUrls?.[p] && platforms?.has(p));
   if (!entries.length) return null;
   return (
     <section className="space-y-1.5">
@@ -86,7 +88,7 @@ function Row({ post, onOpen, t }) {
       >
         <CoverThumb media={post.media} image={post.image} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-bold">{post.title?.trim() || post.caption?.split('\n')[0] || post.id}</p>
+          <p className="truncate text-sm font-bold">{postDisplayTitle(post)}</p>
           <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
             <StatusPill state={post.derivedState} short />
             <span>{t(`type.${post.type}`)}</span>
@@ -156,7 +158,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
 
-  const { posts, unfilteredCount, rangeCounts } = useMemo(() => {
+  const { posts, unfilteredCount, rangeCounts, publishedPlatforms } = useMemo(() => {
     const now = Date.now();
     const inRange = (p, days) => {
       if (days == null) return true;
@@ -181,7 +183,11 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
       const tb = Date.parse(b.postedAt || b.scheduledAt || '') || 0;
       return tb - ta;
     });
-    return { posts: flat, unfilteredCount: published.length, rangeCounts: counts };
+    // The platforms actually published to (across the archive, before the date
+    // range) - so the accounts strip links only real live profiles, never a
+    // platform this workspace never posted to.
+    const platformsSet = new Set(published.flatMap((p) => p.platforms || []));
+    return { posts: flat, unfilteredCount: published.length, rangeCounts: counts, publishedPlatforms: platformsSet };
   }, [campaigns, platformFilter, range]);
 
   const groups = useMemo(() => {
@@ -225,7 +231,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
 
   return (
     <div className="space-y-5">
-      <AccountStrip publicUrls={accounts?.publicUrls} t={t} />
+      <AccountStrip publicUrls={accounts?.publicUrls} platforms={publishedPlatforms} t={t} />
 
       <div className="flex flex-wrap items-center gap-2">
         <Segmented label={t('published.view.aria')} value={view} options={viewOptions} onChange={setView} />
@@ -290,7 +296,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
               <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{g.header}</h3>
               <div className="space-y-1.5">
                 {g.entries.map((post) => (
-                  <Row key={`${post.campaign}/${post.id}`} post={post} onOpen={onOpen} t={t} />
+                  <Row key={`${post.campaign}/${post.id}`} post={post} onOpen={(p) => onOpen(p, posts)} t={t} />
                 ))}
               </div>
             </section>

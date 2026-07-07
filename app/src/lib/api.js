@@ -215,6 +215,8 @@ export const archiveClient = (id) => postJson(`/api/clients/${id}/archive`, { ac
 // Create a campaign (US-ONB-04): the first-run empty-state's primary action.
 // body = { id, note?, timezone? }; maps to campaign_create / POST /api/campaigns.
 export const createCampaign = (body) => postJson('/api/campaigns', { ...body, actor: ACTOR });
+// Operator-only "hide from views" flag; maps to campaign_set_internal.
+export const setCampaignInternal = (id, internal) => postJson(`/api/campaigns/${id}/internal`, { internal, actor: ACTOR });
 export const createPost = (campaign, post) => postJson(`/api/plans/${campaign}/posts`, { post, actor: ACTOR });
 export const updatePost = (campaign, postId, ifRev, fields) => sendJson('PATCH', `/api/plans/${campaign}/posts/${postId}`, { ifRev, fields, actor: ACTOR });
 export const deletePost = (campaign, postId, force = false) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}`, { force, actor: ACTOR });

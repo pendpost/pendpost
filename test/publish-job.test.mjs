@@ -87,6 +87,10 @@ try {
   ok(throwsWith(() => buildPublishJob({ ...basePost, approval: 'pending' }, 'meta', metaCtx), 'not_approved'), 'a pending post is refused (code not_approved)');
   ok(throwsWith(() => buildPublishJob({ ...basePost, approval: 'rejected' }, 'meta', metaCtx), 'not_approved'), 'a rejected post is refused (code not_approved)');
 
+  // ---- (5b) trust gate: an approved-but-edited post is refused (second fence) -
+  ok(throwsWith(() => buildPublishJob({ ...basePost, editedSinceApproval: true }, 'meta', metaCtx), 'edited_since_approval'), 'an approved post edited after approval is refused (code edited_since_approval)');
+  ok(buildPublishJob({ ...basePost, editedSinceApproval: false }, 'meta', metaCtx).jobId === 'default:c1:p1:meta', 'editedSinceApproval:false does not block a clean approved post');
+
   // ---- (6) approval invariant: self-approval is refused, owner is exempt -----
   ok(throwsWith(() => buildPublishJob({ ...basePost, createdBy: 'agent:claude', approvalBy: 'agent:claude' }, 'meta', metaCtx), 'self_approved'), 'a post approved by its own creator is refused (code self_approved)');
   const ownerApproved = buildPublishJob({ ...basePost, createdBy: 'owner', approvalBy: 'owner' }, 'meta', metaCtx);

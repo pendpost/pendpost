@@ -13,10 +13,11 @@
 // lowercase "pendpost"; the emerald/amber/red semantic palette is status-only.
 import { useEffect, useRef, useState } from 'react';
 import { Cloud as CloudIcon, CloudOff, Loader2, CheckCircle2, AlertCircle, ExternalLink, Monitor, LogOut, ListChecks, ShieldCheck, RefreshCw, DownloadCloud, CreditCard, Receipt, X, AtSign, ChevronLeft, ArrowRight, ChevronDown, UserCog, RefreshCcw, UserPlus } from 'lucide-react';
-import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, useCapabilities, startCheckout, startBillingPortal, setSpendCap, enableStart, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud } from '../lib/cloud.js';
+import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, enableStart, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud } from '../lib/cloud.js';
 import { useClients } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { INNER_SURFACE, EYEBROW, PLATFORM_META } from './ui.jsx';
+import { LanesHonestyNote } from './CloudLanesNote.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { Switch } from './ui/Switch.jsx';
@@ -62,30 +63,6 @@ const PLAN_INFO = {
 const usd = (cents) => `$${(cents / 100).toFixed(2)}`;
 const usdWhole = (cents) => (cents % 100 === 0 ? `$${cents / 100}` : usd(cents));
 
-// The pre-purchase lanes honesty note: which lanes the cloud can NEVER fire
-// (reddit: non-commercial API terms; tiktok: unaudited apps post private-only -
-// they publish only while the operator's own machine runs pendpost) and which
-// the platform schedules natively anyway. Shown at every buy decision point so
-// nobody purchases a 24/7 guarantee for a lane the cloud does not cover. Driven
-// by the cloud's public capability map (useCapabilities; baked fallback offline)
-// so a capability flip propagates without an app release. Lane ids -> human
-// names only; a lane without a name here (youtube-release) stays out of the
-// prose - it is not a UI platform.
-const LANE_LABELS = {
-  reddit: 'Reddit', tiktok: 'TikTok', youtube: 'YouTube', mastodon: 'Mastodon',
-  wordpress: 'WordPress', ghost: 'Ghost', telegram: 'Telegram', discord: 'Discord',
-  nostr: 'Nostr', pinterest: 'Pinterest', gbp: 'Google Business Profile',
-};
-function LanesHonestyNote() {
-  const t = useT();
-  const { data: caps } = useCapabilities();
-  const names = (list, fallback) => ((Array.isArray(list) && list.length ? list : fallback))
-    .map((l) => LANE_LABELS[l]).filter(Boolean).join(', ');
-  const localOnly = names(caps?.localOnlyLanes, ['reddit', 'tiktok']);
-  const native = names(caps?.nativeLanes, ['youtube', 'mastodon', 'wordpress', 'ghost']);
-  if (!localOnly) return null;
-  return <p>{t('cloud.lanes.note', { localOnly, native })}</p>;
-}
 
 // How long to wait for the browser sign-in to complete before offering a retry. The
 // human signs in and the cloud redirects to the loopback callback, which flips the
