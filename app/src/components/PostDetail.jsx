@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, PauseCircle, CheckCheck, Send, ExternalLink, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft } from 'lucide-react';
-import { fmtFull, fmtBytes, campaignBaseLabel, deliveryMode } from '../lib/format.js';
+import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, PauseCircle, CheckCheck, Send, ExternalLink, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, ChevronLeft, ChevronRight, Cloud as CloudIcon, FileText } from 'lucide-react';
+import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, fieldsForPost, deriveThread } from '../lib/format.js';
 import {
   useAccounts, usePlatformValidate, useValidateMedia, useActiveClient,
   approvePost, rejectPost, deletePost, unschedulePost, reschedulePost, markPosted, verifyPost,
-  runPublishDue, setCoverFrame, uploadCover, clearCover,
+  runPublishDue, setCoverFrame, uploadCover, clearCover, updatePost,
 } from '../lib/api.js';
-import { StatusPill, ApprovalPill, PLATFORM_META, INNER_SURFACE, SlideOver, CloseButton, PostPreview, PlatformBlockers, EYEBROW } from './ui.jsx';
+import { useCloudDelivery } from '../lib/cloud.js';
+import { StatusPill, ApprovalPill, PlatformIcons, PLATFORM_META, INNER_SURFACE, Modal, CloseButton, PostPreview, PlatformBlockers, EYEBROW } from './ui.jsx';
+import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import ClientBand from './ClientBand.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
@@ -23,6 +25,111 @@ function Section({ title, children }) {
       <h3 className={EYEBROW}>{title}</h3>
       {children}
     </section>
+  );
+}
+
+// ONE editable content field in the detail dialog, driven by the shared
+// field-relevance model. `label` names it; the optional platform-icon row shows
+// which targeted networks the field feeds (only where it diverges from "all of
+// them"), and the optional hint carries the override note (X/Mastodon/Nostr).
+// Read-only (a posted post) collapses to a plain paragraph. Long content wraps
+// (break-words) so a URL-heavy field never forces the dialog to scroll sideways.
+function ContentField({ label, platforms, showIcons, hint, kind, mono, value, onChange, editable, placeholder }) {
+  const rows = kind === 'textarea'
+    ? Math.min(mono ? 18 : 14, Math.max(3, String(value || '').split('\n').length + 1))
+    : undefined;
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span className={EYEBROW}>{label}</span>
+        {showIcons && platforms.length ? <PlatformIcons platforms={platforms} size={12} /> : null}
+        {hint ? <span className="text-[10px] font-medium text-zinc-400 dark:text-zinc-500">{hint}</span> : null}
+      </div>
+      {editable ? (
+        kind === 'textarea' ? (
+          <textarea
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            aria-label={label}
+            placeholder={placeholder}
+            rows={rows}
+            className={`w-full resize-y break-words rounded-xl p-3 text-sm leading-relaxed scrollbar-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${mono ? 'font-mono ' : ''}${INNER_SURFACE}`}
+          />
+        ) : (
+          <input
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            aria-label={label}
+            placeholder={placeholder}
+            className={`w-full rounded-xl px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
+          />
+        )
+      ) : (
+        <p className={`whitespace-pre-wrap break-words rounded-xl p-3 text-sm leading-relaxed ${INNER_SURFACE} ${value ? '' : 'text-zinc-400 dark:text-zinc-500'}`}>
+          {value || placeholder}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// A one-line human summary of the GBP local-post intent for the read-only Details
+// row (topic + optional CTA), reusing the Composer's gbp label keys.
+function gbpSummary(gbp, t) {
+  if (!gbp) return '';
+  const parts = [t(`composer.gbp.topic.${gbp.topic || 'standard'}`)];
+  const ctaKey = { BOOK: 'book', ORDER: 'order', SHOP: 'shop', LEARN_MORE: 'learnMore', SIGN_UP: 'signUp', CALL: 'call' }[gbp.ctaType];
+  if (ctaKey) parts.push(t(`composer.gbp.cta.${ctaKey}`));
+  return parts.join(' · ');
+}
+
+// The read-only "Details" block: relevant-but-not-primary fields (supporting URLs,
+// the newsletter flag, and the structured GBP / story-sticker / hashtag intent),
+// each shown ONLY when it carries content - so an operator sees the full picture of
+// what will publish without the field ever standing empty. Deep edits happen in the
+// Composer (the Edit button); this is review signage, not a second author form.
+function PostExtras({ post, extras, t }) {
+  const rows = [];
+  for (const { key } of extras) {
+    if (key === 'link' && post.link) rows.push({ key, label: t('postDetail.field.link'), value: post.link, url: true });
+    else if (key === 'image' && post.image) rows.push({ key, label: t('postDetail.field.image'), value: post.image, url: true });
+    else if (key === 'canonicalUrl' && post.canonicalUrl) rows.push({ key, label: t('postDetail.field.canonicalUrl'), value: post.canonicalUrl, url: true });
+    else if (key === 'blogSlug' && post.blogSlug) rows.push({ key, label: t('postDetail.field.blogSlug'), value: post.blogSlug });
+    else if (key === 'hashtags' && Array.isArray(post.hashtags) && post.hashtags.length) rows.push({ key, label: t('postDetail.field.hashtags'), value: post.hashtags.join(' ') });
+    else if (key === 'gbp' && post.gbp) rows.push({ key, label: t('postDetail.field.gbp'), value: gbpSummary(post.gbp, t) });
+    else if (key === 'interactiveStory' && post.interactiveStory?.stickers?.length) rows.push({ key, label: t('postDetail.field.interactiveStory'), value: t('postDetail.field.stickerCount', { count: post.interactiveStory.stickers.length }) });
+    else if (key === 'ghostEmail' && post.ghostEmail === true) rows.push({ key, label: t('postDetail.field.ghostEmail'), check: true });
+  }
+  if (!rows.length) return null;
+  return (
+    <Section title={t('postDetail.section.details')}>
+      <dl className="space-y-1.5">
+        {rows.map((r) => (
+          <div key={r.key} className={`flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
+            <dt className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{r.label}</dt>
+            <dd className="min-w-0 flex-1 text-xs text-zinc-600 dark:text-zinc-300">
+              {r.check ? (
+                <CheckCircle2 size={13} className="text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+              ) : (
+                <span className="break-all">{r.value}</span>
+              )}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </Section>
+  );
+}
+
+// The right-column placeholder for a pure-text post (no link, no image): a calm,
+// theme-aware tile at the card's 1.91:1 ratio so every post keeps the same
+// two-column shape, instead of leaving the text stranded in one column.
+function TextPostTile({ label }) {
+  return (
+    <div className="flex aspect-[1.91/1] w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-zinc-100 text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500">
+      <FileText size={20} aria-hidden="true" />
+      <span className="text-[11px] font-bold">{label}</span>
+    </div>
   );
 }
 
@@ -88,7 +195,7 @@ function coverChips(post, t) {
   return chips;
 }
 
-export default function PostDetail({ post, posts = [], onClose, onEdit, onNavigate, onOpenPost }) {
+export default function PostDetail({ post, posts = [], triage = null, triageIndex = -1, onClose, onEdit, onNavigate, onOpenPost }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: accounts } = useAccounts();
@@ -100,6 +207,10 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
   const confirm = useConfirm();
   const prompt = usePrompt();
   const { activeClient } = useActiveClient();
+  // Cloud-aware delivery: whether the always-on runtime fires this brand and which
+  // lanes it covers, so the one delivery statement below tells the truth (and stays
+  // silent until `resolved` rather than flashing a wrong "needs your Mac").
+  const { cloudOn, cloudLanes, resolved: cloudResolved } = useCloudDelivery();
   // B4: append a client-naming line to an irreversible/native-mutation confirm so
   // the owner always knows whose post/platform they are about to act on. Returns
   // the body unchanged when no client is active (never implies a wrong client).
@@ -112,6 +223,33 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
   // ISO string for the house DateTimePicker (finding #41); null = nothing picked.
   const [rescheduleValue, setRescheduleValue] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  // Platform-aware content model (lib/format.js): the ordered editable text fields
+  // this post's platforms actually use + the read-only extras. The SAME model the
+  // Composer gates its fields on, so authoring and review never drift.
+  const { fields: contentFields, extras: contentExtras } = useMemo(() => fieldsForPost(post || {}), [post]);
+  // Inline editing across EVERY relevant field (not just the caption): one draft
+  // per field, re-seeded whenever the post identity or rev changes (triage nav, or
+  // our own save bumping rev), so the dirty check is honest and Save only lights up
+  // once a field actually differs. Keyed by field key, so a YouTube post edits its
+  // title/description and an X post its tweet text - each the platform's primary.
+  // Seeded from the post on mount (no first-render flash), then re-seeded whenever
+  // the post identity or rev changes.
+  const [drafts, setDrafts] = useState(() => {
+    const seed = {};
+    for (const f of contentFields) seed[f.key] = post?.[f.key] || '';
+    return seed;
+  });
+  useEffect(() => {
+    const seed = {};
+    for (const f of contentFields) seed[f.key] = post?.[f.key] || '';
+    setDrafts(seed);
+    // Re-seed on identity/rev change only (rev bumps on every server write); the
+    // field list is derived from the same post, so it is intentionally not a dep.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [post?.campaign, post?.id, post?.rev]);
+  // Keyboard triage reads the live action bundle from a ref so the single global
+  // listener never goes stale and is not re-bound on every post change.
+  const kbRef = useRef(null);
   // Mirror the video playhead (rounded to the 0.1s the backend stores) so the
   // cover-frame button can show a live "X.Xs als Titelbild" counter. Listeners
   // attach to the shared videoRef so PostPreview stays generic.
@@ -134,18 +272,59 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
     };
   }, [post?.id, post?.media?.url]);
 
+  // Keyboard triage (A=approve, R=reject, ←/→=prev/next). Esc stays owned by the
+  // Modal's useSlideOver. Ignored while typing (reschedule picker, reject prompt,
+  // any input) or while a Radix menu/picker owns the keys ([data-state="open"]).
+  useEffect(() => {
+    const onKey = (e) => {
+      const b = kbRef.current;
+      if (!b) return;
+      const el = document.activeElement;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      if (document.querySelector('[data-state="open"]')) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'ArrowLeft') { if (b.prevPost) { e.preventDefault(); b.goPrev(); } }
+      else if (e.key === 'ArrowRight') { if (b.nextPost) { e.preventDefault(); b.goNext(); } }
+      else if (e.key === 'a' || e.key === 'A') { if (b.canApprove) { e.preventDefault(); b.act(b.onApprove); } }
+      else if (e.key === 'r' || e.key === 'R') { if (b.canReject) { e.preventDefault(); b.act(b.onReject); } }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, []);
+
   if (!post) return null;
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['plans'] });
+
+  // Inline save across every dirty content field: reuses the same rev-guarded
+  // updatePost the Composer uses (a stale edit is refused, never silently
+  // clobbered) and sends only the changed fields in one PATCH. On success the
+  // plans refetch bumps rev, re-syncing the drafts and clearing dirty (hiding
+  // Save). caption sends its raw string (empty is valid); every other field
+  // mirrors the Composer's `value || null` clear-semantics.
+  const setDraft = (key, val) => setDrafts((d) => ({ ...d, [key]: val }));
+  const dirtyFields = contentFields.filter((f) => (drafts[f.key] ?? '') !== (post[f.key] || ''));
+  const anyDirty = dirtyFields.length > 0;
+  const saveFields = async () => {
+    const patch = {};
+    for (const f of dirtyFields) {
+      const v = drafts[f.key] ?? '';
+      patch[f.key] = f.key === 'caption' ? v : (v || null);
+    }
+    try {
+      await updatePost(post.campaign, post.id, post.rev, patch);
+    } catch (err) {
+      throw new Error(err?.code === 'stale_write' ? t('composer.error.staleWrite') : (err?.message || t('postDetail.error.generic')));
+    }
+    await queryClient.invalidateQueries({ queryKey: ['plans'] });
+  };
 
   // X reply-chain context (xReplyTo): the sibling post this one threads under,
   // and any posts that thread under THIS one. Same-campaign only - the engine
   // resolves the reference within one plan and fail-closes when the parent is
   // gone (scripts/x-social.mjs), so a dangling reference means "held forever".
-  const threadParent = post.xReplyTo
-    ? posts.find((p) => p.campaign === post.campaign && p.id === post.xReplyTo) || null
-    : null;
-  const threadReplies = posts.filter((p) => p.campaign === post.campaign && p.xReplyTo === post.id);
+  const { parent: threadParent, replies: threadReplies } = deriveThread(post, posts);
 
   // Meta lane pause notice (finding #2): the owner-controlled kill switch
   // (accounts.meta.paused) stops every Meta write, so a FB/IG post will not
@@ -325,7 +504,9 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
     }
   };
 
-  const canApprove = post.approval !== 'approved' && post.derivedState !== 'posted';
+  // An edited-since-approval post is approval:'approved' but needs a FRESH decision:
+  // offer Approve (re-approve) again. Reject stays available so the owner can pull it.
+  const canApprove = (post.approval !== 'approved' || post.editedSinceApproval) && post.derivedState !== 'posted';
   const canReject = post.approval !== 'rejected' && post.derivedState !== 'posted';
   const editable = post.derivedState !== 'posted';
   // Verify is meaningful once a post is handed off and past due (fired-assumed),
@@ -334,7 +515,7 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
   // Force-publish is offered only for an approved post that has slipped past its
   // scheduled time. A healthy scheduler publishes it within a minute; this is the
   // manual "do it now" lever for the owner.
-  const canPublishNow = post.derivedState === 'overdue' && post.approval === 'approved';
+  const canPublishNow = post.derivedState === 'overdue' && post.approval === 'approved' && !post.editedSinceApproval;
   // Screen-reader summary of the read-back (finding: verify outcome was never
   // announced). The visible per-platform rows below carry the detail; this single
   // polite line lets a SR user who just ran Verify learn the live/total result
@@ -342,176 +523,219 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
   const verifyChecked = post.verify ? Object.keys(post.verify.platforms || {}) : [];
   const verifyLive = verifyChecked.filter((p) => post.verify.platforms[p]?.live).length;
 
-  return (
-    <SlideOver onClose={onClose} label={t('postDetail.slideOverLabel', { id: post.id })}>
-      {/* Per-client signage (B4): the detail overlay covers the sidebar switcher,
-          so the band names the active client at the top of this header. Read-only. */}
-      <div className="mb-2">
-        <ClientBand client={activeClient} />
-      </div>
-      <header className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className="font-display text-2xl font-bold leading-tight">
-            {post.title?.trim() || post.caption?.split('\n')[0] || t('approvals.card.untitled')}
-          </h2>
-          <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
-            {t('approvals.card.scheduledFor', { when: post.scheduledAt ? fmtFull(post.scheduledAt) : t('approvals.card.noSchedule') })}
-          </p>
-          <p className="mt-1 text-[11px] text-zinc-400 dark:text-zinc-500">
-            {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id, type: t(`type.${post.type}`) })}
-          </p>
-          {/* X thread line (xReplyTo): link to the parent post, or an explicit
-              missing note - a dangling reference never publishes on X. */}
-          {post.xReplyTo ? (
-            <p className="mt-1 flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-              <CornerUpLeft size={11} className="shrink-0" aria-hidden="true" />
-              {threadParent ? (
-                <button
-                  type="button"
-                  onClick={() => onOpenPost?.(threadParent)}
-                  className="rounded text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
-                >
-                  {t('postDetail.thread.repliesTo', { id: post.xReplyTo })}
-                </button>
-              ) : (
-                <span className="text-amber-600 dark:text-amber-300">{t('postDetail.thread.parentMissing', { id: post.xReplyTo })}</span>
-              )}
-            </p>
-          ) : null}
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            <StatusPill state={post.derivedState} />
-            <ApprovalPill approval={post.approval} />
-            {/* Advisory brand-lint badge (read-only): mirrors the per-platform
-                publish gate. Silent unless a target platform would trip an error;
-                never alters approve/reject enablement. */}
-            <BrandLintBadge caption={post.caption} platforms={post.platforms} />
-            {post.publishedVia === 'manual' && post.externalUrl ? (
-              <a href={post.externalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 rounded text-[11px] text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
-                <ExternalLink size={11} aria-hidden="true" /> {t('postDetail.viewLink')}
-              </a>
-            ) : null}
-          </div>
-          {post.publishedVia === 'manual' ? (
-            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">{t('postDetail.postedExternally')}</p>
-          ) : null}
-        </div>
-        <CloseButton onClose={onClose} label={t('postDetail.close')} />
-      </header>
+  // Triage: prev/next re-thread the SAME ordered list through the one openPost
+  // entry point, so the "n of m" counter stays alive without a dedicated callback.
+  const hasTriage = Array.isArray(triage) && triage.length > 1 && triageIndex >= 0;
+  const prevPost = hasTriage && triageIndex > 0 ? triage[triageIndex - 1] : null;
+  const nextPost = hasTriage && triageIndex < triage.length - 1 ? triage[triageIndex + 1] : null;
+  const goPrev = () => prevPost && onOpenPost?.(prevPost, triage);
+  const goNext = () => nextPost && onOpenPost?.(nextPost, triage);
+  // Shared runner for keyboard + ⋯-menu actions: one in-flight guard so a mashed
+  // key can't double-fire, and the reject/delete cancel sentinel stays silent.
+  const actingRef = { current: false }; // fresh each render is fine: guards one synchronous burst
+  const act = async (fn) => {
+    if (actingRef.current) return;
+    actingRef.current = true;
+    try { await fn(); }
+    catch (err) { if (err?.canceled !== true) setError(err?.message || t('postDetail.error.generic')); }
+    finally { actingRef.current = false; }
+  };
 
-      {/* Meta lane paused notice (finding #2): a FB/IG post will not publish
-          while the owner-controlled Meta kill switch is active. */}
-      {showMetaPaused ? (
-        <p className="flex items-start gap-2 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
-          <PauseCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>
-            {t('postDetail.metaPaused.notice')}
-            {metaPauseReason ? <span className="mt-0.5 block opacity-80">{metaPauseReason}</span> : null}
-          </span>
-        </p>
+  // One dominant primary CTA per state; everything destructive/less-common lives
+  // in the ⋯ overflow. Precedence mirrors the plan's action-hierarchy table.
+  const primary =
+    canPublishNow ? 'publishNow'
+    : canApprove ? 'approve'
+    : canVerify ? 'verify'
+    : editable ? 'reschedule'
+    : null;
+  const toggleReschedule = () => { setRescheduleOpen((v) => !v); setRescheduleValue(null); };
+
+  // ⋯ overflow items (data, not markup) - filtered to what's valid for the state.
+  const menuItems = [
+    canReject && { key: 'reject', icon: XCircle, label: t('approvals.action.reject'), danger: true, run: onReject },
+    editable && post.executionMode === 'fully-scheduled' && { key: 'park', icon: PauseCircle, label: t('postDetail.action.parkIdle'), run: onPark },
+    post.derivedState !== 'posted' && { key: 'mark', icon: CheckCheck, label: t('postDetail.action.markIdle'), run: onMarkPosted },
+    canVerify && primary !== 'verify' && { key: 'verify', icon: ShieldCheck, label: t('postDetail.action.verifyIdle'), run: onVerify },
+    { key: 'delete', icon: Trash2, label: t('postDetail.action.deleteMenu'), danger: true, run: onDelete },
+  ].filter(Boolean);
+
+  // A text post has a real card to preview when it targets a blog lane (article
+  // card) or carries a link/image (LinkedIn card); a pure text post has none.
+  const isText = post.type === 'text';
+  const textHasCard = isText && (post.platforms?.includes('wordpress') || post.platforms?.includes('ghost') || Boolean(post.link) || Boolean(post.image));
+
+  // ONE post-level delivery statement (replaces the per-platform "needs pendpost"
+  // line). Summarize the effective mechanism across the still-pending platforms:
+  // 'cloud'/'native' fire without the user, 'local' needs pendpost running. Amber
+  // caveat names ONLY the local lanes (the actionable subset); otherwise a calm
+  // "publishes automatically". Silent until the cloud answer resolves (no wrong
+  // flash) and silent when nothing is pending (every lane already handed off).
+  const pendingPlatforms = post.platforms.filter(
+    (p) => PLATFORM_META[p] && platformState(post, p, t).tier === 'pending',
+  );
+  const localPending = pendingPlatforms.filter(
+    (p) => effectiveDelivery(p, { cloudOn, cloudLanes }) === 'local',
+  );
+  const cloudPending = pendingPlatforms.some(
+    (p) => effectiveDelivery(p, { cloudOn, cloudLanes }) === 'cloud',
+  );
+  const deliveryHint = !cloudResolved || pendingPlatforms.length === 0
+    ? null
+    : localPending.length > 0
+      ? { tone: 'local', platforms: localPending }
+      : { tone: 'auto', viaCloud: cloudPending };
+
+  // Live action bundle for the keyboard listener (read via ref, never stale).
+  kbRef.current = { canApprove, canReject, prevPost, nextPost, onApprove, onReject, goPrev, goNext, act };
+
+  // Per-field platform-icon rule: show icons only where a field diverges from
+  // "every targeted platform" (redundant on a single-platform post, or on a field
+  // all networks share), so a multi-platform post reads exactly what each network
+  // posts without noise. Override fields (x/mastodon/nostr) carry a text hint.
+  const targetCount = post.platforms.length;
+  const OVERRIDE_KEYS = new Set(['xCaption', 'mastodonCaption', 'nostrCaption']);
+  // Editable post: show every relevant field (empty ones are there to fill in).
+  // Read-only (posted) post: hide the empty ones - a review of what actually
+  // published should not carry blank "Not set" rows for fields left unused.
+  const visibleContentFields = editable
+    ? contentFields
+    : contentFields.filter((f) => String(drafts[f.key] ?? '').trim());
+
+  // The scrollable body content shared by the two-column and single-column layouts.
+  const bodyLeft = (
+    <>
+      {/* Platform-relevant content, primary text first: only the fields a targeted
+          platform actually posts appear (YouTube leads with title + description, X
+          with its tweet text, meta with the caption) - never an empty "Bildtext" on
+          a lane that has none. Each is inline-editable with the shared dirty->Save. */}
+      {visibleContentFields.length ? (
+        <section className="space-y-4">
+          {visibleContentFields.map((f) => {
+            const val = drafts[f.key] ?? '';
+            const isOverride = OVERRIDE_KEYS.has(f.key);
+            return (
+              <ContentField
+                key={f.key}
+                label={t(`postDetail.field.${f.key}`)}
+                platforms={f.platforms}
+                showIcons={f.platforms.length > 0 && f.platforms.length !== targetCount}
+                hint={isOverride ? (val.trim() ? t('postDetail.field.overrideSet') : t('postDetail.field.overrideEmpty')) : null}
+                kind={f.kind}
+                mono={f.mono}
+                value={val}
+                onChange={(v) => setDraft(f.key, v)}
+                editable={editable}
+                placeholder={f.key === 'caption' ? t('postDetail.caption.empty') : t('postDetail.field.empty')}
+              />
+            );
+          })}
+        </section>
       ) : null}
 
-      {/* Approval + lifecycle actions. Each ActionButton owns its own
-          idle->loading->success state machine (no global disable-all). */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {canApprove ? (
-          <ActionButton
-            variant="success"
-            icon={CheckCircle2}
-            labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
-            onAction={onApprove}
-            onError={setError}
-          />
+      {contentExtras.length ? <PostExtras post={post} extras={contentExtras} t={t} /> : null}
+
+      <Section title={t('postDetail.section.platforms')}>
+        {deliveryHint ? (
+          <p className={`mb-1.5 flex items-center gap-1.5 text-[11px] ${deliveryHint.tone === 'local' ? 'text-amber-600 dark:text-amber-300' : 'text-zinc-500 dark:text-zinc-400'}`}>
+            {deliveryHint.tone === 'local'
+              ? <Power size={11} aria-hidden="true" className="shrink-0" />
+              : deliveryHint.viaCloud
+                ? <CloudIcon size={11} aria-hidden="true" className="shrink-0" />
+                : <CalendarClock size={11} aria-hidden="true" className="shrink-0" />}
+            {deliveryHint.tone === 'local'
+              ? t('postDetail.delivery.needsLocal', { platforms: deliveryHint.platforms.map((p) => PLATFORM_META[p].label).join(', ') })
+              : t('postDetail.delivery.autoAll')}
+          </p>
         ) : null}
-        {canReject ? (
-          <ActionButton
-            variant="danger"
-            icon={XCircle}
-            labels={{ idle: t('approvals.action.reject'), loading: t('approvals.action.rejecting'), success: t('approvals.action.rejected'), error: t('approvals.action.error') }}
-            onAction={onReject}
-            onError={setError}
-          />
+        <ul className="space-y-1.5">
+          {post.platforms.map((p) => {
+            const meta = PLATFORM_META[p];
+            const state = platformState(post, p, t);
+            if (!meta) return null;
+            const { Icon } = meta;
+            const verify = platformVerify(post, p, t);
+            const stateCls = state.tier === 'done'
+              ? 'text-emerald-600 dark:text-emerald-300'
+              : state.tier === 'warn'
+                ? 'text-amber-600 dark:text-amber-300'
+                : 'text-zinc-500 dark:text-zinc-400';
+            const verifyCls = verify?.tone === 'ok'
+              ? 'text-emerald-600 dark:text-emerald-300'
+              : verify?.tone === 'err'
+                ? 'text-red-600 dark:text-red-300'
+                : 'text-amber-600 dark:text-amber-300';
+            const VerifyIcon = verify?.tone === 'ok' ? ShieldCheck : verify?.tone === 'err' ? ShieldX : ShieldAlert;
+            const verifySr = verify?.tone === 'ok'
+              ? t('postDetail.verify.toneOk')
+              : verify?.tone === 'err'
+                ? t('postDetail.verify.toneErr')
+                : t('postDetail.verify.toneWarn');
+            return (
+              <li key={p} className={`rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
+                <div className="flex items-center gap-2.5">
+                  <Icon size={15} className={meta.color} aria-hidden="true" />
+                  <span className="flex-1 text-sm font-bold">{meta.label}</span>
+                  <span className={`flex items-center gap-1 text-[11px] ${stateCls}`}>
+                    {state.tier === 'done' ? <CheckCircle2 size={11} aria-hidden="true" /> : null}
+                    {state.tier === 'done' ? <span className="sr-only">{t('postDetail.platform.publishedSr')}: </span> : null}
+                    {state.tier === 'warn' ? <span className="sr-only">{t('postDetail.platform.warnSr')}: </span> : null}
+                    {state.text}
+                  </span>
+                  {state.tier === 'warn' && state.warn ? (
+                    <IconBadge icon={CalendarClock} tone="warn" label={state.warn} />
+                  ) : null}
+                </div>
+                {verify ? (
+                  <div className="mt-1 flex items-center gap-2 pl-[25px] text-[11px]">
+                    <span className={`flex items-center gap-1 ${verifyCls}`}>
+                      <VerifyIcon size={11} aria-hidden="true" />
+                      <span className="sr-only">{verifySr}: </span>
+                      {verify.label}
+                    </span>
+                    {verify.permalink ? (
+                      <a href={verify.permalink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                        <ExternalLink size={11} aria-hidden="true" /> {t('postDetail.verify.viewLink')}
+                      </a>
+                    ) : null}
+                  </div>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+        {post.verify?.at ? (
+          <p className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">{t('postDetail.verify.lastChecked', { when: fmtFull(post.verify.at) })}</p>
         ) : null}
-        {editable ? (
-          <Tip label={t('postDetail.action.editAria')}>
-            <button type="button" onClick={() => onEdit(post)} aria-label={t('postDetail.action.editAria')} className={`${ACTION_BTN} bg-zinc-200/60 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60`}>
-              <Pencil size={13} aria-hidden="true" />
-              {t('postDetail.action.editIdle')}
-            </button>
-          </Tip>
-        ) : null}
-        {editable ? (
-          <Tip label={t('postDetail.action.rescheduleAria')}>
-            <button
-              type="button"
-              aria-label={t('postDetail.action.rescheduleAria')}
-              aria-expanded={rescheduleOpen}
-              aria-controls="detail-reschedule-panel"
-              onClick={() => {
-                setRescheduleOpen((v) => !v);
-                setRescheduleValue(null);
-              }}
-              className={`${ACTION_BTN} bg-zinc-200/60 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60`}
-            >
-              <CalendarClock size={13} aria-hidden="true" />
-              {t('postDetail.action.rescheduleIdle')}
-            </button>
-          </Tip>
-        ) : null}
-        {editable && post.executionMode === 'fully-scheduled' ? (
-          <Tip label={t('postDetail.action.parkTip')}>
-            <ActionButton
-              icon={PauseCircle}
-              ariaLabel={t('postDetail.action.parkTip')}
-              labels={{ idle: t('postDetail.action.parkIdle'), loading: t('postDetail.action.parkLoading'), success: t('postDetail.action.parkSuccess'), error: t('postDetail.error.generic') }}
-              onAction={onPark}
-              onError={setError}
+        <p role="status" aria-live="polite" className="sr-only">
+          {post.verify ? t('postDetail.verify.announce', { live: verifyLive, total: verifyChecked.length }) : ''}
+        </p>
+        <PlatformBlockers platformValidate={platformValidate} validateMedia={validateMedia} approval={post.approval} editedSinceApproval={post.editedSinceApproval} showApproval={false} onNavigate={onNavigate} className="mt-1.5" />
+      </Section>
+
+      {/* Low-frequency detail, shown inline (each row self-labels; no chevron).
+          The first comment is now an editable content field above when relevant
+          (IG feed); the approval note + media file stay read-only here. */}
+      {post.approvalNote ? (
+        <div className="space-y-1">
+          <p className={EYEBROW}>{t('postDetail.section.approvalNote')}</p>
+          <p className={`whitespace-pre-wrap rounded-xl p-3 text-sm ${INNER_SURFACE}`}>{post.approvalNote}</p>
+        </div>
+      ) : null}
+      {post.media.file ? (
+        <div className="space-y-1">
+          <p className={EYEBROW}>{t('postDetail.section.file')}</p>
+          <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs ${INNER_SURFACE}`}>
+            <span className="break-all font-bold">{post.media.file}</span>
+            {post.media.bytes ? <span className="text-zinc-500 dark:text-zinc-400">{fmtBytes(post.media.bytes)}</span> : null}
+            <IconBadge
+              icon={post.media.exists ? FileVideo : FileX2}
+              tone={post.media.exists ? 'ok' : 'warn'}
+              label={post.media.exists ? t('postDetail.file.present') : t('postDetail.file.missing')}
             />
-          </Tip>
-        ) : null}
-        {canPublishNow ? (
-          <Tip label={t('postDetail.action.publishNowTip')}>
-            <ActionButton
-              variant="success"
-              icon={Send}
-              ariaLabel={t('postDetail.action.publishNowTip')}
-              labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }}
-              onAction={onPublishNow}
-              onError={setError}
-            />
-          </Tip>
-        ) : null}
-        {post.derivedState !== 'posted' ? (
-          <Tip label={t('postDetail.action.markTip')}>
-            <ActionButton
-              icon={CheckCheck}
-              labels={{ idle: t('postDetail.action.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }}
-              onAction={onMarkPosted}
-              onError={setError}
-            />
-          </Tip>
-        ) : null}
-        {canVerify ? (
-          <Tip label={t('postDetail.action.verifyTip')}>
-            <ActionButton
-              icon={ShieldCheck}
-              labels={{ idle: t('postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.error.generic') }}
-              onAction={onVerify}
-              onError={setError}
-            />
-          </Tip>
-        ) : null}
-        <Tip label={t('postDetail.action.deleteTip')}>
-          <ActionButton
-            variant="danger"
-            className="ml-auto"
-            icon={Trash2}
-            ariaLabel={t('postDetail.action.deleteAria')}
-            labels={{ idle: '', loading: t('postDetail.action.deleteLoading'), success: t('postDetail.action.deleteSuccess'), error: t('postDetail.error.generic') }}
-            onAction={onDelete}
-            onError={setError}
-          />
-        </Tip>
-      </div>
+          </div>
+        </div>
+      ) : null}
 
       {rescheduleOpen ? (
         <div id="detail-reschedule-panel" role="group" aria-label={t('postDetail.reschedule.panelLabel')} className={`flex items-center gap-2 rounded-xl p-2.5 ${INNER_SURFACE}`}>
@@ -523,14 +747,14 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
           </button>
         </div>
       ) : null}
+    </>
+  );
 
-      {error ? (
-        <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p>
-      ) : null}
-
-      <PostPreview post={post} videoRef={videoRef} />
-
-      {/* Cover override: frame scrubber + drop zone, honest platform chips */}
+  // The media column (two-column) or inline block (single-column): the preview
+  // plus, for a media-backed editable post, the cover override editor.
+  const mediaBlock = (
+    <>
+      <PostPreview key={`${post.campaign}-${post.id}`} post={post} videoRef={videoRef} />
       {post.media.url && editable ? (
         <Section title={t('postDetail.section.cover')}>
           <div
@@ -601,119 +825,203 @@ export default function PostDetail({ post, posts = [], onClose, onEdit, onNaviga
           </div>
         </Section>
       ) : null}
+    </>
+  );
 
-      <Section title={t('postDetail.section.platforms')}>
-        <ul className="space-y-1.5">
-          {post.platforms.map((p) => {
-            const meta = PLATFORM_META[p];
-            const state = platformState(post, p, t);
-            if (!meta) return null;
-            const { Icon } = meta;
-            const verify = platformVerify(post, p, t);
-            const stateCls = state.tier === 'done'
-              ? 'text-emerald-600 dark:text-emerald-300'
-              : state.tier === 'warn'
-                ? 'text-amber-600 dark:text-amber-300'
-                : 'text-zinc-500 dark:text-zinc-400';
-            const verifyCls = verify?.tone === 'ok'
-              ? 'text-emerald-600 dark:text-emerald-300'
-              : verify?.tone === 'err'
-                ? 'text-red-600 dark:text-red-300'
-                : 'text-amber-600 dark:text-amber-300';
-            // Icon + sr-only word per outcome so a failure never carries the
-            // reassuring check-shield and color is never the only signal.
-            const VerifyIcon = verify?.tone === 'ok' ? ShieldCheck : verify?.tone === 'err' ? ShieldX : ShieldAlert;
-            const verifySr = verify?.tone === 'ok'
-              ? t('postDetail.verify.toneOk')
-              : verify?.tone === 'err'
-                ? t('postDetail.verify.toneErr')
-                : t('postDetail.verify.toneWarn');
-            return (
-              <li key={p} className={`rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-                <div className="flex items-center gap-2.5">
-                  <Icon size={15} className={meta.color} aria-hidden="true" />
-                  <span className="flex-1 text-sm font-bold">{meta.label}</span>
-                  <span className={`flex items-center gap-1 text-[11px] ${stateCls}`}>
-                    {state.tier === 'done' ? <CheckCircle2 size={11} aria-hidden="true" /> : null}
-                    {state.tier === 'done' ? <span className="sr-only">{t('postDetail.platform.publishedSr')}: </span> : null}
-                    {state.tier === 'warn' ? <span className="sr-only">{t('postDetail.platform.warnSr')}: </span> : null}
-                    {state.text}
-                  </span>
-                  {state.tier === 'warn' && state.warn ? (
-                    <IconBadge icon={CalendarClock} tone="warn" label={state.warn} />
-                  ) : null}
-                </div>
-                {state.tier === 'pending' ? (
-                  <div className="mt-1 flex items-center gap-1.5 pl-[25px] text-[11px] text-zinc-500 dark:text-zinc-400">
-                    {deliveryMode(p) === 'native'
-                      ? <CalendarClock size={11} aria-hidden="true" />
-                      : <Power size={11} aria-hidden="true" />}
-                    {t(`postDetail.delivery.${deliveryMode(p)}`)}
-                  </div>
-                ) : null}
-                {verify ? (
-                  <div className="mt-1 flex items-center gap-2 pl-[25px] text-[11px]">
-                    <span className={`flex items-center gap-1 ${verifyCls}`}>
-                      <VerifyIcon size={11} aria-hidden="true" />
-                      <span className="sr-only">{verifySr}: </span>
-                      {verify.label}
-                    </span>
-                    {verify.permalink ? (
-                      <a href={verify.permalink} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
-                        <ExternalLink size={11} aria-hidden="true" /> {t('postDetail.verify.viewLink')}
-                      </a>
-                    ) : null}
-                  </div>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-        {post.verify?.at ? (
-          <p className="mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">{t('postDetail.verify.lastChecked', { when: fmtFull(post.verify.at) })}</p>
-        ) : null}
-        {/* Verify result announced to screen readers (the visible rows above hold
-            the per-platform detail). Container is always present so a result that
-            lands after the user runs Verify is read out via the polite region. */}
-        <p role="status" aria-live="polite" className="sr-only">
-          {post.verify ? t('postDetail.verify.announce', { live: verifyLive, total: verifyChecked.length }) : ''}
-        </p>
-        {/* B2: read-only publish-readiness blockers. Quiet advisory rows distinct
-            from the state/verify rows above; clean post => nothing renders. */}
-        <PlatformBlockers platformValidate={platformValidate} validateMedia={validateMedia} approval={post.approval} onNavigate={onNavigate} className="mt-1.5" />
-      </Section>
+  // The right column of the two-column body: the media/card preview for any post
+  // that has one, or a calm text tile for a pure-text post - so EVERY post keeps
+  // the same two-column shape (no more single-column text with dead space).
+  const rightColumn = isText && !textHasCard ? <TextPostTile label={t('postDetail.preview.textOnly')} /> : mediaBlock;
 
-      <Section title={t('postDetail.section.caption')}>
-        <p className={`whitespace-pre-wrap rounded-xl p-3 text-sm leading-relaxed ${INNER_SURFACE}`}>
-          {post.caption || t('postDetail.caption.empty')}
-        </p>
-      </Section>
-
-      {post.firstComment ? (
-        <Section title={t('postDetail.section.firstComment')}>
-          <p className={`whitespace-pre-wrap rounded-xl p-3 text-sm ${INNER_SURFACE}`}>{post.firstComment}</p>
-        </Section>
-      ) : null}
-
-      {post.approvalNote ? (
-        <Section title={t('postDetail.section.approvalNote')}>
-          <p className={`whitespace-pre-wrap rounded-xl p-3 text-sm ${INNER_SURFACE}`}>{post.approvalNote}</p>
-        </Section>
-      ) : null}
-
-      {post.media.file ? (
-        <Section title={t('postDetail.section.file')}>
-          <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs ${INNER_SURFACE}`}>
-            <span className="break-all font-bold">{post.media.file}</span>
-            {post.media.bytes ? <span className="text-zinc-500 dark:text-zinc-400">{fmtBytes(post.media.bytes)}</span> : null}
-            <IconBadge
-              icon={post.media.exists ? FileVideo : FileX2}
-              tone={post.media.exists ? 'ok' : 'warn'}
-              label={post.media.exists ? t('postDetail.file.present') : t('postDetail.file.missing')}
-            />
+  return (
+    <Modal onClose={onClose} label={t('postDetail.dialogLabel', { id: post.id })} width="max-w-4xl">
+      {/* Header (never scrolls): ONE dense identity row - client signage + status +
+          approval + platform glyphs + schedule + campaign meta, all side by side to
+          use the width - then only the rare thread/manual sublines. Triage + close
+          sit on the right. */}
+      <div>
+        <header className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+              <ClientBand client={activeClient} />
+              {/* `short` label ("Geplant", not "Geplant - pendpost"): the cloud-blind
+                  delivery suffix is dropped here - the one delivery statement in the
+                  Platforms section carries the honest, cloud-aware mechanism instead. */}
+              <StatusPill state={post.derivedState} short />
+              <ApprovalPill approval={post.approval} editedSinceApproval={post.editedSinceApproval} />
+              <span className="flex items-center gap-1">
+                {post.platforms.map((p) => {
+                  const meta = PLATFORM_META[p];
+                  return meta ? <meta.Icon key={p} size={14} className={meta.color} aria-hidden="true" /> : null;
+                })}
+              </span>
+              <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                {post.scheduledAt ? `${fmtRelative(post.scheduledAt)} · ${fmtTime(post.scheduledAt)}` : t('approvals.card.noSchedule')}
+              </span>
+              <span className="text-[11px] text-zinc-400 dark:text-zinc-500">
+                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id, type: t(`type.${post.type}`) })}
+              </span>
+              {/* Advisory brand-lint badge (read-only): silent unless a target
+                  platform would trip an error; never alters approve/reject. */}
+              <BrandLintBadge caption={post.caption} platforms={post.platforms} />
+              {post.publishedVia === 'manual' && post.externalUrl ? (
+                <a href={post.externalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 rounded text-[11px] text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                  <ExternalLink size={11} aria-hidden="true" /> {t('postDetail.viewLink')}
+                </a>
+              ) : null}
+            </div>
+            {/* X thread line (xReplyTo): link to the parent post, or an explicit
+                missing note - a dangling reference never publishes on X. */}
+            {post.xReplyTo ? (
+              <p className="flex items-center gap-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                <CornerUpLeft size={11} className="shrink-0" aria-hidden="true" />
+                {threadParent ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPost?.(threadParent)}
+                    className="rounded text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                  >
+                    {t('postDetail.thread.repliesTo', { id: post.xReplyTo })}
+                  </button>
+                ) : (
+                  <span className="text-amber-600 dark:text-amber-300">{t('postDetail.thread.parentMissing', { id: post.xReplyTo })}</span>
+                )}
+              </p>
+            ) : null}
+            {post.publishedVia === 'manual' ? (
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('postDetail.postedExternally')}</p>
+            ) : null}
           </div>
-        </Section>
+          <div className="flex shrink-0 items-center gap-1">
+            {hasTriage ? (
+              <>
+                <Tip label={t('postDetail.triage.prev')}>
+                  <button type="button" onClick={goPrev} disabled={!prevPost} aria-label={t('postDetail.triage.prev')} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-700/60">
+                    <ChevronLeft size={16} aria-hidden="true" />
+                  </button>
+                </Tip>
+                <span role="status" aria-live="polite" className="whitespace-nowrap text-[11px] font-bold tabular-nums text-zinc-400 dark:text-zinc-500">
+                  {t('postDetail.triage.counter', { n: triageIndex + 1, m: triage.length })}
+                </span>
+                <Tip label={t('postDetail.triage.next')}>
+                  <button type="button" onClick={goNext} disabled={!nextPost} aria-label={t('postDetail.triage.next')} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-700/60">
+                    <ChevronRight size={16} aria-hidden="true" />
+                  </button>
+                </Tip>
+              </>
+            ) : null}
+            <CloseButton onClose={onClose} label={t('postDetail.close')} />
+          </div>
+        </header>
+      </div>
+
+      {/* Meta lane paused notice (finding #2): a FB/IG post will not publish
+          while the owner-controlled Meta kill switch is active. */}
+      {showMetaPaused ? (
+        <p className="flex items-start gap-2 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+          <PauseCircle size={14} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <span>
+            {t('postDetail.metaPaused.notice')}
+            {metaPauseReason ? <span className="mt-0.5 block opacity-80">{metaPauseReason}</span> : null}
+          </span>
+        </p>
       ) : null}
-    </SlideOver>
+
+      {error ? (
+        <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p>
+      ) : null}
+
+      {/* Scrolling body: the ONLY overflow-y-auto child (min-h-0 or the footer
+          collapses). Two-column 62/38 golden grid at lg for EVERY post - caption +
+          platforms left, the preview (media / link-card / article-card, or a text
+          tile for a pure-text post) sticky on the right. Stacks below lg. */}
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden scrollbar-soft pr-1">
+        <div className="flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1.62fr)_minmax(0,1fr)] lg:gap-6">
+          <div className="min-w-0 space-y-5">{bodyLeft}</div>
+          <div className="min-w-0 space-y-4 lg:sticky lg:top-0 lg:self-start">{rightColumn}</div>
+        </div>
+      </div>
+
+      {/* Pinned footer (flex sibling, not sticky): muted secondary actions + ⋯
+          overflow, primary CTA bottom-right (Z-pattern). Triage nav lives in the
+          header now, next to the "n von m" counter. */}
+      <div className="flex items-center gap-2 border-t border-zinc-900/5 pt-4 dark:border-white/10">
+        <div className="ml-auto flex items-center gap-1.5">
+          {/* ⋯ overflow FIRST - sits to the LEFT of Edit: destructive (Reject/Delete)
+              + less-common actions. */}
+          {menuItems.length ? (
+            <Popover>
+              <PopoverTrigger asChild>
+                <button type="button" aria-label={t('postDetail.more')} className={`${ACTION_BTN} text-zinc-500 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60`}>
+                  <MoreHorizontal size={16} aria-hidden="true" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" side="top" className="w-56">
+                <div className="flex flex-col">
+                  {menuItems.map((it) => (
+                    <PopoverClose asChild key={it.key}>
+                      <button
+                        type="button"
+                        onClick={() => act(it.run)}
+                        className={`flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-bold transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 ${it.danger ? 'text-red-600 dark:text-red-300' : 'text-zinc-700 dark:text-zinc-200'}`}
+                      >
+                        <it.icon size={14} aria-hidden="true" />
+                        {it.label}
+                      </button>
+                    </PopoverClose>
+                  ))}
+                </div>
+              </PopoverContent>
+            </Popover>
+          ) : null}
+          {editable ? (
+            <Tip label={t('postDetail.action.editAria')}>
+              <button type="button" onClick={() => onEdit(post)} aria-label={t('postDetail.action.editAria')} className={`${ACTION_BTN} bg-zinc-200/60 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60`}>
+                <Pencil size={13} aria-hidden="true" />
+                {t('postDetail.action.editIdle')}
+              </button>
+            </Tip>
+          ) : null}
+          {editable && primary !== 'reschedule' && !anyDirty ? (
+            <Tip label={t('postDetail.action.rescheduleAria')}>
+              <button type="button" aria-label={t('postDetail.action.rescheduleAria')} aria-expanded={rescheduleOpen} aria-controls="detail-reschedule-panel" onClick={toggleReschedule} className={`${ACTION_BTN} bg-zinc-200/60 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60`}>
+                <CalendarClock size={13} aria-hidden="true" />
+                {t('postDetail.action.rescheduleIdle')}
+              </button>
+            </Tip>
+          ) : null}
+
+          {/* Dirty edits take the primary slot: Save appears only once ANY content
+              field changed, patches all of them in one rev-guarded write, and
+              clears itself on success (rev bump -> draft re-sync). When clean, the
+              normal state-based CTA shows. */}
+          {anyDirty ? (
+            <ActionButton variant="success" size="md" icon={CheckCircle2} labels={{ idle: t('postDetail.action.saveIdle'), loading: t('postDetail.action.saveLoading'), success: t('postDetail.action.saveSuccess'), error: t('postDetail.error.generic') }} onAction={saveFields} onError={setError} />
+          ) : (
+            <>
+              {primary === 'approve' ? (
+                <ActionButton variant="success" size="md" icon={CheckCircle2} labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }} onAction={onApprove} onError={setError} />
+              ) : null}
+              {primary === 'publishNow' ? (
+                <Tip label={t('postDetail.action.publishNowTip')}>
+                  <ActionButton variant="success" size="md" icon={Send} ariaLabel={t('postDetail.action.publishNowTip')} labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
+                </Tip>
+              ) : null}
+              {primary === 'verify' ? (
+                <Tip label={t('postDetail.action.verifyTip')}>
+                  <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t('postDetail.action.verifyTip')} labels={{ idle: t('postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.error.generic') }} onAction={onVerify} onError={setError} />
+                </Tip>
+              ) : null}
+              {primary === 'reschedule' ? (
+                <button type="button" aria-expanded={rescheduleOpen} aria-controls="detail-reschedule-panel" onClick={toggleReschedule} className="flex items-center gap-1.5 rounded-xl bg-brand px-3 py-1.5 text-xs font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900">
+                  <CalendarClock size={14} aria-hidden="true" />
+                  {t('postDetail.action.rescheduleIdle')}
+                </button>
+              ) : null}
+            </>
+          )}
+        </div>
+      </div>
+    </Modal>
   );
 }

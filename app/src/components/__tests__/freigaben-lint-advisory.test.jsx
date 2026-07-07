@@ -65,11 +65,19 @@ beforeEach(() => {
   lintText.mockClear();
 });
 
+// The badge renders only after the react-query lint pass resolves and React
+// re-renders. Testing Library's default findBy poll is 1s; under the capped
+// 4-fork parallel run that async resolve can be starved past 1s on a loaded
+// machine, which flaked this file (the per-test budget is a roomy 60s). Wait
+// generously - matching the config's Radix-tree timeout philosophy - so the
+// assertion tracks the badge's presence, not the scheduler's mood.
+const BADGE_WAIT = { timeout: 15000 };
+
 describe('Freigaben advisory brand-lint badge', () => {
   it('shows the advisory error badge yet keeps Approve and Reject fully enabled (advisory, not a gate)', async () => {
     renderFreigaben();
     // Badge surfaces (errors>0 on a target platform).
-    expect(await screen.findByRole('status')).toBeInTheDocument();
+    expect(await screen.findByRole('status', {}, BADGE_WAIT)).toBeInTheDocument();
     // The advisory badge does NOT disable the actions.
     const approve = screen.getByRole('button', { name: /approve/i });
     const reject = screen.getByRole('button', { name: /reject/i });
@@ -79,7 +87,7 @@ describe('Freigaben advisory brand-lint badge', () => {
 
   it('has no axe violations with the badge present', async () => {
     const { container } = renderFreigaben();
-    await screen.findByRole('status');
+    await screen.findByRole('status', {}, BADGE_WAIT);
     expect(await axeClean(container)).toHaveNoViolations();
   });
 });

@@ -151,7 +151,7 @@ Captions run through a brand-lint pass before they can publish. The rule set liv
 
 ## Architecture
 
-pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 43 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are four publish engines in `scripts/`: `meta-social.mjs` (Facebook and Instagram), `linkedin-social.mjs`, `x-social.mjs`, and `yt-social.mjs`, each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
+pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 44 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are four publish engines in `scripts/`: `meta-social.mjs` (Facebook and Instagram), `linkedin-social.mjs`, `x-social.mjs`, and `yt-social.mjs`, each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
 
 ## Platforms
 

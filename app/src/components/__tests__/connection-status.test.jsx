@@ -14,10 +14,12 @@ import { TooltipProvider } from '../ui/Tooltip.jsx';
 let cloudState;
 let subState;
 let clientsState;
+let capsState;
 vi.mock('../../lib/cloud.js', () => ({
   useCloud: () => cloudState,
   useCloudClients: () => clientsState,
   useCloudSubscription: () => subState,
+  useCapabilities: () => capsState,
 }));
 
 function renderStatus(props) {
@@ -36,6 +38,7 @@ beforeEach(() => {
   cloudState = { data: undefined, isLoading: true };
   subState = { data: undefined };
   clientsState = { data: { clients: [] } };
+  capsState = { data: { cloudLanes: ['meta', 'linkedin', 'x'], nativeLanes: ['youtube', 'mastodon', 'wordpress', 'ghost'], localOnlyLanes: ['reddit', 'tiktok'] } };
 });
 
 describe('ConnectionStatus', () => {

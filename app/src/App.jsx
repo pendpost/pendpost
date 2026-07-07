@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List } from 'lucide-react';
-import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, recheckHealth } from './lib/api.js';
+import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, recheckHealth, setCampaignInternal } from './lib/api.js';
 import { useT, useLocale, useSetLocale } from './lib/i18n.js';
 import { applyAccent, clientAccent } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
 import { useInvalidateCloud } from './lib/cloud.js';
-import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, visiblePlatforms, matchesFilters, STATUS_FILTERS, moveToDayTarget, activeCampaigns } from './lib/format.js';
+import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, visiblePlatforms, matchesFilters, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './components/ui/Popover.jsx';
@@ -19,6 +20,7 @@ import Assets from './components/Assets.jsx';
 import ActivityView, { ACTION_GROUPS } from './components/Activity.jsx';
 import Published from './components/Published.jsx';
 import Composer from './components/Composer.jsx';
+import ThreadComposer from './components/ThreadComposer.jsx';
 import Insights from './components/Insights.jsx';
 import Freigaben from './components/Freigaben.jsx';
 import Settings from './components/Settings.jsx';
@@ -156,10 +158,21 @@ export default function App() {
   const [view, setView] = useState('week');
   const [anchor, setAnchor] = useState(() => startOfWeek(new Date()));
   const [campaignFilter, setCampaignFilter] = useState('active');
+  // Operator debug toggle: reveal internal (validation/test) campaigns that are
+  // hidden from Published/Planner/Approvals by default. Off = the clean view.
+  const [showInternal, setShowInternal] = useState(false);
+  const queryClient = useQueryClient();
   // Selection is a KEY, never an object snapshot (UX-08): the rendered post
   // is re-derived from fresh plan data every render, so an engine publish
   // updates the open detail panel instead of letting it lie.
   const [selectedKey, setSelectedKey] = useState(null);
+  // The Setup lane to auto-expand + scroll to on the next Setup visit (deep-link
+  // from an error's fix CTA). Cleared on leaving Setup so a later visit is clean.
+  const [setupFocus, setSetupFocus] = useState(null);
+  // Triage context (approvals throughput): the ordered {campaign,id} keys of the
+  // list the open post was picked from, so the detail dialog can go prev/next
+  // without closing. Keys, not objects, so a plans refetch re-derives fresh posts.
+  const [triageKeys, setTriageKeys] = useState(null);
   const [composer, setComposer] = useState(null); // null | {mode:'create'} | {mode:'edit', post}
   const [dark, toggleDark] = useDarkMode();
   // Clickable multi-select filters (3g), shared across all tabs, in-memory only
@@ -197,6 +210,12 @@ export default function App() {
     applyAccent(accent, dark);
   }, [accent, dark]);
 
+  // Clear the Setup deep-link focus whenever we leave Setup, so re-navigating to
+  // the same lane later re-triggers the auto-expand (null -> id is a real change).
+  useEffect(() => {
+    if (page !== 'setup') setSetupFocus(null);
+  }, [page]);
+
   // The browser tab is the third, non-color active-client signal (US-MC-02):
   // "pendpost - <client> - <page>", so the operator always knows the client.
   useEffect(() => {
@@ -209,12 +228,26 @@ export default function App() {
   // campaign-filter select; the approvals page defaults to active campaigns (its
   // own "Show archive" toggle widens it). presentTypes + posts derive from here.
   const scopedCampaigns = useMemo(() => {
-    if (page === 'freigaben') return campaigns.filter((c) => c.active);
-    return campaigns.filter((c) =>
-      campaignFilter === 'active' ? c.active : campaignFilter === 'all' ? true : c.id === campaignFilter,
-    );
-  }, [campaigns, campaignFilter, page]);
+    // Internal campaigns drop out by default; an explicit pick always shows (it is
+    // only selectable via the picker, which itself hides internal unless revealed).
+    const shown = (c) => showInternal || !c.internal;
+    if (page === 'freigaben') return campaigns.filter((c) => c.active && shown(c));
+    return campaigns.filter((c) => {
+      if (campaignFilter === 'active') return c.active && shown(c);
+      if (campaignFilter === 'all') return shown(c);
+      return c.id === campaignFilter;
+    });
+  }, [campaigns, campaignFilter, page, showInternal]);
   const scopedPosts = useMemo(() => scopedCampaigns.flatMap((c) => c.posts || []), [scopedCampaigns]);
+  // The campaign the picker is scoped to (a concrete id, not active/all) - the
+  // per-campaign "mark internal" toggle acts on it. hasInternalCampaign gates the
+  // "Show internal" reveal so it only appears when there is something hidden.
+  const pickedCampaign = useMemo(() => campaigns.find((c) => c.id === campaignFilter) || null, [campaigns, campaignFilter]);
+  const hasInternalCampaign = useMemo(() => campaigns.some((c) => c.internal), [campaigns]);
+  // The operator-facing campaign set (internal hidden unless revealed) - shared by
+  // every full-campaigns view (Published, Approvals, run-now) so they never leak a
+  // validation campaign. The Composer keeps the full list (you may author into one).
+  const visibleCampaigns = useMemo(() => campaigns.filter((c) => showInternal || !c.internal), [campaigns, showInternal]);
 
   // Type chips reflect only the types selectable in the current page + platform
   // context (A1): with Instagram selected you see Reel/Story, never a LinkedIn
@@ -236,7 +269,10 @@ export default function App() {
   // The live pipeline = posts of active campaigns only. Sidebar counts / next-up
   // read off this so the chrome never counts dormant archived drafts (G1).
   // allPosts stays the universe for global open-by-key + command-palette search.
-  const activePosts = useMemo(() => campaigns.filter((c) => c.active).flatMap((c) => c.posts || []), [campaigns]);
+  // Internal campaigns are never "live pipeline" work, so they stay out of the
+  // sidebar counts / next-up unconditionally (even when the debug view reveals
+  // them elsewhere) - otherwise a running validation campaign inflates pending.
+  const activePosts = useMemo(() => campaigns.filter((c) => c.active && !c.internal).flatMap((c) => c.posts || []), [campaigns]);
   const pendingCount = useMemo(
     () => activePosts.filter((p) => p.approval !== 'approved' && p.derivedState !== 'posted').length,
     [activePosts],
@@ -253,9 +289,45 @@ export default function App() {
     if (!selectedKey) return null;
     return allPosts.find((p) => p.campaign === selectedKey.campaign && p.id === selectedKey.id) || null;
   }, [allPosts, selectedKey]);
+  // The ordered triage posts (re-derived from fresh plan data, deleted ones
+  // dropped) and the open post's index within them - drives prev/next + "n of m".
+  const triagePosts = useMemo(() => {
+    if (!triageKeys) return null;
+    return triageKeys
+      .map((k) => allPosts.find((p) => p.campaign === k.campaign && p.id === k.id))
+      .filter(Boolean);
+  }, [allPosts, triageKeys]);
+  const triageIndex = useMemo(() => {
+    if (!triagePosts || !selectedKey) return -1;
+    return triagePosts.findIndex((p) => p.campaign === selectedKey.campaign && p.id === selectedKey.id);
+  }, [triagePosts, selectedKey]);
 
   const [composerReturn, setComposerReturn] = useState('planner');
-  const openPost = (post) => setSelectedKey({ campaign: post.campaign, id: post.id });
+  // Optional orderedList threads a triage list (prev/next); callers without one
+  // open a single post (no triage nav). Both paths keep the {campaign,id} model.
+  const openPost = (post, orderedList) => {
+    setSelectedKey({ campaign: post.campaign, id: post.id });
+    setTriageKeys(orderedList ? orderedList.map((p) => ({ campaign: p.campaign, id: p.id })) : null);
+  };
+  const closePost = () => { setSelectedKey(null); setTriageKeys(null); };
+  // Navigate to a page, optionally focusing a specific Setup lane (from an Activity
+  // error's "Fix in Setup" or a PlatformBlockers "Set up X"). The platform is
+  // resolved to its setup id (facebook/instagram -> meta) for the card to match.
+  const navigateTo = (p, platform) => {
+    closePost();
+    setSetupFocus(p === 'setup' && platform ? setupIdOf(platform) : null);
+    setPage(p);
+  };
+  // Flag/unflag the currently-scoped campaign as internal. When hiding it while
+  // the debug view is off, snap the picker back to "active" so it never points at
+  // a now-hidden campaign. Refetch plans so every view reflects the new flag.
+  const markCampaignInternal = async (id, internal) => {
+    try {
+      await setCampaignInternal(id, internal);
+      if (internal && !showInternal) setCampaignFilter('active');
+      queryClient.invalidateQueries({ queryKey: ['plans'] });
+    } catch { /* surfaced by the row's own state elsewhere; keep the toolbar quiet */ }
+  };
   // Composer is a full page (not a slide-over): remember where we came from so
   // closing returns there, and clear the detail overlay when editing from it.
   // B9: an optional seed (e.g. from an asset card's "Attach to a post" CTA) pre-
@@ -266,6 +338,15 @@ export default function App() {
     // accept a real seed shape (a media path) - never a SyntheticEvent.
     const validSeed = seed && typeof seed.mediaPath === 'string' ? { mediaPath: seed.mediaPath, type: seed.type } : undefined;
     setComposer({ mode: 'create', seed: validSeed });
+    setComposerReturn(PAGES.includes(page) ? page : 'planner');
+    setPage('composer');
+  };
+  // Thread composer: an X-only multi-tweet authoring surface that shares the
+  // composer page slot via a `mode: 'thread'` discriminator. An optional seed
+  // pre-fills the opener (e.g. from the single composer's "make a thread" hint).
+  const openThreadComposer = (seed) => {
+    const validSeed = seed && typeof seed.text === 'string' ? { text: seed.text } : undefined;
+    setComposer({ mode: 'thread', seed: validSeed });
     setComposerReturn(PAGES.includes(page) ? page : 'planner');
     setPage('composer');
   };
@@ -339,7 +420,7 @@ export default function App() {
         {/* In-app updater: a branded "preparing"/"reload" nudge when a background
             rebuild swaps in a new bundle. Fixed overlay, so placement is cosmetic. */}
         <UpdateToast />
-        <div className="relative z-10 mx-auto flex min-h-dvh max-w-none gap-4 p-4">
+        <div className="relative z-10 mx-auto flex h-dvh max-w-none gap-4 overflow-hidden p-4">
           <Sidebar
             accounts={accounts}
             posting={posting}
@@ -351,11 +432,12 @@ export default function App() {
             activePage={page}
             onNavigate={setPage}
             onNew={openComposer}
+            onNewThread={openThreadComposer}
             onOpenPost={openPost}
             onShowOverdue={showOverdue}
           />
 
-          <main className="flex min-w-0 flex-1 flex-col gap-4">
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto scrollbar-soft">
             {page !== 'composer' ? (
             <header className="glass-panel flex items-center gap-2 rounded-2xl px-4 py-3">
               {page === 'planner' ? (
@@ -400,7 +482,7 @@ export default function App() {
                         Meta-368 disables Run-now and offers Check-readiness instead. */}
                     <PlannerRunNow
                       pendpostHealth={pendpostHealth}
-                      campaigns={campaigns}
+                      campaigns={visibleCampaigns}
                       clientName={activeClient?.displayName || activeClient?.id || ''}
                       onCheckReadiness={() =>
                         document.getElementById('planner-readiness')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
@@ -441,13 +523,44 @@ export default function App() {
                       <option value="active">{t('app.campaign.active')}</option>
                       <option value="all">{t('app.campaign.all')}</option>
                       {/* Mandate F: only ACTIVE campaigns are listed by name here;
-                          archived ones stay reachable via the "All campaigns" mode. */}
-                      {activeCampaigns(campaigns).map((c) => (
+                          archived ones stay reachable via the "All campaigns" mode.
+                          Internal (validation/test) campaigns are hidden unless the
+                          Show-internal toggle is on. */}
+                      {activeCampaigns(campaigns).filter((c) => showInternal || !c.internal).map((c) => (
                         <option key={c.id} value={c.id}>
                           {prettyCampaign(c.id)}
                         </option>
                       ))}
                     </select>
+                    {/* Per-campaign internal flag: hide a scoped validation/test
+                        campaign from the operator views (or bring it back). */}
+                    {pickedCampaign ? (
+                      <Tip label={pickedCampaign.internal ? t('app.campaign.markVisible') : t('app.campaign.markInternal')}>
+                        <button
+                          type="button"
+                          onClick={() => markCampaignInternal(pickedCampaign.id, !pickedCampaign.internal)}
+                          aria-label={pickedCampaign.internal ? t('app.campaign.markVisible') : t('app.campaign.markInternal')}
+                          aria-pressed={pickedCampaign.internal}
+                          className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-zinc-200/60 text-zinc-500 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60"
+                        >
+                          {pickedCampaign.internal ? <Eye size={14} aria-hidden="true" /> : <EyeOff size={14} aria-hidden="true" />}
+                        </button>
+                      </Tip>
+                    ) : null}
+                    {/* Reveal hidden internal campaigns across the views (debug). */}
+                    {hasInternalCampaign ? (
+                      <Tip label={t('app.campaign.showInternal')}>
+                        <button
+                          type="button"
+                          onClick={() => setShowInternal((v) => !v)}
+                          aria-label={t('app.campaign.showInternal')}
+                          aria-pressed={showInternal}
+                          className={`grid h-8 w-8 shrink-0 place-items-center rounded-xl transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${showInternal ? 'bg-brand/15 text-brand dark:text-brand-light' : 'bg-zinc-200/60 text-zinc-500 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60'}`}
+                        >
+                          <FlaskConical size={14} aria-hidden="true" />
+                        </button>
+                      </Tip>
+                    ) : null}
                   </>
                 ) : null}
                 {/* Merged delivery + always-on status (replaces the dismissible
@@ -599,7 +712,7 @@ export default function App() {
                 then remembered. Teaches the model the chip only hints at. */}
             {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} /> : null}
 
-            <div className="glass-panel min-h-0 flex-1 overflow-x-auto rounded-2xl p-4">
+            <div className="glass-panel shrink-0 overflow-x-auto rounded-2xl p-4">
               {/* At-risk framing: when the overdue filter is active (e.g. arrived via
                   the cloud dot's "view in planner" route or the sidebar Overdue jump),
                   a slim strip names the miss count and points at the per-post routes.
@@ -623,17 +736,17 @@ export default function App() {
                   </div>
                 </div>
               ) : page === 'activity' ? (
-                <ActivityView active={page === 'activity'} platformFilter={platformFilter} failuresOnly={failuresOnly} actionGroups={actionGroups} onOpenPost={openPost} />
+                <ActivityView active={page === 'activity'} platformFilter={platformFilter} failuresOnly={failuresOnly} actionGroups={actionGroups} onOpenPost={openPost} onNavigate={navigateTo} />
               ) : page === 'published' ? (
-                <Published campaigns={campaigns} onOpen={openPost} platformFilter={platformFilter} isLoading={isLoading} />
+                <Published campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} isLoading={isLoading} />
               ) : page === 'freigaben' ? (
-                <Freigaben campaigns={campaigns} onOpen={openPost} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={setPage} />
+                <Freigaben campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={setPage} />
               ) : page === 'insights' ? (
                 <Insights active={page === 'insights'} platformFilter={platformFilter} campaignFilter={campaignFilter} />
               ) : page === 'assets' ? (
                 <Assets onAttach={openComposer} />
               ) : page === 'setup' ? (
-                <Setup />
+                <Setup focus={setupFocus} />
               ) : page === 'settings' ? (
                 <Settings />
               ) : page === 'clients' ? (
@@ -644,6 +757,13 @@ export default function App() {
                   onReturnDismiss={() => setCloudReturn(false)}
                   deepLinkPlan={cloudLaunch.plan}
                   deepLinkInterval={cloudLaunch.interval}
+                />
+              ) : page === 'composer' && composer?.mode === 'thread' ? (
+                <ThreadComposer
+                  seed={composer.seed}
+                  campaigns={campaigns}
+                  onClose={closeComposer}
+                  onSaved={(campaign, id) => setSelectedKey({ campaign, id })}
                 />
               ) : page === 'composer' && composer ? (
                 <Composer
@@ -656,6 +776,7 @@ export default function App() {
                   onClose={closeComposer}
                   onSaved={(campaign, id) => setSelectedKey({ campaign, id })}
                   onNavigate={(p) => { setComposer(null); setPage(p); }}
+                  onStartThread={(text) => openThreadComposer({ text })}
                 />
               ) : campaigns.length === 0 && !isLoading ? (
                 // First-run / genuinely empty workspace (US-ONB-03): welcome +
@@ -676,20 +797,23 @@ export default function App() {
           <PostDetail
             post={selectedPost}
             posts={allPosts}
-            onClose={() => setSelectedKey(null)}
+            triage={triagePosts}
+            triageIndex={triageIndex}
+            onClose={closePost}
             onEdit={editComposer}
-            onNavigate={(p) => { setSelectedKey(null); setPage(p); }}
+            onNavigate={navigateTo}
             onOpenPost={openPost}
           />
         ) : null}
         {selectedKey && !selectedPost && !isLoading ? (
           // The selected post vanished from the plan (deleted / campaign error).
-          <PostDetailMissing onClose={() => setSelectedKey(null)} />
+          <PostDetailMissing onClose={closePost} />
         ) : null}
         <CommandPalette
           posts={allPosts}
           onNavigate={setPage}
           onNew={openComposer}
+          onNewThread={openThreadComposer}
           onToggleTheme={toggleDark}
           onRecheckHealth={recheckHealth}
           onOpenPost={openPost}

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2 } from 'lucide-react';
+import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText } from 'lucide-react';
 import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, postDisplayStatusKey, mediaAspect } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
@@ -181,8 +181,19 @@ export function StatusPill({ state, short = false }) {
   );
 }
 
-export function ApprovalPill({ approval }) {
+export function ApprovalPill({ approval, editedSinceApproval = false }) {
   const t = useT();
+  // Trust gate: an approved post whose content changed after approval reads as a
+  // distinct amber "re-approve" pill, NOT the settled green (which is hidden). The
+  // publish gate refuses it until re-approval, so it belongs in the attention tone.
+  if (approval === 'approved' && editedSinceApproval) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30">
+        <AlertTriangle size={11} className="shrink-0" aria-hidden="true" />
+        {t('approval.editedSinceApproval')}
+      </span>
+    );
+  }
   const meta = APPROVAL_META[approval];
   if (!meta || approval === 'approved') return null;
   const Icon = meta.Icon;
@@ -224,27 +235,35 @@ export function PostStatusPill({ post }) {
   );
 }
 
+// A neutral placeholder background sits behind every media element so a thumb
+// reads as a calm loading tile (never a stark empty box) until the pixels paint;
+// the opaque object-cover media covers it once loaded. A load error anywhere in
+// the chain, OR a genuine text post (no media at all), resolves to an honest
+// "text post" tile (muted surface + document glyph) - so a row NEVER shows the
+// ambiguous bare grey square that read as broken/loading (US media fix).
 export function CoverThumb({ media, image, className = '' }) {
+  const [errored, setErrored] = useState(false);
+  const PLACEHOLDER = 'bg-zinc-200/70 dark:bg-zinc-800/60';
   // media.cover = the render's local cover JPEG; image = a remote thumbnail
   // (e.g. a LinkedIn type:text article hero) for media-less posts.
   const src = media?.cover || image;
-  if (src) {
+  if (src && !errored) {
     // Center crop: curated 9:16 covers carry info at top AND bottom; the old
     // object-top crop deterministically discarded the bottom quarter (UX-12).
-    return <img src={src} alt="" loading="lazy" className={`object-cover ${className}`} />;
+    return <img src={src} alt="" loading="lazy" onError={() => setErrored(true)} className={`${PLACEHOLDER} object-cover ${className}`} />;
   }
   // A4: a still-image asset IS its own preview - render its bytes as an <img>, never
   // a <video> (a <video> pointed at a JPEG/PNG shows a broken/black box). This branch
   // sits BEFORE the video fallback so kind:'image' (or an image URL) always wins.
   const isImage = media?.kind === 'image' || /\.(jpe?g|png)$/i.test(media?.url || '');
-  if (isImage && media?.url) {
+  if (isImage && media?.url && !errored) {
     return (
       <img
         src={media.url}
         alt=""
         loading="lazy"
-        onError={(e) => { e.currentTarget.style.display = 'none'; }}
-        className={`object-cover ${className}`}
+        onError={() => setErrored(true)}
+        className={`${PLACEHOLDER} object-cover ${className}`}
       />
     );
   }
@@ -252,9 +271,8 @@ export function CoverThumb({ media, image, className = '' }) {
   // media item always shows a real preview, never a bare icon. preload=metadata
   // keeps it light (metadata, not the whole file); we seek to 20% of the clip -
   // past blank intros/title cards, where there's real content - falling back to a
-  // 0.1s nudge when the duration is unknown. Falls back to a calm neutral tile
-  // only when there is no media at all (e.g. a text post).
-  if (media?.url) {
+  // 0.1s nudge when the duration is unknown.
+  if (media?.url && !errored) {
     return (
       <video
         src={media.url}
@@ -268,16 +286,59 @@ export function CoverThumb({ media, image, className = '' }) {
           const d = e.currentTarget.duration;
           e.currentTarget.currentTime = Number.isFinite(d) && d > 0 ? d * 0.2 : 0.1;
         }}
+        onError={() => setErrored(true)}
         className={`bg-black/80 object-cover ${className}`}
       />
     );
   }
-  return <div className={`bg-zinc-200/70 dark:bg-zinc-800/60 ${className}`} aria-hidden="true" />;
+  // Genuine text post (no media) or a media load failure: an intentional tile,
+  // not a broken/empty square. Decorative - the row's title/caption carries the text.
+  return (
+    <div className={`grid place-items-center ${PLACEHOLDER} text-zinc-400 dark:text-zinc-500 ${className}`} aria-hidden="true">
+      <FileText size={18} aria-hidden="true" />
+    </div>
+  );
+}
+
+// The hero image shared by the link/article cards. Kept at the real 1.91:1 card
+// ratio and object-cover so it always FILLS the frame - no letterbox bars, in
+// either theme. The card's own max-width (below) bounds the height, so the hero
+// never grows tall enough to force the dialog to scroll. Click to open the full
+// image in the shared full-screen viewer (the same affordance the media preview
+// uses); no image -> a calm, theme-aware placeholder tile.
+function CardHero({ image, noImageLabel }) {
+  const t = useT();
+  const [zoom, setZoom] = useState(false);
+  if (!image) {
+    return (
+      <div className="flex aspect-[1.91/1] w-full items-center justify-center border-b border-dashed border-zinc-300 bg-zinc-200/40 px-3 text-center text-[11px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/40 dark:text-zinc-400">
+        {noImageLabel}
+      </div>
+    );
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setZoom(true)}
+        aria-label={t('ui.player.expand')}
+        className="group relative block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+      >
+        <img src={image} alt="" className="aspect-[1.91/1] w-full object-cover" />
+        <span className="absolute right-2 top-2 grid h-7 w-7 place-items-center rounded-full bg-black/55 text-white opacity-0 backdrop-blur transition group-hover:opacity-100">
+          <Maximize2 size={14} aria-hidden="true" />
+        </span>
+      </button>
+      {zoom ? <MediaLightbox kind="image" src={image} onClose={() => setZoom(false)} /> : null}
+    </>
+  );
 }
 
 // Read-only LinkedIn article-card preview (image + title + source host) so the
-// owner can verify the card before approving. Mirrors the 1.91:1 ratio
-// LinkedIn renders. Hoisted here (from Composer) so PostDetail reuses it too.
+// owner can verify the card before approving. Mirrors the 1.91:1 ratio LinkedIn
+// renders. Capped to a real card width (max-w-md) so the hero stays a modest,
+// contained thumbnail - never a full-width banner that scrolls. Hoisted here (from
+// Composer) so PostDetail reuses it too.
 export function LinkCardPreview({ image, title, link }) {
   const t = useT();
   let host = '';
@@ -287,19 +348,13 @@ export function LinkCardPreview({ image, title, link }) {
     host = ''; // invalid/partial URL - skip the host chip, still render the card
   }
   return (
-    <div className="space-y-1.5">
+    <div className="w-full max-w-md space-y-1.5">
       <p className={EYEBROW}>{t('ui.linkCard.title')}</p>
       <div className={`overflow-hidden rounded-xl ring-1 ring-zinc-900/10 dark:ring-white/10 ${INNER_SURFACE}`}>
-        {image ? (
-          <img src={image} alt="" className="aspect-[1.91/1] w-full object-cover" />
-        ) : (
-          <div className="flex aspect-[1.91/1] w-full items-center justify-center border-b border-dashed border-zinc-300 bg-zinc-200/40 px-3 text-center text-[11px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/40 dark:text-zinc-400">
-            {t('ui.linkCard.noImage')}
-          </div>
-        )}
+        <CardHero image={image} noImageLabel={t('ui.linkCard.noImage')} />
         <div className="space-y-0.5 p-3">
-          <p className="text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || 'pendpost'}</p>
-          {host ? <p className="text-[11px] tracking-tight text-zinc-400 dark:text-zinc-500">{host}</p> : null}
+          <p className="break-words text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || 'pendpost'}</p>
+          {host ? <p className="break-words text-[11px] tracking-tight text-zinc-400 dark:text-zinc-500">{host}</p> : null}
         </div>
       </div>
     </div>
@@ -312,19 +367,13 @@ export function LinkCardPreview({ image, title, link }) {
 export function ArticleCardPreview({ image, title, excerpt }) {
   const t = useT();
   return (
-    <div className="space-y-1.5">
+    <div className="w-full max-w-md space-y-1.5">
       <p className={EYEBROW}>{t('ui.articleCard.title')}</p>
       <div className={`overflow-hidden rounded-xl ring-1 ring-zinc-900/10 dark:ring-white/10 ${INNER_SURFACE}`}>
-        {image ? (
-          <img src={image} alt="" className="aspect-[1.91/1] w-full object-cover" />
-        ) : (
-          <div className="flex aspect-[1.91/1] w-full items-center justify-center border-b border-dashed border-zinc-300 bg-zinc-200/40 px-3 text-center text-[11px] text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800/40 dark:text-zinc-400">
-            {t('ui.articleCard.noImage')}
-          </div>
-        )}
+        <CardHero image={image} noImageLabel={t('ui.articleCard.noImage')} />
         <div className="space-y-0.5 p-3">
-          <p className="text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || t('ui.articleCard.noTitle')}</p>
-          {excerpt ? <p className="text-xs leading-snug text-zinc-500 dark:text-zinc-400">{excerpt}</p> : null}
+          <p className="break-words text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || t('ui.articleCard.noTitle')}</p>
+          {excerpt ? <p className="break-words text-xs leading-snug text-zinc-500 dark:text-zinc-400">{excerpt}</p> : null}
         </div>
       </div>
     </div>
@@ -336,9 +385,11 @@ function YoutubeMeta({ title, description, tags }) {
   return (
     <div className={`space-y-1.5 rounded-xl p-3 ${INNER_SURFACE}`}>
       <p className={EYEBROW}>YouTube</p>
-      <p className="text-sm font-bold leading-snug">{title || t('ui.youtube.noTitle')}</p>
-      {description ? <p className="whitespace-pre-wrap text-xs text-zinc-600 dark:text-zinc-300">{description}</p> : null}
-      {tags ? <p className="text-[11px] text-zinc-400 dark:text-zinc-500">{tags}</p> : null}
+      <p className="break-words text-sm font-bold leading-snug">{title || t('ui.youtube.noTitle')}</p>
+      {/* break-words: a long unbroken token (e.g. a tracking URL in the description)
+          must wrap, not force the whole two-column body to scroll sideways. */}
+      {description ? <p className="whitespace-pre-wrap break-words text-xs text-zinc-600 dark:text-zinc-300">{description}</p> : null}
+      {tags ? <p className="break-words text-[11px] text-zinc-400 dark:text-zinc-500">{tags}</p> : null}
     </div>
   );
 }
@@ -362,6 +413,10 @@ export function PostPreview({ post, videoRef }) {
     if (post.platforms?.includes('wordpress') || post.platforms?.includes('ghost')) {
       return <ArticleCardPreview image={post.image} title={post.title} excerpt={post.excerpt} />;
     }
+    // A pure text post (no link, no image) has NOTHING to preview - render nothing
+    // rather than an empty "no image" link card that just eats width. The card only
+    // earns its space when there is a real link or image to show.
+    if (!post.link && !post.image) return null;
     return <LinkCardPreview image={post.image} title={post.title} link={post.link} />;
   }
   if (post.media?.url) {
@@ -484,25 +539,33 @@ function mediaCheckRows(checks, t) {
   return rows;
 }
 
-export function PlatformBlockers({ platformValidate, validateMedia, approval, onNavigate, className = '' }) {
+export function PlatformBlockers({ platformValidate, validateMedia, approval, editedSinceApproval = false, showApproval = true, onNavigate, className = '' }) {
   const t = useT();
   const platforms = platformValidate?.ok ? platformValidate.platforms || {} : {};
   const entries = Object.entries(platforms);
   const hasPlatformRows = entries.some(([, v]) => (v.problems?.length || 0) + (v.warnings?.length || 0) > 0);
   const mediaRows = mediaCheckRows(validateMedia?.ok ? validateMedia.checks : null, t);
   // A draft/pending/rejected post isn't a fault - it's just waiting for the owner's
-  // approval (the status badge already names that state). Surface it as ONE neutral
-  // line, never a red per-lane blocker.
-  const waitingApproval = Boolean(approval) && approval !== 'approved';
+  // approval. Surface it as ONE neutral line - but ONLY where the approval state isn't
+  // already shown elsewhere (`showApproval`). PostDetail passes false: its header
+  // ApprovalPill already carries the draft/rejected AND the "re-approve" states, so
+  // repeating them here would just say the same thing twice.
+  const waitingApproval = showApproval && Boolean(approval) && approval !== 'approved';
+  // Approved but content changed after approval: the gate refuses it until re-approval.
+  // A distinct one-line reason (not the plain "awaiting approval").
+  const needsReApproval = showApproval && approval === 'approved' && editedSinceApproval === true;
 
   // Clean across the board AND already approved: render nothing (no false alarms).
-  if (!hasPlatformRows && mediaRows.length === 0 && !waitingApproval) return null;
+  if (!hasPlatformRows && mediaRows.length === 0 && !waitingApproval && !needsReApproval) return null;
 
   return (
     <div className={`space-y-2 rounded-xl p-2.5 ${INNER_SURFACE} ${className}`}>
       <p className={EYEBROW}>{t('blockers.title')}</p>
       {waitingApproval ? (
         <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('blockers.awaitingApproval')}</p>
+      ) : null}
+      {needsReApproval ? (
+        <p className="text-[11px] font-bold text-amber-600 dark:text-amber-300">{t('blockers.editedSinceApproval')}</p>
       ) : null}
       {entries.map(([platform, v]) => {
         const problems = v.problems || [];
@@ -583,7 +646,7 @@ export function Skeleton({ className = '' }) {
 
 // Light-mode hairline + dark ring for inner surfaces sitting on glass panels
 // (UX-01: white-on-white alpha alone loses every edge in light mode).
-export const INNER_SURFACE = 'bg-white/60 ring-1 ring-zinc-900/5 dark:bg-zinc-800/40 dark:ring-white/10';
+export const INNER_SURFACE = 'bg-zinc-100 ring-1 ring-zinc-900/5 dark:bg-zinc-800 dark:ring-white/10';
 
 // DS-1: the single eyebrow micro-label token. Sentence case (never all-caps),
 // tiny, bold, tight tracking - the anti-slop replacement for the retired
@@ -730,10 +793,12 @@ export function Modal({ onClose, label, width = 'max-w-lg', children }) {
   const panelProps = useSlideOver(onClose);
   return createPortal(
     <div className="fixed inset-0 z-[60] grid place-items-center p-4" role="dialog" aria-modal="true" aria-label={label}>
-      <button type="button" aria-label={t('ui.action.close')} onClick={onClose} className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <button type="button" aria-label={t('ui.action.close')} onClick={onClose} className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
+      {/* Solid, opaque dialog surface - no translucency, for maximum clarity. */}
       <div
         {...panelProps}
-        className={`glass-panel relative flex max-h-[85vh] w-full ${width} flex-col gap-5 overflow-hidden rounded-2xl p-5 outline-none animate-slide-in motion-reduce:animate-none`}
+        data-dialog-panel="true"
+        className={`relative flex max-h-[85vh] w-full ${width} flex-col gap-5 overflow-hidden rounded-2xl border border-zinc-200 bg-white p-5 shadow-2xl outline-none animate-slide-in motion-reduce:animate-none dark:border-white/10 dark:bg-zinc-900`}
       >
         {children}
       </div>

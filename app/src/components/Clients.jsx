@@ -317,6 +317,11 @@ export default function Clients() {
   const [actionError, setActionError] = useState(null);
 
   const clients = data?.clients || [];
+  // Archived projects sink to the bottom (stable within each group) and read
+  // muted, so the active roster stays front-and-centre while a one-click restore
+  // stays fully legible. Only the table order changes - counts/forms keep `clients`.
+  const sortedClients = [...clients].sort((a, b) => (a.status === 'archived' ? 1 : 0) - (b.status === 'archived' ? 1 : 0));
+  const firstArchivedId = sortedClients.find((c) => c.status === 'archived')?.id;
   const activeId = data?.activeClientId || null;
   // Per-brand cloud delivery, joined from the cloud view (read only when connected so an
   // unconfigured install makes no cloud call). Drives the per-row delivery icon and the
@@ -442,13 +447,17 @@ export default function Clients() {
               </tr>
             </thead>
             <tbody>
-              {clients.map((c) => {
+              {sortedClients.map((c) => {
                 const isActive = c.id === activeId;
                 const archived = c.status === 'archived';
                 const busy = busyId === c.id;
+                // Mute the archived row's content cells (not the actions cell, so
+                // Restore stays fully legible); a hairline separates the groups.
+                const muted = archived ? 'opacity-60' : '';
+                const sep = c.id === firstArchivedId ? 'border-t-2 border-zinc-200 dark:border-zinc-700' : '';
                 return (
-                  <tr key={c.id} aria-current={isActive ? 'true' : undefined} className="border-b border-zinc-200/50 last:border-0 dark:border-zinc-700/50">
-                    <td className="px-3 py-2">
+                  <tr key={c.id} aria-current={isActive ? 'true' : undefined} className={`border-b border-zinc-200/50 last:border-0 dark:border-zinc-700/50 ${sep}`}>
+                    <td className={`px-3 py-2 ${muted}`}>
                       <span className="flex items-center gap-2">
                         <ClientAvatar client={c} size={24} />
                         <span className="min-w-0">
@@ -464,7 +473,7 @@ export default function Clients() {
                         </span>
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-xs">
+                    <td className={`px-3 py-2 text-xs ${muted}`}>
                       <span className="flex items-center gap-2">
                         <span>{archived ? t('clients.status.archived') : t('clients.status.active')}</span>
                         {cloudConnected && !archived ? (
@@ -484,10 +493,10 @@ export default function Clients() {
                         ) : null}
                       </span>
                     </td>
-                    <td className="px-3 py-2 text-xs">
+                    <td className={`px-3 py-2 text-xs ${muted}`}>
                       <ClientHealthCell row={overviewById[c.id]} blocked={c.actionBlocked} t={t} />
                     </td>
-                    <td className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">{c.timezone || '-'}</td>
+                    <td className={`px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400 ${muted}`}>{c.timezone || '-'}</td>
                     <td className="px-3 py-2">
                       <span className="flex items-center justify-end gap-1">
                         {!isActive && !archived ? (

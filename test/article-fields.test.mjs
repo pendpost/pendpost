@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 // test/article-fields.test.mjs - the LinkedIn article-card fields (image +
-// description) survive the write/read seam.
+// description + liDescription) survive the write/read seam.
 //
-// Two pure assertions, no manifest, no I/O:
-//   1. normalizePost (the read DTO) SURFACES image + description. This guards the
-//      documented silent failure mode: a field that persists on write but is
-//      dropped by the read DTO is invisible to plan_get / platform_validate / the
-//      dashboard with no error (the write-side/read-side parity rule).
+// Pure assertions, no manifest, no I/O:
+//   1. normalizePost (the read DTO) SURFACES image + description + liDescription.
+//      This guards the documented silent failure mode: a field that persists on
+//      write but is dropped by the read DTO is invisible to plan_get /
+//      platform_validate / the dashboard with no error (write/read parity rule).
 //   2. validateFieldValues REJECTS a non-URL image and ACCEPTS a valid one - the
 //      cheap automated gate on the new field's validation contract (every
 //      create/update passes through this validator).
-// The non-blocking warning path + create/update persistence are covered by the
-// live MCP round-trip (manifest-coupled, integration-first), not duplicated here.
+// The LinkedIn engine's card-description PRECEDENCE - liDescription (the
+// LinkedIn-specific field, so a LinkedIn+YouTube post never posts the YouTube
+// `description` on the LinkedIn card) else `description` (the original
+// LinkedIn-only convention) - lives in scripts/linkedin-social.mjs createPost and
+// is covered by the live MCP round-trip, not mocked here.
 import assert from 'node:assert';
 import { normalizePost } from '../lib/plans.mjs';
 import { validateFieldValues } from '../lib/writes.mjs';
@@ -40,14 +43,17 @@ const articlePost = {
   link: 'https://example.com/blog/x',
   image: HERO,
   description: 'Die Kartenbeschreibung.',
+  liDescription: 'Die LinkedIn-spezifische Kartenbeschreibung.',
   caption: 'Caption',
 };
 const dto = normalizePost(planEntry, plan, articlePost);
 check('normalizePost surfaces image', () => assert.equal(dto.image, HERO));
 check('normalizePost surfaces description', () => assert.equal(dto.description, 'Die Kartenbeschreibung.'));
+check('normalizePost surfaces liDescription', () => assert.equal(dto.liDescription, 'Die LinkedIn-spezifische Kartenbeschreibung.'));
 
 const bareDto = normalizePost(planEntry, plan, { id: 'y', type: 'text', platforms: ['linkedin'] });
 check('normalizePost defaults image to null when absent', () => assert.equal(bareDto.image, null));
+check('normalizePost defaults liDescription to empty when absent', () => assert.equal(bareDto.liDescription, ''));
 
 // --- 2. validateFieldValues guards the image URL --------------------------
 check('valid image + description pass', () => assert.equal(validateFieldValues({ image: HERO, description: 'd' }), null));

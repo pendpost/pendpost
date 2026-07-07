@@ -131,7 +131,37 @@ try {
   ok(r3.created === 1 && r3.failed === 1, 'one bad video fails in isolation; the good one still gets its cover');
   ok(isJpeg(path.join(MEDIA, 'good.jpg')) && !exists('bad-one.jpg'), 'the good cover lands; the failed one leaves no stub');
 
-  console.log(`[asset-cover] OK - upload auto-covers videos (best-effort), images skipped, backfill idempotent + failure-isolated, additive (no new route/tool) (${pass} assertions).`);
+  // ============ (7) binary-free in mock mode: the DEFAULT path no-ops ==========
+  // With NO injected extractor, PENDPOST_MODE=mock must keep BOTH cover paths
+  // binary-free (never shell out to ffmpeg) - the same guarantee scanAssets already
+  // gives. Proven by the backfill reporting skipped (NOT failed) and no JPEG
+  // landing; an injected extractor still runs (the guard is only on the default).
+  fs.rmSync(MEDIA, { recursive: true, force: true });
+  fs.mkdirSync(MEDIA, { recursive: true });
+  seed('demo-1.mp4');
+  seed('demo-2.mov');
+
+  // uploadAsset via the DEFAULT (guarded) extractor - no fake passed.
+  const upDefault = await uploadAsset({ filename: 'demo-up.mp4', bytes: FAKE_VIDEO, actor: 'owner' });
+  ok(upDefault.ok === true, 'mock mode: a default-path video upload still succeeds');
+  ok(upDefault.cover === false, 'mock mode: uploadAsset generates no cover via the default path (binary-free)');
+  ok(!exists('demo-up.jpg'), 'mock mode: no <base>.jpg is written by the default upload path');
+
+  // backfillCovers via the DEFAULT (guarded) extractor - no fake passed. A skip is
+  // NOT a failure: real ffmpeg would report failed>0 on these stub videos.
+  const rDefault = await backfillCovers();
+  ok(rDefault.scanned === 3, 'mock backfill scans all 3 videos');
+  ok(rDefault.failed === 0, 'mock mode: backfill reports NO failures (a binary-free skip is not a failure)');
+  ok(rDefault.created === 0, 'mock mode: backfill creates no covers (binary-free)');
+  ok(rDefault.skipped === 3, 'mock mode: every cover-less video is skipped, not extracted');
+  ok(!exists('demo-1.jpg') && !exists('demo-2.jpg') && !exists('demo-up.jpg'), 'mock mode: the default backfill writes no cover JPEGs');
+
+  // ...but an INJECTED extractor still runs (the guard lives only on the default).
+  calls.length = 0;
+  const rInjected = await backfillCovers(fakeExtract);
+  ok(rInjected.created === 3 && calls.length === 3, 'an injected extractor still runs in mock mode (guard is only on the default path)');
+
+  console.log(`[asset-cover] OK - upload auto-covers videos (best-effort), images skipped, backfill idempotent + failure-isolated, mock-mode binary-free default path, additive (no new route/tool) (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

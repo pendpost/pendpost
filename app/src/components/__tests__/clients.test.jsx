@@ -185,3 +185,23 @@ describe('Clients make-active (R2: shared invalidation + SR announcement)', () =
     await waitFor(() => expect(status.textContent.length).toBeGreaterThan(0));
   });
 });
+
+describe('Clients archived ordering', () => {
+  it('sorts archived projects below active ones regardless of source order', () => {
+    clientsState = {
+      activeClientId: 'acme',
+      clients: [
+        { id: 'zed', displayName: 'Zed Archived', status: 'archived', timezone: 'UTC', rev: 'r1' },
+        { id: 'acme', displayName: 'Acme Retail', status: 'active', timezone: 'UTC', rev: 'r2' },
+      ],
+    };
+    renderClients();
+    const bodyRows = screen.getAllByRole('row').slice(1).map((r) => r.textContent);
+    const acmeIdx = bodyRows.findIndex((tx) => /Acme Retail/.test(tx));
+    const zedIdx = bodyRows.findIndex((tx) => /Zed Archived/.test(tx));
+    expect(acmeIdx).toBeGreaterThanOrEqual(0);
+    expect(zedIdx).toBeGreaterThan(acmeIdx);
+    // The archived project keeps a usable restore action.
+    expect(screen.getByRole('button', { name: /restore .*Zed Archived/i })).toBeInTheDocument();
+  });
+});

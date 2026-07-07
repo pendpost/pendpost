@@ -1,11 +1,38 @@
 import { useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight } from 'lucide-react';
+import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench } from 'lucide-react';
 import { useActivity } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { Skeleton, PLATFORM_META } from './ui.jsx';
+import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { dayKey, fmtTime, dateLocale } from '../lib/format.js';
+
+// Map a FAILED activity entry to a one-click fix (data, not UI - like ACTION_LABEL
+// above). The source of truth for the setup-class strings is platformValidate()'s
+// needsSetup problems (lib/writes.mjs): missing credentials/identifiers or a
+// not-connected/not-authenticated lane. Returns null for a generic failure (the
+// row already opens its post as before) so a wrench only appears where there IS a
+// specific, actionable fix. Server error strings are English (LinkedIn's are the
+// two German exceptions), so both are matched.
+function resolveRemediation(entry) {
+  if (entry.ok !== false) return null;
+  const msg = entry.errorMessage || '';
+  const code = entry.errorCode || '';
+  // Meta action-block / rate-limit -> the Meta lane cadence + pause controls.
+  if (code === 'blocked_368' || /action block|\b368\b|rate.?limit/i.test(msg)) {
+    return { kind: 'metaCadence', ctaKey: 'activity.fix.metaCadence' };
+  }
+  // needsSetup class: a missing credential/identifier or an unconnected lane.
+  if (/not connected|not authenticated|not configured|credentials not configured|is not set|not set \(|no signing key|nicht verbunden|nicht eingerichtet/i.test(msg)) {
+    return { kind: 'setup', ctaKey: 'activity.fix.setup' };
+  }
+  // Brand-lint / invalid input on a concrete post -> open it to edit.
+  if (code === 'invalid_input' && entry.campaign && entry.postId) {
+    return { kind: 'edit', ctaKey: 'activity.fix.edit' };
+  }
+  return null;
+}
 
 // Maps an action id (data, not UI text) to its i18n key. The English values
 // live in en.json under activity.action.*; resolved through t() at render time
@@ -94,14 +121,23 @@ function dayHeader(iso, t) {
   return new Intl.DateTimeFormat(dateLocale(), { timeZone: TZ, weekday: 'long', day: 'numeric', month: 'long' }).format(new Date(iso));
 }
 
-function Row({ entry, onOpenPost }) {
+function Row({ entry, onOpenPost, onNavigate }) {
   const t = useT();
   const meta = entry.platform ? PLATFORM_META[entry.platform] : null;
   const errText = entry.errorMessage ? `${entry.errorCode ? `${entry.errorCode}: ` : ''}${entry.errorMessage}` : null;
+  // A failed row with a specific, actionable fix shows a single amber wrench CTA
+  // (jumps straight to the fix); the row is then a plain div - the wrench is the
+  // only interactive control, so no nesting. Generic failures keep the
+  // whole-row-opens-the-post behavior below (US-ACT-10, no dead ends).
+  const remediation = resolveRemediation(entry);
+  const doFix = () => {
+    if (remediation?.kind === 'edit') onOpenPost?.({ campaign: entry.campaign, id: entry.postId });
+    else onNavigate?.('setup', remediation?.kind === 'metaCadence' ? 'facebook' : entry.platform);
+  };
   // US-ACT-10: an entry that carries a post is a clickable row that opens it (no
   // dead ends). The error rides as plain text with a native title for the full
   // string, so there is no nested-interactive control inside the row button.
-  const openable = Boolean(entry.campaign && entry.postId && onOpenPost);
+  const openable = Boolean(entry.campaign && entry.postId && onOpenPost) && !remediation;
   // A cadence-defer is a deferral, not a success or failure - render it with the
   // design system's amber "waiting/held" token (Clock), and tone its message
   // amber rather than red (it is informational, the post stays due).
@@ -144,6 +180,24 @@ function Row({ entry, onOpenPost }) {
       ) : null}
     </>
   );
+  if (remediation) {
+    return (
+      <div className={cls}>
+        {inner}
+        <Tip label={t(remediation.ctaKey)}>
+          <button
+            type="button"
+            onClick={doFix}
+            aria-label={t(remediation.ctaKey)}
+            className="flex shrink-0 items-center gap-1 self-center rounded-lg px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 transition hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300 dark:ring-amber-400/30"
+          >
+            <Wrench size={13} aria-hidden="true" />
+            <span className="hidden sm:inline">{t(remediation.ctaKey)}</span>
+          </button>
+        </Tip>
+      </div>
+    );
+  }
   if (openable) {
     return (
       <button
@@ -159,7 +213,7 @@ function Row({ entry, onOpenPost }) {
   return <div className={cls}>{inner}</div>;
 }
 
-export default function ActivityView({ active, platformFilter = [], failuresOnly = false, actionGroups = [], onOpenPost }) {
+export default function ActivityView({ active, platformFilter = [], failuresOnly = false, actionGroups = [], onOpenPost, onNavigate }) {
   const { data, isLoading, isError } = useActivity(active);
   const queryClient = useQueryClient();
   const t = useT();
@@ -259,7 +313,7 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
           <section key={g.key}>
             <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{g.header}</h3>
             <div className="space-y-1.5">
-              {g.entries.map((entry, i) => <Row key={`${entry.ts}-${i}`} entry={entry} onOpenPost={onOpenPost} />)}
+              {g.entries.map((entry, i) => <Row key={`${entry.ts}-${i}`} entry={entry} onOpenPost={onOpenPost} onNavigate={onNavigate} />)}
             </div>
           </section>
         ))}

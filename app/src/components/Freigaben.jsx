@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, Sparkles, LayoutGrid, List, Info } from 'lucide-react';
+import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, Sparkles, LayoutGrid, List, Info, CornerUpLeft } from 'lucide-react';
 import { approvePost, rejectPost } from '../lib/api.js';
-import { fmtFull, fmtStampShort, campaignBaseLabel, matchesFilters } from '../lib/format.js';
+import { fmtFull, fmtStampShort, campaignBaseLabel, matchesFilters, collectThread } from '../lib/format.js';
 import { CoverThumb, LinkCardPreview, PlatformIcons, ApprovalPill, StatusPill, INNER_SURFACE, Skeleton } from './ui.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { GateMark } from './ui/GateMark.jsx';
@@ -15,7 +15,10 @@ import { useT } from '../lib/i18n.js';
 
 const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
 const keyOf = (post) => `${post.campaign}-${post.id}`;
-const isActionable = (post) => post.approval !== 'approved' && post.derivedState !== 'posted';
+// Actionable = still needs an approval decision. An edited-since-approval post is
+// approval:'approved' but its content diverged from what was blessed, so it needs a
+// FRESH decision (re-approve) and belongs back in the queue, not settled.
+const isActionable = (post) => (post.approval !== 'approved' || post.editedSinceApproval) && post.derivedState !== 'posted';
 // Skip the approve "clearing sweep" motion for users who asked for less of it.
 const prefersReduced = () =>
   typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -26,11 +29,16 @@ const prefersReduced = () =>
 // Approve actions sit BESIDE that button, not inside it. Status (a state)
 // reads as quiet ring-badges top-right; actions (things you do) read as a clear
 // button group bottom-right - never interleaved.
-function ApprovalCard({ post, onOpen, selected, onToggleSelect, archived, compact = false, focused = false, registerRef, onArrowNav, onActed }) {
+function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed }) {
   const queryClient = useQueryClient();
   const prompt = usePrompt();
   const t = useT();
   const [error, setError] = useState(null);
+  // X thread membership: the whole chain this post belongs to. When it is part of
+  // a thread, the card offers "select whole thread" so every tweet can be approved
+  // together (each is still an independent, individually-audited approval).
+  const thread = useMemo(() => (onSelectThread ? collectThread(post, posts) : [post]), [onSelectThread, post, posts]);
+  const inThread = thread.length > 1;
   // Mirror ActionButton's in-flight guard for the KEYBOARD path: keys bypass the
   // button machine, so a second 'a'/'r' while one is still resolving would
   // double-submit. A ref (not state) is the guard ActionButton uses in spirit.
@@ -200,7 +208,7 @@ function ApprovalCard({ post, onOpen, selected, onToggleSelect, archived, compac
     <span className="flex shrink-0 items-center gap-1">
       {contextBadges}
       <StatusPill state={post.derivedState} short />
-      <ApprovalPill approval={post.approval} />
+      <ApprovalPill approval={post.approval} editedSinceApproval={post.editedSinceApproval} />
     </span>
   );
 
@@ -291,6 +299,20 @@ function ApprovalCard({ post, onOpen, selected, onToggleSelect, archived, compac
                 nested in it), mirroring the per-platform publish gate. Silent unless
                 a target platform would trip a severity:'error' rule; never gates. */}
             <BrandLintBadge caption={post.caption} platforms={post.platforms} />
+            {/* Thread marker + "select whole thread": approving one tweet is not
+                approving the thread, so this both signals membership and seeds the
+                bulk selection with every tweet in the chain. */}
+            {inThread ? (
+              <Tip label={t('approvals.thread.selectThread')}>
+                <button
+                  type="button"
+                  onClick={() => onSelectThread(post)}
+                  className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-bold text-zinc-500 ring-1 ring-zinc-900/10 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-zinc-700/60"
+                >
+                  <CornerUpLeft size={11} aria-hidden="true" /> {t('approvals.thread.partOf', { count: thread.length })}
+                </button>
+              </Tip>
+            ) : null}
             <span className="flex-1" />
             {actions}
           </div>
@@ -517,6 +539,13 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
       return next;
     });
   };
+  // Seed the selection with every tweet in the post's thread, so a reviewer can
+  // approve the whole chain in one bulk action (the bulk loop still intersects
+  // against the visible actionable items, so already-approved tweets are no-ops).
+  const selectThread = (post) => {
+    const keys = collectThread(post, all).map(keyOf);
+    setSelected((prev) => new Set([...prev, ...keys]));
+  };
   const clearSelection = () => setSelected(new Set());
   const selectAllVisible = () => setSelected(new Set(actionableItems.map(keyOf)));
   const allVisibleSelected = actionableItems.length > 0 && selCount === actionableItems.length;
@@ -695,9 +724,11 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
             <ApprovalCard
               key={keyOf(post)}
               post={post}
-              onOpen={onOpen}
+              posts={all}
+              onOpen={(p) => onOpen(p, items)}
               selected={selected.has(keyOf(post))}
               onToggleSelect={toggleSelect}
+              onSelectThread={selectThread}
               archived={!activeIds.has(post.campaign)}
               compact={density === 'compact'}
               focused={focusKey === keyOf(post)}
