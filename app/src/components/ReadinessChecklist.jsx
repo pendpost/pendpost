@@ -86,7 +86,14 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
             className="flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-bold text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
           >
             {!open && blockerCount ? (
-              <span aria-hidden="true" className="rounded-full bg-zinc-300/70 px-1.5 text-[10px] font-bold text-zinc-600 dark:bg-zinc-600/70 dark:text-zinc-200">{blockerCount}</span>
+              // Pair the count with an AlertCircle glyph so the collapsed badge
+              // reads as "attention needed" - a naked number can be misread as a
+              // positive/ready count. Calm zinc (not amber-alarm), matching the
+              // panel's blocker rows; the button aria-label carries the meaning.
+              <>
+                <AlertCircle size={12} aria-hidden="true" className="text-zinc-500 dark:text-zinc-400" />
+                <span aria-hidden="true" className="rounded-full bg-zinc-300/70 px-1.5 text-[10px] font-bold text-zinc-600 dark:bg-zinc-600/70 dark:text-zinc-200">{blockerCount}</span>
+              </>
             ) : null}
             <ChevronDown size={14} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
           </button>

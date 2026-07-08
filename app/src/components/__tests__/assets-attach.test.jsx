@@ -146,21 +146,21 @@ describe('Composer accepts a seed (B9)', () => {
     const srt = '1\n00:00:00,000 --> 00:00:02,000\nHello from the demo.\n';
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, text: () => Promise.resolve(srt) })));
     renderComposer({ seed: { mediaPath: 'data/media/crm-demo.mp4' } });
-    const caption = await screen.findByLabelText(/caption/i);
+    const caption = await screen.findByLabelText(/post text/i);
     await waitFor(() => expect(caption).toHaveValue('Hello from the demo.'));
   });
 
   it('leaves the caption empty when the asset has no SRT sidecar', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, text: () => Promise.resolve('') })));
     renderComposer({ seed: { mediaPath: 'data/media/plain.mp4' } });
-    const caption = await screen.findByLabelText(/caption/i);
+    const caption = await screen.findByLabelText(/post text/i);
     expect(caption).toHaveValue('');
   });
 
   it('leaves the caption empty (never blocks) when the SRT fetch fails', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('network'))));
     renderComposer({ seed: { mediaPath: 'data/media/crm-demo.mp4' } });
-    const caption = await screen.findByLabelText(/caption/i);
+    const caption = await screen.findByLabelText(/post text/i);
     // The picker still shows the file even though the SRT fetch threw.
     expect(await screen.findByText('crm-demo.mp4')).toBeInTheDocument();
     expect(caption).toHaveValue('');

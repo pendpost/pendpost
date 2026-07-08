@@ -88,9 +88,17 @@ the install-global workspace; `checkout` opens a Stripe Checkout to subscribe to
 plan, payment method, and invoices; `spend-cap` sets or clears the overage spend cap (the
 running overage pauses once it is reached).) The core stays fully standalone when the feature is
 unconnected (per-client always-on off by default), consistent with the open-core boundary
-in `docs/specs/cloud-integration-contract.md`. (`GET /api/cloud`, `GET /api/cloud/clients`,
-`GET /api/cloud/subscription`, and `GET /api/cloud/enable/callback` are plain reads/redirects
-and need no exemption.)
+in `docs/specs/cloud-integration-contract.md`.
+
+The cloud OBSERVABILITY reads now ship read-only MCP twins so an agent can observe
+cloud / always-on state (it previously could not read it at all): `GET /api/cloud` ->
+`cloud_status`, `GET /api/cloud/capabilities` -> `cloud_capabilities`, `GET /api/cloud/clients`
+-> `cloud_clients`, `GET /api/cloud/subscription` -> `cloud_subscription`. They are strictly
+read-only, carry NO secrets (the api key never leaves `.env`, tokens never leave the vault) and
+NO confirm gate; `cloud_capabilities` / `cloud_subscription` proxy the cloud over the network and
+degrade gracefully. The cloud CONTROL routes (`push`, `reconcile`, `enabled`, `clients/always-on`)
+and the connect/billing ceremonies above stay operator-only and are NOT twinned. (`GET /api/cloud/enable/callback`
+is a plain loopback redirect and needs no exemption.)
 
 ```json
 {

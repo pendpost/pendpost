@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronUp, ChevronDown, Plus, PauseCircle, CornerUpLeft } from 'lucide-react';
-import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread } from '../lib/format.js';
+import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { unschedulePost } from '../lib/api.js';
 import { useQueryClient } from '@tanstack/react-query';
@@ -470,10 +470,14 @@ function ListRow({ post, posts = [], onSelect, lane }) {
             <span className="sr-only">{t('planner.list.replyChain', { id: post.xReplyTo })}</span>
           </span>
         ) : null}
-        {/* Thread head: how many replies thread beneath this opener. */}
-        {threadReplies.length ? (
+        {/* Thread membership, shown ONCE on the opener only: a reply row (xReplyTo
+            truthy) carries the reply glyph + indent instead, so a linear 6-post
+            thread reads as one "Thread · 6 posts" head badge rather than five
+            look-alike per-row badges. Count the whole transitive chain including
+            the opener (collectThread.length = total posts in the thread). */}
+        {threadReplies.length && !post.xReplyTo ? (
           <span className="shrink-0 rounded-full bg-zinc-500/10 px-1.5 py-0.5 text-[10px] font-bold text-zinc-500 dark:text-zinc-400">
-            {t('planner.list.threadCount', { count: threadReplies.length })}
+            {t('planner.list.threadCount', { count: collectThread(post, posts).length })}
           </span>
         ) : null}
         <PlatformIcons platforms={post.platforms} />

@@ -50,7 +50,7 @@ function ScrollColumn({ items, sel, onPick, selRef, label }) {
   );
 }
 
-export function DateTimePicker({ value, onChange, placeholder, renderTrigger, disablePast = false }) {
+export function DateTimePicker({ value, onChange, placeholder, renderTrigger, triggerClassName, disablePast = false }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const date = value ? new Date(value) : null;
@@ -109,8 +109,12 @@ export function DateTimePicker({ value, onChange, placeholder, renderTrigger, di
         ) : (
           <button
             type="button"
+            // `triggerClassName` lets a caller align the trigger with its sibling
+            // form fields (e.g. the Composer's FIELD_CLS select surface); the
+            // translucent default stays for every existing call site.
             className={cn(
-              'flex w-full items-center gap-2 rounded-xl border-0 bg-white/60 px-3 py-2 text-sm ring-1 ring-zinc-900/5 transition hover:bg-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/40 dark:ring-white/10 dark:hover:bg-zinc-800/60',
+              'flex w-full items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand',
+              triggerClassName || 'rounded-xl border-0 bg-white/60 px-3 py-2 ring-1 ring-zinc-900/5 transition hover:bg-white/80 dark:bg-zinc-800/40 dark:ring-white/10 dark:hover:bg-zinc-800/60',
               !valid && 'text-zinc-400 dark:text-zinc-500',
             )}
           >

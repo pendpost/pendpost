@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, PauseCircle, CheckCheck, Send, ExternalLink, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, ChevronLeft, ChevronRight, Cloud as CloudIcon, FileText } from 'lucide-react';
-import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, fieldsForPost, deriveThread } from '../lib/format.js';
+import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, PauseCircle, CheckCheck, Send, ExternalLink, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, ChevronLeft, ChevronRight, Cloud as CloudIcon } from 'lucide-react';
+import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, fieldsForPost, deriveThread, PLATFORMS, TYPES, formatsForPlatform, visiblePlatforms } from '../lib/format.js';
 import {
   useAccounts, usePlatformValidate, useValidateMedia, useActiveClient,
   approvePost, rejectPost, deletePost, unschedulePost, reschedulePost, markPosted, verifyPost,
@@ -35,8 +35,13 @@ function Section({ title, children }) {
 // Read-only (a posted post) collapses to a plain paragraph. Long content wraps
 // (break-words) so a URL-heavy field never forces the dialog to scroll sideways.
 function ContentField({ label, platforms, showIcons, hint, kind, mono, value, onChange, editable, placeholder }) {
+  // Size from content, not just newlines: a long single-paragraph caption wraps,
+  // so estimate wrapped lines (~52 chars/row, matching the ~55-char left column)
+  // and take the max with the newline count - min 3 rows, capped so a whole
+  // article body cannot swallow the dialog.
+  const text = String(value || '');
   const rows = kind === 'textarea'
-    ? Math.min(mono ? 18 : 14, Math.max(3, String(value || '').split('\n').length + 1))
+    ? Math.min(mono ? 18 : 14, Math.max(3, text.split('\n').length + 1, Math.ceil(text.length / 52)))
     : undefined;
   return (
     <div className="space-y-1.5">
@@ -121,18 +126,6 @@ function PostExtras({ post, extras, t }) {
   );
 }
 
-// The right-column placeholder for a pure-text post (no link, no image): a calm,
-// theme-aware tile at the card's 1.91:1 ratio so every post keeps the same
-// two-column shape, instead of leaving the text stranded in one column.
-function TextPostTile({ label }) {
-  return (
-    <div className="flex aspect-[1.91/1] w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-zinc-300 bg-zinc-100 text-zinc-400 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-500">
-      <FileText size={20} aria-hidden="true" />
-      <span className="text-[11px] font-bold">{label}</span>
-    </div>
-  );
-}
-
 // Tier semantics (finding #44): `done` (emerald) is reserved for an artifact
 // that is permanently published on the platform (fbReelId / igMediaId /
 // liPostId). A natively-scheduled future object (FB scheduled post fbPostId,
@@ -177,6 +170,10 @@ function platformVerify(post, platform, t) {
 
 const ACTION_BTN = 'flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
 
+// The Composer's form-field surface, mirrored for the quick-edit controls so the
+// modal's format select + schedule trigger read as the same field family.
+const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+
 // Honest per-platform cover reality (mirrors covers.mjs applicability /
 // PLATFORM-MATRIX.md) - never imply a cover reaches a platform it cannot.
 function coverChips(post, t) {
@@ -195,7 +192,7 @@ function coverChips(post, t) {
   return chips;
 }
 
-export default function PostDetail({ post, posts = [], triage = null, triageIndex = -1, onClose, onEdit, onNavigate, onOpenPost }) {
+export default function PostDetail({ post, posts = [], triage = null, triageIndex = -1, posting, onClose, onEdit, onNavigate, onOpenPost }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: accounts } = useAccounts();
@@ -219,9 +216,6 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   const videoRef = useRef(null);
   const fileInputRef = useRef(null);
   const [error, setError] = useState(null);
-  const [rescheduleOpen, setRescheduleOpen] = useState(false);
-  // ISO string for the house DateTimePicker (finding #41); null = nothing picked.
-  const [rescheduleValue, setRescheduleValue] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   // Platform-aware content model (lib/format.js): the ordered editable text fields
   // this post's platforms actually use + the read-only extras. The SAME model the
@@ -239,10 +233,20 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
     for (const f of contentFields) seed[f.key] = post?.[f.key] || '';
     return seed;
   });
+  // Quick-edit drafts (single edit surface): format + platforms + schedule live
+  // inline in the modal now, staged like the text drafts and written by the same
+  // Save. The schedule half goes through the reschedule mutation (native-object
+  // guards), the rest through the one rev-guarded PATCH.
+  const [typeDraft, setTypeDraft] = useState(post?.type || 'reel');
+  const [platformsDraft, setPlatformsDraft] = useState(post?.platforms || []);
+  const [scheduleDraft, setScheduleDraft] = useState(post?.scheduledAt || null);
   useEffect(() => {
     const seed = {};
     for (const f of contentFields) seed[f.key] = post?.[f.key] || '';
     setDrafts(seed);
+    setTypeDraft(post?.type || 'reel');
+    setPlatformsDraft(post?.platforms || []);
+    setScheduleDraft(post?.scheduledAt || null);
     // Re-seed on identity/rev change only (rev bumps on every server write); the
     // field list is derived from the same post, so it is intentionally not a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -305,17 +309,41 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // mirrors the Composer's `value || null` clear-semantics.
   const setDraft = (key, val) => setDrafts((d) => ({ ...d, [key]: val }));
   const dirtyFields = contentFields.filter((f) => (drafts[f.key] ?? '') !== (post[f.key] || ''));
-  const anyDirty = dirtyFields.length > 0;
+  const ts = (v) => (v ? Date.parse(v) : null);
+  const typeDirty = typeDraft !== post.type;
+  const platformsDirty = platformsDraft.join(',') !== (post.platforms || []).join(',');
+  const scheduleDirty = ts(scheduleDraft) !== ts(post.scheduledAt);
+  const anyDirty = dirtyFields.length > 0 || typeDirty || platformsDirty || scheduleDirty;
   const saveFields = async () => {
+    // The Composer's own guards, mirrored: never save a post with no platform,
+    // and a reply-to must be another post's id (the X lane fail-closes on junk).
+    if (platformsDirty && !platformsDraft.length) throw new Error(t('composer.error.noPlatform'));
+    const xr = String(drafts.xReplyTo ?? '').trim();
+    if (dirtyFields.some((f) => f.key === 'xReplyTo') && xr && (!/^[a-zA-Z0-9_-]+$/.test(xr) || xr === post.id)) {
+      throw new Error(t('composer.error.xReplyToFormat'));
+    }
     const patch = {};
     for (const f of dirtyFields) {
       const v = drafts[f.key] ?? '';
       patch[f.key] = f.key === 'caption' ? v : (v || null);
     }
-    try {
-      await updatePost(post.campaign, post.id, post.rev, patch);
-    } catch (err) {
-      throw new Error(err?.code === 'stale_write' ? t('composer.error.staleWrite') : (err?.message || t('postDetail.error.generic')));
+    if (typeDirty) patch.type = typeDraft;
+    if (platformsDirty) patch.platforms = platformsDraft;
+    if (Object.keys(patch).length) {
+      try {
+        await updatePost(post.campaign, post.id, post.rev, patch);
+      } catch (err) {
+        throw new Error(err?.code === 'stale_write' ? t('composer.error.staleWrite') : (err?.message || t('postDetail.error.generic')));
+      }
+    }
+    // Schedule goes through the reschedule mutation (NOT the PATCH) so the
+    // native-object safety net applies (a natively-scheduled FB/YT post asks
+    // for confirmation before its platform object is recreated).
+    if (scheduleDirty) {
+      const d = new Date(scheduleDraft);
+      if (Number.isNaN(d.getTime())) throw new Error(t('postDetail.reschedule.invalidDate'));
+      if (d.getTime() <= Date.now()) throw new Error(t('postDetail.reschedule.pastDate'));
+      await withConfirm((confirm2) => reschedulePost(post.campaign, post.id, d.toISOString(), confirm2));
     }
     await queryClient.invalidateQueries({ queryKey: ['plans'] });
   };
@@ -448,28 +476,6 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
       throw { canceled: true };
     }
   };
-  // The reschedule control is a plain (non-ActionButton) inline form; it owns its
-  // own error handling.
-  const onReschedule = async () => {
-    const d = new Date(rescheduleValue);
-    if (Number.isNaN(d.getTime())) {
-      setError(t('postDetail.reschedule.invalidDate'));
-      return;
-    }
-    // Guard against past dates (finding #40): on a natively-scheduled YT/FB post
-    // a past reschedule deletes the platform object then marks the post overdue.
-    if (d.getTime() <= Date.now()) {
-      setError(t('postDetail.reschedule.pastDate'));
-      return;
-    }
-    try {
-      await withConfirm((confirm2) => reschedulePost(post.campaign, post.id, d.toISOString(), confirm2));
-      setRescheduleOpen(false);
-    } catch (err) {
-      if (err?.canceled !== true) setError(err?.message || t('postDetail.reschedule.error'));
-    }
-  };
-
   const onCoverFrame = async () => {
     const sec = videoRef.current?.currentTime;
     if (typeof sec !== 'number') throw { canceled: true };
@@ -541,18 +547,19 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
     finally { actingRef.current = false; }
   };
 
-  // One dominant primary CTA per state; everything destructive/less-common lives
-  // in the ⋯ overflow. Precedence mirrors the plan's action-hierarchy table.
+  // One dominant state CTA (approval flows keep precedence); Save is the
+  // permanent primary next to it. Everything destructive/less-common lives in
+  // the ⋯ overflow.
   const primary =
     canPublishNow ? 'publishNow'
     : canApprove ? 'approve'
     : canVerify ? 'verify'
-    : editable ? 'reschedule'
     : null;
-  const toggleReschedule = () => { setRescheduleOpen((v) => !v); setRescheduleValue(null); };
 
   // ⋯ overflow items (data, not markup) - filtered to what's valid for the state.
+  // The full Composer stays reachable for heavy media work via "Open in editor".
   const menuItems = [
+    editable && { key: 'edit', icon: Pencil, label: t('postDetail.action.openEditor'), run: () => onEdit(post) },
     canReject && { key: 'reject', icon: XCircle, label: t('approvals.action.reject'), danger: true, run: onReject },
     editable && post.executionMode === 'fully-scheduled' && { key: 'park', icon: PauseCircle, label: t('postDetail.action.parkIdle'), run: onPark },
     post.derivedState !== 'posted' && { key: 'mark', icon: CheckCheck, label: t('postDetail.action.markIdle'), run: onMarkPosted },
@@ -602,9 +609,69 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
     ? contentFields
     : contentFields.filter((f) => String(drafts[f.key] ?? '').trim());
 
+  // The platform chips offer connected + enabled + not-skipped lanes plus any
+  // lane the post already targets (a real target is never silently dropped) -
+  // the Composer's pickerPlatforms rule.
+  const pickerPlatforms = !accounts
+    ? PLATFORMS
+    : PLATFORMS.filter((p) => new Set([...visiblePlatforms(accounts, posting), ...platformsDraft]).has(p));
+
   // The scrollable body content shared by the two-column and single-column layouts.
   const bodyLeft = (
     <>
+      {/* Quick edit (single edit surface): platforms + format + schedule live
+          inline, staged into the same dirty->Save model as the text fields, so
+          routine changes never need the full Composer. */}
+      {editable ? (
+        <section className="space-y-4">
+          <fieldset className="space-y-1.5">
+            <legend className={EYEBROW}>{t('composer.field.platforms')}</legend>
+            <div className="flex flex-wrap gap-1.5">
+              {pickerPlatforms.map((p) => {
+                const meta = PLATFORM_META[p];
+                if (!meta) return null;
+                const active = platformsDraft.includes(p);
+                const { Icon } = meta;
+                return (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => setPlatformsDraft((prev) => (prev.includes(p) ? prev.filter((q) => q !== p) : PLATFORMS.filter((q) => prev.includes(q) || q === p)))}
+                    aria-pressed={active}
+                    className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+                      active
+                        ? 'bg-brand/10 text-brand ring-brand/30 dark:bg-brand-light/10 dark:text-brand-light dark:ring-brand-light/30'
+                        : 'text-zinc-500 ring-zinc-900/10 hover:bg-zinc-200/40 dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-zinc-800/40'
+                    }`}
+                  >
+                    <Icon size={13} className={active ? meta.color : ''} aria-hidden="true" />
+                    {meta.label}
+                  </button>
+                );
+              })}
+            </div>
+          </fieldset>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="detail-type">{t('composer.field.format')}</label>
+              {/* A12: offer only the formats the chosen lane(s) can publish (union
+                  across platforms; full list when none) - a text lane never lists
+                  Reel/Story. The current value stays listed even if now invalid, so
+                  a platform change never silently rewrites the format. */}
+              <select id="detail-type" value={typeDraft} onChange={(e) => setTypeDraft(e.target.value)} className={`${FIELD_CLS} h-10`}>
+                {TYPES.filter((ty) => ty === typeDraft || (platformsDraft.length ? platformsDraft.some((p) => formatsForPlatform(p).includes(ty)) : true)).map((ty) => (
+                  <option key={ty} value={ty}>{t(`type.${ty}`)}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <label className={EYEBROW}>{t('composer.field.schedule')}</label>
+              <DateTimePicker value={scheduleDraft} onChange={setScheduleDraft} disablePast triggerClassName={`${FIELD_CLS} h-10`} />
+            </div>
+          </div>
+        </section>
+      ) : null}
+
       {/* Platform-relevant content, primary text first: only the fields a targeted
           platform actually posts appear (YouTube leads with title + description, X
           with its tweet text, meta with the caption) - never an empty "Bildtext" on
@@ -635,7 +702,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
 
       {contentExtras.length ? <PostExtras post={post} extras={contentExtras} t={t} /> : null}
 
-      <Section title={t('postDetail.section.platforms')}>
+      <Section title={t('postDetail.section.delivery')}>
         {deliveryHint ? (
           <p className={`mb-1.5 flex items-center gap-1.5 text-[11px] ${deliveryHint.tone === 'local' ? 'text-amber-600 dark:text-amber-300' : 'text-zinc-500 dark:text-zinc-400'}`}>
             {deliveryHint.tone === 'local'
@@ -736,17 +803,6 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
           </div>
         </div>
       ) : null}
-
-      {rescheduleOpen ? (
-        <div id="detail-reschedule-panel" role="group" aria-label={t('postDetail.reschedule.panelLabel')} className={`flex items-center gap-2 rounded-xl p-2.5 ${INNER_SURFACE}`}>
-          <div className="flex-1">
-            <DateTimePicker value={rescheduleValue} onChange={setRescheduleValue} placeholder={t('postDetail.reschedule.placeholder')} disablePast />
-          </div>
-          <button type="button" onClick={onReschedule} disabled={!rescheduleValue} className={`${ACTION_BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`}>
-            {t('postDetail.reschedule.submit')}
-          </button>
-        </div>
-      ) : null}
     </>
   );
 
@@ -828,10 +884,10 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
     </>
   );
 
-  // The right column of the two-column body: the media/card preview for any post
-  // that has one, or a calm text tile for a pure-text post - so EVERY post keeps
-  // the same two-column shape (no more single-column text with dead space).
-  const rightColumn = isText && !textHasCard ? <TextPostTile label={t('postDetail.preview.textOnly')} /> : mediaBlock;
+  // A post with a preview (media, link card, or article card) keeps the two-column
+  // shape; a pure-text post has nothing to preview, so its body goes single-column
+  // full-width instead of reserving ~38% for an empty tile.
+  const hasPreview = !isText || textHasCard;
 
   return (
     <Modal onClose={onClose} label={t('postDetail.dialogLabel', { id: post.id })} width="max-w-4xl">
@@ -932,14 +988,21 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
       ) : null}
 
       {/* Scrolling body: the ONLY overflow-y-auto child (min-h-0 or the footer
-          collapses). Two-column 62/38 golden grid at lg for EVERY post - caption +
-          platforms left, the preview (media / link-card / article-card, or a text
-          tile for a pure-text post) sticky on the right. Stacks below lg. */}
-      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden scrollbar-soft pr-1">
-        <div className="flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1.62fr)_minmax(0,1fr)] lg:gap-6">
+          collapses). A post WITH a preview uses the two-column 62/38 golden grid at
+          lg - caption + platforms left, the preview (media / link-card / article-
+          card) sticky on the right, stacking below lg. A pure-text post has no
+          preview, so it drops to a single full-width column. px-1/-mx-1 keeps 4px of
+          slack inside the clip box so the 2px focus ring on the fields renders fully
+          instead of being cut by overflow-x-hidden. */}
+      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto overflow-x-hidden scrollbar-soft px-1">
+        {hasPreview ? (
+          <div className="flex flex-col gap-5 lg:grid lg:grid-cols-[minmax(0,1.62fr)_minmax(0,1fr)] lg:gap-6">
+            <div className="min-w-0 space-y-5">{bodyLeft}</div>
+            <div className="min-w-0 space-y-4 lg:sticky lg:top-0 lg:self-start">{mediaBlock}</div>
+          </div>
+        ) : (
           <div className="min-w-0 space-y-5">{bodyLeft}</div>
-          <div className="min-w-0 space-y-4 lg:sticky lg:top-0 lg:self-start">{rightColumn}</div>
-        </div>
+        )}
       </div>
 
       {/* Pinned footer (flex sibling, not sticky): muted secondary actions + ⋯
@@ -974,52 +1037,29 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
               </PopoverContent>
             </Popover>
           ) : null}
-          {editable ? (
-            <Tip label={t('postDetail.action.editAria')}>
-              <button type="button" onClick={() => onEdit(post)} aria-label={t('postDetail.action.editAria')} className={`${ACTION_BTN} bg-zinc-200/60 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60`}>
-                <Pencil size={13} aria-hidden="true" />
-                {t('postDetail.action.editIdle')}
-              </button>
+
+          {/* Approval-flow CTAs keep precedence as the state primary ... */}
+          {primary === 'approve' ? (
+            <ActionButton variant="success" size="md" icon={CheckCircle2} labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }} onAction={onApprove} onError={setError} />
+          ) : null}
+          {primary === 'publishNow' ? (
+            <Tip label={t('postDetail.action.publishNowTip')}>
+              <ActionButton variant="success" size="md" icon={Send} ariaLabel={t('postDetail.action.publishNowTip')} labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
             </Tip>
           ) : null}
-          {editable && primary !== 'reschedule' && !anyDirty ? (
-            <Tip label={t('postDetail.action.rescheduleAria')}>
-              <button type="button" aria-label={t('postDetail.action.rescheduleAria')} aria-expanded={rescheduleOpen} aria-controls="detail-reschedule-panel" onClick={toggleReschedule} className={`${ACTION_BTN} bg-zinc-200/60 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60`}>
-                <CalendarClock size={13} aria-hidden="true" />
-                {t('postDetail.action.rescheduleIdle')}
-              </button>
+          {primary === 'verify' ? (
+            <Tip label={t('postDetail.action.verifyTip')}>
+              <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t('postDetail.action.verifyTip')} labels={{ idle: t('postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.error.generic') }} onAction={onVerify} onError={setError} />
             </Tip>
           ) : null}
 
-          {/* Dirty edits take the primary slot: Save appears only once ANY content
-              field changed, patches all of them in one rev-guarded write, and
-              clears itself on success (rev bump -> draft re-sync). When clean, the
-              normal state-based CTA shows. */}
-          {anyDirty ? (
-            <ActionButton variant="success" size="md" icon={CheckCircle2} labels={{ idle: t('postDetail.action.saveIdle'), loading: t('postDetail.action.saveLoading'), success: t('postDetail.action.saveSuccess'), error: t('postDetail.error.generic') }} onAction={saveFields} onError={setError} />
-          ) : (
-            <>
-              {primary === 'approve' ? (
-                <ActionButton variant="success" size="md" icon={CheckCircle2} labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }} onAction={onApprove} onError={setError} />
-              ) : null}
-              {primary === 'publishNow' ? (
-                <Tip label={t('postDetail.action.publishNowTip')}>
-                  <ActionButton variant="success" size="md" icon={Send} ariaLabel={t('postDetail.action.publishNowTip')} labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
-                </Tip>
-              ) : null}
-              {primary === 'verify' ? (
-                <Tip label={t('postDetail.action.verifyTip')}>
-                  <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t('postDetail.action.verifyTip')} labels={{ idle: t('postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.error.generic') }} onAction={onVerify} onError={setError} />
-                </Tip>
-              ) : null}
-              {primary === 'reschedule' ? (
-                <button type="button" aria-expanded={rescheduleOpen} aria-controls="detail-reschedule-panel" onClick={toggleReschedule} className="flex items-center gap-1.5 rounded-xl bg-brand px-3 py-1.5 text-xs font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900">
-                  <CalendarClock size={14} aria-hidden="true" />
-                  {t('postDetail.action.rescheduleIdle')}
-                </button>
-              ) : null}
-            </>
-          )}
+          {/* ... and Save is the PERMANENT footer action for an editable post:
+              subdued (disabled) while nothing changed, lit once any field is
+              dirty. One rev-guarded PATCH + the reschedule mutation when the
+              schedule moved; success clears itself (rev bump -> draft re-sync). */}
+          {editable ? (
+            <ActionButton variant="success" size="md" icon={CheckCircle2} disabled={!anyDirty} labels={{ idle: t('postDetail.action.saveIdle'), loading: t('postDetail.action.saveLoading'), success: t('postDetail.action.saveSuccess'), error: t('postDetail.error.generic') }} onAction={saveFields} onError={setError} />
+          ) : null}
         </div>
       </div>
     </Modal>

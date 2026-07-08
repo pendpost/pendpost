@@ -14,7 +14,10 @@ const LANE_LABELS = {
   nostr: 'Nostr', pinterest: 'Pinterest', gbp: 'Google Business Profile',
 };
 
-export function LanesHonestyNote({ className = '' }) {
+// `short` renders the one-sentence form (the header popover): just the
+// local-only limit, no native-lane elaboration. The Cloud page keeps the full
+// two-sentence note - both read the same capability map.
+export function LanesHonestyNote({ className = '', short = false }) {
   const t = useT();
   const { data: caps } = useCapabilities();
   const names = (list, fallback) => ((Array.isArray(list) && list.length ? list : fallback))
@@ -22,5 +25,5 @@ export function LanesHonestyNote({ className = '' }) {
   const localOnly = names(caps?.localOnlyLanes, ['reddit', 'tiktok']);
   const native = names(caps?.nativeLanes, ['youtube', 'mastodon', 'wordpress', 'ghost']);
   if (!localOnly) return null;
-  return <p className={className}>{t('cloud.lanes.note', { localOnly, native })}</p>;
+  return <p className={className}>{short ? t('cloud.lanes.noteShort', { localOnly }) : t('cloud.lanes.note', { localOnly, native })}</p>;
 }

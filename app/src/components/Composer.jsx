@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft } from 'lucide-react';
 import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, createPost, updatePost, lintText } from '../lib/api.js';
 import { useT, useLocale } from '../lib/i18n.js';
-import { PLATFORMS, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance } from '../lib/format.js';
+import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
@@ -13,7 +13,15 @@ import { IconBadge } from './ui/IconBadge.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 
 const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-const TYPES = ['reel', 'story', 'video', 'text', 'youtube-short', 'youtube-longform'];
+
+// Content-driven textarea height (mirrors PostDetail's ContentField, punch-list
+// 2.5): grow from the content's newline count and a wrapped-line estimate
+// (~52 chars/row), clamped between min and max so an empty field starts compact
+// and a long body cannot swallow the surface. resize-y stays for manual override.
+function growRows(text, min, max) {
+  const s = String(text || '');
+  return Math.min(max, Math.max(min, s.split('\n').length + 1, Math.ceil(s.length / 52)));
+}
 
 // B9: reduce a SubRip (.srt) transcript to its plain spoken text so an attached
 // asset's voiceover can seed an editable draft caption. Pure + zero-dep: split on
@@ -654,6 +662,15 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // drift on which fields a post uses. Every conditional field below gates on
   // `rel.<field>` instead of an ad-hoc inline check.
   const rel = useMemo(() => fieldRelevance(platforms, type), [platforms, type]);
+  // Single-lane override collapse (shared rule, lib/format.js): an X-only /
+  // Mastodon-only / Nostr-only post authors ONE text — the caption — so its
+  // override field is hidden unless it already carries content (saved on the
+  // post, or typed in this session before the platform set changed).
+  const hiddenOverride = useMemo(() => collapsedOverrideKey(platforms, {
+    xCaption: (isEdit && post.xCaption) || xCaption,
+    mastodonCaption: (isEdit && post.mastodonCaption) || mastodonCaption,
+    nostrCaption: (isEdit && post.nostrCaption) || nostrCaption,
+  }), [platforms, isEdit, post, xCaption, mastodonCaption, nostrCaption]);
   const isLinkedinArticle = platforms.includes('linkedin') && type === 'text';
   // Article authoring (wave 2): the long-form fields apply whenever a blog lane
   // is targeted - WordPress and Ghost publish title + markdown body (falling
@@ -1011,15 +1028,21 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-type">{t('composer.field.format')}</label>
-              <select id="composer-type" value={type} onChange={(e) => onTypeChange(e.target.value)} className={FIELD_CLS}>
-                {TYPES.map((ty) => (
+              {/* Format + schedule share one explicit height and the same FIELD_CLS
+                  surface so the adjacent select and picker trigger read as one row.
+                  A12: offer only the formats the chosen lane(s) can publish (union
+                  across platforms; full list when none), keeping the current value
+                  listed even if now invalid so a platform change never silently
+                  rewrites the format. */}
+              <select id="composer-type" value={type} onChange={(e) => onTypeChange(e.target.value)} className={`${FIELD_CLS} h-10`}>
+                {TYPES.filter((ty) => ty === type || (platforms.length ? platforms.some((p) => formatsForPlatform(p).includes(ty)) : true)).map((ty) => (
                   <option key={ty} value={ty}>{t(`type.${ty}`)}</option>
                 ))}
               </select>
             </div>
             <div className="space-y-1.5">
               <label className={EYEBROW}>{t('composer.field.schedule')}</label>
-              <DateTimePicker value={scheduledIso} onChange={setScheduledIso} />
+              <DateTimePicker value={scheduledIso} onChange={setScheduledIso} triggerClassName={`${FIELD_CLS} h-10`} />
             </div>
           </div>
 
@@ -1036,21 +1059,21 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.caption ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-caption">{t('composer.field.caption')}</label>
-              <textarea id="composer-caption" value={caption} onChange={(e) => setCaption(e.target.value)} rows={7} className={`${FIELD_CLS} resize-y leading-relaxed`} />
+              <textarea id="composer-caption" value={caption} onChange={(e) => setCaption(e.target.value)} rows={growRows(caption, 4, 14)} className={`${FIELD_CLS} resize-y leading-relaxed`} />
               <div aria-live="polite">
                 <LintPanel lint={lint} />
               </div>
             </div>
           ) : null}
 
-          {rel.xCaption ? (
+          {rel.xCaption && hiddenOverride !== 'xCaption' ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-x-caption">{t('composer.field.xCaption')}</label>
               <textarea
                 id="composer-x-caption"
                 value={xCaption}
                 onChange={(e) => setXCaption(e.target.value)}
-                rows={3}
+                rows={growRows(xCaption, 3, 12)}
                 placeholder={t('composer.field.xCaptionPlaceholder')}
                 aria-describedby="composer-x-counter"
                 className={`${FIELD_CLS} resize-y leading-relaxed`}
@@ -1087,14 +1110,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
-          {rel.mastodonCaption ? (
+          {rel.mastodonCaption && hiddenOverride !== 'mastodonCaption' ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-mastodon-caption">{t('composer.field.mastodonCaption')}</label>
               <textarea
                 id="composer-mastodon-caption"
                 value={mastodonCaption}
                 onChange={(e) => setMastodonCaption(e.target.value)}
-                rows={3}
+                rows={growRows(mastodonCaption, 3, 12)}
                 placeholder={t('composer.field.mastodonCaptionPlaceholder')}
                 aria-describedby="composer-mastodon-counter"
                 className={`${FIELD_CLS} resize-y leading-relaxed`}
@@ -1104,14 +1127,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
-          {rel.nostrCaption ? (
+          {rel.nostrCaption && hiddenOverride !== 'nostrCaption' ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-nostr-caption">{t('composer.field.nostrCaption')}</label>
               <textarea
                 id="composer-nostr-caption"
                 value={nostrCaption}
                 onChange={(e) => setNostrCaption(e.target.value)}
-                rows={3}
+                rows={growRows(nostrCaption, 3, 12)}
                 placeholder={t('composer.field.nostrCaptionPlaceholder')}
                 className={`${FIELD_CLS} resize-y leading-relaxed`}
               />

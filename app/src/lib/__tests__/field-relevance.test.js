@@ -141,12 +141,24 @@ describe('fieldsForPost', () => {
     expect(fields.map((f) => f.key)).toContain('firstComment');
   });
 
-  it('an X post leads with caption then the X override, each scoped to X', () => {
+  it('an X-only post with NO saved override collapses to ONE text field (+ reply-to)', () => {
     const { fields } = fieldsForPost(post(['x'], 'video'));
     const keys = fields.map((f) => f.key);
-    expect(keys).toEqual(['caption', 'xCaption']);
+    // Single-lane collapse: the caption IS the tweet, so no separate xCaption.
+    expect(keys).toEqual(['caption', 'xReplyTo']);
+  });
+
+  it('an X-only post with a LEGACY override keeps caption + xCaption, scoped to X', () => {
+    const { fields } = fieldsForPost(post(['x'], 'video', { xCaption: 'tweet' }));
+    const keys = fields.map((f) => f.key);
+    expect(keys).toEqual(['caption', 'xCaption', 'xReplyTo']);
     const x = fields.find((f) => f.key === 'xCaption');
     expect(x.platforms).toEqual(['x']);
+  });
+
+  it('a multi-platform X post keeps the override (base + per-lane text differ)', () => {
+    const { fields } = fieldsForPost(post(['x', 'instagram'], 'video'));
+    expect(fields.map((f) => f.key)).toContain('xCaption');
   });
 
   it('scopes each field to the targeted platforms that consume it (icons)', () => {

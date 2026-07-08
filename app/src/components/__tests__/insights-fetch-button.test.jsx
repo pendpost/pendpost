@@ -28,7 +28,9 @@ function renderInsights() {
   );
 }
 
-const fetchBtn = () => screen.getByRole('button', { name: /fetch metrics/i });
+// The header carries the freshness-aware button; the empty state adds a second
+// plain fetch button, so target the first (header) match.
+const fetchBtn = () => screen.getAllByRole('button', { name: /fetch metrics/i })[0];
 
 describe('Insights fetch button freshness (US-INS-09)', () => {
   it('carries a green (fresh) state right after a recent fetch', () => {

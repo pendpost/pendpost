@@ -197,6 +197,20 @@ function statusTone(status, validation) {
 
 const dotClass = (tone) => ({ ok: 'bg-emerald-500', warn: 'bg-amber-500', err: 'bg-red-500', neutral: 'bg-zinc-400' }[tone] || 'bg-zinc-400');
 
+// The lane's status as READABLE text (same mapping StatusChip renders), lifted so the
+// collapsed trigger can fold it into its accessible name - the dot is decorative, so
+// status must not be color-only on a collapsed row (DESIGN.md; WCAG 1.4.1).
+function statusText(status, validation, t) {
+  if (status === 'connected') {
+    const state = validation?.state;
+    if (state === 'live') return t('setup.status.connected');
+    if (state === 'failed') return t('setup.status.failed');
+    return t('setup.status.notVerified');
+  }
+  if (status === 'skipped') return t('setup.status.skipped');
+  return t('setup.status.incomplete');
+}
+
 // The brand glyph(s) each setup lane shows in its collapsed row (keyed to PLATFORM_META).
 const SETUP_PLATFORM_ICONS = { meta: ['facebook', 'instagram'], linkedin: ['linkedin'], youtube: ['youtube'], x: ['x'], telegram: ['telegram'], discord: ['discord'], reddit: ['reddit'], pinterest: ['pinterest'], tiktok: ['tiktok'], mastodon: ['mastodon'], wordpress: ['wordpress'], ghost: ['ghost'], nostr: ['nostr'], gbp: ['gbp'] };
 
@@ -568,7 +582,7 @@ function IdentifierRow({ field, savedValue, configRev, hint, dimmed }) {
 // hint. Rendered inline on an incomplete card AND on a connected one (the card collapse
 // replaces the old per-card disclosure). Renders nothing for a platform with none.
 const GRID = 'grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3';
-function IdentifierFields({ platformId, identifiers, configRev }) {
+function IdentifierFields({ platformId, identifiers, configRev, showOptional = true }) {
   const t = useT();
   const fields = PLATFORM_IDENTIFIERS[platformId] || [];
   if (!fields.length) return null;
@@ -584,7 +598,7 @@ function IdentifierFields({ platformId, identifiers, configRev }) {
           ))}
         </div>
       ) : null}
-      {optional.length ? (
+      {showOptional && optional.length ? (
         <>
           <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{t('setup.zone.optional')}</p>
           <div className={GRID}>
@@ -955,6 +969,7 @@ function PlatformCard({ platform, capability, configRev, identifiers, posting, o
         <button
           type="button"
           aria-expanded={open}
+          aria-label={`${label} — ${statusText(status, validation, t)}`}
           onClick={() => setOpen((v) => !v)}
           className="flex w-full items-center gap-2.5 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
         >
@@ -1106,7 +1121,10 @@ export default function Setup({ focus = null }) {
               {setup.ready ? (
                 <IconBadge icon={CheckCircle2} tone="ok" text={t('setup.allReady')} />
               ) : (
-                <IconBadge icon={AlertCircle} tone="warn" text={t('setup.notReady', { count: setup.summary.incomplete })} />
+                // Plain state affirmation paralleling "All ready" - the incomplete COUNT
+                // already lives in the breakdown line to the left, so the pill no longer
+                // repeats it (avoids stating "9" twice inches apart).
+                <IconBadge icon={AlertCircle} tone="warn" text={t('setup.status.incomplete')} />
               )}
               <button type="button" onClick={validateAll} disabled={validatingAll} aria-busy={validatingAll} className={BTN_GHOST}>
                 {validatingAll ? <Loader2 size={14} className="inline animate-spin" aria-hidden="true" /> : <RefreshCw size={13} className="mr-1 inline" aria-hidden="true" />}

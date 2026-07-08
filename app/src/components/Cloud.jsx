@@ -386,7 +386,7 @@ function MenuItem({ icon: Icon, label, sublabel, onClick, busy = false, tone = '
       {busy ? <Loader2 size={15} className="shrink-0 animate-spin" aria-hidden="true" /> : <Icon size={15} className="shrink-0" aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate">{label}</span>
-        {sublabel ? <span className="block truncate text-[10px] font-normal text-zinc-400 dark:text-zinc-500">{sublabel}</span> : null}
+        {sublabel ? <span className="block line-clamp-2 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">{sublabel}</span> : null}
       </span>
       {external ? <ExternalLink size={12} className="shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" /> : null}
     </button>
@@ -744,7 +744,10 @@ function OrderSummary({ plan, interval, brandsBilled, busy, error, onBack, onCon
   const billed = interval === 'year' ? base * ANNUAL_MONTHS_CHARGED : base;
   const billedLabel = interval === 'year' ? t('cloud.summary.billedYear', { total: usdWhole(billed) }) : t('cloud.summary.billedMonth', { total: usdWhole(billed) });
   const extraBrands = Math.max(0, brandsBilled || 0);
-  const extraBrandMonthly = extraBrands * info.extraBrandCents;
+  // PLAN_INFO has no per-tier extra-brand rate, so info.extraBrandCents is undefined -> NaN.
+  // Only compute (and render) the add-on line when a finite rate is actually available.
+  const extraBrandRate = Number.isFinite(info.extraBrandCents) ? info.extraBrandCents : null;
+  const extraBrandMonthly = extraBrandRate != null ? extraBrands * extraBrandRate : null;
   const row = (label, value) => (
     <div className="flex items-center justify-between gap-3">
       <dt className="text-zinc-500 dark:text-zinc-400">{label}</dt>
@@ -765,7 +768,7 @@ function OrderSummary({ plan, interval, brandsBilled, busy, error, onBack, onCon
         {row(t('cloud.summary.posts'), t('cloud.plans.posts', { count: info.postsIncluded }))}
         {row(t('cloud.summary.overage'), t('cloud.plans.overage', { rate: usd(info.overageCents) }))}
         {row(t('cloud.summary.brandsIncluded'), String(info.brandsIncluded))}
-        {extraBrands > 0 ? row(t('cloud.summary.extraBrands', { count: extraBrands }), `${usd(extraBrandMonthly)}${t('cloud.summary.perMonthSuffix')}`) : null}
+        {extraBrands > 0 && extraBrandMonthly != null ? row(t('cloud.summary.extraBrands', { count: extraBrands }), `${usd(extraBrandMonthly)}${t('cloud.summary.perMonthSuffix')}`) : null}
         <div className="flex items-center justify-between gap-3 border-t border-black/5 pt-1.5 dark:border-white/5">
           <dt className="font-bold text-zinc-700 dark:text-zinc-200">{t('cloud.summary.dueToday')}</dt>
           <dd className="text-right font-bold text-zinc-900 dark:text-white">{billedLabel}</dd>
@@ -1090,7 +1093,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
               <dt>{t('cloud.cost.estimate')}</dt>
               <dd className="font-bold text-zinc-700 dark:text-zinc-200">{usd(estCents)}</dd>
             </div>
-            <div className="flex items-center justify-between gap-2">
+            <div>
               <dt>{t('cloud.overage.rate', { rate: usd(overageCents) })}</dt>
             </div>
             {brandsBilled > 0 ? (
@@ -1220,9 +1223,6 @@ function CloudClients() {
       <div className="space-y-1">
         <h3 className={EYEBROW}>{t('cloud.clients.title')}</h3>
         <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.clients.body')}</p>
-        {extraBrandCents > 0 ? (
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.brands.extraCost', { amount: usd(extraBrandCents) })}</p>
-        ) : null}
       </div>
       {error ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p> : null}
       <ul className="divide-y divide-black/5 dark:divide-white/5">
@@ -1318,7 +1318,7 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
     <div className="mx-auto max-w-2xl space-y-6">
       <header>
         <h2 className="font-display text-lg font-bold">{t('cloud.title')}</h2>
-        <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.subtitle')}</p>
+        {connected ? null : <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.subtitle')}</p>}
       </header>
 
       {ejectResult ? <EjectChecklist bundle={ejectResult} onDismiss={() => setEjectResult(null)} /> : null}

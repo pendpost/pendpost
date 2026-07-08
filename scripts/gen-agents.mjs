@@ -13,12 +13,25 @@ import { PLAYBOOKS } from '../lib/playbooks.mjs';
 
 // Platform order + short display names. The keys ARE the single source; these
 // labels are local doc presentation (headings), not business logic.
-const ORDER = ['meta', 'linkedin', 'x', 'youtube'];
+const ORDER = [
+  'meta', 'linkedin', 'x', 'youtube', 'telegram', 'discord', 'reddit',
+  'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp',
+];
 const DISPLAY = {
   meta: 'Meta (Instagram + Facebook)',
   linkedin: 'LinkedIn',
   x: 'X',
   youtube: 'YouTube',
+  telegram: 'Telegram',
+  discord: 'Discord',
+  reddit: 'Reddit (beta)',
+  pinterest: 'Pinterest (beta)',
+  tiktok: 'TikTok (beta)',
+  mastodon: 'Mastodon',
+  wordpress: 'WordPress',
+  ghost: 'Ghost',
+  nostr: 'Nostr',
+  gbp: 'Google Business Profile (beta)',
 };
 
 const HEADER =
@@ -29,8 +42,12 @@ const HEADER =
 const PREAMBLE = `# AGENTS.md
 
 pendpost is a local-first, MCP-native social planner with a human approval gate.
-An agent drafts, schedules, and (once trusted) publishes across Facebook,
-Instagram, LinkedIn, YouTube, and X; a human approves before anything goes out.
+An agent drafts, schedules, and (once trusted) publishes across Instagram,
+Facebook, LinkedIn, X, YouTube, Telegram, Discord, Reddit, Pinterest, TikTok,
+Mastodon, WordPress, Ghost, Nostr, and Google Business Profile; a human approves
+before anything goes out. Reddit, Pinterest, TikTok, and Google Business Profile
+are beta lanes (each gated by a vendor trial/audit/access step, called out in its
+playbook below).
 This file is the contract for an AI agent operating pendpost. The per-platform
 sections at the end are generated from lib/playbooks.mjs.
 
@@ -52,9 +69,14 @@ Exercise everything here before connecting a real platform.
 
 - Every post carries an approval state; a missing or \`draft\` state means it will
   NOT publish.
-- An actor can never approve its own post (no self-approval). Approval authority
-  is the owner (\`actor:"owner"\`); an agent approves ONLY on the owner's explicit
-  instruction.
+- An actor can never approve its own post (no self-approval): the actor passed to
+  \`plan_create_post\` cannot later \`approve_post\` it. Only \`actor:"owner"\` is exempt,
+  as the approval authority; an agent approves ONLY on the owner's explicit
+  instruction. \`plan_update_post\` can never touch approval.
+- Auto-approve (the progressive-autonomy policy) is OWNER-ONLY: only \`actor:"owner"\`
+  can enable it via \`config_set\` \`set.posting.autoApprove\` - an agent can never turn
+  it on for itself. When enabled it approves under a distinct policy actor, never the
+  post's creator, so the no-self-approval rule still holds.
 - \`publish_due_run\` does REAL publishes and needs \`confirm:true\` - never call it
   unless the owner asks.
 

@@ -7,7 +7,15 @@ import { StatusPill, CoverThumb, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { MonthView } from './Planner.jsx';
-import { dayKey, fmtTime, fmtFull, fmtMonthYear, PLATFORMS, postDisplayTitle } from '../lib/format.js';
+import { dayKey, fmtTime, fmtMonthYear, dateLocale, PLATFORMS, postDisplayTitle } from '../lib/format.js';
+
+// Date-only day-group header: weekday/day/month/year, no time. Built directly
+// rather than regex-stripping the clock off fmtFull, because locales that join
+// date and time with a word (de-CH "… um 09:27") otherwise leave a dangling
+// preposition ("… 2026 um") once the time is removed.
+function fmtDayHeader(iso) {
+  return new Intl.DateTimeFormat(dateLocale(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date(iso));
+}
 
 // The handed-off / live states a published archive surfaces: actually posted,
 // believed live (fired-assumed), and the two verify outcomes.
@@ -90,7 +98,9 @@ function Row({ post, onOpen, t }) {
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-bold">{postDisplayTitle(post)}</p>
           <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-            <StatusPill state={post.derivedState} short />
+            {(post.derivedState === 'fired-assumed' || post.derivedState === 'verify-failed') ? (
+              <StatusPill state={post.derivedState} short />
+            ) : null}
             <span>{t(`type.${post.type}`)}</span>
             {post.scheduledAt ? <span>· {fmtTime(post.scheduledAt)}</span> : null}
           </p>
@@ -197,7 +207,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
       const iso = p.postedAt || p.scheduledAt;
       const k = iso ? dayKey(iso) : 'undated';
       if (!cur || cur.key !== k) {
-        cur = { key: k, header: iso ? fmtFull(iso).replace(/,?\s*\d{2}:\d{2}.*$/, '') : t('published.undated'), entries: [] };
+        cur = { key: k, header: iso ? fmtDayHeader(iso) : t('published.undated'), entries: [] };
         out.push(cur);
       }
       cur.entries.push(p);

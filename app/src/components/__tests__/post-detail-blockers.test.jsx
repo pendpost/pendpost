@@ -239,23 +239,26 @@ describe('PostDetail platform-validate blocker rows', () => {
     const user = userEvent.setup();
     platformValidateState.data = { ok: true, postId: 'p1', platforms: { instagram: { ready: true, problems: [], warnings: [] } } };
     renderDetail(); // basePost is approved + scheduled -> editable
-    const textarea = screen.getByLabelText('Caption');
+    const textarea = screen.getByLabelText('Post text');
     expect(textarea.tagName).toBe('TEXTAREA');
     expect(textarea).toHaveValue('A caption');
-    // Clean: no Save button yet.
-    expect(screen.queryByRole('button', { name: /save changes/i })).not.toBeInTheDocument();
+    // Save is the PERMANENT primary now: visible but disabled while clean.
+    expect(screen.getByRole('button', { name: /save changes/i })).toBeDisabled();
     await user.type(textarea, ' edited');
     const save = await screen.findByRole('button', { name: /save changes/i });
+    expect(save).toBeEnabled();
     await user.click(save);
     expect(updatePost).toHaveBeenCalledWith('spring', 'p1', 1, { caption: 'A caption edited' });
   });
 
-  it('shows a text tile in the right column for a pure-text post (no link/image)', () => {
-    // Two-column layout for every post: a pure text post (no card to preview) gets
-    // a calm "Text only" tile on the right instead of a stranded single column.
+  it('drops the right column for a pure-text post (no link/image): single full-width body', () => {
+    // A5: a pure text post has nothing to preview, so its body goes single-column
+    // full-width - no empty "Text only" placeholder tile reserving ~38% of the row.
     platformValidateState.data = { ok: true, postId: 'p1', platforms: { x: { ready: true, problems: [], warnings: [] } } };
     renderDetail({ ...basePost, type: 'text', platforms: ['x'], link: null, image: null });
-    expect(screen.getByText('Text only')).toBeInTheDocument();
+    expect(screen.queryByText('Text only')).not.toBeInTheDocument();
+    // The editable body still renders (the single column carries the fields).
+    expect(screen.getByLabelText('Post text')).toBeInTheDocument();
   });
 
   it('warns the lane needs the machine when the cloud is off', () => {

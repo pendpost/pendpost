@@ -45,6 +45,115 @@ function Sparkline({ values, dir, width = 56, height = 16 }) {
   );
 }
 
+// Inline markdown -> React nodes. Handles **bold**, _italic_, and [text](url) -
+// the only inline marks the digest emits (see lib/insights.mjs). Text is returned
+// as React children (auto-escaped), so no HTML is ever injected; links are
+// scheme-checked and always open isolated. Underscores must sit on a word
+// boundary so post ids like `launch_01` are never italicised by accident.
+const INLINE_RE = /\*\*([\s\S]+?)\*\*|(?<![A-Za-z0-9])_([^_\n]+?)_(?![A-Za-z0-9])|\[([^\]]+)\]\(([^)\s]+)\)/g;
+
+function safeHref(raw) {
+  const url = String(raw).trim();
+  return /^(https?:\/\/|mailto:)/i.test(url) ? url : null;
+}
+
+function renderInline(text, keyPrefix) {
+  const nodes = [];
+  let last = 0;
+  let i = 0;
+  let m;
+  INLINE_RE.lastIndex = 0;
+  while ((m = INLINE_RE.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m[1] != null) {
+      nodes.push(<strong key={`${keyPrefix}-${i}`} className="font-bold text-zinc-800 dark:text-zinc-100">{m[1]}</strong>);
+    } else if (m[2] != null) {
+      nodes.push(<em key={`${keyPrefix}-${i}`} className="not-italic text-zinc-500 dark:text-zinc-400">{m[2]}</em>);
+    } else {
+      const href = safeHref(m[4]);
+      nodes.push(href
+        ? <a key={`${keyPrefix}-${i}`} href={href} target="_blank" rel="noopener noreferrer" className="text-brand underline underline-offset-2">{m[3]}</a>
+        : m[3]);
+    }
+    last = INLINE_RE.lastIndex;
+    i += 1;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
+// Small, safe markdown renderer for the app-generated insights digest. Parses the
+// exact subset the digest uses - #/##/### headings, > blockquote, -/* bullet lists
+// (one level of nesting via leading indent), blank-line paragraphs - into React
+// elements. No dangerouslySetInnerHTML; every text run is escaped by React.
+function DigestMarkdown({ source }) {
+  const lines = String(source).replace(/\r\n?/g, '\n').split('\n');
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i += 1; continue; }
+    const heading = /^(#{1,3})\s+(.*)$/.exec(line);
+    if (heading) { blocks.push({ type: 'h', level: heading[1].length, text: heading[2] }); i += 1; continue; }
+    if (/^>\s?/.test(line)) {
+      const quote = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) { quote.push(lines[i].replace(/^>\s?/, '')); i += 1; }
+      blocks.push({ type: 'quote', text: quote.join(' ') });
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+        const indent = /^(\s*)/.exec(lines[i])[1].length;
+        items.push({ depth: indent >= 2 ? 1 : 0, text: lines[i].replace(/^\s*[-*]\s+/, '') });
+        i += 1;
+      }
+      blocks.push({ type: 'list', items });
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,3})\s/.test(lines[i]) && !/^>\s?/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i])) {
+      para.push(lines[i]); i += 1;
+    }
+    blocks.push({ type: 'p', text: para.join(' ') });
+  }
+
+  return blocks.map((b, bi) => {
+    const key = `d-${bi}`;
+    if (b.type === 'h') {
+      const size = b.level === 1 ? 'text-sm' : b.level === 2 ? 'text-xs' : 'text-[11px]';
+      const Tag = b.level === 1 ? 'h3' : b.level === 2 ? 'h4' : 'h5';
+      return <Tag key={key} className={`${size} font-bold text-zinc-800 dark:text-zinc-100 ${bi ? 'pt-1' : ''}`}>{renderInline(b.text, key)}</Tag>;
+    }
+    if (b.type === 'quote') {
+      return <p key={key} className="border-l-2 border-zinc-300 pl-3 text-zinc-500 dark:border-zinc-600 dark:text-zinc-400">{renderInline(b.text, key)}</p>;
+    }
+    if (b.type === 'list') {
+      const tree = [];
+      let cur = null;
+      for (const it of b.items) {
+        if (it.depth === 0 || !cur) { cur = { text: it.text, children: [] }; tree.push(cur); }
+        else cur.children.push(it.text);
+      }
+      return (
+        <ul key={key} className="ml-4 list-disc space-y-0.5 text-zinc-600 marker:text-zinc-400 dark:text-zinc-300">
+          {tree.map((li, li2) => (
+            <li key={`${key}-${li2}`}>
+              {renderInline(li.text, `${key}-${li2}`)}
+              {li.children.length ? (
+                <ul className="ml-4 list-[circle] space-y-0.5">
+                  {li.children.map((c, ci) => <li key={ci}>{renderInline(c, `${key}-${li2}-${ci}`)}</li>)}
+                </ul>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      );
+    }
+    return <p key={key} className="text-zinc-600 dark:text-zinc-300">{renderInline(b.text, key)}</p>;
+  });
+}
+
 export default function Insights({ active, platformFilter = [], campaignFilter = 'all' }) {
   const t = useT();
   const queryClient = useQueryClient();
@@ -99,7 +208,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
           {data?.lastFetch
             ? t('insights.lastFetched', { date: new Date(data.lastFetch).toLocaleString(dateLocale(), { dateStyle: 'short', timeStyle: 'short' }) })
             : t('insights.noFetchYet')}
-          {' '}{t('insights.schedulerNote')}
+          {' · '}{t('insights.schedulerNote')}
         </p>
         <span className="flex-1" />
         <ActionButton
@@ -243,6 +352,17 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
               {t('insights.empty.body')}
             </p>
+            <div className="flex justify-center pt-1">
+              <ActionButton
+                icon={RefreshCw}
+                labels={{ idle: t('insights.fetch.idle'), loading: t('insights.fetch.loading'), success: t('insights.fetch.success'), error: t('insights.fetch.error') }}
+                onAction={async () => {
+                  await fetchInsights();
+                  queryClient.invalidateQueries({ queryKey: ['insights'] });
+                  queryClient.invalidateQueries({ queryKey: ['digest'] });
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -286,14 +406,14 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
             />
           </div>
           {digestOpen ? (
-            <pre
+            <div
               id="insights-digest-content"
               role="region"
               aria-label={t('insights.digest')}
-              className={`max-w-4xl whitespace-pre-wrap rounded-xl p-4 font-body text-xs leading-relaxed ${INNER_SURFACE}`}
+              className={`max-w-4xl space-y-2 rounded-xl p-4 font-body text-xs leading-relaxed ${INNER_SURFACE}`}
             >
-              {digestData.digest}
-            </pre>
+              <DigestMarkdown source={digestData.digest} />
+            </div>
           ) : null}
         </section>
       ) : null}

@@ -35,11 +35,12 @@ describe('pendpost_health blocker codes are fully localized', () => {
     expect(joined).not.toMatch(/ß/);
   });
 
-  it('interpolates {label} and {cmd} into the lane code (no leftover placeholders)', () => {
+  it('interpolates {label} into the lane code without leaking a raw CLI command', () => {
     const de = makeT('de-CH');
-    const s = de('blocker.lane.notConnected', { label: 'Meta (Instagram)', cmd: 'node scripts/meta-social.mjs auth' });
+    const s = de('blocker.lane.notConnected', { label: 'Meta (Instagram)' });
     expect(s).toContain('Meta (Instagram)');
-    expect(s).toContain('node scripts/meta-social.mjs auth');
+    // Operator copy stays plain-language: no shell command, no leftover placeholder.
+    expect(s).not.toMatch(/node scripts|\.mjs/);
     expect(s).not.toMatch(/\{(label|cmd)\}/);
   });
 });

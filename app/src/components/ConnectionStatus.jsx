@@ -126,13 +126,12 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
               {sub.checkoutEligible ? <span className="ml-1.5 font-bold text-amber-600 dark:text-amber-400">{t('connection.needsPayment')}</span> : null}
             </p>
           ) : null}
-          {/* Coverage, once on: WHICH lanes the cloud does (and does not) fire, so an
-              always-on subscriber knows exactly what still needs their machine. Same
-              single-source note as the /cloud page - no second copy of the lane map. */}
-          {cloudOn ? <LanesHonestyNote className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400" /> : null}
+          {/* Coverage, once on: the ONE short honest-limit line (which lanes still
+              need this machine), from the same capability map as the /cloud page.
+              Hidden while the guarantee is broken - the miss line + CTA own that
+              state and the popover stays minimal. */}
+          {cloudOn && !isBroken ? <LanesHonestyNote short className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400" /> : null}
         </div>
-        <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">{t('connection.fact')}</p>
-        <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-300">{t('connection.pitch')}</p>
         {!cloudConnected ? (
           <div className="space-y-0.5 rounded-xl bg-zinc-100/70 px-3 py-2 dark:bg-zinc-800/50">
             <p className="text-[11px] text-zinc-600 dark:text-zinc-300">{t('connection.price.selfHost')}</p>
@@ -158,15 +157,19 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
             {cloudConnected ? t('connection.manage') : t('connection.setup')}
             <ArrowRight size={13} aria-hidden="true" />
           </button>
-          <a
-            href={SERVICES_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-bold text-zinc-600 transition hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-          >
-            {t('connection.viewPlans')}
-            <ExternalLink size={13} aria-hidden="true" />
-          </a>
+          {/* The plans link belongs to the not-yet-connected upsell only; a
+              connected workspace manages everything via "Manage cloud". */}
+          {!cloudConnected ? (
+            <a
+              href={SERVICES_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-bold text-zinc-600 transition hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            >
+              {t('connection.viewPlans')}
+              <ExternalLink size={13} aria-hidden="true" />
+            </a>
+          ) : null}
         </div>
       </PopoverContent>
     </Popover>

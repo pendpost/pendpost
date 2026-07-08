@@ -80,8 +80,11 @@ beforeEach(() => {
 describe('PostDetail i18n migration (en)', () => {
   it('renders the prior English Section titles verbatim', () => {
     renderDetail();
-    expect(screen.getByText('Platforms')).toBeInTheDocument();
-    expect(screen.getByText('Caption')).toBeInTheDocument();
+    // The status section is now titled "Delivery" (round-2 rename); "Platforms"
+    // survives only as the quick-edit chips legend, so assert both still render.
+    expect(screen.getAllByText('Delivery').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Platforms').length).toBeGreaterThan(0);
+    expect(screen.getByText('Post text')).toBeInTheDocument();
     // First comment / Approval note / File are shown inline (no disclosure toggle).
     expect(screen.getByText('First comment')).toBeInTheDocument();
     expect(screen.getByText('Approval note')).toBeInTheDocument();
@@ -146,8 +149,10 @@ describe('PostDetail i18n migration (en)', () => {
 describe('PostDetail i18n migration (de-CH)', () => {
   it('renders a backfilled German Section title', () => {
     renderDetail({ locale: 'de-CH' });
-    // postDetail.section.platforms is backfilled in de-CH.
-    expect(screen.getByText('Plattformen')).toBeInTheDocument();
+    // The status section is now postDetail.section.delivery ("Zustellung");
+    // "Plattformen" survives as the quick-edit chips legend, so assert both.
+    expect(screen.getAllByText('Zustellung').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Plattformen').length).toBeGreaterThan(0);
   });
 
   it('renders the de-CH backfill for every postDetail section and never a raw key id', () => {
@@ -155,7 +160,7 @@ describe('PostDetail i18n migration (de-CH)', () => {
     // Every postDetail.* section title is backfilled in de-CH, so the German
     // string renders - never blank, never a raw key id. Caption and the inline
     // detail rows (first comment) are shown directly - no disclosure toggle.
-    expect(screen.getByText('Bildtext')).toBeInTheDocument(); // postDetail.section.caption
+    expect(screen.getByText('Beitragstext')).toBeInTheDocument(); // postDetail.field.caption
     expect(screen.getByText('Erster Kommentar')).toBeInTheDocument(); // postDetail.section.firstComment
     expect(screen.queryByText(/postDetail\./)).toBeNull();
   });

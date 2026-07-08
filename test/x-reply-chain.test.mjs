@@ -60,6 +60,63 @@ check('non-string reference is rejected', () => {
   assert.equal(nonString.code, 'invalid_input');
 });
 
+// --- 3. mock driver mirrors the fail-closed thread contract ----------------
+// The real engine (scripts/x-social.mjs cmdPublishDue) emits a STRUCTURED result
+// for an unresolvable parent instead of a silent skip: parent_unpublished is
+// deferrable (retry once the parent lands), parent_missing is terminal. The mock
+// driver mirrors this exactly so tests/demos exercise the live semantics. These
+// checks lock that mirror - the seam the cloud worker's defer logic consumes.
+const fsm = await import('node:fs');
+const osm = await import('node:os');
+const pathm = await import('node:path');
+const { runMockCommand } = await import('../lib/drivers/mock-driver.mjs');
+
+const dir = fsm.mkdtempSync(pathm.join(osm.tmpdir(), 'pendpost-xreply-'));
+const planPath = pathm.join(dir, 'post-plan.json');
+const mkPlan = (posts) => fsm.writeFileSync(planPath, JSON.stringify({ campaign: 'thread-c', posts }, null, 2));
+
+// (a) parent not yet published -> the child DEFERS with a structured result.
+mkPlan([
+  { id: 'p1', platforms: ['x'], type: 'text', caption: 'root' },
+  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'p1' },
+]);
+const deferred = await runMockCommand({ platform: 'x', command: 'publish-due', planPath, only: 'p2' });
+check('unpublished parent defers the reply (parent_unpublished, deferred:true, never silent)', () => {
+  const r = (deferred.results || [])[0];
+  assert.ok(r, 'expected a structured result, not an empty envelope');
+  assert.equal(r.ok, false);
+  assert.equal(r.errorCode, 'parent_unpublished');
+  assert.equal(r.deferred, true);
+  const saved = JSON.parse(fsm.readFileSync(planPath, 'utf8'));
+  assert.ok(!saved.posts[1].xPostId, 'the deferred reply must not mint an id');
+});
+
+// (b) parent published -> the reply publishes.
+mkPlan([
+  { id: 'p1', platforms: ['x'], type: 'text', caption: 'root', xPostId: '111' },
+  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'p1' },
+]);
+const published = await runMockCommand({ platform: 'x', command: 'publish-due', planPath, only: 'p2' });
+check('published parent lets the reply publish', () => {
+  const r = (published.results || [])[0];
+  assert.ok(r && r.ok === true, 'expected a successful publish result');
+  const saved = JSON.parse(fsm.readFileSync(planPath, 'utf8'));
+  assert.ok(saved.posts[1].xPostId, 'the reply minted an id');
+});
+
+// (c) dangling reference -> terminal parent_missing (a config error, not a defer).
+mkPlan([
+  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'ghost' },
+]);
+const missing = await runMockCommand({ platform: 'x', command: 'publish-due', planPath, only: 'p2' });
+check('dangling xReplyTo is terminal parent_missing (not deferred)', () => {
+  const r = (missing.results || [])[0];
+  assert.ok(r, 'expected a structured result');
+  assert.equal(r.ok, false);
+  assert.equal(r.errorCode, 'parent_missing');
+  assert.ok(!r.deferred, 'parent_missing must not be marked deferrable');
+});
+
 if (failures) {
   console.error(`x-reply-chain: ${failures} failure(s)`);
   process.exit(1);

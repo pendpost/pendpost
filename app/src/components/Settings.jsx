@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Loader2, CheckCircle2, RefreshCw, HelpCircle } from 'lucide-react';
+import { RefreshCw, HelpCircle } from 'lucide-react';
 import { useConfig, saveConfig } from '../lib/api.js';
 import { useT, LOCALES } from '../lib/i18n.js';
 import { getTimeFormat, setTimeFormat, getCardAccent, setCardAccent } from '../lib/format.js';
@@ -64,7 +64,6 @@ export default function Settings() {
   // immediately, so they need no save round-trip.
   const [timeFmt, setTimeFmt] = useState(getTimeFormat());
   const [cardAccent, setCardAccentState] = useState(getCardAccent());
-  const [state, setState] = useState('idle'); // idle | saving | saved | error
   const [error, setError] = useState(null); // generic banner (non-field errors)
   const [tzError, setTzError] = useState(null); // inline error under the time-zone field
   const [staleWrite, setStaleWrite] = useState(false);
@@ -124,26 +123,20 @@ export default function Settings() {
   };
   const togglePlatform = (id) => savePlatforms({ ...platforms, [id]: !platformOn(id) });
 
-  const save = async () => {
+  // The time zone auto-saves on blur, like every other preference on this page (no
+  // manual Save round-trip). A no-op change is skipped; validation lands inline.
+  const saveTimezone = async () => {
     if (!data) return;
-    setState('saving');
+    const next = timezone ?? '';
+    if (next === (data.posting.defaultTimezone ?? '')) return;
     setError(null);
     setTzError(null);
     setStaleWrite(false);
-    const next = timezone ?? '';
-    if (next === (data.posting.defaultTimezone ?? '')) {
-      setState('saved');
-      setTimeout(() => setState('idle'), 1500);
-      return;
-    }
     try {
       await saveConfig(data.rev, { posting: { defaultTimezone: next } });
-      setState('saved');
       queryClient.invalidateQueries({ queryKey: ['config'] });
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
-      setTimeout(() => setState('idle'), 1500);
     } catch (err) {
-      setState('error');
       if (err.code === 'stale_write') {
         // 409: the config changed under us (e.g. a CLI write). Pull the fresh rev so a
         // retry can succeed, and show a reload affordance.
@@ -157,8 +150,6 @@ export default function Settings() {
       else setError(err.message);
     }
   };
-
-  const saving = state === 'saving';
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -192,6 +183,7 @@ export default function Settings() {
                 id="set-tz"
                 value={timezone}
                 onChange={(e) => setTimezone(e.target.value)}
+                onBlur={saveTimezone}
                 placeholder={t('settings.tz.placeholder')}
                 className={tzError ? FIELD_CLS_ERR : FIELD_CLS}
                 aria-invalid={tzError ? 'true' : undefined}
@@ -245,7 +237,7 @@ export default function Settings() {
                 type="checkbox"
                 checked={auto.enabled}
                 onChange={() => saveAuto({ ...auto, enabled: !auto.enabled })}
-                className="h-4 w-4 shrink-0 rounded accent-emerald-600"
+                className="h-4 w-4 shrink-0 rounded accent-brand"
               />
             </label>
             {auto.enabled ? (
@@ -260,7 +252,7 @@ export default function Settings() {
                           type="checkbox"
                           checked={auto.platforms.includes(p.id)}
                           onChange={() => toggleAutoPlatform(p.id)}
-                          className="h-4 w-4 rounded accent-emerald-600"
+                          className="h-4 w-4 rounded accent-brand"
                         />
                         {p.label}
                       </label>
@@ -280,7 +272,7 @@ export default function Settings() {
                     type="checkbox"
                     checked={auto.requireLintClean}
                     onChange={() => saveAuto({ ...auto, requireLintClean: !auto.requireLintClean })}
-                    className="h-4 w-4 shrink-0 rounded accent-emerald-600"
+                    className="h-4 w-4 shrink-0 rounded accent-brand"
                   />
                 </label>
               </div>
@@ -303,7 +295,7 @@ export default function Settings() {
                     checked={platformOn(p.id)}
                     onChange={() => togglePlatform(p.id)}
                     aria-label={t('settings.platforms.toggle', { platform: p.label })}
-                    className="h-4 w-4 shrink-0 rounded accent-emerald-600"
+                    className="h-4 w-4 shrink-0 rounded accent-brand"
                   />
                 </label>
               ))}
@@ -316,7 +308,7 @@ export default function Settings() {
               <span className="flex-1">{t('settings.staleWrite.message')}</span>
               <button
                 type="button"
-                onClick={() => { queryClient.invalidateQueries({ queryKey: ['config'] }); setStaleWrite(false); setState('idle'); }}
+                onClick={() => { queryClient.invalidateQueries({ queryKey: ['config'] }); setStaleWrite(false); }}
                 className="flex items-center gap-1.5 rounded-xl bg-amber-500/20 px-3 py-1.5 font-bold transition hover:bg-amber-500/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
               >
                 <RefreshCw size={13} aria-hidden="true" />
@@ -326,22 +318,6 @@ export default function Settings() {
           ) : null}
 
           {error ? <p role="alert" className="rounded-xl bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-300">{error}</p> : null}
-
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={save}
-              disabled={saving}
-              aria-busy={saving}
-              className={`flex items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
-                state === 'saved' ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300' : 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900'
-              }`}
-            >
-              {saving ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : state === 'saved' ? <CheckCircle2 size={14} aria-hidden="true" /> : null}
-              {state === 'saved' ? t('settings.save.saved') : t('settings.save.save')}
-            </button>
-            <span className="sr-only" role="status" aria-live="polite">{state === 'saved' ? t('settings.save.saved') : ''}</span>
-          </div>
         </>
       )}
     </div>

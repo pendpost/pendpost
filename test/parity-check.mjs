@@ -92,6 +92,7 @@ const READ_ONLY_TOOLS = new Set([
   'plan_list', 'plan_get', 'account_status', 'assets_list', 'activity_log',
   'validate_media', 'platform_validate', 'pendpost_health', 'publish_preview', 'brand_lint',
   'generate_digest', 'config_get', 'health_recheck', 'client_list', 'clients_overview',
+  'cloud_status', 'cloud_capabilities', 'cloud_clients', 'cloud_subscription',
 ]);
 const { TOOLS } = await import(path.join(ROOT, 'lib', 'mcp.mjs'));
 for (const tool of TOOLS) {

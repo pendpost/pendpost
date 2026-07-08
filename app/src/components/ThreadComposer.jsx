@@ -114,7 +114,7 @@ function TweetRow({
             value={tweet.gapMin}
             onChange={(e) => onGap(e.target.value)}
             disabled={disabled}
-            className="w-16 rounded-lg border-0 px-2 py-1 text-sm tabular-nums bg-zinc-100 ring-1 ring-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800 dark:ring-white/10"
+            className={`w-16 rounded-lg border-0 px-2 py-1 text-sm tabular-nums ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
           />
           {time ? <span className="text-[11px] text-zinc-400 dark:text-zinc-500">{fmtFull(time)}</span> : null}
         </div>
@@ -289,7 +289,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved 
           </div>
           <div className="space-y-1.5">
             <label className={EYEBROW}>{t('threadComposer.openerSchedule')}</label>
-            <DateTimePicker value={openerAt} onChange={setOpenerAt} disablePast placeholder={t('threadComposer.schedulePlaceholder')} />
+            <DateTimePicker value={openerAt} onChange={setOpenerAt} disablePast placeholder={t('threadComposer.schedulePlaceholder')} triggerClassName={FIELD_CLS} />
           </div>
           <div className="space-y-1.5">
             <span className={EYEBROW}>{t('threadComposer.lane')}</span>

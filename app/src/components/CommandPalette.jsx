@@ -167,8 +167,24 @@ export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, 
   const results = useMemo(() => {
     const q = query.trim();
     if (!q) return [...staticCommands, ...switchCommands, ...postCommands.slice(0, 8)];
+    const ql = q.toLowerCase();
     return [...staticCommands, ...switchCommands, ...postCommands]
-      .map((cmd) => ({ cmd, score: fuzzyScore(q, `${cmd.label} ${cmd.hint} ${cmd._hay || ''}`) }))
+      .map((cmd) => {
+        const base = fuzzyScore(q, `${cmd.label} ${cmd.hint} ${cmd._hay || ''}`);
+        if (base === null) return { cmd, score: null };
+        // Reward a literal name match so a short page/action label ("Go to
+        // Planner") outranks a diffuse p-l-a-n subsequence scattered across a
+        // long post caption. A prefix of the label is the strongest signal; a
+        // whole-substring appearance is next.
+        const label = cmd.label.toLowerCase();
+        let score = base;
+        if (label.startsWith(ql)) score += 50;
+        else if (label.includes(ql)) score += 25;
+        // Break ties toward commands (pages + actions + client switches) over
+        // post matches, whose ids are namespaced 'post:'.
+        if (!cmd.id.startsWith('post:')) score += 1;
+        return { cmd, score };
+      })
       .filter((r) => r.score !== null)
       .sort((a, b) => b.score - a.score)
       .slice(0, 30)

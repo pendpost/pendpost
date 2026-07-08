@@ -320,6 +320,27 @@ export default function Assets({ onAttach }) {
   const [dragging, setDragging] = useState(false);
   const [uploads, setUploads] = useState([]); // [{name, state:'uploading'|'done'|'error', error?}]
   const inputRef = useRef(null);
+  // A9: the dashed drop target is dragover-only, so it never competes with the grid
+  // at rest. Handlers live on the persistent panel root (a hidden overlay can't hear
+  // its own dragover); a depth counter tracks nested dragenter/dragleave so moving
+  // across child elements never flickers the overlay off mid-drag.
+  const dragDepth = useRef(0);
+  const onDragEnter = (e) => {
+    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setDragging(true);
+  };
+  const onDragLeave = () => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragging(false);
+  };
+  const onDrop = (e) => {
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    handleFiles(e.dataTransfer.files);
+  };
 
   useEffect(() => {
     try { localStorage.setItem('pendpost-assets-view', view); } catch { /* private mode - ignore */ }
@@ -456,11 +477,20 @@ export default function Assets({ onAttach }) {
   ];
 
   return (
-    <div className="flex h-full flex-col gap-3">
+    <div
+      className="relative flex h-full flex-col gap-3"
+      onDragEnter={onDragEnter}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
       <header className="flex flex-wrap items-center gap-2">
         <div>
-          <h2 className="font-display text-lg font-bold">{t('assets.header.title')}</h2>
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('assets.mediaDir')} {t('assets.header.fileCount', { count: assets.length })}</p>
+          {/* The app-shell page title already names this screen; the in-panel h2 was
+              a second, stacked copy of the same word (Insights, its sibling, shows no
+              in-panel h2). Keep only the file-count caption here - the raw media-dir
+              path was operator noise, so the subline is just the count. */}
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('assets.header.fileCount', { count: assets.length })}</p>
         </div>
         <span className="flex-1" />
         <div className="relative">
@@ -500,28 +530,19 @@ export default function Assets({ onAttach }) {
         <input ref={inputRef} type="file" accept="video/*,image/png,image/jpeg" multiple className="hidden" aria-label={t('assets.upload.button')} onChange={(e) => { handleFiles(e.target.files); e.target.value = ''; }} />
       </header>
 
-      {/* Drag-drop ingestion zone. */}
-      <div
-        role="region"
-        aria-label={t('assets.drop.region')}
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(e) => { e.preventDefault(); setDragging(false); handleFiles(e.dataTransfer.files); }}
-        className={`flex flex-wrap items-center justify-center gap-x-1.5 gap-y-1 rounded-2xl border-2 border-dashed px-4 py-3 text-center text-xs transition ${dragging ? 'border-brand bg-brand/5 text-brand dark:text-brand-light' : 'border-zinc-300/70 text-zinc-400 dark:border-zinc-700/70 dark:text-zinc-500'}`}
-      >
-        <span>{t('assets.drop.prompt')}</span>
-        <label className="cursor-pointer rounded-full px-2 py-0.5 font-bold text-brand underline decoration-dotted underline-offset-2 transition hover:bg-brand/5 focus-within:outline-none focus-within:ring-2 focus-within:ring-brand dark:text-brand-light">
-          {t('assets.drop.choose')}
-          <input
-            type="file"
-            accept="video/*,image/png,image/jpeg"
-            multiple
-            className="sr-only"
-            onChange={(e) => { handleFiles(e.target.files); e.target.value = ''; }}
-          />
-        </label>
-        <span>{t('assets.drop.suffix')}</span>
-      </div>
+      {/* A9: the dashed drop target appears ONLY while a drag is in flight, so it
+          never competes with the grid at rest. It's a click-through overlay
+          (pointer-events-none) covering the whole panel; the panel root owns the
+          drag handlers. Keyboard/click upload stays on the header Upload button. */}
+      {dragging ? (
+        <div
+          role="region"
+          aria-label={t('assets.drop.region')}
+          className="pointer-events-none absolute inset-0 z-30 grid place-items-center rounded-2xl border-2 border-dashed border-brand bg-brand/5 text-center text-sm font-bold text-brand backdrop-blur-sm dark:text-brand-light"
+        >
+          {t('assets.drop.prompt')}
+        </div>
+      ) : null}
 
       {uploads.length ? (
         <ul role="status" aria-live="polite" className="space-y-1">
@@ -555,8 +576,11 @@ export default function Assets({ onAttach }) {
         </div>
         <span className="mx-0.5 hidden h-4 w-px self-center bg-zinc-300/70 dark:bg-zinc-700/70 sm:block" aria-hidden="true" />
         {/* A4: media-type filter (all / images / videos) via kind. The group carries
-            an accessible name so its "All" is distinct from the usage-filter "All". */}
-        <div className="flex flex-wrap gap-1" role="group" aria-label={t('assets.filter.type')}>
+            an accessible name so its "All" is distinct from the usage-filter "All"; a
+            small visible "Type" caption mirrors that name for sighted users, so the two
+            identical "All" chips no longer read the same. */}
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label={t('assets.filter.type')}>
+          <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400" aria-hidden="true">{t('assets.filter.type')}</span>
           <FilterChip active={mediaType === 'all'} onClick={() => setMediaType('all')} label={t('assets.filter.all')} />
           <FilterChip active={mediaType === 'image'} onClick={() => setMediaType('image')} icon={ImageIcon} label={t('assets.filter.image')} />
           <FilterChip active={mediaType === 'video'} onClick={() => setMediaType('video')} icon={Film} label={t('assets.filter.video')} />
