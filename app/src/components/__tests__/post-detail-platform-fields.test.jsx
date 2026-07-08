@@ -64,9 +64,9 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(labels).toContain('Description');
     expect(labels).toContain('Tags');
     expect(labels).toContain('First comment'); // YouTube pins a first comment
-    expect(labels).not.toContain('Caption');
-    // The core bug: no "No caption" placeholder anywhere for a YouTube post.
-    expect(screen.queryByText('No caption')).toBeNull();
+    expect(labels).not.toContain('Post text');
+    // The core bug: no "No post text" placeholder anywhere for a YouTube post.
+    expect(screen.queryByText('No post text')).toBeNull();
     // Title is the first editable field (primary text leads).
     expect(screen.getAllByRole('textbox')[0].getAttribute('aria-label')).toBe('Title');
   });
@@ -74,37 +74,47 @@ describe('PostDetail — platform-relevant fields', () => {
   it('YouTube longform: same YouTube field set', () => {
     renderDetail(makePost({ type: 'youtube-longform', platforms: ['youtube'], title: 'T', description: 'D' }));
     expect(contentLabels()).toContain('Description');
-    expect(contentLabels()).not.toContain('Caption');
+    expect(contentLabels()).not.toContain('Post text');
   });
 
-  it('Meta reel: Caption leads + first comment, no Title/Description', () => {
+  it('Meta reel: Post text leads + first comment, no Title/Description', () => {
     renderDetail(makePost({ type: 'reel', platforms: ['instagram', 'facebook'], caption: 'hi', firstComment: 'fc' }));
     const labels = contentLabels();
-    expect(labels[0]).toBe('Caption');
+    expect(labels[0]).toBe('Post text');
     expect(labels).toContain('First comment');
     expect(labels).not.toContain('Title');
     expect(labels).not.toContain('Description');
   });
 
-  it('X: Caption + the X override (xCaption) with a fallback/override hint', () => {
+  it('X with a LEGACY override set: base text + the X override with its hint', () => {
     renderDetail(makePost({ type: 'video', platforms: ['x'], caption: 'base', xCaption: 'tweet' }));
     const labels = contentLabels();
-    expect(labels).toContain('Caption');
+    expect(labels).toContain('Post text');
     expect(labels).toContain('X post');
-    // The override note is shown (set -> "Overrides the caption").
-    expect(screen.getByText('Overrides the caption')).toBeInTheDocument();
+    // The override note is shown (set -> "Overrides the post text").
+    expect(screen.getByText('Overrides the post text')).toBeInTheDocument();
   });
 
-  it('X override empty: hint reads "Uses the caption when empty"', () => {
+  it('X-only with an EMPTY override: ONE text field, the override is collapsed', () => {
     renderDetail(makePost({ type: 'video', platforms: ['x'], caption: 'base', xCaption: '' }));
-    expect(screen.getByText('Uses the caption when empty')).toBeInTheDocument();
+    const labels = contentLabels();
+    expect(labels).toContain('Post text');
+    expect(labels).not.toContain('X post');
+    expect(screen.queryByText('Uses the post text when empty')).toBeNull();
   });
 
-  it('Mastodon + Nostr: each shows its own note override', () => {
+  it('Mastodon + Nostr (multi-platform): each shows its own note override', () => {
     renderDetail(makePost({ type: 'video', platforms: ['mastodon', 'nostr'], caption: 'c', mastodonCaption: 'm', nostrCaption: 'n' }));
     const labels = contentLabels();
     expect(labels).toContain('Mastodon post');
     expect(labels).toContain('Nostr note');
+  });
+
+  it('Mastodon-only with an empty override: the override is collapsed', () => {
+    renderDetail(makePost({ type: 'video', platforms: ['mastodon'], caption: 'c', mastodonCaption: '' }));
+    const labels = contentLabels();
+    expect(labels).toContain('Post text');
+    expect(labels).not.toContain('Mastodon post');
   });
 
   it('WordPress article: Title + Body + Excerpt + Tags, NO caption', () => {
@@ -114,7 +124,7 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(labels).toContain('Body');
     expect(labels).toContain('Excerpt');
     expect(labels).toContain('Tags');
-    expect(labels).not.toContain('Caption');
+    expect(labels).not.toContain('Post text');
   });
 
   it('Ghost article: adds the canonical URL + newsletter flag in Details', () => {
@@ -127,7 +137,7 @@ describe('PostDetail — platform-relevant fields', () => {
   it('LinkedIn text: Title + Link description + link/image extras', () => {
     renderDetail(makePost({ type: 'text', platforms: ['linkedin'], caption: 'c', title: 'T', liDescription: 'ld', link: 'https://a', image: 'https://i' }));
     const labels = contentLabels();
-    expect(labels).toContain('Caption');
+    expect(labels).toContain('Post text');
     expect(labels).toContain('Title');
     expect(labels).toContain('Link description');
     expect(screen.getByText('Link')).toBeInTheDocument(); // extra row
@@ -135,15 +145,15 @@ describe('PostDetail — platform-relevant fields', () => {
 
   it.each([
     ['telegram'], ['discord'], ['tiktok'], ['reddit'], ['pinterest'],
-  ])('%s: shows just the caption, no platform-specific fields', (platform) => {
+  ])('%s: shows just the post text, no platform-specific fields', (platform) => {
     renderDetail(makePost({ type: 'video', platforms: [platform], caption: 'c' }));
     const labels = contentLabels();
-    expect(labels).toEqual(['Caption']);
+    expect(labels).toEqual(['Post text']);
   });
 
-  it('GBP: caption + a Details row summarising the local-post intent', () => {
+  it('GBP: post text + a Details row summarising the local-post intent', () => {
     renderDetail(makePost({ type: 'image', platforms: ['gbp'], caption: 'c', gbp: { topic: 'offer', ctaType: 'BOOK' } }));
-    expect(contentLabels()).toContain('Caption');
+    expect(contentLabels()).toContain('Post text');
     expect(screen.getByText('Google Business post')).toBeInTheDocument();
   });
 
@@ -157,7 +167,7 @@ describe('PostDetail — platform-relevant fields', () => {
   it('Multi-platform X + YouTube: union of both field sets', () => {
     renderDetail(makePost({ type: 'youtube-short', platforms: ['x', 'youtube'], caption: 'c', xCaption: 'x', title: 'T', description: 'D' }));
     const labels = contentLabels();
-    expect(labels).toContain('Caption');
+    expect(labels).toContain('Post text');
     expect(labels).toContain('X post');
     expect(labels).toContain('Title');
     expect(labels).toContain('Description');

@@ -70,6 +70,15 @@ const ACTION_LABEL = {
   'cadence-defer': 'activity.action.cadenceDefer',
 };
 
+// Maps an action id to the i18n key for its NOTE body (data, not UI text), so a
+// structured code drives the localized message instead of leaking the raw
+// English errorMessage into the de-CH UI. Mirrors ACTION_LABEL: resolved through
+// t() at render. Unmapped actions fall back to the raw entry.errorMessage below.
+const ACTION_NOTE = {
+  'cloud-backstop': 'activity.note.cloudBackstop',
+  'cadence-defer': 'activity.note.cadenceDefer',
+};
+
 // C7: a SMALL fixed set of action GROUPS (curated, like STATUS_FILTERS) that
 // fold the ~30 ACTION_LABEL ids above into one chip each. Data, not UI - the
 // labels resolve through t() at render via the activity.action.group.* keys.
@@ -124,7 +133,14 @@ function dayHeader(iso, t) {
 function Row({ entry, onOpenPost, onNavigate }) {
   const t = useT();
   const meta = entry.platform ? PLATFORM_META[entry.platform] : null;
-  const errText = entry.errorMessage ? `${entry.errorCode ? `${entry.errorCode}: ` : ''}${entry.errorMessage}` : null;
+  // Note body: a mapped action code resolves to a localized note (so the de-CH UI
+  // never leaks raw English); otherwise fall back to the raw errorMessage (with its
+  // code prefix) so unmapped/error notes still show rather than going blank.
+  const noteText = ACTION_NOTE[entry.action]
+    ? t(ACTION_NOTE[entry.action])
+    : entry.errorMessage
+      ? `${entry.errorCode ? `${entry.errorCode}: ` : ''}${entry.errorMessage}`
+      : null;
   // A failed row with a specific, actionable fix shows a single amber wrench CTA
   // (jumps straight to the fix); the row is then a plain div - the wrench is the
   // only interactive control, so no nesting. Generic failures keep the
@@ -165,8 +181,13 @@ function Row({ entry, onOpenPost, onNavigate }) {
             <span className="ml-1.5 rounded-full bg-zinc-900/[0.06] px-1.5 align-middle text-[10px] font-bold tabular-nums text-zinc-500 dark:bg-white/10 dark:text-zinc-400">×{count}</span>
           ) : null}
         </p>
-        {errText ? (
-          <p title={errText} className={`max-w-full truncate text-[11px] ${isDefer ? 'text-amber-600/90 dark:text-amber-300/90' : 'text-red-600/90 dark:text-red-300/90'}`}>{errText}</p>
+        {noteText ? (
+          // Three fixed tones (DESIGN.md: colour never the sole signal - the row
+          // icon carries severity too). Red only for a genuine failure
+          // (entry.ok === false). Amber only for a real defer (the post stays due).
+          // A note riding on a SUCCESS (e.g. a backstop/cloud-miss under a green
+          // check) is neutral zinc - a local backstop publish is not degraded.
+          <p title={noteText} className={`max-w-full truncate text-[11px] ${entry.ok === false ? 'text-red-600/90 dark:text-red-300/90' : isDefer ? 'text-amber-600/90 dark:text-amber-300/90' : 'text-zinc-500 dark:text-zinc-400'}`}>{noteText}</p>
         ) : null}
       </div>
       <p className="shrink-0 whitespace-nowrap text-[11px] text-zinc-400 dark:text-zinc-500">

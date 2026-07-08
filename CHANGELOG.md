@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-07-08
+
+### Added
+- Backstop publish-claim gate for always-on. The cloud worker and the local overdue-backstop are two independent firers of the same job; both now assert one shared atomic publish-claim lease before firing, so a double-post is structurally impossible even when the machine wakes mid-fire. It fails open when the cloud is unreachable, so a self-hosted install behaves exactly as before.
+- Read-only cloud observability over MCP. Four new read-only tools — `cloud_status`, `cloud_capabilities`, `cloud_clients`, and `cloud_subscription` — mirror the `GET /api/cloud*` routes so an agent can inspect cloud state with no secret and no confirm gate (API-key presence only, never the key itself).
+- Single edit surface for a post. The post detail is now the one place a post is edited; a single-lane post (X, Mastodon, or Nostr only) shows one "Post text" field instead of a caption/override split, and the sidebar's next-post pill shows the platform glyph, the day and time, and a one-line content preview.
+
+### Fixed
+- X thread replies now thread correctly when fired as separate jobs. A reply job resolved its parent against a plan snapshot frozen before the parent tweet existed, so it fail-closed with an empty envelope. The parent id is now resolved at fire time, and an unresolvable parent emits a structured `parent_unpublished` (deferred, retryable) or `parent_missing` (terminal) result instead of a silent skip.
+- UX-audit pass across 15 screens: collapsed status a11y and summary copy (Setup), a NaN guard and subtitle gating (Cloud), a single schedule control and auto-growing text areas (post detail, composer, thread composer), an exceptions-only health cell (Clients), timezone auto-save (Settings), and header and empty-state polish (Insights, Assets, Activity, Published, Planner).
+- The planner readiness checklist no longer leaks raw shell commands into its blocker rows; the rows still deep-link to Setup, which is the actual next step.
+- Honest, cloud-scoped delivery labels: the planner banner and the cloud popover no longer share one "undelivered" label for two different counts, and the duplicate active-client chip and reused labels across post detail, clients, and cloud are disambiguated.
+
 ## [1.3.0] - 2026-07-07
 
 ### Added

@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff, Menu } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, recheckHealth, setCampaignInternal } from './lib/api.js';
 import { useT, useLocale, useSetLocale } from './lib/i18n.js';
 import { applyAccent, clientAccent } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
-import { useInvalidateCloud } from './lib/cloud.js';
+import { useCloud, useCloudClients, useInvalidateCloud } from './lib/cloud.js';
 import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, visiblePlatforms, matchesFilters, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
@@ -30,7 +30,6 @@ import Cloud from './components/Cloud.jsx';
 import FirstRunEmptyState from './components/FirstRunEmptyState.jsx';
 import ReadinessChecklist from './components/ReadinessChecklist.jsx';
 import PlannerRunNow from './components/PlannerRunNow.jsx';
-import ClientBand from './components/ClientBand.jsx';
 import ActivityCheckNow from './components/ActivityCheckNow.jsx';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import DeliveryExplainer from './components/DeliveryExplainer.jsx';
@@ -91,6 +90,14 @@ export default function App() {
   const posting = configData?.posting;
   const reschedule = useReschedule();
   const invalidateCloud = useInvalidateCloud();
+  // Delivery signalling: is the ACTIVE client published round-the-clock by the
+  // managed cloud? Same derivation the sidebar uses (dedupes on the react-query
+  // key). Used to suppress the DeliveryExplainer upsell for a user who is already
+  // always-on - you should never be told to set up what you already have.
+  const { data: cloudState } = useCloud();
+  const cloudConnected = Boolean(cloudState?.workspaceId && cloudState?.apiKey?.present);
+  const { data: cloudClientsData } = useCloudClients(cloudConnected);
+  const activeOnCloud = cloudConnected && Boolean(cloudState?.enabled) && ((cloudClientsData?.clients) || []).find((c) => c.active)?.alwaysOn === true;
   const [page, setPage] = useState(() => {
     const h = window.location.hash.replace('#', '');
     return PAGES.includes(h) ? h : 'planner';
@@ -175,6 +182,12 @@ export default function App() {
   const [triageKeys, setTriageKeys] = useState(null);
   const [composer, setComposer] = useState(null); // null | {mode:'create'} | {mode:'edit', post}
   const [dark, toggleDark] = useDarkMode();
+  // Narrow-viewport shell: below lg the fixed sidebar rail becomes an off-canvas
+  // drawer, hidden by default and opened by the header hamburger. Meaningless on
+  // lg+ (the rail is always visible there), so it is closed when crossing to
+  // desktop and by Escape / backdrop / nav-select.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const closeSidebar = () => setSidebarOpen(false);
   // Clickable multi-select filters (3g), shared across all tabs, in-memory only
   // (transient scoping, not a persisted preference). Empty array = all.
   const [platformFilter, setPlatformFilter] = useState([]);
@@ -200,6 +213,23 @@ export default function App() {
       window.history.replaceState(null, '', `#${page}`);
     }
   }, [page]);
+
+  // Narrow-drawer lifecycle: Escape closes it, and crossing up to the lg rail
+  // closes it too so its open state never lingers onto the always-visible desktop
+  // rail (which would otherwise carry the drawer's dialog semantics).
+  useEffect(() => {
+    if (!sidebarOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setSidebarOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [sidebarOpen]);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChange = (e) => { if (e.matches) setSidebarOpen(false); };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
 
   // Per-client accent (US-MC-03): set --accent / --accent-light / --accent-contrast
   // on documentElement from the active client's theme, recomputed on every client
@@ -421,6 +451,17 @@ export default function App() {
             rebuild swaps in a new bundle. Fixed overlay, so placement is cosmetic. */}
         <UpdateToast />
         <div className="relative z-10 mx-auto flex h-dvh max-w-none gap-4 overflow-hidden p-4">
+          {/* Narrow-only scrim for the off-canvas sidebar drawer (mirrors the
+              PostDetailMissing overlay pattern below); tapping it closes the drawer.
+              Never rendered on lg+, where the sidebar is a permanent rail. */}
+          {sidebarOpen ? (
+            <button
+              type="button"
+              aria-label={t('app.action.close')}
+              onClick={closeSidebar}
+              className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm lg:hidden"
+            />
+          ) : null}
           <Sidebar
             accounts={accounts}
             posting={posting}
@@ -430,16 +471,29 @@ export default function App() {
             setupReady={pendpostHealth?.setup?.ready}
             setupIncomplete={pendpostHealth?.setup?.summary?.incomplete}
             activePage={page}
-            onNavigate={setPage}
-            onNew={openComposer}
-            onNewThread={openThreadComposer}
-            onOpenPost={openPost}
-            onShowOverdue={showOverdue}
+            open={sidebarOpen}
+            onNavigate={(p) => { closeSidebar(); setPage(p); }}
+            onNew={(seed) => { closeSidebar(); openComposer(seed); }}
+            onNewThread={(seed) => { closeSidebar(); openThreadComposer(seed); }}
+            onOpenPost={(post, list) => { closeSidebar(); openPost(post, list); }}
+            onShowOverdue={() => { closeSidebar(); showOverdue(); }}
           />
 
           <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto scrollbar-soft">
             {page !== 'composer' ? (
             <header className="glass-panel flex items-center gap-2 rounded-2xl px-4 py-3">
+              {/* Narrow-only trigger for the off-canvas sidebar drawer; hidden on
+                  the lg+ rail. Controls the #app-sidebar drawer. */}
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(true)}
+                aria-label={t('app.nav.openMenu')}
+                aria-expanded={sidebarOpen}
+                aria-controls="app-sidebar"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand lg:hidden"
+              >
+                <Menu size={18} aria-hidden="true" />
+              </button>
               {page === 'planner' ? (
                 <div className="flex min-w-0 shrink-0 items-center gap-1">
                   <button type="button" onClick={() => navigate(-1)} aria-label={t('app.cal.back')} className="flex h-8 w-8 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand">
@@ -467,10 +521,10 @@ export default function App() {
               )}
 
               <div className="ml-auto flex min-w-0 items-center gap-2">
-                {/* Always-on per-client signage (B4): names the active client on
-                    its accent in every page header. Read-only - switching stays in
-                    the sidebar ClientSwitcher / Cmd-K. */}
-                <ClientBand client={activeClient} />
+                {/* The active client is named by the always-visible sidebar
+                    ClientSwitcher (and Cmd-K); on the base shell the header no
+                    longer repeats it. The per-client ClientBand signage lives in
+                    the Composer / PostDetail overlays, which cover the sidebar. */}
                 {/* Activity "Check now" (publish_due_run): a real publish path,
                     now gated by an in-app confirm that NAMES the active client
                     before any publish (B4). Fail-closed - cancel publishes nothing. */}
@@ -710,7 +764,7 @@ export default function App() {
 
             {/* One-time native-vs-live explainer (B-app): shown once per machine,
                 then remembered. Teaches the model the chip only hints at. */}
-            {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} /> : null}
+            {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} suppressed={activeOnCloud} /> : null}
 
             <div className="glass-panel shrink-0 overflow-x-auto rounded-2xl p-4">
               {/* At-risk framing: when the overdue filter is active (e.g. arrived via
@@ -799,6 +853,7 @@ export default function App() {
             posts={allPosts}
             triage={triagePosts}
             triageIndex={triageIndex}
+            posting={posting}
             onClose={closePost}
             onEdit={editComposer}
             onNavigate={navigateTo}

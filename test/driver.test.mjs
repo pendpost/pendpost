@@ -131,7 +131,7 @@ try {
   const { execFileSync } = await import('node:child_process');
   const parityOut = execFileSync(process.execPath, [path.join(REPO, 'test', 'parity-check.mjs')], { encoding: 'utf8' });
   // 69 = 68 + POST /api/campaigns/<id>/internal (campaign_set_internal).
-  ok(/69 routes, 44 tools.*0 documented UI-only/.test(parityOut),
+  ok(/69 routes, 48 tools.*0 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
   console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 67/43 unaffected (${pass} assertions).`);

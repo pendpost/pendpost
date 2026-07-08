@@ -68,9 +68,9 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
           className={HEADER_BTN}
         >
           <Rocket size={13} aria-hidden="true" />
-          {/* Label collapses to icon-only below xl so the toolbar stays one line
+          {/* Label collapses to icon-only below lg so the toolbar stays one line
               (the sidebar eats ~256px, so the header is much narrower than the viewport). */}
-          <span className="hidden xl:inline">{t('planner.runNow.idle')}</span>
+          <span className="hidden lg:inline">{t('planner.runNow.idle')}</span>
         </button>
         <Tip label={t('planner.runNow.tip.checkReadiness')}>
           <button
@@ -80,7 +80,7 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
             className={HEADER_BTN}
           >
             <ListChecks size={13} aria-hidden="true" />
-            <span className="hidden xl:inline">{t('planner.runNow.checkReadiness')}</span>
+            <span className="hidden lg:inline">{t('planner.runNow.checkReadiness')}</span>
           </button>
         </Tip>
       </div>
@@ -102,9 +102,9 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
           className={HEADER_BTN}
         >
           <Rocket size={13} aria-hidden="true" />
-          {/* Label collapses to icon-only below xl so the toolbar stays one line
+          {/* Label collapses to icon-only below lg so the toolbar stays one line
               (the sidebar eats ~256px, so the header is much narrower than the viewport). */}
-          <span className="hidden xl:inline">{t('planner.runNow.idle')}</span>
+          <span className="hidden lg:inline">{t('planner.runNow.idle')}</span>
         </button>
       </Tip>
       {open ? (

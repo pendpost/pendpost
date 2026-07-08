@@ -82,6 +82,11 @@ try {
   ok(!serialized.includes('scheduler') && !('actor' in job), 'the firing actor is NOT part of the envelope (a runtime credential, not data)');
   ok(job.payloadRef.ids && 'igMediaId' in job.payloadRef.ids, 'payloadRef carries the per-platform publish-evidence ids');
 
+  // ---- (4b) thread chain reference (fire-time resolution seam) ---------------
+  ok(job.payloadRef.xReplyTo === null, 'payloadRef.xReplyTo defaults to null for a non-reply post');
+  const replyJob = buildPublishJob({ ...basePost, platforms: ['x'], xReplyTo: 'p0' }, 'x', { ...metaCtx, lanePlatforms: ['x'] });
+  ok(replyJob.payloadRef.xReplyTo === 'p0', 'payloadRef.xReplyTo carries the sibling POST id (a reference for fire-time resolution, never a tweet id)');
+
   // ---- (5) approval invariant: unapproved is refused -------------------------
   ok(throwsWith(() => buildPublishJob({ ...basePost, approval: 'draft' }, 'meta', metaCtx), 'not_approved'), 'a draft post is refused (code not_approved)');
   ok(throwsWith(() => buildPublishJob({ ...basePost, approval: 'pending' }, 'meta', metaCtx), 'not_approved'), 'a pending post is refused (code not_approved)');

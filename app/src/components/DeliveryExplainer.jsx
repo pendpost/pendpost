@@ -29,10 +29,13 @@ function markSeen() {
 // The live plans/pricing page. ?from=app flips its managed CTA to "enable always-on".
 const SERVICES_URL = 'https://pendpost.com/services?from=app';
 
-export default function DeliveryExplainer({ onNavigate }) {
+export default function DeliveryExplainer({ onNavigate, suppressed = false }) {
   const t = useT();
   const [show, setShow] = useState(() => !hasSeen());
-  if (!show) return null;
+  // Never upsell 24/7 to a user already on 24/7: when the active client is
+  // cloud always-on, this card has nothing to offer, so it stays hidden (and
+  // does NOT mark itself seen - if they later turn the cloud off, it returns).
+  if (suppressed || !show) return null;
   const dismiss = () => {
     markSeen();
     setShow(false);

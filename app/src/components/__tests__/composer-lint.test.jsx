@@ -64,7 +64,7 @@ describe('Composer live brand-lint platform threading (A4)', () => {
     // Default selection is Instagram; switch to Facebook only.
     await user.click(screen.getByRole('button', { name: 'Instagram' })); // deselect IG
     await user.click(screen.getByRole('button', { name: 'Facebook' })); // select FB
-    await user.type(screen.getByLabelText('Caption'), 'hello facebook');
+    await user.type(screen.getByLabelText('Post text'), 'hello facebook');
     vi.advanceTimersByTime(400);
     await waitFor(() => {
       expect(lintText).toHaveBeenCalledWith('hello facebook', 'facebook');
@@ -76,7 +76,7 @@ describe('Composer live brand-lint platform threading (A4)', () => {
     renderComposer();
     // Default is Instagram; add Facebook so both are selected.
     await user.click(screen.getByRole('button', { name: 'Facebook' }));
-    await user.type(screen.getByLabelText('Caption'), 'multi target');
+    await user.type(screen.getByLabelText('Post text'), 'multi target');
     vi.advanceTimersByTime(400);
     await waitFor(() => {
       const captionCalls = lintText.mock.calls.filter((c) => c[0] === 'multi target');

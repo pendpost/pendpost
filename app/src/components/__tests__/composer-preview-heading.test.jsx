@@ -81,7 +81,11 @@ describe('Composer hides the preview label + toggle when there is nothing to pre
   it('create mode, plain text post (no link/image): hides BOTH the eyebrow and the toggle', async () => {
     const user = userEvent.setup();
     renderComposer();
-    // Switch the format to Text -> pure text, no link, no image -> nothing to preview.
+    // Move to a text lane first: A12 only offers the Text format on a lane that can
+    // publish it (Instagram is reel/story/video). Swap Instagram -> X, then pick Text
+    // -> pure text, no link, no image -> nothing to preview.
+    await user.click(screen.getByRole('button', { name: 'Instagram' }));
+    await user.click(screen.getByRole('button', { name: 'X' }));
     await user.selectOptions(screen.getByLabelText('Format'), 'text');
     expect(previewHeading()).not.toBeInTheDocument();
     expect(previewToggle()).not.toBeInTheDocument();

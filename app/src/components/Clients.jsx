@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Check, Pencil, Archive, ArchiveRestore, Loader2, X, Ban, CircleCheck, Clock, AlertTriangle, Play, PauseCircle, Cloud as CloudIcon, Monitor } from 'lucide-react';
+import { Plus, Check, Pencil, Archive, ArchiveRestore, Loader2, X, Ban, CircleCheck, Clock, AlertTriangle, PauseCircle, Cloud as CloudIcon, Monitor } from 'lucide-react';
 import { useClients, useClientsOverview, createClient, updateClient, archiveClient, useSetActiveClient, uploadAssetFile } from '../lib/api.js';
 import { useCloud, useCloudClients, setClientAlwaysOn } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
@@ -284,21 +284,18 @@ function ClientHealthCell({ row, blocked, t }) {
           {t('clientsOverview.signal.overdue', { count: row.overdue })}
         </span>
       ) : null}
-      <span className="inline-flex items-center gap-1.5">
-        {row.schedulerRunning ? <Play size={13} aria-hidden="true" /> : <PauseCircle size={13} aria-hidden="true" />}
-        {row.schedulerRunning ? t('clientsOverview.signal.schedulerOn') : t('clientsOverview.signal.schedulerOff')}
-      </span>
+      {!row.schedulerRunning ? (
+        <span className="inline-flex items-center gap-1.5 font-bold text-zinc-800 dark:text-zinc-100">
+          <PauseCircle size={13} aria-hidden="true" />
+          {t('clientsOverview.signal.schedulerOff')}
+        </span>
+      ) : null}
       {row.metaBlocked ? (
         <span className="inline-flex items-center gap-1.5 font-bold text-zinc-800 dark:text-zinc-100" title={t('clients.health.blockedTitle')}>
           <Ban size={13} aria-hidden="true" />
           {t('clientsOverview.signal.blocked')}
         </span>
-      ) : (
-        <span className="inline-flex items-center gap-1.5">
-          <CircleCheck size={13} aria-hidden="true" />
-          {t('clientsOverview.signal.clear')}
-        </span>
-      )}
+      ) : null}
     </span>
   );
 }
@@ -435,6 +432,7 @@ export default function Clients() {
         </div>
       ) : (
         <div className={`overflow-hidden rounded-2xl ${INNER_SURFACE}`}>
+          <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <caption className="sr-only">{t('clients.tableCaption')}</caption>
             <thead>
@@ -465,7 +463,7 @@ export default function Clients() {
                             <span className="font-bold">{c.displayName}</span>
                             {isActive ? (
                               <span className="inline-flex items-center gap-1 rounded-full bg-brand/15 px-2 py-0.5 text-[10px] font-bold text-brand dark:text-brand-light">
-                                <Check size={11} aria-hidden="true" /> {t('clients.active')}
+                                <Check size={11} aria-hidden="true" /> {t('clients.selected')}
                               </span>
                             ) : null}
                           </span>
@@ -494,7 +492,7 @@ export default function Clients() {
                       </span>
                     </td>
                     <td className={`px-3 py-2 text-xs ${muted}`}>
-                      <ClientHealthCell row={overviewById[c.id]} blocked={c.actionBlocked} t={t} />
+                      {archived ? null : <ClientHealthCell row={overviewById[c.id]} blocked={c.actionBlocked} t={t} />}
                     </td>
                     <td className={`px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400 ${muted}`}>{c.timezone || '-'}</td>
                     <td className="px-3 py-2">
@@ -521,6 +519,7 @@ export default function Clients() {
               })}
             </tbody>
           </table>
+          </div>
         </div>
       )}
     </div>

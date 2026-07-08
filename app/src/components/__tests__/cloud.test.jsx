@@ -232,7 +232,7 @@ describe('Cloud', () => {
     };
     const user = userEvent.setup();
     renderCloud();
-    expect(screen.getByText(/11 \/ 10 posts fired/i)).toBeInTheDocument();
+    expect(screen.getByText(/11 \/ 10 posts this month/i)).toBeInTheDocument();
     // The internal test/live billing mode is NOT surfaced to the user.
     expect(screen.queryByText(/^test$/i)).not.toBeInTheDocument();
     // The in-app purchase flow: pick a tier card -> Review -> Continue to secure checkout.
@@ -258,7 +258,7 @@ describe('Cloud', () => {
     };
     const user = userEvent.setup();
     renderCloud();
-    expect(screen.getByText(/3 \/ 10 posts fired/i)).toBeInTheDocument();
+    expect(screen.getByText(/3 \/ 10 posts this month/i)).toBeInTheDocument();
     // No hard-stop banner (trial not exhausted), but the purchase flow IS available.
     expect(screen.queryByText(/your free trial is used up/i)).not.toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: /studio/i }));
@@ -460,7 +460,7 @@ describe('Cloud', () => {
     // The tier name is the meter header (replaces the old "metered" label).
     expect(screen.getByText('Studio')).toBeInTheDocument();
     // The pooled allowance meter renders the new included count.
-    expect(screen.getByText(/5 \/ 300 posts fired/i)).toBeInTheDocument();
+    expect(screen.getByText(/5 \/ 300 posts this month/i)).toBeInTheDocument();
     // A connected operator still sees the rate basis (the popover's pricing box hides once connected).
     expect(screen.getByText(/24\/7 cloud service: plans include a pooled monthly post allowance/i)).toBeInTheDocument();
     // The spend-cap control is present (no cap set yet -> "Set a cap").

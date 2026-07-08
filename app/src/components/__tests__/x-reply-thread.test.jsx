@@ -104,9 +104,11 @@ describe('PostDetail xReplyTo thread line', () => {
 
   it('renders no thread line on a standalone post', () => {
     renderDetail({ post: parent, posts: [parent, child] });
-    // parent's own header carries no "Replies to" (the delete confirm covers
-    // the reverse direction, tested below).
-    expect(screen.queryByText(/replies to/i)).not.toBeInTheDocument();
+    // parent's own header carries no "Replies to <id>" line. (The inline
+    // "Replies to (X thread)" edit FIELD is a different, empty control; the
+    // delete confirm covers the reverse direction, tested below.)
+    expect(screen.queryByRole('button', { name: /replies to/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/replies to x-launch-thread/i)).not.toBeInTheDocument();
   });
 });
 

@@ -634,16 +634,44 @@ async function cmdPublishDue(args) {
     }
 
     // Reply-chain (xReplyTo): this post replies to a sibling post in the SAME
-    // plan. Fail-closed: until the parent has published (xPostId set), skip
-    // this tick and let the next one retry - never publish an orphan reply.
-    // In a catch-up run the parent publishes first (plan order), so its fresh
-    // in-memory xPostId is already visible to children within the same loop.
+    // plan. Resolution order:
+    //   1. --reply-to-id <tweetId> (with --only): the DISPATCHER's fire-time
+    //      resolution of the parent tweet id. A per-post dispatcher may run this
+    //      engine against a plan SNAPSHOT frozen at enqueue time - the parent
+    //      publishes later, so the snapshot's parent.xPostId is forever null
+    //      (the 2026-07-08 launch-thread incident, five replies failed). The
+    //      dispatcher knows the freshly-minted parent id (the cloud from the
+    //      parent job's result; the local scheduler from the live plan), so an
+    //      explicit override beats the plan lookup.
+    //   2. The plan lookup: in a whole-plan walk the parent publishes first
+    //      (plan order), so its fresh in-memory xPostId is visible in-loop.
+    // Fail-closed EITHER WAY, but never silently: an unresolvable parent emits a
+    // structured result (errorCode below) so no consumer ever sees an empty
+    // envelope and has to guess (the old silent `continue` read as "engine
+    // reported no successful publish").
+    //   - parent_unpublished: parent exists, not yet posted -> DEFERRABLE, the
+    //     dispatcher should retry after the parent lands (never terminal).
+    //   - parent_missing: xReplyTo names no post in this plan -> a config error,
+    //     terminal until the plan is fixed.
     let replyToTweetId = null;
     if (post.xReplyTo) {
-      const parent = (plan.posts || []).find((p) => p.id === post.xReplyTo);
-      if (!parent) { console.log(`[warn] ${post.id}: xReplyTo "${post.xReplyTo}" not found in this plan - skipping.`); continue; }
-      if (!parent.xPostId) { console.log(`[skip] ${post.id}: waiting for parent "${post.xReplyTo}" to publish before threading.`); continue; }
-      replyToTweetId = String(parent.xPostId);
+      const override = args.only && args['reply-to-id'] ? String(args['reply-to-id']).trim() : null;
+      if (override && /^\d{5,25}$/.test(override)) {
+        replyToTweetId = override;
+      } else {
+        const parent = (plan.posts || []).find((p) => p.id === post.xReplyTo);
+        if (!parent) {
+          console.log(`[warn] ${post.id}: xReplyTo "${post.xReplyTo}" not found in this plan - skipping.`);
+          RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'parent_missing', errorMessage: `xReplyTo "${post.xReplyTo}" names no post in this plan` });
+          continue;
+        }
+        if (!parent.xPostId) {
+          console.log(`[skip] ${post.id}: waiting for parent "${post.xReplyTo}" to publish before threading.`);
+          RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'parent_unpublished', errorMessage: `waiting for parent "${post.xReplyTo}" to publish before threading`, deferred: true });
+          continue;
+        }
+        replyToTweetId = String(parent.xPostId);
+      }
     }
 
     if (args['dry-run']) {

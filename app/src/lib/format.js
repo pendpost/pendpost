@@ -425,6 +425,40 @@ export function mediaAspect(post) {
 }
 export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'];
 
+// The authorable post formats, in menu order. Shared by the Composer's format
+// select and the PostDetail quick-edit select so the two lists can never drift.
+export const TYPES = ['reel', 'story', 'video', 'text', 'youtube-short', 'youtube-longform'];
+
+// A12: the formats a given lane can actually publish, so a text-only lane
+// (x/mastodon/nostr/…) is never offered "Reel"/"Story" and a feed lane is never
+// offered a YouTube format. The visual feeds (instagram/tiktok) take reel/story/
+// video; youtube takes its two native formats + plain video; every text/chat/blog
+// lane publishes text or a plain video. A lane absent from this map (e.g.
+// pinterest) or an empty/unknown id returns the full TYPES — conservative, so a
+// caller never strips a valid format (no regression). For a MULTI-platform post
+// the caller unions each lane's set (in TYPES order).
+const VISUAL_LANE_FORMATS = ['reel', 'story', 'video'];
+const TEXT_LANE_FORMATS = ['text', 'video'];
+const PLATFORM_FORMATS = {
+  instagram: VISUAL_LANE_FORMATS,
+  tiktok: VISUAL_LANE_FORMATS,
+  youtube: ['youtube-short', 'youtube-longform', 'video'],
+  facebook: TEXT_LANE_FORMATS,
+  linkedin: TEXT_LANE_FORMATS,
+  x: TEXT_LANE_FORMATS,
+  telegram: TEXT_LANE_FORMATS,
+  discord: TEXT_LANE_FORMATS,
+  reddit: TEXT_LANE_FORMATS,
+  mastodon: TEXT_LANE_FORMATS,
+  wordpress: TEXT_LANE_FORMATS,
+  ghost: TEXT_LANE_FORMATS,
+  nostr: TEXT_LANE_FORMATS,
+  gbp: TEXT_LANE_FORMATS,
+};
+export function formatsForPlatform(platformId) {
+  return PLATFORM_FORMATS[platformId] || TYPES;
+}
+
 // ── Per-platform field relevance ──────────────────────────────────────────────
 // The SINGLE source of truth for "which content fields does this post actually
 // use", so the Composer (authoring) and the PostDetail dialog (review) render the
@@ -516,6 +550,7 @@ export function fieldRelevance(platforms = [], type = 'reel') {
 const EDITABLE_FIELDS = [
   { key: 'caption', kind: 'textarea' },
   { key: 'xCaption', kind: 'textarea' },
+  { key: 'xReplyTo', kind: 'input' },
   { key: 'mastodonCaption', kind: 'textarea' },
   { key: 'nostrCaption', kind: 'textarea' },
   { key: 'title', kind: 'input' },
@@ -538,6 +573,32 @@ function platformsForField(field, targeted) {
   return set.filter((p) => targeted.includes(p));
 }
 
+// Override collapse: which ONE caption field to HIDE so a post never shows two
+// fields for one message. Two mirror-image cases (the override lanes are the only
+// ones that shadow the base caption: x/mastodon/nostr):
+//   - Single override lane: the base caption IS the post, so hide the still-empty
+//     per-platform override. It stays visible once it carries its own content
+//     (legacy posts keep both fields with the override hint).
+//   - Several targets, ALL override lanes each carrying its OWN non-empty text:
+//     the base caption is unpublishable (every lane overrides it), so hide it.
+//     Conservative — any target without an override, or an empty one, keeps the
+//     base caption visible (a later platform with no override still falls back to
+//     it, so the field is kept in the data model, just not rendered here).
+// `values` holds the current field values (a post object, or the Composer's live
+// draft merged with the saved post).
+const OVERRIDE_FIELD = { x: 'xCaption', mastodon: 'mastodonCaption', nostr: 'nostrCaption' };
+export function collapsedOverrideKey(platforms, values = {}) {
+  const list = platforms || [];
+  if (list.length === 1) {
+    const key = OVERRIDE_FIELD[list[0]];
+    return key && !String(values[key] || '').trim() ? key : null;
+  }
+  if (list.length > 1 && list.every((p) => OVERRIDE_FIELD[p] && String(values[OVERRIDE_FIELD[p]] || '').trim())) {
+    return 'caption';
+  }
+  return null;
+}
+
 // The full render model for the PostDetail dialog: the relevance map (also used
 // by tests + Composer), the ordered EDITABLE fields (each with the targeted
 // platforms that consume it), and the ordered read-only EXTRAS. Never lists a
@@ -546,8 +607,9 @@ export function fieldsForPost(post) {
   const platforms = post?.platforms || [];
   const type = post?.type || 'reel';
   const rel = fieldRelevance(platforms, type);
+  const collapsed = collapsedOverrideKey(platforms, post || {});
   const fields = EDITABLE_FIELDS
-    .filter((f) => rel[f.key])
+    .filter((f) => rel[f.key] && f.key !== collapsed)
     .map((f) => ({ ...f, platforms: platformsForField(f.key, platforms) }));
   const extras = EXTRA_FIELDS
     .filter((k) => rel[k])
