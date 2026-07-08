@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - Backstop publish-claim gate for always-on. The cloud worker and the local overdue-backstop are two independent firers of the same job; both now assert one shared atomic publish-claim lease before firing, so a double-post is structurally impossible even when the machine wakes mid-fire. It fails open when the cloud is unreachable, so a self-hosted install behaves exactly as before.
-- Read-only cloud observability over MCP. Four new read-only tools — `cloud_status`, `cloud_capabilities`, `cloud_clients`, and `cloud_subscription` — mirror the `GET /api/cloud*` routes so an agent can inspect cloud state with no secret and no confirm gate (API-key presence only, never the key itself).
+- Read-only cloud observability over MCP. Four new read-only tools (`cloud_status`, `cloud_capabilities`, `cloud_clients`, and `cloud_subscription`) mirror the `GET /api/cloud*` routes so an agent can inspect cloud state with no secret and no confirm gate (API-key presence only, never the key itself).
 - Single edit surface for a post. The post detail is now the one place a post is edited; a single-lane post (X, Mastodon, or Nostr only) shows one "Post text" field instead of a caption/override split, and the sidebar's next-post pill shows the platform glyph, the day and time, and a one-line content preview.
 
 ### Fixed
@@ -22,11 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [1.3.0] - 2026-07-07
 
 ### Added
-- Thread composer for X. Plan a whole X thread as one artifact — draft every reply in a single editor, reorder the tweets, and schedule the chain as one unit instead of stitching separate `xReplyTo` posts by hand.
-- Platform-aware post detail. The detail dialog now shows only the fields each network actually publishes — no more editing a caption a platform will never use. It opens as a centered two-column layout with state-aware actions and keyboard triage, supports inline caption editing, and surfaces platform specifics like a YouTube first comment and the LinkedIn card description.
+- Thread composer for X. Plan a whole X thread as one artifact. Draft every reply in a single editor, reorder the tweets, and schedule the chain as one unit instead of stitching separate `xReplyTo` posts by hand.
+- Platform-aware post detail. The detail dialog now shows only the fields each network actually publishes, so you never edit a caption a platform will never use. It opens as a centered two-column layout with state-aware actions and keyboard triage, supports inline caption editing, and surfaces platform specifics like a YouTube first comment and the LinkedIn card description.
 - Redesigned accounts sidebar. A compact logo cluster with a clean per-account status list replaces the old chip list; the sidebar is a static full-height rail that stays in view while the whole content column scrolls.
 - Fail-closed approval trust gate. Editing a post after it was approved now revokes the approval instead of silently keeping the green light, so an approved-then-changed post can never ship un-reviewed.
-- Server-side video cover JPEGs. The asset scan generates video cover thumbnails on the server, so the dashboard always has a real cover — `CoverThumb` no longer flashes an empty grey square, and cover generation stays binary-free in mock mode.
+- Server-side video cover JPEGs. The asset scan generates video cover thumbnails on the server, so the dashboard always has a real cover, `CoverThumb` no longer flashes an empty grey square, and cover generation stays binary-free in mock mode.
 - Archived projects sink to the bottom of the clients list, greyed, with one-click restore.
 - One-click "Fix in Setup" on actionable activity errors, deep-linking straight to the relevant Setup card.
 
@@ -42,23 +42,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Six new publishing lanes. Mastodon, WordPress, Ghost, and Nostr each get a first-class publish engine wired through every seam (connect, validate, schedule, publish), plus Google Business Profile as a beta lane. The connect panel, sidebar account chips, and setup cards surface all of them.
 - Native platform scheduling for Mastodon, WordPress, and Ghost: like YouTube, an approved post is handed to the platform's own scheduler instead of waiting on the local clock, so it fires even when the app is closed.
 - Content-type-aware composer. WordPress and Ghost posts get a long-form article editor (title + body); Mastodon and Nostr get a note override; Google Business Profile gets its own post fields. The composer adapts to the platforms a post targets rather than showing one flat text box.
-- Capability badges before you pay. Each lane is tagged by how it runs — cloud 24/7, native platform scheduling, or local-only — driven by the cloud's live capability map, so the trade-off is visible on the Cloud page before a plan is chosen.
+- Capability badges before you pay. Each lane is tagged by how it runs (cloud 24/7, native platform scheduling, or local-only), driven by the cloud's live capability map, so the trade-off is visible on the Cloud page before a plan is chosen.
 - Cloud always-on now covers Telegram, Discord, and Nostr for managed brands, on top of the existing Meta / LinkedIn / X / Bluesky lanes.
 - X reply-chain threading. A post can reference an earlier X post (`xReplyTo`) to publish as a threaded reply; the dashboard surfaces the chain and the composer has a set/clear affordance for it.
 - Per-platform model overrides for the Telegram, Discord, TikTok, Reddit, and Pinterest lanes, matching the override support the other lanes already had.
 
 ### Fixed
 - `platform_validate` now catches half-configured Mastodon and Nostr identifiers (and the other wave-2 lanes) instead of letting an incomplete setup reach publish time.
-- Cloud hand-off is scoped to the lanes the cloud actually fires: local-only lanes are no longer pushed to the cloud, and Bluesky — which has no publish engine anywhere yet — was dropped from the cloud lane set so a deferred post can no longer land nowhere.
+- Cloud hand-off is scoped to the lanes the cloud actually fires: local-only lanes are no longer pushed to the cloud, and Bluesky (which has no publish engine anywhere yet) was dropped from the cloud lane set so a deferred post can no longer land nowhere.
 
 ## [1.2.0] - 2026-07-04
 
 ### Added
-- Cloud sync guarantee status: `GET /api/cloud` now returns a `sync` roll-up (`green` — every approved cloud-lane post is confirmed accepted by the cloud; `yellow` — a push is still pending; `red` — the guarantee is broken: cloud unreachable, an approved post overdue-unpublished, a failed cloud publish, or sync stopped). The header cloud icon surfaces it as a green/amber/red dot with a localized reason line (en + de-CH).
+- Cloud sync guarantee status: `GET /api/cloud` now returns a `sync` roll-up (`green` - every approved cloud-lane post is confirmed accepted by the cloud; `yellow` - a push is still pending; `red` - the guarantee is broken: cloud unreachable, an approved post overdue-unpublished, a failed cloud publish, or sync stopped). The header cloud icon surfaces it as a green/amber/red dot with a localized reason line (en + de-CH).
 - Push acknowledgements, the last successful cloud contact, and the subscription view are now persisted per client (`state.cloudAccepted` / `state.cloudContact` / `state.cloudSubView`), so the status is computable offline and survives restarts.
 
 ### Fixed
-- Cloud-managed brands never silently miss a post again. The scheduler no longer hands off blindly to the cloud: lanes the managed cloud does not fire (YouTube incl. the release-recovery lane, Telegram, Discord, Reddit, Pinterest, TikTok) always run on the normal local schedule, and cloud lanes (Meta, LinkedIn, X, Bluesky) get a 20-minute liveness backstop — a post the cloud provably has not fired past that grace publishes locally, with a `cloud-backstop` activity entry. Reconcile runs first each tick and the cloud worker's claim guard holds, so the backstop cannot double-post.
+- Cloud-managed brands never silently miss a post again. The scheduler no longer hands off blindly to the cloud: lanes the managed cloud does not fire (YouTube incl. the release-recovery lane, Telegram, Discord, Reddit, Pinterest, TikTok) always run on the normal local schedule, and cloud lanes (Meta, LinkedIn, X, Bluesky) get a 20-minute liveness backstop: a post the cloud provably has not fired past that grace publishes locally, with a `cloud-backstop` activity entry. Reconcile runs first each tick and the cloud worker's claim guard holds, so the backstop cannot double-post.
 - A brand the cloud wrongly reports as paused while it is on locally now re-asserts its always-on flag every tick (the mirror of the existing off-flag self-heal).
 - A stale cached cloud-failure entry for a post that has since published no longer holds the sync status red.
 
@@ -70,7 +70,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ## [1.1.0] - 2026-06-28
 
 ### Added
-- Connect panel: set up Instagram, Facebook, LinkedIn, YouTube, and X from inside the app. Credentials go into collapsible per-platform cards that save as you type — no Save button — and never leave your machine.
+- Connect panel: set up Instagram, Facebook, LinkedIn, YouTube, and X from inside the app. Credentials go into collapsible per-platform cards that save as you type (no Save button) and never leave your machine.
 - Disconnect: clear a platform's stored credentials straight from its card, for rotating keys or stepping away from a shared machine.
 - YouTube setup guidance: Production-first connect steps and plain-language reassurance for Google's "this app isn't verified" consent screen, so the one-time warning doesn't read as a dead end.
 - `pendpost connect`: a CLI entry point for the same operator-only connect flow.
@@ -83,7 +83,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 - 24/7 Cloud-Service in-app purchase: compare plans, review the order, open secure checkout, and return to an active plan without leaving the app, with graceful cancel handling. The website deep-links a chosen plan straight into the app (`/download?plan=<tier>`).
-- A cloud account menu on the real account identity: manage billing (Stripe portal), manage account (Clerk), a lightweight reversible sign-out/switch, and an explicit sign-in entry — with the heavier "eject to self-host" kept separate.
+- A cloud account menu on the real account identity: manage billing (Stripe portal), manage account (Clerk), a lightweight reversible sign-out/switch, and an explicit sign-in entry, with the heavier "eject to self-host" kept separate.
 
 ### Added (always-on foundation)
 - Always-on self-host: deploy templates for Fly.io, Railway, and Render (`deploy/`) and an always-on self-host guide, so Instagram, LinkedIn, and X publish on schedule even when your computer is off.
