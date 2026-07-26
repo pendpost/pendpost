@@ -27,6 +27,8 @@ vi.mock('../../lib/api.js', () => ({
   // B2: read-only validate hooks; inert (undefined data) in this create-mode lint test.
   usePlatformValidate: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePinterestBoardSections: () => ({ data: undefined, isLoading: false }),
   createPost: vi.fn(() => Promise.resolve({ ok: true })),
   updatePost: vi.fn(() => Promise.resolve({ ok: true })),
   lintText: (...args) => lintText(...args),

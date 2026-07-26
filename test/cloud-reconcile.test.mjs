@@ -169,12 +169,46 @@ try {
     'the failed post surfaces in the summary with its jobId + firedAt + sanitized failureMessage');
   const failAfter = readPost('fail');
   ok(failAfter.status === failBefore.status && !('tgMessageId' in failAfter), 'the failed post is NOT mutated (no id, status unchanged) - it stays due for the local backstop to recover');
-  ok(derived('fail') === 'overdue', 'the failed post still derives as "overdue" (recoverable by the backstop, not silently done)');
+  // Still LATE and still the backstop's to recover - but now it says WHY rather than wearing
+  // the same "overdue" as a post nothing ever tried. publish-failed filters under the same
+  // needs-attention bucket and eligibleDuePosts never reads derivedState, so recovery is
+  // unchanged; only the word the operator reads is more honest.
+  ok(derived('fail') === 'publish-failed', 'the failed post derives as "publish-failed" (recoverable by the backstop, not silently done, and it names the reason)');
   const cf = loadState().cloudFailures || {};
   ok(cf[`${CAMP}:fail`] && cf[`${CAMP}:fail`].message === FAIL_MSG && cf[`${CAMP}:fail`].lane === 'telegram',
     'state.cloudFailures caches the reason keyed campaign:postId so pendpost_health surfaces WHY the post is stuck');
 
-  console.log(`[cloud-reconcile] OK - done patches + clears overdue, idempotent, refused is a no-op, brand loop reconciles, cloud-fired telegram flips to posted, a failed fire stays due but surfaces its reason (${pass} assertions).`);
+  // --- (7) a Radar reply to a GONE thread (radar_target_gone) is TERMINAL: the reconcile
+  //         stamps radarReplyState='target_gone' on the plan (mirroring the local engine's
+  //         own terminal write) so the scheduler STOPS owing the lane - it must NOT loop the
+  //         local backstop against a since-deleted thread. It is NOT a stuck cloudFailure
+  //         (terminal, not recoverable) and is NOT handed to the self-healer.
+  //
+  //         Uses MASTODON, not x. This arm was written for a cloud-fired X reply, and that
+  //         combination no longer exists: X restricted programmatic replies in Feb 2026, so
+  //         x is reply:false (lib/radar.mjs) and validateFieldValues refuses a new x reply
+  //         post at the door. The reconcile branch under test is lane-agnostic, so any
+  //         reply-capable source proves it; mastodon is local-fired, which makes this a test
+  //         of the MECHANISM rather than of a live cloud route.
+  await createPost({ campaign: CAMP, post: { id: 'xr', type: 'text', platforms: ['mastodon'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a helpful reply', radarReplyTo: { url: 'https://mastodon.social/@u/999', source: 'mastodon', externalId: '999' } }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: 'xr', actor: 'owner' });
+  ok(!('radarReplyState' in readPost('xr')), 'precondition: the queued radar reply has no radarReplyState yet');
+  resultsPayload = [{
+    jobId: `${CLIENT}:${CAMP}:xr:mastodon`, clientId: CLIENT, campaign: CAMP, postId: 'xr', lane: 'mastodon', state: 'failed',
+    firedAt: FIRED_AT, refusedCode: null, results: [], failureMessage: 'mastodon: HTTP 404 - the parent status is gone', errorCode: 'radar_target_gone',
+  }];
+  const r7 = await cloud.reconcileCloudResults();
+  ok(readPost('xr').radarReplyState === 'target_gone', 'the plan post is stamped radarReplyState=target_gone (the lane stops being owed)');
+  ok(r7.radarTerminal && r7.radarTerminal.some((x) => x.postId === 'xr'), 'the terminal radar reply surfaces in the reconcile summary');
+  ok(!r7.failed.some((f) => f.postId === 'xr'), 'a terminal radar reply is NOT handed to the self-healer (it must never be retriggered)');
+  ok(!(loadState().cloudFailures || {})[`${CAMP}:xr`], 'a terminal radar reply is NOT cached as a stuck cloudFailure (it is terminal, not recoverable)');
+  // Idempotent: a second reconcile of the same terminal result does not re-stamp or churn.
+  const beforeSecond = fs.readFileSync(planAbs, 'utf8');
+  const r7b = await cloud.reconcileCloudResults();
+  ok(!r7b.radarTerminal.some((x) => x.postId === 'xr'), 'an already-stamped terminal radar reply is not re-stamped');
+  ok(fs.readFileSync(planAbs, 'utf8') === beforeSecond, 'the plan file is byte-identical after the idempotent terminal re-run (no churn)');
+
+  console.log(`[cloud-reconcile] OK - done patches + clears overdue, idempotent, refused is a no-op, brand loop reconciles, cloud-fired telegram flips to posted, a failed fire stays due but surfaces its reason, a gone radar reply goes terminal (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

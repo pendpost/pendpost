@@ -9,7 +9,10 @@
  *
  * ALL media uploads straight from the local render folder (post.path / plan.folder + post.file):
  * FB videos as multipart to graph-video.facebook.com, IG Reels via Meta's resumable upload
- * protocol (rupload.facebook.com). No hosting layer, no Cloudinary.
+ * protocol (rupload.facebook.com). No hosting layer, no Cloudinary. The one exception the
+ * platform forces (spec 39): IG feed IMAGES have no upload API at all - the IMAGE container
+ * fetches a PUBLIC image_url, so the operator supplies it (post.imageUrl / per-slide
+ * mediaItems[].url, resolved via lib/public-media.mjs); the local render stays required.
  *
  * Source of truth: a post-plan.json (see data/plans/<campaign>/post-plan.json).
  *
@@ -25,6 +28,7 @@
  *   publish-due    --plan <post-plan.json> [--only <postId>] [--dry-run]
  *   set-thumbnail  --plan <post-plan.json> [--only <postId>] [--dry-run]   (post-hoc FB reel covers; IG is container-creation-only)
  *   insights       --plan <post-plan.json> [--only <postId>] --json          (read-only IG/FB metrics, defensive metric fallback)
+ *   demographics   --plan <post-plan.json> --json          (account-scoped IG follower age/gender/geo breakdown; needs instagram_business_manage_insights)
  *   status         --plan <post-plan.json>
  *   delete         --id <fbPostId>
  *
@@ -37,6 +41,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand, platformEnabled } from '../lib/mode.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
+import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
+import { effectivePublicUrl, effectiveSlideUrl } from '../lib/public-media.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -740,13 +746,84 @@ async function cmdPublishDue(args) {
     const lateMin = Math.round((now - dueMs) / 60000);
     if (lateMin > 15) console.log(`[warn] ${post.id}: publishing ${lateMin} min late (catch-up).`);
 
+    // Spec 05 + 39: a native Instagram carousel (media_type=CAROUSEL) - 2..10 child
+    // containers. FB multi-photo is out of scope (FB stays reel-gated), so only the IG
+    // half publishes. Fail-closed BEFORE any Graph call (count/cap + slides-on-disk).
+    // IMAGE children publish from a PUBLIC per-slide `url` (Graph has no local-image
+    // upload) via an image_url child container; an image slide WITHOUT a url emits an
+    // honest ok:false row (no half-post). VIDEO children upload via the resumable path.
+    if (isCarouselPost(post)) {
+      if (!wantsIg || post.igMediaId) continue;
+      const postingCfg = loadClientConfig();
+      const slides = carouselItems(post).map((it) => ({
+        path: resolveMediaPath(plan, { file: it.file, path: it.path }),
+        url: effectiveSlideUrl(it, postingCfg),
+      }));
+      const blocker = carouselBlocker(post, 'instagram', slides.map((s) => ({ exists: Boolean(s.path) })));
+      if (blocker) {
+        console.log(`[warn] ${post.id}: ${blocker} - skipping.`);
+        RUN.results.push(carouselBlockRow(post, 'instagram', blocker));
+        continue;
+      }
+      // The single-source degrade reason lives in lib/carousel.mjs carouselUnsupported
+      // (spec 39: only image slides LACKING a url degrade) - the shared helper keeps
+      // this engine, the validator and the mock driver on one string.
+      const unsupported = carouselUnsupported(post, 'instagram', postingCfg);
+      if (unsupported) {
+        console.log(`[warn] ${post.id}: ${unsupported} - skipping.`);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: false, errorCode: 'unsupported', errorMessage: unsupported });
+        continue;
+      }
+      if (args['dry-run']) { console.log(`[dry] ${post.id}: would publish an IG carousel of ${slides.length} children.`); continue; }
+      console.log(`[info] ${post.id}: assembling IG carousel (${slides.length} children)...`);
+      try {
+        const childIds = [];
+        for (const slide of slides) {
+          if (carouselItemKind({ path: slide.path }) === 'image') {
+            // Spec 39 §4c: an IMAGE child is a plain image_url container (no
+            // media_type param; IMAGE is the Graph default), fetched by Meta.
+            const child = await graph('POST', `/${igUserId}/media`, { image_url: slide.url, is_carousel_item: 'true', access_token: pageToken });
+            await pollContainer(child.id, pageToken);
+            childIds.push(child.id);
+            continue;
+          }
+          const child = await graph('POST', `/${igUserId}/media`, { media_type: 'VIDEO', is_carousel_item: 'true', upload_type: 'resumable', access_token: pageToken });
+          await igResumableUpload(child.id, slide.path, pageToken);
+          await pollContainer(child.id, pageToken);
+          childIds.push(child.id);
+        }
+        const parent = await graph('POST', `/${igUserId}/media`, { media_type: 'CAROUSEL', caption: post.caption || '', children: childIds.join(','), access_token: pageToken });
+        await pollContainer(parent.id, pageToken);
+        const media = await graph('POST', `/${igUserId}/media_publish`, { creation_id: parent.id, access_token: pageToken });
+        post.igMediaId = media.id;
+        post.status = 'posted';
+        post.postedAt = new Date(now).toISOString();
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-carousel', ok: true, errorCode: null, errorMessage: null, lateMin, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: true, id: media.id });
+        console.log(`[ok] ${post.id}: IG carousel published (media id ${media.id}).`);
+        published += 1;
+      } catch (err) {
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-carousel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
+        console.error(`[err] ${post.id}: IG carousel failed - ${err.message}`);
+        if (err.fbCode === 368) { RUN.blocked368 = true; await reportMetaBlock(err); break; }
+      }
+      continue;
+    }
+
     const mediaPath = resolveMediaPath(plan, post);
     if (!mediaPath) {
       console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`);
       continue;
     }
-    if (!/\.(mp4|mov)$/i.test(mediaPath)) {
-      console.log(`[warn] ${post.id}: image posts are not supported in local-file mode (API requires a public image_url) - post manually.`);
+    // Spec 39: type=image publishes via the IG IMAGE branch below (Graph fetches a
+    // public image_url; the local render satisfies the media gates + preview). The
+    // extension bailout stays for the genuinely-video types, whose resumable upload
+    // needs a video file.
+    if (!/\.(mp4|mov)$/i.test(mediaPath) && post.type !== 'image') {
+      console.log(`[warn] ${post.id}: ${post.type} needs a video render (.mp4/.mov) - skipping.`);
       continue;
     }
 
@@ -795,8 +872,56 @@ async function cmdPublishDue(args) {
       }
     }
 
+    // Spec 39 §4b: the Instagram feed IMAGE. Graph has NO local-image upload - an
+    // IMAGE container publishes from the operator's public URL (effectivePublicUrl:
+    // manual imageUrl today, the §4.0 media-mirror seam later). No effective URL is
+    // the FAIL-CLOSED BACKSTOP: a structured ok:false row, never the silent bare
+    // continue this branch replaced (Pruefen is advisory, so only the engine can
+    // prevent the silent skip). alt_text rides the IMAGE container only (spec 21's
+    // IG coverage gate, closed here).
+    if (wantsIg && !post.igMediaId && post.type === 'image') {
+      const publicUrl = effectivePublicUrl(post, loadClientConfig());
+      if (!publicUrl) {
+        const msg = 'instagram feed image needs a public image URL (set imageUrl, or set a public media host in Settings)';
+        console.log(`[warn] ${post.id}: ${msg} - skipping.`);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: false, errorCode: 'unsupported', errorMessage: msg });
+        continue;
+      }
+      try {
+        console.log(`[info] ${post.id}: creating IG IMAGE container from ${publicUrl}...`);
+        const containerParams = { image_url: publicUrl, caption: post.caption || '', access_token: pageToken };
+        if ((post.altText || '').trim()) containerParams.alt_text = post.altText.trim();
+        const container = await graph('POST', `/${igUserId}/media`, containerParams);
+        await pollContainer(container.id, pageToken);
+        const media = await graph('POST', `/${igUserId}/media_publish`, { creation_id: container.id, access_token: pageToken });
+        post.igMediaId = media.id;
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-image', ok: true, errorCode: null, errorMessage: null, lateMin, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish-image', ok: true, id: media.id });
+        console.log(`[ok] ${post.id}: feed image published on Instagram (media id ${media.id}).`);
+        if (post.firstComment) {
+          try {
+            await graph('POST', `/${media.id}/comments`, { message: post.firstComment, access_token: pageToken });
+            console.log(`[ok] ${post.id}: first comment added.`);
+          } catch (err) {
+            console.log(`[warn] ${post.id}: first comment failed - ${err.message}`);
+          }
+        }
+      } catch (err) {
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-image', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish-image', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
+        console.error(`[err] ${post.id}: IG feed image failed - ${err.message}`);
+        if (err.fbCode === 368) {
+          RUN.blocked368 = true;
+          await reportMetaBlock(err);
+          break;
+        }
+      }
+    }
+
     // Instagram Reel or Story. Stories take NO caption/share_to_feed/firstComment (API ignores them).
-    if (wantsIg && !post.igMediaId) {
+    if (wantsIg && !post.igMediaId && post.type !== 'image') {
       const isStory = post.type === 'story';
       try {
         console.log(`[info] ${post.id}: creating IG resumable ${isStory ? 'STORIES' : 'REELS'} container...`);
@@ -1082,6 +1207,60 @@ async function cmdInsights(args) {
   console.log(`[done] insights complete - ${RUN.results.filter((r) => r.ok).length} fetched.`);
 }
 
+// Parse the IG follower_demographics total_value.breakdowns array into
+// {age:{...}, gender:{...}, country:{...}, city:{...}} - each requested
+// dimension (age/gender/city/country) comes back as its own breakdown object
+// (dimension_keys[0] names it), with `results[].dimension_values` joined as the
+// bucket label and `value` as the count.
+function parseIgDemographics(data) {
+  const demographics = {};
+  const breakdowns = data?.data?.[0]?.total_value?.breakdowns || [];
+  for (const b of breakdowns) {
+    const key = (b.dimension_keys || [])[0];
+    if (!key) continue;
+    const bucket = {};
+    for (const r of b.results || []) {
+      const label = (r.dimension_values || []).join(', ');
+      if (label) bucket[label] = Number(r.value || 0);
+    }
+    demographics[key] = bucket;
+  }
+  return demographics;
+}
+
+// Account-scoped IG audience demographics (spec 07, Pattern P5) - called ONCE per
+// evidence campaign by the insights sweep's generic account pass (spec 04). Needs
+// Advanced Access to instagram_business_manage_insights; that gate degrades to the
+// structured needs_scope shape (P9), never a throw. Emits ONE account row
+// { postId:null, platform:'meta', action:'demographics', ok, scope:'account',
+// demographics:{...} }.
+async function cmdDemographics() {
+  const accountRow = (extra) => ({ postId: null, platform: 'meta', action: 'demographics', scope: 'account', ...extra });
+  const igUserId = readEnv('META_IG_USER_ID');
+  const pageToken = readEnv('META_PAGE_TOKEN');
+  if (!igUserId || !pageToken) {
+    RUN.results.push(accountRow({ ok: false, errorCode: 'not_configured', errorMessage: 'META_IG_USER_ID / META_PAGE_TOKEN are not set' }));
+    return;
+  }
+  try {
+    const data = await graph('GET', `/${igUserId}/insights`, {
+      metric: 'follower_demographics', metric_type: 'total_value', breakdown: 'age,gender,city,country', period: 'lifetime', access_token: pageToken,
+    });
+    RUN.results.push(accountRow({ ok: true, demographics: parseIgDemographics(data) }));
+    console.log('[ok] demographics fetched.');
+  } catch (err) {
+    // Advanced Access not granted on instagram_business_manage_insights surfaces as
+    // a generic permission error (code 10) rather than a distinct demographics code.
+    if (err.fbCode === 10 || err.fbCode === 200) {
+      RUN.results.push(accountRow({ ok: false, error: 'needs_scope', scope: 'instagram_business_manage_insights' }));
+      console.log('[warn] demographics: instagram_business_manage_insights Advanced Access not granted - no audience data available yet.');
+      return;
+    }
+    RUN.results.push(accountRow({ ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) }));
+    console.log(`[warn] demographics failed: ${err.message}`);
+  }
+}
+
 // Read-only verification (read-back): confirm whether a handed-off post is
 // actually live on Facebook/Instagram. Pure GET - NOT a write, so it is
 // deliberately NOT in META_WRITE_COMMANDS and never gated by the lane-pause kill
@@ -1114,9 +1293,14 @@ async function cmdVerify(args) {
     }
     if (platforms.includes('instagram') && post.igMediaId) {
       try {
-        const v = await graph('GET', `/${post.igMediaId}`, { fields: 'permalink', access_token: pageToken });
-        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'verify', ok: true, id: post.igMediaId, live: true, state: 'published', permalink: v.permalink || null });
-        console.log(`[ok] ${post.id}: IG verify live=true`);
+        // `username` rides along so the read-back also proves WHICH ACCOUNT the media
+        // actually lives on. Nothing on a post recorded its destination before, which is
+        // why the 25.07.2026 wrong-account publish had to be caught by eye four days
+        // later. This is a platform-confirmed fact, strictly better than echoing back
+        // the account id we already believed we used, and it costs no extra call.
+        const v = await graph('GET', `/${post.igMediaId}`, { fields: 'permalink,username', access_token: pageToken });
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'verify', ok: true, id: post.igMediaId, live: true, state: 'published', permalink: v.permalink || null, account: v.username || null });
+        console.log(`[ok] ${post.id}: IG verify live=true${v.username ? ` account=@${v.username}` : ''}`);
       } catch (err) {
         if (missingRe.test(err.message || '')) {
           RUN.results.push({ postId: post.id, platform: 'instagram', action: 'verify', ok: true, id: post.igMediaId, live: false, state: 'missing', permalink: null });
@@ -1167,9 +1351,30 @@ async function cmdProbe() {
   }
 }
 
+// The inbound-engagement seam (spec 02, Pattern P6): read + reply to inbound
+// comments on this lane's own posts. Thin wrappers over the shared, source-agnostic
+// REST in lib/comments.mjs (dynamic import so the publish hot path's module graph is
+// untouched). The result is merged onto RUN so main() emits the normalized
+// { items } / { id } envelope; a needs_scope degrade sets ok:false (P9).
+async function cmdComments(args) {
+  const { runLaneComments } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneComments('meta', args));
+}
+async function cmdReply(args) {
+  const { runLaneReply } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneReply('meta', args));
+}
+async function cmdModerate(args) {
+  const { runLaneModerate } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneModerate('meta', args));
+}
+
 const COMMANDS = {
   setup: cmdSetup,
   'setup-system-user': cmdSetupSystemUser,
+  comments: cmdComments,
+  reply: cmdReply,
+  moderate: cmdModerate,
   schedule: cmdSchedule,
   'publish-due': cmdPublishDue,
   status: cmdStatus,
@@ -1178,6 +1383,7 @@ const COMMANDS = {
   fbreel: cmdFbReel,
   'set-thumbnail': cmdSetThumbnail,
   insights: cmdInsights,
+  demographics: cmdDemographics,
   probe: cmdProbe,
 };
 
@@ -1195,7 +1401,7 @@ async function main() {
   // for WRITE commands. Reads (insights/probe/validate) are never paused. A
   // paused write emits the clean { ok:true, paused:true } no-op the scheduler
   // treats as a no-op, NOT an engine_failure.
-  const META_WRITE_COMMANDS = new Set(['schedule', 'publish-due', 'publish', 'fbreel', 'set-thumbnail']);
+  const META_WRITE_COMMANDS = new Set(['schedule', 'publish-due', 'publish', 'fbreel', 'set-thumbnail', 'reply', 'moderate']);
   if (META_WRITE_COMMANDS.has(commandName) && metaLanePaused(commandName)) {
     const envelope = { ok: true, ...RUN };
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
@@ -1209,6 +1415,8 @@ async function main() {
       platform: 'meta', command: commandName,
       planPath: typeof args.plan === 'string' ? path.resolve(String(args.plan)) : null,
       only: typeof args.only === 'string' ? args.only : null,
+      // spec 06: the moderate verb carries its action so the mock can branch per-lane.
+      action: typeof args.action === 'string' ? args.action : null,
     });
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
     else console.error(`[mock] meta ${commandName}: ${envelope.results.length} result(s)`);
@@ -1219,7 +1427,7 @@ async function main() {
     console.error(`Usage: node scripts/meta-social.mjs <${Object.keys(COMMANDS).join('|')}> [options]`);
     process.exit(2);
   }
-  if (['schedule', 'publish-due', 'set-thumbnail', 'insights', 'verify'].includes(args._[0]) && !args.plan) {
+  if (['schedule', 'publish-due', 'set-thumbnail', 'insights', 'verify', 'demographics'].includes(args._[0]) && !args.plan) {
     console.error(`[err] ${args._[0]} requires --plan <post-plan.json>`);
     process.exit(2);
   }

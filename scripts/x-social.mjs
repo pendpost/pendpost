@@ -64,6 +64,8 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
+import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
+import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { oauth1Header } from '../lib/x-oauth1.mjs';
 import { envPath } from '../lib/util.mjs';
 
@@ -299,7 +301,30 @@ async function uploadCommand(form, token, endpointOverride = null) {
   return data;
 }
 
-async function uploadMedia(localPath, token) {
+// ---------- alt-text (spec 21) ----------
+//
+// Sets the accessibility/SEO alt-text on an already-FINALIZEd media object.
+// OAuth 1.0a routes to the legacy v1.1 metadata endpoint (JSON body, unsigned -
+// same shape as uploadCommand's multipart calls); OAuth 2.0 routes to the v2
+// endpoint, which nests the alt text under `metadata`. Fail-soft by design: the
+// caller never lets a metadata failure block the tweet itself.
+async function setMediaAltText(mediaId, altText, token) {
+  const truncated = String(altText).slice(0, 1000);
+  const o1 = oauth1Creds();
+  if (o1) {
+    const endpoint = 'https://upload.twitter.com/1.1/media/metadata/create.json';
+    const headers = { Authorization: oauth1Header('POST', endpoint, {}, o1), 'Content-Type': 'application/json' };
+    const res = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ media_id: String(mediaId), alt_text: { text: truncated } }) });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`X media metadata: HTTP ${res.status} - ${text.slice(0, 200)}`);
+    }
+  } else {
+    await api('POST', '/media/metadata', { body: { media_id: String(mediaId), metadata: { alt_text: { text: truncated } } }, token });
+  }
+}
+
+async function uploadMedia(localPath, token, altText = null, postId = null) {
   const buf = fs.readFileSync(localPath);
   const totalBytes = buf.length;
   const { category, mime } = mediaCategoryFor(localPath);
@@ -338,6 +363,18 @@ async function uploadMedia(localPath, token) {
     await pollMediaStatus(mediaId, token, proc.check_after_secs || 5);
   }
   console.log(`[ok]   media ready (${mediaId}).`);
+  // Spec 21: alt-text is additive + fail-soft - a metadata failure never blocks
+  // the tweet itself (the tweet still posts with no alt-text; the operator sees
+  // a structured set-alt result row instead of a silent gap).
+  if (altText) {
+    try {
+      await setMediaAltText(mediaId, altText, token);
+      console.log('[ok]   alt-text set on media.');
+    } catch (err) {
+      console.error(`[warn] alt-text failed for media ${mediaId} - ${err.message}`);
+      RUN.results.push({ postId, platform: 'x', action: 'set-alt', ok: false, errorMessage: String(err.message).slice(0, 300) });
+    }
+  }
   return mediaId;
 }
 
@@ -367,10 +404,20 @@ async function pollMediaStatus(mediaId, token, firstWaitSecs, timeoutMs = 5 * 60
 
 // ---------- tweet creation ----------
 
-async function createTweet(text, mediaId, token, replyToTweetId = null) {
+async function createTweet(text, mediaId, token, replyToTweetId = null, replySettings = null, poll = null, mediaIds = null) {
   const body = { text };
-  if (mediaId) body.media = { media_ids: [String(mediaId)] };
+  // Spec 05: a carousel tweet carries up to 4 media_ids (mediaIds) - the multi-media
+  // path; a single video/image tweet carries the one mediaId. Mutually exclusive.
+  if (Array.isArray(mediaIds) && mediaIds.length) body.media = { media_ids: mediaIds.map(String) };
+  else if (mediaId) body.media = { media_ids: [String(mediaId)] };
+  // Spec 10: a native poll (poll.options 2..4, poll.duration_minutes 5..10080). A
+  // poll tweet carries no media (the two are mutually exclusive on X).
+  if (poll) body.poll = { options: poll.options, duration_minutes: poll.durationMinutes };
   if (replyToTweetId) body.reply = { in_reply_to_tweet_id: String(replyToTweetId) };
+  // Spec 25: who may reply (an interaction/comment control) - X has NO paid-
+  // partnership/branded-content create param (not API-exposed, UI-only); unset
+  // keeps X's own default (everyone), byte-identical to today.
+  if (replySettings) body.reply_settings = replySettings;
   const data = await api('POST', '/tweets', { body, token });
   const id = data?.data?.id;
   if (!id) throw new Error(`create tweet returned no id: ${JSON.stringify(data).slice(0, 200)}`);
@@ -386,7 +433,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, xCaption, schedule, approval,
 // cover) belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'status', 'postedAt', 'attempts'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'status', 'postedAt', 'attempts', 'radarReplyState'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -619,6 +666,46 @@ async function cmdPublishDue(args) {
     const dueMs = Date.parse(post.scheduledAt);
     if (Number.isNaN(dueMs) || dueMs > now) continue;
 
+    // Spec 45: a Radar reply-to-external post REPLIES to the signal's tweet id instead of
+    // creating a NEW tweet. It reached here only after a DISTINCT human approved it (the
+    // approval gate above + no-self-approval; X is absent from RADAR_AUTO_REPLY_LANES, so it
+    // is NEVER auto-posted - a public reply to a stranger is always human-gated). Fail-closed:
+    // a gone/404 tweet => radar_target_gone (TERMINAL - lanesOwed stops owing the lane, so no
+    // re-fire against a dead tweet), 401/403 => needs_scope, anything else => engine_failure.
+    // Mirrors scripts/reddit-social.mjs cmdPublishDue's radar branch EXACTLY.
+    if (post.radarReplyTo) {
+      const rr = post.radarReplyTo;
+      // WRONG-TARGET guard: fire ONLY when the reply's source is this lane. A source<->platform
+      // mismatch is rejected at create (validateFieldValues); this is the fire-time backstop.
+      if (rr.source !== 'x') { RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `radarReplyTo.source '${rr.source}' does not match the x lane` }); continue; }
+      const body = tweetText(post);
+      if (!body) { RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'radar reply needs a caption' }); continue; }
+      if (body.length > TWEET_LIMIT) { RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `radar reply is ${body.length} chars (> ${TWEET_LIMIT})` }); continue; }
+      if (args['dry-run']) { console.log(`[dry] ${post.id}: would reply to tweet ${rr.externalId} (${body.length} chars).`); continue; }
+      try {
+        // createTweet sets body.reply = { in_reply_to_tweet_id } from its 4th arg - the signal's
+        // externalId IS the parent tweet id. No media, no reply_settings on a radar reply.
+        const tweetId = await createTweet(body, null, token, String(rr.externalId));
+        post.xPostId = tweetId;
+        post.status = 'posted';
+        post.postedAt = new Date(now).toISOString();
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'x', action: 'publish', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: true, id: tweetId, radarReply: rr.externalId });
+        console.log(`[ok] ${post.id}: replied on X to ${rr.externalId} (${tweetId}).`);
+        published += 1;
+      } catch (err) {
+        const status = err && err.status;
+        const gone = status === 404; // a deleted/unavailable parent tweet - TERMINAL, never re-fired
+        const code = gone ? 'radar_target_gone' : ((status === 401 || status === 403) ? 'needs_scope' : 'engine_failure');
+        if (gone) post.radarReplyState = 'target_gone';
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: code, errorMessage: String(err.message || err).slice(0, 300), lateMin: 0, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: code, errorMessage: String(err.message || err).slice(0, 300) });
+      }
+      continue;
+    }
+
     const text = tweetText(post);
     if (!text) { console.log(`[warn] ${post.id}: due but no tweet text (xCaption/caption) - skipping.`); continue; }
     if (text.length > TWEET_LIMIT) { console.log(`[warn] ${post.id}: text is ${text.length} chars (> ${TWEET_LIMIT}) - set a shorter xCaption; skipping.`); continue; }
@@ -627,8 +714,32 @@ async function cmdPublishDue(args) {
     if (lateMin > 15) console.log(`[warn] ${post.id}: publishing ${lateMin} min late (catch-up).`);
 
     const textPost = isTextPost(post);
+    // Spec 10: a native poll tweet (poll.options 2..4, duration 5..10080 min). No media.
+    const pollPost = isPollPost(post);
+    if (pollPost) {
+      const blocker = pollBlocker(post, text, POLL_LANE_LIMITS.x);
+      if (blocker) {
+        console.log(`[warn] ${post.id}: ${blocker} - skipping.`);
+        RUN.results.push(pollBlockRow(post, 'x', blocker));
+        continue;
+      }
+    }
+    // Spec 05: a native carousel tweet - 2..4 media (images XOR video, X's mix rule). No
+    // single mediaPath; each slide uploads via the same chunked flow. Fail-closed BEFORE
+    // any upload (count/cap/mix + slides-on-disk) so no half-posted media set is created.
+    const carouselPost = isCarouselPost(post);
+    let carouselPaths = [];
+    if (carouselPost) {
+      carouselPaths = carouselItems(post).map((it) => resolveMediaPath(plan, { file: it.file, path: it.path }));
+      const blocker = carouselBlocker(post, 'x', carouselPaths.map((p) => ({ exists: Boolean(p) })));
+      if (blocker) {
+        console.log(`[warn] ${post.id}: ${blocker} - skipping.`);
+        RUN.results.push(carouselBlockRow(post, 'x', blocker));
+        continue;
+      }
+    }
     let mediaPath = null;
-    if (!textPost) {
+    if (!textPost && !pollPost && !carouselPost) {
       mediaPath = resolveMediaPath(plan, post);
       if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
     }
@@ -675,16 +786,34 @@ async function cmdPublishDue(args) {
     }
 
     if (args['dry-run']) {
-      console.log(textPost
+      if (pollPost) console.log(`[dry] ${post.id}: would create a poll tweet (${pollOptions(post).length} options, ${pollDurationMinutes(post)} min).`);
+      else if (carouselPost) console.log(`[dry] ${post.id}: would upload ${carouselPaths.length} slides + create a carousel tweet.`);
+      else console.log(textPost
         ? `[dry] ${post.id}: would create a text tweet (${text.length} chars).`
         : `[dry] ${post.id}: would upload ${path.basename(mediaPath)} + create a video tweet.`);
       continue;
     }
 
-    console.log(`[info] ${post.id}: publishing ${textPost ? 'text tweet' : 'video tweet'} to X...`);
+    console.log(`[info] ${post.id}: publishing ${pollPost ? 'poll tweet' : (carouselPost ? 'carousel tweet' : (textPost ? 'text tweet' : 'video tweet'))} to X...`);
     try {
-      const mediaId = textPost ? null : await uploadMedia(mediaPath, token);
-      const tweetId = await createTweet(text, mediaId, token, replyToTweetId);
+      const mediaId = (textPost || pollPost || carouselPost) ? null : await uploadMedia(mediaPath, token, post.altText, post.id);
+      // Spec 05: upload each carousel slide via the same chunked flow, collecting up to
+      // 4 media_ids IN ORDER. A slide upload failure throws -> the catch below pushes a
+      // structured ok:false row and NO tweet is created (fail-closed, no half-post).
+      const mediaIds = carouselPost ? [] : null;
+      if (carouselPost) {
+        // Spec 05 review (#9): apply post.altText to each slide for symmetry with the
+        // LinkedIn multiImage lane (which sets altText on every image URN) - one shared
+        // alt string across the album (X has no per-slide alt authoring surface).
+        for (const slide of carouselPaths) mediaIds.push(await uploadMedia(slide, token, post.altText, post.id));
+      }
+      // Defense-in-depth: 'everyone' is X's implicit default, NOT a create value
+      // (POST /2/tweets 400s on it) - drop it (and any empty/absent value) so the
+      // param is simply omitted. A validated field is already one of the four
+      // create values; this just neutralizes any pre-spec-25-fix stored 'everyone'.
+      const replySettings = post.xReplySettings && post.xReplySettings !== 'everyone' ? post.xReplySettings : null;
+      const poll = pollPost ? { options: pollOptions(post), durationMinutes: pollDurationMinutes(post) } : null;
+      const tweetId = await createTweet(text, mediaId, token, replyToTweetId, replySettings, poll, mediaIds);
 
       post.xPostId = tweetId;
       post.status = 'posted';
@@ -952,6 +1081,33 @@ async function cmdProfile(args) {
   console.error(`[done] profile update - ${rows.filter((r) => r.ok).length} ok, ${rows.filter((r) => r.ok === false).length} failed.`);
 }
 
+// Connected-account discovery (spec 22, Pattern P3): who does this token
+// authenticate as? X has no multi-page concept, so it is a single identity + a
+// single "page" asset (the account). Reads creds via readEnv (NOT requireEnv) so a
+// missing token degrades to an ok:false row, never process.exit past the envelope
+// (models cmdProbe). Reuses the same /users/me identity read. Takes no --plan.
+async function cmdDiscover() {
+  const { discoverOk, discoverNeedsScope, discoverAuthError } = await import('../lib/discovery.mjs');
+  const o1 = oauth1Creds();
+  if (!o1 && !readEnv('X_REFRESH_TOKEN') && !readEnv('X_ACCESS_TOKEN')) {
+    RUN.results.push(discoverNeedsScope('x'));
+    return;
+  }
+  try {
+    const token = await ensureFreshToken();
+    const me = await api('GET', '/users/me', { token, query: { 'user.fields': 'profile_image_url,name,username' } });
+    const u = me?.data || {};
+    const handle = u.username || (readEnv('X_HANDLE') || '').replace(/^@/, '') || null;
+    RUN.results.push(discoverOk('x', {
+      identity: { id: u.id || '', handle, name: u.name || handle || 'X account', avatarUrl: u.profile_image_url },
+      assets: [{ kind: 'page', id: u.id || handle || 'x', name: handle ? `@${handle}` : (u.name || 'X account'), current: true }],
+      selected: {},
+    }));
+  } catch (err) {
+    RUN.results.push(discoverAuthError('x', err.message || err));
+  }
+}
+
 // ---------- main ----------
 
 function parseArgs(argv) {
@@ -981,6 +1137,7 @@ const COMMANDS = {
   delete: cmdDelete,
   probe: cmdProbe,
   profile: cmdProfile,
+  discover: cmdDiscover,
 };
 
 async function main() {
@@ -1016,8 +1173,20 @@ async function main() {
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
-main().catch(async (err) => {
-  console.error('[err]', err.message || err);
-  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
-  process.exit(1);
-});
+// CLI entry - only when executed directly, never when imported (unit tests reach
+// createTweet this way). Mirrors scripts/tiktok-social.mjs's identical guard.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(async (err) => {
+    console.error('[err]', err.message || err);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    process.exit(1);
+  });
+}
+
+// Test-only export (spec 25): createTweet is pure over its (text, mediaId, token,
+// replyToTweetId, replySettings) inputs + globalThis.fetch (via api()), so a
+// stubbed-fetch test can prove reply_settings lands in the real POST /tweets body
+// without spawning the CLI or the real API - X's API host is a hardcoded literal
+// (not env-overridable), so a live-local-server proof (like the Mastodon lane) is
+// not feasible here.
+export { createTweet };

@@ -56,6 +56,12 @@ export function useCloud() {
 // a fallback link in case the browser did not open. Errors carry the transport codes.
 export const enableStart = () => postJson('/api/cloud/enable/start', {});
 
+// POST /api/cloud/heal -> { ok, healed, workspaceId? | reason }. Re-links a
+// half-written connection (api key present, workspaceId lost): one authenticated
+// subscription read echoes the workspaceId and the server persists it. Never mints
+// a key, never touches brand flags.
+export const healCloud = () => postJson('/api/cloud/heal', {});
+
 // POST /api/cloud/enabled { enabled } -> the cloud state. Pauses/resumes pushing
 // without losing the connection.
 export const setCloudEnabled = (enabled) => postJson('/api/cloud/enabled', { enabled });
@@ -103,6 +109,28 @@ export function useCloudClients(enabled = true) {
     queryFn: () => getJson('/api/cloud/clients'),
     enabled,
     staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+// GET /api/cloud/events -> { ok, events: [{ eventId, type, platform, clientId, postId,
+// externalPostId, author, text, reaction, parentId, permalink, ts }] }. The webhook/
+// realtime ingestion seam READ (spec 23): the normalized inbound-event feed (comment/
+// mention/message/reaction), pulled from the cloud's stored, workspace-scoped webhook
+// store (a REQUIRED pendpost-cloud companion change, NOT this repo - the receiver has
+// not shipped yet, so the honest state today is always an empty feed). FAILS OPEN
+// server-side - a cloud-down/not-connected/transport-error pull resolves to
+// { ok:true, events:[] }, never a thrown error - so this read never surfaces a NEW
+// error state; the existing header cloud dot already reflects a degraded connection.
+// Unlike useCloud/useCloudClients/useCapabilities/useCloudSubscription (workspace-wide,
+// not client-scoped), this feed IS scoped to the active/bound client, so its query key
+// rides CLIENT_SCOPED_KEYS (app/src/lib/api.js) and refetches on a client switch.
+export function useInboundEvents(enabled = true) {
+  return useQuery({
+    queryKey: ['cloud', 'events'],
+    queryFn: () => getJson('/api/cloud/events'),
+    enabled,
+    staleTime: 15_000,
     refetchInterval: 60_000,
   });
 }
@@ -159,12 +187,15 @@ export function useCloudDelivery() {
   const activeAlwaysOn = ((clientsData?.clients) || []).find((c) => c.active)?.alwaysOn === true;
   const cloudOn = cloudConnected && Boolean(cloud?.enabled) && activeAlwaysOn;
   const cloudLanes = Array.isArray(caps?.cloudLanes) ? caps.cloudLanes : [];
+  // H6: the post FORMATS the cloud cannot fire, whatever the lane says. Locally known
+  // (the endpoint is lane-shaped), so it is present even on the degraded fallback shape.
+  const localOnlyTypes = Array.isArray(caps?.localOnlyTypes) ? caps.localOnlyTypes : [];
   // Settled enough to speak: the connection read is back, and IF the cloud could be on
   // (connected + enabled) we also have the clients (for always-on) and the capability
   // map (for the lanes). An unconnected/disabled install resolves immediately as off.
   const couldBeOn = cloudConnected && Boolean(cloud?.enabled);
   const resolved = Boolean(cloud) && (!couldBeOn || (Boolean(clientsData) && Boolean(caps)));
-  return { cloudOn, cloudLanes, resolved };
+  return { cloudOn, cloudLanes, localOnlyTypes, resolved };
 }
 
 // POST /api/cloud/checkout { plan, interval } -> { ok, url }. Opens a Stripe Checkout

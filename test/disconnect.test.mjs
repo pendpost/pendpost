@@ -64,6 +64,23 @@ try {
     'other platforms (meta) are untouched');
   ok(byPlatform(setupStatus()).linkedin.status === 'incomplete', 'the lane returns to incomplete');
 
+  // ===== (4b) pinterest disconnect also clears PINTEREST_TOKEN_SCOPE (spec 17
+  // review MINOR-3) - a stale grant claim must not survive into a reconnect
+  // whose token response omits `scope` =====
+  setEnv([
+    'PINTEREST_ACCESS_TOKEN=pin_secret_token',
+    'PINTEREST_REFRESH_TOKEN=pin_refresh',
+    'PINTEREST_BOARD_ID=board1',
+    'PINTEREST_TOKEN_SCOPE=boards:read pins:read pins:write media:write',
+  ]);
+  ok(readEnv('PINTEREST_TOKEN_SCOPE') !== null, 'pinterest scope is stored before disconnect');
+  const pinRes = disconnectPlatform({ platform: 'pinterest', confirm: true, actor: 'owner' });
+  ok(pinRes && pinRes.ok === true, 'pinterest disconnect succeeds');
+  ok(readEnv('PINTEREST_TOKEN_SCOPE') === null, 'PINTEREST_TOKEN_SCOPE is cleared by disconnect (no stale grant claim survives)');
+  for (const k of PLATFORM_ENV_KEYS.pinterest) {
+    ok(readEnv(k) === null, `pinterest key ${k} is gone from .env`);
+  }
+
   // ===== (5) coverage guard: no config key can escape the wipe =====
   const allWipe = new Set(Object.values(PLATFORM_ENV_KEYS).flat());
   for (const k of Object.values(IDENTIFIER_ENV_KEYS)) {

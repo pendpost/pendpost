@@ -67,7 +67,7 @@ function AccountStrip({ publicUrls, platforms, t }) {
             >
               <Icon size={13} className={meta.color} aria-hidden="true" />
               {t('published.openAccount', { platform: meta.label })}
-              <ExternalLink size={11} className="text-zinc-400" aria-hidden="true" />
+              <ExternalLink size={11} className="text-zinc-500" aria-hidden="true" />
             </a>
           );
         })}
@@ -259,7 +259,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
         range !== 'all' && unfilteredCount > 0 ? (
           <div className="grid h-full min-h-48 place-items-center">
             <div className="max-w-sm space-y-3 text-center">
-              <Send className="mx-auto text-zinc-400" size={26} aria-hidden="true" />
+              <Send className="mx-auto text-zinc-500" size={26} aria-hidden="true" />
               <div className="space-y-2">
                 <p className="text-sm font-bold">{t('published.empty.rangeTitle')}</p>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('published.empty.rangeBody')}</p>
@@ -276,7 +276,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
         ) : (
           <div className="grid h-full min-h-48 place-items-center">
             <div className="max-w-sm space-y-2 text-center">
-              <Send className="mx-auto text-zinc-400" size={26} aria-hidden="true" />
+              <Send className="mx-auto text-zinc-500" size={26} aria-hidden="true" />
               <p className="text-sm font-bold">{t('published.empty.title')}</p>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('published.empty.body')}</p>
             </div>

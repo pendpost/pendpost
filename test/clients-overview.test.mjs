@@ -164,10 +164,56 @@ try {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const parityOut = execFileSync('node', [path.join(__dirname, 'parity-check.mjs')], { encoding: 'utf8' });
   ok(/\bOK\b/.test(parityOut), `parity-check exits 0 / OK: ${parityOut.trim()}`);
-  // 69 = 68 + POST /api/campaigns/<id>/internal (campaign_set_internal).
-  ok(/69 routes, 48 tools/.test(parityOut), `parity is 69 routes / 48 tools: ${parityOut.trim()}`);
+  // 84 = 79 + 2 GBP reviews routes (spec 03: GET /api/reviews + POST /api/reviews/reply)
+  // + 1 nostr zap route (spec 20: POST /api/plans/:campaign/posts/:postId/zap)
+  // + 1 edit-after-publish route (spec 12: POST /api/plans/:campaign/posts/:postId/edit-published)
+  // + 1 discord-event route (spec 26: POST /api/plans/:campaign/posts/:postId/discord-event);
+  // 85 = 84 + 1 pinterest board-sections route (spec 17: GET /api/pinterest/board-sections).
+  // 89 = 85 + 4 GBP location media + attributes routes (spec 19: GET+POST /api/gbp/media,
+  // GET+POST /api/gbp/attributes).
+  // 93 = 89 + 4 cross-lane profile-edit routes (spec 28: POST /api/accounts/<lane>/profile
+  // for mastodon/nostr/telegram/youtube).
+  // 98 = 93 + 5 Pinterest board/section CRUD routes (spec 29: GET+POST /api/pinterest/boards,
+  // PATCH /api/pinterest/boards/:boardId, POST /api/pinterest/boards/:boardId/sections,
+  // PATCH /api/pinterest/boards/:boardId/sections/:sectionId).
+  // 104 = 98 + 6 Ghost members/newsletters routes (spec 30: GET+POST /api/ghost/members,
+  // POST /api/ghost/members/import, GET+POST /api/ghost/newsletters,
+  // POST /api/ghost/newsletters/update).
+  // 110 = 104 + 6 social-graph & list routes (spec 31: POST /api/mastodon/pin,
+  // POST /api/mastodon/follow, GET+POST /api/nostr/relay-list, GET /api/nostr/list/:kind,
+  // POST /api/nostr/list).
+  // 111 = 110 + 1 webhook/realtime ingestion seam route (spec 23: GET /api/cloud/events).
+  // 63 tools = 58 + list_reviews + reply_to_review (spec 03) + send_zap (spec 20) + edit_published (spec 12)
+  // + discord_schedule_event (spec 26); 64 = 63 + pinterest_list_board_sections (spec 17);
+  // 68 = 64 + gbp_media_list + gbp_media_add + gbp_attributes_get + gbp_attributes_set (spec 19);
+  // 72 = 68 + mastodon_update_profile + nostr_update_profile + telegram_update_profile +
+  // youtube_update_profile (spec 28).
+  // 77 = 72 + pinterest_boards_list + pinterest_board_create + pinterest_board_update +
+  // pinterest_board_section_create + pinterest_board_section_update (spec 29).
+  // 83 = 77 + ghost_members + ghost_newsletters + ghost_member_create + ghost_members_import +
+  // ghost_newsletter_create + ghost_newsletter_update (spec 30).
+  // 89 = 83 + mastodon_pin + mastodon_follow + nostr_relay_list_get + nostr_relay_list_set +
+  // nostr_list_get + nostr_list_set (spec 31).
+  // 90 = 89 + list_inbound_events (spec 23).
+  // 92 = 90 + radar_scan + radar_list (spec 32; +2 GET twins => 113 routes).
+  // 93 = 92 + radar_triage (spec 32 review; +1 POST twin => 114 routes).
+  // 94 = 93 + radar_queue_reply (spec 34; +1 POST twin => 115 routes).
+  // 95 = 94 + radar_footprint_log (spec 35; +1 POST twin => 116 routes).
+  // 96 = 95 + radar_ingest (spec 38; +1 POST twin => 117 routes).
+  // 97 = 96 + agent_recheck (spec 41; +1 POST twin => 118 routes). 119 = 118 +
+  // POST /api/agent/connect, which has NO tool by design: entering a credential is a human
+  // dashboard action (declared in API-CONTRACT.md's routes exemption, like /api/connect).
+  // 99 = 97 + radar_agent_scan + radar_agent_stop (spec 41; +2 POST twins => 121 routes).
+  // 101 = 99 + radar_agent_comparison (the button) + radar_draft_comparison (the spawned child's own
+  // tool, declared agentOnly) (spec 42; +2 POST twins => 123 routes).
+  // 102 = 101 + radar_followup_check (spec 44 author-reply; +1 POST twin => 124 routes).
+  // 125 routes = 124 + POST /api/agent/adopt (credential adopt), which has NO tool by design
+  // (a human dashboard ceremony, declared in API-CONTRACT.md's routes exemption).
+  // 126 routes = 125 + POST /api/cloud/heal (re-link a half-written cloud connection),
+  // operator-only with the other /api/cloud/* ceremonies (routes exemption).
+  ok(/126 routes, 102 tools/.test(parityOut), `parity is 126 routes / 102 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 66/43 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 126/102 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

@@ -56,6 +56,11 @@ try {
     // overdue: approved + past + text -> overdue blocker
     assert.ok((await createPost({ campaign: 'camp', post: { id: 'duep', type: 'text', platforms: ['linkedin'], caption: 'x', scheduledAt: PAST }, actor: 'agent:claude' })).ok);
     assert.ok((await approvePost({ campaign: 'camp', postId: 'duep', actor: 'owner' })).ok);
+
+    // late AND unapproved: draft + past + text. Late is a fact independent of the
+    // approval axis, so this reports BOTH blockers - "overdue" (what went wrong) and
+    // "approval" (the action that fixes it).
+    assert.ok((await createPost({ campaign: 'camp', post: { id: 'draftduep', type: 'text', platforms: ['linkedin'], caption: 'x', scheduledAt: PAST }, actor: 'agent:claude' })).ok);
   });
 
   const sh = withClient(clientRoot('default'), () => pendpostHealth());
@@ -82,6 +87,11 @@ try {
   ok(byId.draftp && byId.draftp.blockerCodes.some((b) => b.code === 'blocker.approval' && b.params && b.params.state === 'draft'), 'draft post -> blocker.approval{state:draft}');
   ok(byId.reelp && byId.reelp.blockerCodes.some((b) => b.code === 'blocker.mediaMissing'), 'reel without media -> blocker.mediaMissing');
   ok(byId.duep && byId.duep.blockerCodes.some((b) => b.code === 'blocker.overdue'), 'overdue post -> blocker.overdue');
+  // A late post that nobody approved in time reports BOTH facts: it missed its slot
+  // (overdue) AND it needs a decision (approval). Dropping either would hide half the
+  // story - the operator needs to know it is late AND what to do about it.
+  ok(byId.draftduep && byId.draftduep.blockerCodes.some((b) => b.code === 'blocker.approval' && b.params && b.params.state === 'draft'), 'late draft -> blocker.approval{state:draft} (the action)');
+  ok(byId.draftduep && byId.draftduep.blockerCodes.some((b) => b.code === 'blocker.overdue'), 'late draft -> blocker.overdue too (late is a fact independent of approval)');
 
   for (const r of sh.nextDue || []) {
     ok(Array.isArray(r.blockers) && Array.isArray(r.blockerCodes) && r.blockers.length === r.blockerCodes.length,

@@ -4,12 +4,16 @@ name: CI
 # `*.html` matches root-level overview files only — web/ sources are unaffected.
 # Dependabot bumps always touch package.json, so they are never skipped (keeps
 # the "CI" name → dependabot-auto-merge's workflow_run trigger intact).
+#
+# CI does NOT run on direct pushes to develop (the daily working branch) — that
+# volume was draining the free Actions quota. develop is covered by the CI run on
+# its promotion PR into staging, plus PR runs and staging/main push runs below.
 on:
   pull_request:
     branches: [develop, staging, main]
     paths-ignore: ['**/*.md', 'docs/**', '.claude/**', '*.html']
   push:
-    branches: [develop, staging, main]
+    branches: [staging, main]
     paths-ignore: ['**/*.md', 'docs/**', '.claude/**', '*.html']
 
 concurrency:

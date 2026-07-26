@@ -9,7 +9,7 @@
 // function of a frozen const - deterministic across machines and CI.
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { PLAYBOOKS } from '../lib/playbooks.mjs';
+import { PLAYBOOKS, RADAR_SOURCE_PLAYBOOKS } from '../lib/playbooks.mjs';
 
 // Platform order + short display names. The keys ARE the single source; these
 // labels are local doc presentation (headings), not business logic.
@@ -17,6 +17,13 @@ const ORDER = [
   'meta', 'linkedin', 'x', 'youtube', 'telegram', 'discord', 'reddit',
   'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp',
 ];
+// Radar (beta) SEARCH sources (spec 33): listening sources, NOT publish/setup lanes, so
+// they come from RADAR_SOURCE_PLAYBOOKS (separate from the key-parity-locked PLAYBOOKS)
+// and render as their own section below the publish platforms. Reddit search uses the
+// SAME script app as Reddit publishing (documented as a step in its platform section),
+// so it is not repeated here - only the search-only sources are.
+const RADAR_ORDER = ['bluesky', 'hackernews'];
+const RADAR_DISPLAY = { bluesky: 'Bluesky', hackernews: 'Hacker News' };
 const DISPLAY = {
   meta: 'Meta (Instagram + Facebook)',
   linkedin: 'LinkedIn',
@@ -153,9 +160,42 @@ function renderPlatform(key) {
   ].join('\n');
 }
 
+// A Radar (beta) SEARCH source (spec 33). Simpler than a publish playbook: no
+// products/scopes, just the BYO-credential steps + common failures. bluesky/hacker-news.
+function renderRadarSource(key) {
+  const pb = RADAR_SOURCE_PLAYBOOKS[key];
+  const failures = (pb.commonFailures || [])
+    .map((f) => `- _${f.symptom}_ ${f.cause} **Fix:** ${f.fix}`)
+    .join('\n');
+  return [
+    `### ${RADAR_DISPLAY[key]}`,
+    '',
+    `- **Portal:** ${pb.portalUrl}`,
+    `- **What to create:** ${pb.appToCreate}`,
+    '',
+    '**Steps**',
+    '',
+    renderSteps(pb.steps),
+    '',
+    '**Common failures**',
+    '',
+    failures,
+  ].join('\n');
+}
+
 export function render() {
   const sections = ORDER.map(renderPlatform).join('\n\n');
-  return `${HEADER}\n\n${PREAMBLE}\n\n${sections}\n`;
+  const radar = [
+    '## Radar (beta) sources',
+    '',
+    'Radar (beta) is opt-in, default-off social listening (`posting.radar.enabled`). It searches '
+    + 'these sources for your saved buyer-intent queries and ranks hits by intent - it never publishes. '
+    + 'Reddit search reuses the SAME script app as Reddit publishing (see the Reddit section above). '
+    + 'Bluesky and Hacker News are search-ONLY sources (never publish targets):',
+    '',
+    RADAR_ORDER.map(renderRadarSource).join('\n\n'),
+  ].join('\n');
+  return `${HEADER}\n\n${PREAMBLE}\n\n${sections}\n\n${radar}\n`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

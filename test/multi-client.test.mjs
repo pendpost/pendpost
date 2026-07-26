@@ -45,12 +45,10 @@ try {
   const boot = initMultiClient();
   ok(boot && boot.migrated === false, 'initMultiClient on a fresh root: no migration, just registry');
   ok(activeClientId() === 'default', 'active client is default after boot');
-
-  // The default client needs an empty manifest to host a campaign (a fresh root
-  // has none); scaffold it under the default subtree.
-  const defPlans = path.join(activeRoot(), 'data', 'plans');
-  fs.mkdirSync(defPlans, { recursive: true });
-  fs.writeFileSync(path.join(defPlans, 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
+  // Boot scaffolds the auto-registered default client's plan store (the one client
+  // that never goes through createClient), so it can host a campaign on a fresh
+  // root with no hand-scaffolding here. See test/migration.test.mjs scenario D.
+  ok(fs.existsSync(path.join(activeRoot(), 'data', 'plans', 'active-plans.json')), 'boot scaffolded the default client an empty manifest');
 
   // ---- create a second client via lib/clients.mjs ----
   const created = createClient({ id: 'acme', displayName: 'Acme Co', timezone: 'Europe/Zurich', actor: 'owner' });
@@ -68,14 +66,14 @@ try {
   await withClient(clientRoot('default'), async () => {
     const c = await createCampaign({ id: 'd-camp', timezone: 'UTC', actor: 'owner' });
     assert.ok(c.ok, `default createCampaign: ${JSON.stringify(c)}`);
-    const p = await createPost({ campaign: 'd-camp', post: { id: 'd1', type: 'text', platforms: ['linkedin'], caption: 'default only' }, actor: 'agent:claude' });
+    const p = await createPost({ campaign: 'd-camp', post: { id: 'd1', type: 'text', platforms: ['linkedin'], scheduledAt: '2026-01-01T00:00:00Z', caption: 'default only' }, actor: 'agent:claude' });
     assert.ok(p.ok, `default createPost: ${JSON.stringify(p)}`);
   });
   // acme client: a DIFFERENT campaign "a-camp".
   await withClient(clientRoot('acme'), async () => {
     const c = await createCampaign({ id: 'a-camp', timezone: 'UTC', actor: 'owner' });
     assert.ok(c.ok, `acme createCampaign: ${JSON.stringify(c)}`);
-    const p = await createPost({ campaign: 'a-camp', post: { id: 'a1', type: 'text', platforms: ['linkedin'], caption: 'acme only' }, actor: 'agent:claude' });
+    const p = await createPost({ campaign: 'a-camp', post: { id: 'a1', type: 'text', platforms: ['linkedin'], scheduledAt: '2026-01-01T00:00:00Z', caption: 'acme only' }, actor: 'agent:claude' });
     assert.ok(p.ok, `acme createPost: ${JSON.stringify(p)}`);
   });
 

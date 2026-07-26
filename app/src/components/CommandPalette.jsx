@@ -242,7 +242,7 @@ export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, 
         className="glass-panel relative z-10 flex max-h-[70vh] w-full max-w-xl flex-col overflow-hidden rounded-2xl animate-slide-in motion-reduce:animate-none"
       >
         <div className="flex items-center gap-2.5 border-b border-zinc-900/5 px-4 py-3 dark:border-white/10">
-          <Search size={16} className="shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" />
+          <Search size={16} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
           <input
             ref={inputRef}
             type="text"
@@ -260,7 +260,7 @@ export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, 
             aria-autocomplete="list"
             autoComplete="off"
             spellCheck="false"
-            className="min-w-0 flex-1 bg-transparent text-sm font-bold text-zinc-800 placeholder:font-normal placeholder:text-zinc-400 focus:outline-none dark:text-zinc-100 dark:placeholder:text-zinc-500"
+            className="min-w-0 flex-1 bg-transparent text-sm font-bold text-zinc-800 placeholder:font-normal placeholder:text-zinc-500 focus:outline-none dark:text-zinc-100 dark:placeholder:text-zinc-500"
           />
           <kbd aria-hidden="true" className="hidden shrink-0 rounded-md bg-zinc-200/60 px-1.5 py-0.5 text-[10px] font-bold text-zinc-500 dark:bg-zinc-800/60 dark:text-zinc-400 sm:inline-block">
             {t('palette.escKey')}
@@ -274,7 +274,7 @@ export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, 
         </span>
 
         {results.length === 0 ? (
-          <p className="px-4 py-8 text-center text-xs text-zinc-400 dark:text-zinc-500">{t('palette.noMatches')}</p>
+          <p className="px-4 py-8 text-center text-xs text-zinc-500 dark:text-zinc-400">{t('palette.noMatches')}</p>
         ) : (
           <ul id="cmdk-listbox" role="listbox" aria-label={t('palette.results')} className="min-h-0 flex-1 overflow-y-auto p-2">
             {results.map((cmd, i) => {
@@ -298,7 +298,7 @@ export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, 
                 >
                   {Icon ? <Icon size={15} className="shrink-0" aria-hidden="true" /> : null}
                   <span className="min-w-0 flex-1 truncate text-sm font-bold">{cmd.label}</span>
-                  {cmd.hint ? <span className="shrink-0 truncate text-[11px] font-normal text-zinc-400 dark:text-zinc-500">{cmd.hint}</span> : null}
+                  {cmd.hint ? <span className="shrink-0 truncate text-[11px] font-normal text-zinc-500 dark:text-zinc-400">{cmd.hint}</span> : null}
                   {isActive ? <CornerDownLeft size={13} className="shrink-0 text-brand/60 dark:text-brand-light/60" aria-hidden="true" /> : null}
                 </li>
               );

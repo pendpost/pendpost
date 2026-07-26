@@ -4,7 +4,7 @@ import { ArrowLeft, Loader2, Plus, Trash2, ChevronUp, ChevronDown, CornerUpLeft,
 import { useAssets, useActiveClient, createPost } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { prettyCampaign, fmtFull } from '../lib/format.js';
-import { INNER_SURFACE, EYEBROW, PLATFORM_META } from './ui.jsx';
+import { INNER_SURFACE, EYEBROW, PLATFORM_META, DISABLED_PRIMARY } from './ui.jsx';
 import { CharCounter, useLint, LintPanel, VideoPicker } from './Composer.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
@@ -116,7 +116,7 @@ function TweetRow({
             disabled={disabled}
             className={`w-16 rounded-lg border-0 px-2 py-1 text-sm tabular-nums ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
           />
-          {time ? <span className="text-[11px] text-zinc-400 dark:text-zinc-500">{fmtFull(time)}</span> : null}
+          {time ? <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{fmtFull(time)}</span> : null}
         </div>
       ) : null}
     </div>
@@ -176,6 +176,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved 
         body: t('threadComposer.leaveConfirm'),
         confirmLabel: t('threadComposer.leaveDiscard'),
         danger: true,
+        rememberKey: 'threadComposer.discard',
       });
       if (!ok) return;
     }
@@ -369,7 +370,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved 
               {t('composer.cancel')}
             </button>
           )}
-          <button type="button" onClick={save} disabled={busy} className="flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:bg-brand-light dark:text-zinc-900">
+          <button type="button" onClick={save} disabled={busy} className={`flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}>
             {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
             {busy && runState
               ? t('threadComposer.creatingProgress', { done: runState.saved.length, total: runState.total })

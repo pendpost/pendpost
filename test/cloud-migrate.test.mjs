@@ -101,7 +101,7 @@ try {
   // ---- (2) handLocalTokens seals .env tokens, never leaking the value ----------
   setCloud({ enabled: true, baseUrl: 'https://cloud.test', workspaceId: 'ws_x' });
   installFetch();
-  const tok = await cloud.handLocalTokens();
+  const tok = await cloud.handLocalTokens('default');
   const handed = tok.handed.map((h) => h.platform);
   ok(handed.includes('facebook') && handed.includes('instagram'), 'facebook + instagram are sealed (both from META_PAGE_TOKEN, with their own account ids)');
   ok(tok.skipped.some((s) => s.platform === 'linkedin' && s.reason === 'no_token_in_env'), 'a platform with no .env token is skipped, not an error');

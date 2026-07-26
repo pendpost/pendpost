@@ -1,6 +1,47 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useT } from '../../lib/i18n.js';
 import { Modal } from '../ui.jsx';
+import { Checkbox } from './Checkbox.jsx';
+
+// "Don't show this message again" persistence. A dialog opts in by passing a stable
+// `rememberKey`; the checkbox then appears, and once the owner confirms with it ticked
+// the dialog is suppressed on every future call carrying that key (confirm -> resolves
+// true, prompt -> resolves its defaultValue). Keyed suppression, not global: only the
+// exact recurring gate the owner silenced is skipped. Recoverable from Settings via
+// resetDialogSkips(). localStorage is best-effort (private mode just never remembers).
+const SKIP_PREFIX = 'pendpost-dialog-skip.';
+const skipKey = (rememberKey) => `${SKIP_PREFIX}${rememberKey}`;
+function isDialogSkipped(rememberKey) {
+  if (!rememberKey) return false;
+  try { return localStorage.getItem(skipKey(rememberKey)) === '1'; } catch { return false; }
+}
+function rememberDialogSkip(rememberKey) {
+  if (!rememberKey) return;
+  try { localStorage.setItem(skipKey(rememberKey), '1'); } catch { /* private mode - ignore */ }
+}
+// How many dialogs are currently silenced, for the Settings reset control's label.
+export function dialogSkipCount() {
+  try {
+    let n = 0;
+    for (let i = 0; i < localStorage.length; i += 1) {
+      if ((localStorage.key(i) || '').startsWith(SKIP_PREFIX)) n += 1;
+    }
+    return n;
+  } catch { return 0; }
+}
+// Clear every "don't show again" choice so the dialogs ask again. Returns how many were
+// cleared. The recovery path for the owner-chosen ability to silence any dialog.
+export function resetDialogSkips() {
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(SKIP_PREFIX)) keys.push(k);
+    }
+    keys.forEach((k) => localStorage.removeItem(k));
+    return keys.length;
+  } catch { return 0; }
+}
 
 // In-app glass confirm + prompt dialogs, replacing window.confirm/prompt/alert
 // (which ignore dark mode, break the glass design, and are not styleable/a11y).
@@ -22,20 +63,31 @@ export function ConfirmProvider({ children }) {
   const t = useT();
   const [req, setReq] = useState(null); // { kind:'confirm'|'prompt', opts, resolve }
   const [value, setValue] = useState('');
+  const [remember, setRemember] = useState(false);
   const resolveRef = useRef(null);
   const firstFieldRef = useRef(null);
 
-  const settle = useCallback((result) => {
+  const settle = useCallback((result, { persist = false } = {}) => {
+    // Only a CONFIRM with the box ticked persists the skip; cancelling never does.
+    if (persist && req?.opts?.rememberKey) rememberDialogSkip(req.opts.rememberKey);
     const r = resolveRef.current;
     resolveRef.current = null;
     setReq(null);
     setValue('');
+    setRemember(false);
     if (r) r(result);
-  }, []);
+  }, [req]);
 
   const open = useCallback((kind, opts) => new Promise((resolve) => {
+    // Previously silenced (rememberKey set + skip stored): resolve straight through with
+    // the "proceed" answer and never mount the modal. confirm -> true, prompt -> default.
+    if (isDialogSkipped(opts.rememberKey)) {
+      resolve(kind === 'prompt' ? (opts.defaultValue || '') : true);
+      return;
+    }
     resolveRef.current = resolve;
     setValue(kind === 'prompt' ? (opts.defaultValue || '') : '');
+    setRemember(false);
     setReq({ kind, opts });
   }), []);
 
@@ -86,10 +138,19 @@ export function ConfirmProvider({ children }) {
                   value={value}
                   placeholder={opts.placeholder || ''}
                   onChange={(e) => setValue(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); settle(confirmResult); } }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); settle(confirmResult, { persist: remember }); } }}
                   className={`mt-3 ${FIELD}`}
                 />
               )
+            ) : null}
+            {/* Opt-in "don't show this message again": rendered only when the caller
+                passes a rememberKey. Ticking it and confirming suppresses this exact
+                dialog on future calls; it is recoverable from Settings. */}
+            {opts.rememberKey ? (
+              <label className="mt-3 flex cursor-pointer items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+                <Checkbox checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+                {opts.rememberLabel || t('ui.confirm.dontShowAgain')}
+              </label>
             ) : null}
             <div className="mt-4 flex items-center justify-end gap-2">
               <button
@@ -103,7 +164,7 @@ export function ConfirmProvider({ children }) {
               <button
                 type="button"
                 ref={req.kind === 'confirm' && !danger ? firstFieldRef : null}
-                onClick={() => settle(confirmResult)}
+                onClick={() => settle(confirmResult, { persist: remember })}
                 className={danger ? BTN_DANGER : BTN_BRAND}
               >
                 {opts.confirmLabel || t('ui.confirm.confirm')}

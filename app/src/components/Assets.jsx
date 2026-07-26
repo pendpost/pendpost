@@ -4,7 +4,8 @@ import { Upload, Search, Play, FileVideo, Zap, Loader2, CheckCircle2, AlertTrian
 import { useAssets, uploadAssetFile, deleteAsset, renameAsset } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { fmtBytes, prettyCampaign, fmtFull, RES_ASPECT } from '../lib/format.js';
-import { Skeleton, INNER_SURFACE, CoverThumb, FilterChip } from './ui.jsx';
+import { Skeleton, INNER_SURFACE, CoverThumb, FilterChip, SelectAllControl } from './ui.jsx';
+import { Checkbox } from './ui/Checkbox.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm, usePrompt } from './ui/confirm.jsx';
@@ -20,6 +21,10 @@ const RES_LABEL = { 'story-9x16': '9:16', 'feed-4x5': '4:5', 'square-1x1': '1:1'
 // defaults to a reel; everything else to a plain feed video. The operator can
 // still change it in the composer - this only sets the starting selection.
 function seedTypeForAsset(asset) {
+  // U: a still image used to seed as a reel or video, which is its own defect - the
+  // composer opened on a format the file cannot be. isImageAsset is the single
+  // image predicate the badges and the no-<video> path already share.
+  if (isImageAsset(asset)) return 'image';
   return asset.checks?.resolution === 'story-9x16' ? 'reel' : 'video';
 }
 
@@ -105,7 +110,7 @@ function SpecRow({ asset }) {
   );
 }
 
-export function AssetCard({ asset, dir, onAttach, onDelete, onRename }) {
+export function AssetCard({ asset, dir, onAttach, onDelete, onRename, selectedIndex = 0, onToggleSelect }) {
   const t = useT();
   const [playing, setPlaying] = useState(false);
   const used = asset.usedBy && asset.usedBy.length;
@@ -178,21 +183,23 @@ export function AssetCard({ asset, dir, onAttach, onDelete, onRename }) {
             </button>
           </Tip>
         ) : (
-          <p className="text-[10px] text-zinc-400 dark:text-zinc-500">{t('assets.card.unused')}</p>
+          <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('assets.card.unused')}</p>
         )}
         {/* "Posten" is the dominant action (item 12): a brand-filled, full-width primary.
             Rename + delete drop to quiet icon-only buttons beside it (mirroring the list row). */}
         <div className="flex items-center gap-1.5 pt-0.5">
           {onAttach ? (
-            <button
-              type="button"
-              onClick={() => onAttach({ mediaPath: `${dir}/${asset.file}`, type: seedTypeForAsset(asset) })}
-              aria-label={t('assets.card.attachAria', { file: asset.file })}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-brand px-2.5 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 dark:hover:bg-brand-light/90"
-            >
-              <Plus size={14} aria-hidden="true" />
-              {t('assets.card.attach')}
-            </button>
+            /* U: the per-card attach CTA is replaced by a selection checkbox, so the
+               per-card control count is flat and one asset or twenty go the same way.
+               The position number is the second, non-colour signal AND the order
+               affordance: selection order is what publishes. */
+            <label className="flex flex-1 cursor-pointer items-center gap-2 rounded-lg bg-zinc-200/60 px-2.5 py-2 text-xs font-bold transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60">
+              <Checkbox checked={selectedIndex > 0} onChange={onToggleSelect} aria-label={t('assets.select.toggleAria', { file: asset.file })} />
+              <span className="truncate">{t('assets.select.pick')}</span>
+              {selectedIndex > 0 ? (
+                <span className="ml-auto grid h-5 min-w-5 shrink-0 place-items-center rounded-full bg-brand px-1 text-[11px] font-bold text-white dark:bg-brand-light dark:text-zinc-900">{selectedIndex}</span>
+              ) : null}
+            </label>
           ) : null}
           <Tip label={t('assets.card.renameAria', { file: asset.file })}>
             <button
@@ -226,7 +233,7 @@ export function AssetCard({ asset, dir, onAttach, onDelete, onRename }) {
 // cluster (type badge + resolution via SpecRow, used/unused, size, modified date),
 // and the SAME attach/rename/delete handlers + aria-label keys as the card. Wrapped
 // by a <ul role="list"> in the parent.
-export function AssetRow({ asset, dir, onAttach, onDelete, onRename }) {
+export function AssetRow({ asset, dir, onAttach, onDelete, onRename, selectedIndex = 0, onToggleSelect }) {
   const t = useT();
   const used = asset.usedBy && asset.usedBy.length;
   return (
@@ -248,7 +255,7 @@ export function AssetRow({ asset, dir, onAttach, onDelete, onRename }) {
               </button>
             </Tip>
           ) : (
-            <span className="text-[10px] text-zinc-400 dark:text-zinc-500">{t('assets.card.unused')}</span>
+            <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('assets.card.unused')}</span>
           )}
         </div>
         <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
@@ -259,16 +266,12 @@ export function AssetRow({ asset, dir, onAttach, onDelete, onRename }) {
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         {onAttach ? (
-          <Tip label={t('assets.card.attachAria', { file: asset.file })}>
-            <button
-              type="button"
-              onClick={() => onAttach({ mediaPath: `${dir}/${asset.file}`, type: seedTypeForAsset(asset) })}
-              aria-label={t('assets.card.attachAria', { file: asset.file })}
-              className="grid h-8 w-8 place-items-center rounded-lg bg-brand/10 text-brand transition hover:bg-brand/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light/10 dark:text-brand-light dark:hover:bg-brand-light/15"
-            >
-              <Plus size={14} aria-hidden="true" />
-            </button>
-          </Tip>
+          <span className="flex items-center gap-1.5">
+            {selectedIndex > 0 ? (
+              <span className="grid h-5 min-w-5 place-items-center rounded-full bg-brand px-1 text-[11px] font-bold text-white dark:bg-brand-light dark:text-zinc-900">{selectedIndex}</span>
+            ) : null}
+            <Checkbox checked={selectedIndex > 0} onChange={onToggleSelect} aria-label={t('assets.select.toggleAria', { file: asset.file })} />
+          </span>
         ) : null}
         <Tip label={t('assets.card.renameAria', { file: asset.file })}>
           <button
@@ -346,6 +349,7 @@ export default function Assets({ onAttach }) {
     try { localStorage.setItem('pendpost-assets-view', view); } catch { /* private mode - ignore */ }
   }, [view]);
 
+
   const assets = useMemo(() => data?.assets || [], [data]);
   const shown = useMemo(
     () => {
@@ -375,6 +379,41 @@ export default function Assets({ onAttach }) {
     },
     [assets, q, folder, mediaType, sort],
   );
+
+  // U: multi-select attach, reusing the idiom Freigaben already proved rather than
+  // growing a second one. Order is SELECTION order (an array, not a Set) because the
+  // click sequence IS the intent and it is visible live; reordering afterwards stays
+  // exclusively in the Composer's existing move up/down, never duplicated here.
+  const [selected, setSelected] = useState([]);
+  // Freigaben's hard-won rule: a bulk action never trusts the raw selection. Intersect
+  // with what is actually VISIBLE on every read, so changing a filter can never attach
+  // an asset the operator can no longer see.
+  const visibleSelected = useMemo(
+    () => selected.filter((f) => shown.some((a) => a.file === f)),
+    [selected, shown],
+  );
+  const selectedIndexOf = (file) => visibleSelected.indexOf(file) + 1;
+  const toggleSelect = (file) => setSelected((prev) => (prev.includes(file) ? prev.filter((f) => f !== file) : [...prev, file]));
+  const clearSelection = () => setSelected([]);
+  const toggleSelectAllVisible = () => setSelected((prev) => (
+    visibleSelected.length === shown.length ? prev.filter((f) => !shown.some((a) => a.file === f)) : [...prev.filter((f) => !shown.some((a) => a.file === f)), ...shown.map((a) => a.file)]
+  ));
+  // The Assets page does not know which lanes the post will target, so it caps only at
+  // the STRUCTURAL bound the server enforces. Per-lane caps stay in Pruefen, where the
+  // platforms are known. The recovering action is named, never a dead end.
+  const CAROUSEL_STRUCTURAL_MAX = 20;
+  const overCap = visibleSelected.length > CAROUSEL_STRUCTURAL_MAX;
+  const attachSelected = () => {
+    if (!onAttach || !visibleSelected.length || overCap) return;
+    const assetOf = (f) => shown.find((a) => a.file === f);
+    if (visibleSelected.length === 1) {
+      const a = assetOf(visibleSelected[0]);
+      onAttach({ mediaPath: `${dir}/${a.file}`, type: seedTypeForAsset(a) });
+    } else {
+      onAttach({ mediaItems: visibleSelected.map((f) => `${dir}/${f}`), type: 'carousel' });
+    }
+    clearSelection();
+  };
 
   const handleFiles = async (fileList) => {
     const files = Array.from(fileList || []);
@@ -413,6 +452,9 @@ export default function Assets({ onAttach }) {
         : t('assets.delete.body'),
       confirmLabel: t('assets.delete.confirm'),
       danger: true,
+      // Suppressible for a plain delete; never when the asset is in use (that warning
+      // names the posts that would break and must always be seen).
+      rememberKey: inUse ? undefined : 'assets.delete',
     });
     if (!okToGo) return;
     try {
@@ -494,7 +536,7 @@ export default function Assets({ onAttach }) {
         </div>
         <span className="flex-1" />
         <div className="relative">
-          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" aria-hidden="true" />
+          <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" aria-hidden="true" />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('assets.search.placeholder')} aria-label={t('assets.search.placeholder')} className={`w-44 rounded-xl border-0 py-2 pl-8 pr-3 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`} />
         </div>
         {/* A4: grid<->list segmented control. aria-pressed marks the active view
@@ -548,7 +590,7 @@ export default function Assets({ onAttach }) {
         <ul role="status" aria-live="polite" className="space-y-1">
           {uploads.map((u) => (
             <li key={u.name} className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-[11px] ${INNER_SURFACE}`}>
-              {u.state === 'uploading' ? <Loader2 size={12} className="animate-spin text-zinc-400" aria-hidden="true" /> : u.state === 'done' ? <CheckCircle2 size={12} className="text-emerald-500" aria-hidden="true" /> : <AlertTriangle size={12} className="text-red-500" aria-hidden="true" />}
+              {u.state === 'uploading' ? <Loader2 size={12} className="animate-spin text-zinc-500" aria-hidden="true" /> : u.state === 'done' ? <CheckCircle2 size={12} className="text-emerald-500" aria-hidden="true" /> : <AlertTriangle size={12} className="text-red-500" aria-hidden="true" />}
               <span className="flex-1 truncate font-bold">{u.name}</span>
               <span className={u.state === 'error' ? 'text-red-600 dark:text-red-300' : 'text-zinc-500 dark:text-zinc-400'}>{u.state === 'uploading' ? t('assets.upload.statusUploading') : u.state === 'done' ? t('assets.upload.statusDone') : u.error}</span>
               {u.state === 'error' ? (
@@ -557,7 +599,7 @@ export default function Assets({ onAttach }) {
                     type="button"
                     onClick={() => dismissUpload(u.name)}
                     aria-label={t('assets.upload.dismissAria', { name: u.name })}
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
                   >
                     <X size={11} aria-hidden="true" />
                   </button>
@@ -611,6 +653,47 @@ export default function Assets({ onAttach }) {
         </div>
       ) : null}
 
+      {/* U: a TRANSIENT action bar, present only while a selection exists - exactly like
+          the existing drag overlay. At rest the page is quieter than before, because the
+          N per-card attach CTAs are gone. */}
+      {onAttach && visibleSelected.length ? (
+        <div className={`mb-2 flex flex-wrap items-center gap-2 rounded-xl p-2 ${INNER_SURFACE}`}>
+          <SelectAllControl
+            total={shown.length}
+            selectedCount={visibleSelected.length}
+            onToggle={toggleSelectAllVisible}
+            allKey="assets.select.all"
+            clearKey="assets.select.clear"
+          />
+          <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+            {t('assets.select.count', { n: visibleSelected.length })}
+          </span>
+          <div className="ml-auto flex items-center gap-1.5">
+            {overCap ? (
+              <span className="text-[11px] text-amber-600 dark:text-amber-300">
+                {t('assets.select.overCap', { max: CAROUSEL_STRUCTURAL_MAX, over: visibleSelected.length - CAROUSEL_STRUCTURAL_MAX })}
+              </span>
+            ) : null}
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
+            >
+              {t('assets.select.clear')}
+            </button>
+            <button
+              type="button"
+              onClick={attachSelected}
+              aria-disabled={overCap ? true : undefined}
+              className={`flex items-center gap-1.5 rounded-lg bg-brand px-2.5 py-1.5 text-xs font-bold text-white shadow-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${overCap ? 'cursor-not-allowed opacity-40' : 'hover:bg-brand/90 dark:hover:bg-brand-light/90'}`}
+            >
+              <Plus size={14} aria-hidden="true" />
+              {visibleSelected.length === 1 ? t('assets.select.attachOne') : t('assets.select.attachAlbum', { n: visibleSelected.length })}
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="min-h-0 flex-1 overflow-y-auto pr-0.5">
         {isLoading ? (
           view === 'list' ? (
@@ -625,11 +708,11 @@ export default function Assets({ onAttach }) {
         ) : shown.length ? (
           view === 'list' ? (
             <ul role="list" aria-label={t('assets.row.list')} className="space-y-2">
-              {shown.map((a) => <AssetRow key={a.file} asset={a} dir={dir} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} />)}
+              {shown.map((a) => <AssetRow key={a.file} asset={a} dir={dir} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} selectedIndex={selectedIndexOf(a.file)} onToggleSelect={() => toggleSelect(a.file)} />)}
             </ul>
           ) : (
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
-              {shown.map((a) => <AssetCard key={a.file} asset={a} dir={dir} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} />)}
+              {shown.map((a) => <AssetCard key={a.file} asset={a} dir={dir} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} selectedIndex={selectedIndexOf(a.file)} onToggleSelect={() => toggleSelect(a.file)} />)}
             </div>
           )
         ) : assets.length === 0 && !q && folder === 'all' && mediaType === 'all' ? (
@@ -639,7 +722,7 @@ export default function Assets({ onAttach }) {
           // hides existing assets.
           <div className="grid h-full place-items-center py-16">
             <div className="max-w-sm space-y-2 text-center">
-              <Clapperboard size={26} className="mx-auto text-zinc-400" aria-hidden="true" />
+              <Clapperboard size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
               <p className="text-sm font-bold">{t('assets.firstRun.title')}</p>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('assets.firstRun.body')}</p>
             </div>
@@ -647,7 +730,7 @@ export default function Assets({ onAttach }) {
         ) : (
           <div className="grid h-full place-items-center py-16">
             <div className="max-w-xs space-y-2 text-center">
-              <Clapperboard size={26} className="mx-auto text-zinc-400" aria-hidden="true" />
+              <Clapperboard size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
               <p className="text-sm font-bold">{t('assets.empty.title')}</p>
               <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('assets.empty.hint')}</p>
               <button

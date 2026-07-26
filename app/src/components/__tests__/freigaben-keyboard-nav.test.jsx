@@ -26,6 +26,9 @@ vi.mock('../../lib/api.js', () => ({
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
   lintText: (...a) => lintText(...a),
+  usePendpostHealth: () => ({ data: null }),
+  // Freigaben reads the connected accounts once at the parent for the destination strip.
+  useAccounts: () => ({ data: null, isLoading: false, isError: false }),
 }));
 
 const mkPost = (id, title, when) => ({

@@ -26,6 +26,20 @@ jobs:
     runs-on: ubuntu-latest
     if: github.repository == 'pendpost/pendpost'
     steps:
+      # Fail fast (and clearly) if the publish credential is missing. Without this,
+      # a missing/empty NPM_TOKEN only surfaces ~36s later as a cryptic `npm error
+      # code ENEEDAUTH` after the whole app has already been built and packed. An
+      # empty value here always means the secret is not set on the repo (an invalid
+      # token would instead reach the registry and return E401), so the message
+      # points straight at the fix.
+      - name: Verify NPM_TOKEN is configured
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is empty or not set. Add an npm automation/granular token as the repository secret NPM_TOKEN (Settings -> Secrets and variables -> Actions). If it is stored as an Environment secret, add the matching \`environment:\` key to this job so the secret is in scope." >&2
+            exit 1
+          fi
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:

@@ -4,6 +4,7 @@
 // primitive + native checkboxes so keyboard + a11y come for free.
 import { ChevronDown } from 'lucide-react';
 import { Popover, PopoverTrigger, PopoverContent } from './Popover.jsx';
+import { Checkbox } from './Checkbox.jsx';
 
 export function MultiSelectDropdown({ label, options, selected, onToggle }) {
   const count = selected.length;
@@ -27,11 +28,9 @@ export function MultiSelectDropdown({ label, options, selected, onToggle }) {
       <PopoverContent align="start" role="group" aria-label={label} className="max-h-72 w-44 space-y-0.5 overflow-y-auto p-1.5">
         {options.map((o) => (
           <label key={o.key} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-bold transition hover:bg-zinc-200/60 dark:hover:bg-zinc-800/60">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={selected.includes(o.key)}
               onChange={() => onToggle(o.key)}
-              className="h-4 w-4 rounded border-zinc-300 text-brand accent-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-zinc-600"
             />
             {o.label}
           </label>

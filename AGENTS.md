@@ -229,6 +229,10 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
    ```bash
    node scripts/reddit-social.mjs auth
    ```
+6. **Radar search (beta)** - The SAME script app also powers Radar (beta) social listening: its `radar` verb searches Reddit for your saved buyer-intent queries. No extra credentials are needed - the four keys above (REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USERNAME / REDDIT_PASSWORD) are enough. Reddit Data API Terms restrict large-scale/commercial data use, so keep it BYO-key and rate-limited; single-project self-hosted search is in-bounds.
+   ```bash
+   node scripts/reddit-social.mjs radar --query '{"keywords":["buffer alternative"],"subreddits":["SocialMediaMarketing"]}'
+   ```
 
 **Common failures**
 
@@ -241,7 +245,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - **Portal:** https://developers.pinterest.com/apps/
 - **App to create:** a Pinterest developer app with the v5 API enabled
 - **Products to add:** 
-- **Scopes to request:** `boards:read pins:read pins:write`
+- **Scopes to request:** `boards:read pins:read pins:write media:write`
 
 **Steps**
 
@@ -259,6 +263,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - _The consent screen rejects the redirect uri._ The redirect uri in the app settings does not match the loopback address exactly. **Fix:** Add http://127.0.0.1:8088/oauth/pinterest/callback to the app, with no trailing slash difference, and retry.
 - _Publishing returns a 403 about access level._ The app is in Trial access and is targeting an account other than the app owner. **Fix:** Publish to the app owner's own boards while in Trial, or apply for Standard access to post more broadly.
 - _Posting fails with an expired-token error._ The stored refresh token was revoked or rotated out. **Fix:** Re-run the auth command to mint a fresh access + refresh token pair.
+- _A native video pin fails needing the media:write scope._ The connected token was minted before media:write was added to this app's scope request. **Fix:** Re-run the auth command to reconnect and grant media:write - image pins and board sections keep working on the old token in the meantime.
 
 ## TikTok (beta)
 
@@ -289,12 +294,12 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - **Portal:** https://joinmastodon.org/servers
 - **App to create:** an application under your account's Preferences > Development (no developer program, no review)
 - **Products to add:** 
-- **Scopes to request:** `read write:statuses write:media`
+- **Scopes to request:** `read write:statuses write:media write:accounts write:follows`
 
 **Steps**
 
 1. **Pick your instance** - Mastodon is federated: your account lives on ONE instance (mastodon.social, your own server, ...) and the engine talks to that instance's API directly. Record its base URL, e.g. https://mastodon.social . _(sets env `MASTODON_INSTANCE_URL`)_
-2. **Create an application** - Log in to the instance in a browser and open Preferences > Development > New application. Name it (e.g. pendpost), grant the read, write:statuses and write:media scopes, and save. No callback URL is needed - the engine uses the app's own access token.
+2. **Create an application** - Log in to the instance in a browser and open Preferences > Development > New application. Name it (e.g. pendpost), grant the read, write:statuses, write:media, write:accounts and write:follows scopes, and save. write:accounts covers pinning a status to the profile and editing the profile itself; write:follows covers follow/unfollow. No callback URL is needed - the engine uses the app's own access token.
 3. **Copy the access token** - Open the application you just created and copy "Your access token" - a static token that never expires unless you regenerate it. _(sets env `MASTODON_ACCESS_TOKEN`)_
 4. **Validate** - Run the CLI below. It calls verify_credentials, confirms the token authenticates, and records your @handle for the account link.
    ```bash
@@ -306,6 +311,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - _HTTP 401 on auth or publish._ The token was regenerated on the instance, or it belongs to a different instance than MASTODON_INSTANCE_URL. **Fix:** Confirm the instance URL matches where the app was created, regenerate the token there, and reconnect.
 - _HTTP 422 on publish for a long post._ The instance caps status length (500 chars by default; instance-configurable). **Fix:** Shorten the caption (or the mastodonCaption override) below the instance cap.
 - _Media posts fail while text posts work._ The application is missing the write:media scope. **Fix:** Recreate the application with read, write:statuses AND write:media, then reconnect with the new token.
+- _Pin/unpin, follow/unfollow, or profile editing degrade to "needs_scope" (an "Authorize" prompt in the app)._ The token was minted before the application had the write:accounts and write:follows scopes. **Fix:** Recreate the application with ALL FIVE scopes (read, write:statuses, write:media, write:accounts, write:follows), then reconnect with the new token.
 
 ## WordPress
 
@@ -370,7 +376,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
    ```bash
    node scripts/nostr-social.mjs auth
    ```
-4. **Know the lane's shape** - Nostr notes are TEXT ONLY here - there is no media hosting in the protocol itself, so a media post publishes its caption and logs a warning. Deletion is a request (NIP-09) that relays may ignore.
+4. **Know the lane's shape** - Two shapes: kind-1 short notes and, via type=nostr-longform, NIP-23 long-form articles (kind 30023) that edit in place on re-publish. Media rides an optional NIP-96 file server (set NOSTR_MEDIA_SERVER): an article carries a header image and a short note embeds an attached image via a NIP-92 imeta tag; without a media server a media post publishes its text only. Deletion is a request (NIP-09) that relays may ignore.
 
 **Common failures**
 
@@ -399,3 +405,42 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - _Every API call returns 403 after a successful consent._ The Cloud project has not been approved for the Business Profile APIs yet. **Fix:** Submit the access request form and wait for approval; the OAuth token itself is fine.
 - _Publish fails with a location error._ GBP_ACCOUNT_ID/GBP_LOCATION_ID are missing, or the location is not verified/owned by the authorized account. **Fix:** Run auth to list candidates, verify the location in the Business Profile manager, and set both ids.
 - _The post is created but never becomes visible._ Google reviews local posts; REJECTED state means a content-policy hit. **Fix:** Check verify for the post state and adjust the content (no phone numbers in the summary, policy-safe imagery).
+
+## Radar (beta) sources
+
+Radar (beta) is opt-in, default-off social listening (`posting.radar.enabled`). It searches these sources for your saved buyer-intent queries and ranks hits by intent - it never publishes. Reddit search reuses the SAME script app as Reddit publishing (see the Reddit section above). Bluesky and Hacker News are search-ONLY sources (never publish targets):
+
+### Bluesky
+
+- **Portal:** https://bsky.app/settings/app-passwords
+- **What to create:** a Bluesky app-password (Radar search only - beta)
+
+**Steps**
+
+1. **Create an app-password** - Sign in to Bluesky, open Settings -> App Passwords -> Add App Password, name it (e.g. "pendpost Radar"), and copy the generated password. This is NOT your account password - it is a scoped, revocable credential you can delete anytime. _(sets env `BLUESKY_APP_PASSWORD`)_
+2. **Set your handle** - Set your Bluesky handle or DID (e.g. you.bsky.social) as the identifier the session logs in with. _(sets env `BLUESKY_IDENTIFIER`)_
+3. **Confirm the connection (Radar search only)** - Run the CLI below to search a keyword and read posts back. Bluesky is a Radar SEARCH source in this release - pendpost does not publish to Bluesky here (publishing stays a cloud-side capability).
+   ```bash
+   node scripts/bluesky-social.mjs radar --query '{"keywords":["pendpost"]}'
+   ```
+
+**Common failures**
+
+- _createSession returns "Invalid identifier or password"._ The handle or app-password is wrong, or the account login password was used instead of an app-password. **Fix:** Use your full handle (you.bsky.social) as BLUESKY_IDENTIFIER and an APP-password (Settings -> App Passwords), not your login password, as BLUESKY_APP_PASSWORD.
+- _searchPosts returns HTTP 429._ The PDS is rate-limiting the app-password session. **Fix:** Radar surfaces the rate-limit inline and retries on the next scan; reduce scan frequency or narrow the query.
+
+### Hacker News
+
+- **Portal:** https://hn.algolia.com/api
+- **What to create:** nothing - the HN Algolia search index is public (no auth, no write API)
+
+**Steps**
+
+1. **No setup required** - Hacker News search needs NO credentials - the Algolia index is public. It is SURFACE-ONLY (no write API), so Radar marks HN signals copy-paste-only: there is no reply/queue action, you act on them by hand.
+   ```bash
+   node scripts/hacker-news-social.mjs radar --query '{"keywords":["schedule social posts"]}'
+   ```
+
+**Common failures**
+
+- _The HN source shows a rate-limit note._ The Algolia index throttled the request (~10k req/h shared). **Fix:** Radar retries on the next scan; no action needed. Narrow the query if it persists.

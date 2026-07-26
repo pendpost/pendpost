@@ -150,17 +150,58 @@ describe('ActivityView outcome/action predicate (C7)', () => {
     const { container } = renderActivity({ failuresOnly: true, actionGroups: ['approval'] });
     expect(await axeClean(container)).toHaveNoViolations();
   });
+
+  // US-ACT-20: the empty filtered state carries its own clear action (one click
+  // out of a filter that hides everything, not just a pointer at the toolbar).
+  it('the filtered empty state offers the clear-filters action', async () => {
+    const onClearFilters = vi.fn();
+    const user = userEvent.setup();
+    renderActivity({ failuresOnly: true, actionGroups: ['campaign'], onClearFilters });
+    const clear = screen.getByRole('button', { name: 'Clear filters' });
+    await user.click(clear);
+    expect(onClearFilters).toHaveBeenCalledTimes(1);
+  });
+
+  // US-ACT-21: colour is spent only on attention - a routine success row carries
+  // a NEUTRAL check (zinc), never the emerald success badge; failures keep red.
+  it('routine success rows are neutral, failure rows keep red', () => {
+    const { container } = renderActivity({});
+    const zincChecks = container.querySelectorAll('svg.text-zinc-500');
+    const emerald = container.querySelectorAll('svg.text-emerald-500');
+    const red = container.querySelectorAll('svg.text-red-500');
+    expect(zincChecks.length).toBeGreaterThan(0);
+    expect(emerald.length).toBe(0);
+    expect(red.length).toBeGreaterThan(0);
+  });
 });
 
 describe('App filter bar wiring (C7)', () => {
-  it('shows the failures-only + action-group chips on the activity page', async () => {
+  it('shows the failures-only chip + the collapsed action dropdown on the activity page', async () => {
     window.location.hash = '#activity';
+    const user = userEvent.setup();
     renderApp();
-    // The failures-only outcome chip
+    // The failures-only outcome chip stays a single boolean toggle.
     expect(await screen.findByRole('button', { name: /failures only/i })).toBeInTheDocument();
-    // At least one action-group chip (label is distinct from the "Approvals"
-    // sidebar nav item so it does not collide).
-    expect(screen.getByRole('button', { name: /approve.*reject/i })).toBeInTheDocument();
+    // The curated action groups collapse into ONE "Action" dropdown (the same
+    // idiom Type/Status use), not eight always-on chips. Opening it reveals the
+    // groups as checkboxes - "Approve / reject" is distinct from the "Approvals"
+    // sidebar nav item so it does not collide.
+    const trigger = screen.getByRole('button', { name: /^action$/i });
+    expect(trigger).toBeInTheDocument();
+    await user.click(trigger);
+    expect(await screen.findByRole('checkbox', { name: /approve \/ reject/i })).toBeInTheDocument();
+  });
+
+  it('the action dropdown narrows the feed to the selected group', async () => {
+    window.location.hash = '#activity';
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    await user.click(await screen.findByRole('button', { name: /^action$/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /approve \/ reject/i }));
+    const log = container.querySelector('[role="log"]');
+    // approval group = approve + reject; a publish is outside it.
+    expect(within(log).getByText('Approved')).toBeInTheDocument();
+    expect(within(log).queryByText('Reel published')).not.toBeInTheDocument();
   });
 
   it('activating failures-only sets aria-pressed=true and hides successes', async () => {
@@ -190,10 +231,10 @@ describe('App filter bar wiring (C7)', () => {
   it('hides the outcome/action chips off the activity page', async () => {
     window.location.hash = '#published';
     renderApp();
-    // Filter bar still renders for published, but the activity-only chips do not.
+    // Filter bar still renders for published, but the activity-only controls do not.
     await screen.findByText('Filter');
     expect(screen.queryByRole('button', { name: /failures only/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /approve.*reject/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^action$/i })).not.toBeInTheDocument();
   });
 });
 
@@ -278,5 +319,49 @@ describe('Activity error remediation', () => {
     renderActivity({ onNavigate, onOpenPost });
     expect(screen.queryByRole('button', { name: /fix in setup/i })).toBeNull();
     expect(screen.getByRole('button', { name: /open c \/ p/i })).toBeInTheDocument();
+  });
+});
+
+// UX round 4 (2026-07-21): the DEFAULT feed answers "what happened to my
+// content" - successful system bookkeeping (scheduler ticks, probes, token/
+// metrics sweeps, cloud reconciliation) hides behind one reveal line; a system
+// FAILURE always surfaces. Rows referencing a post show its headline, not slugs.
+describe('Activity system-noise default hiding (UX round 4)', () => {
+  it('hides a successful system event (scheduler-start) by default', () => {
+    renderActivity();
+    expect(screen.queryByText('Scheduler started')).not.toBeInTheDocument();
+  });
+
+  it('always surfaces a FAILED system event, even by default', () => {
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'token-refresh', ok: false, platform: 'linkedin', errorMessage: 'expired' },
+    ];
+    renderActivity();
+    expect(screen.getByText(/expired/)).toBeInTheDocument();
+  });
+
+  it('the reveal line names the hidden count and selects the System group', async () => {
+    const user = userEvent.setup();
+    const onShowSystem = vi.fn();
+    renderActivity({ onShowSystem });
+    // Exactly one hidden system success in the fixture: scheduler-start.
+    const reveal = screen.getByRole('button', { name: /1 system events hidden/i });
+    await user.click(reveal);
+    expect(onShowSystem).toHaveBeenCalledTimes(1);
+  });
+
+  it('selecting the System group shows the system rows and drops the reveal line', () => {
+    renderActivity({ actionGroups: ['system'], onShowSystem: vi.fn() });
+    expect(screen.getByText('Scheduler started')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /system events hidden/i })).not.toBeInTheDocument();
+  });
+
+  it('a row referencing a post shows the post headline instead of campaign/post slugs', () => {
+    renderActivity({
+      campaigns: [{ id: 'acme', posts: [{ id: 'r1', caption: 'Spring promo headline\nBody' }] }],
+    });
+    const row = screen.getByText('Reel published').closest('p');
+    expect(row.textContent).toContain('Spring promo headline');
+    expect(row.textContent).not.toContain('acme / r1');
   });
 });

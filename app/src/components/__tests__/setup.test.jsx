@@ -11,13 +11,14 @@ import { ConfirmProvider } from '../ui/confirm.jsx';
 // (lib/setup.mjs, folded into pendpost_health). We mock the data + write layer so
 // the tests assert the component's behavior, not the network.
 //
-// UI contract (the guided cards - now COLLAPSIBLE accordions):
-//  - each platform is a <section aria-labelledby> -> role="region" named exactly the
-//    platform label, COLLAPSED by default. The header carries a <button aria-expanded>
-//    (accessible name = the label) that toggles the body. The region-name queries work
-//    collapsed or expanded; everything in the body (StatusChip, identifier textboxes,
-//    Connect panel, disclosures, Validate/Skip, the Meta lane, the per-row sr-only
-//    status) renders ONLY after the card is expanded - so body assertions expand first.
+// UI contract (master-detail):
+//  - a grouped rail (nav "Platforms": agent pinned, Connected / Needs attention /
+//    Skipped) lists every lane as a row (accessible name "<label> <state text>");
+//    clicking a row selects it. ONLY the selected lane's <section aria-labelledby>
+//    (role="region" named exactly the platform label) is in the tree, holding the
+//    whole body (StatusChip, identifier textboxes, Connect panel, disclosures,
+//    Validate, the Meta lane, per-row sr-only status) - so body assertions select
+//    the lane first via expandCard().
 //  - the EXISTING StatusChip is FOLDED with validation.state: connected+live ->
 //    'Connected', connected+failed -> 'Connection failed', connected+unproven ->
 //    'Not verified', skipped -> 'Skipped', incomplete -> 'Incomplete'. ModeBadge
@@ -25,9 +26,14 @@ import { ConfirmProvider } from '../ui/confirm.jsx';
 //  - ONE 'Validate all' button in the summary header calls recheckHealth() (no arg);
 //    a per-card 'Validate' button ONLY on connected cards whose validation.state is
 //    unproven or failed, calling recheckHealth(platform). Suppressed elsewhere.
-//  - playbook prose (portalUrl + steps) renders ONLY on incomplete cards behind a
-//    COLLAPSED-by-default 'How to connect' disclosure. SecretRow/IdentifierRow stay
-//    OUTSIDE the disclosure.
+//  - an incomplete card leads with the copy-a-prompt hero; ONE collapsed 'Set up
+//    manually' disclosure holds the whole manual path (identifier inputs, the GUI
+//    Connect panel, the terminal CLI, and the playbook prose, which renders inline
+//    there rather than as a second nested disclosure). Tests asserting any of those
+//    controls open it first via expandManual().
+//  - a connected lane that is NOT live carries a plain-language reason line, the
+//    platform's own message when a probe returned one, and (except on unproven,
+//    which has no report yet) the debug-and-fix prompt.
 //  - identifiers AUTO-SAVE on blur/Enter (no Save button) -> saveConfig(rev,
 //    { identifiers: { key: value } }), guarded by dirty (non-empty AND changed); a
 //    pristine/empty blur reverts and never saves. A connected card shows its
@@ -58,12 +64,19 @@ let configSecrets;
 
 vi.mock('../../lib/api.js', () => ({
   usePendpostHealth: () => ({ data: { ok: true, ready: false, setup }, isLoading: false, isError: false }),
+  // WP6: Setup reads the radar capability table for the per-card scan switch
+  useSignals: () => ({ data: undefined, isLoading: false }),
   useConfig: () => ({
     data: { ok: true, rev: CONFIG_REV, identifiers: configIdentifiers, posting: { locale: 'en', platforms: {}, skippedPlatforms: ['x'] }, secrets: configSecrets },
     isLoading: false,
   }),
   useAccounts: () => ({ data: accountsState }),
   useActiveClient: () => ({ activeClient: { displayName: 'Acme' } }),
+  // Connected-account discovery (spec 22): the connected card now renders <DiscoveryBlock>.
+  // Keep it in its loading state here so these guided-card tests stay focused on the
+  // identifier/validate/skip surface; DiscoveryBlock's own states are covered in
+  // Setup.discovery.test.jsx.
+  useDiscover: () => ({ data: undefined, isLoading: true }),
   saveConfig: (...args) => saveConfig(...args),
   recheckHealth: (...args) => recheckHealth(...args),
   connectPlatform: (...args) => connectPlatform(...args),
@@ -72,6 +85,12 @@ vi.mock('../../lib/api.js', () => ({
   refreshLinkedinToken: (...args) => refreshLinkedinToken(...args),
   refreshXToken: (...args) => refreshXToken(...args),
   disconnectPlatform: (...args) => disconnectPlatform(...args),
+  // Spec 28: Setup.jsx references these four at module scope (PROFILE_EDIT_API) -
+  // any wholesale api.js mock must stub them even when this test never calls them.
+  mastodonUpdateProfile: vi.fn(() => Promise.resolve({ ok: true, results: [] })),
+  nostrUpdateProfile: vi.fn(() => Promise.resolve({ ok: true, results: [] })),
+  telegramUpdateProfile: vi.fn(() => Promise.resolve({ ok: true, results: [] })),
+  youtubeUpdateProfile: vi.fn(() => Promise.resolve({ ok: true, results: [] })),
 }));
 
 function renderSetup() {
@@ -209,13 +228,30 @@ beforeEach(() => {
   };
 });
 
-// Each platform card is a COLLAPSED-by-default accordion: the region is always in the
-// tree (named by its label) but its body renders only once expanded. Before expansion
-// the card's header trigger is the ONLY collapsed-expandable button in the region, so
-// `{ expanded: false }` uniquely targets it. Returns the region for in-card queries.
+// Master-detail: a rail row (inside the "Platforms" nav) selects a lane, and ONLY the
+// selected lane's <section aria-labelledby> (role=region, named exactly the label) is
+// in the tree. The row's accessible name is "<label> <state text>", so match on the
+// leading label, click it, then await the region mounting. Selecting another lane
+// unmounts the previous region - in-card queries only hold while that lane is selected.
 async function expandCard(user, name) {
-  const region = screen.getByRole('region', { name });
-  await user.click(within(region).getByRole('button', { expanded: false }));
+  const nav = screen.getByRole('navigation', { name: /platforms/i });
+  // The label renders as its own span inside the row button (the state text is a
+  // sibling span), so an exact text match on the label uniquely finds the row.
+  const row = within(nav).getByText(name, { exact: true }).closest('button');
+  await user.click(row);
+  return await screen.findByRole('region', { name });
+}
+
+// Select a lane AND open its "Set up manually" disclosure. Since the prompt-first
+// rework, an incomplete card leads with the copy-a-prompt hero and keeps every manual
+// control (identifier inputs, the GUI Connect panel, the terminal CLI, the vendor
+// steps) behind that one collapsed disclosure. Tests that assert those controls have
+// to open it first; the disclosure is absent on cards that have no manual path (and
+// open by default when there is no playbook), so a missing trigger is not an error.
+async function expandManual(user, name) {
+  const region = await expandCard(user, name);
+  const trigger = within(region).queryByRole('button', { name: /set up manually/i });
+  if (trigger && trigger.getAttribute('aria-expanded') === 'false') await user.click(trigger);
   return region;
 }
 
@@ -235,15 +271,17 @@ describe('Setup page - guided cards', () => {
     ];
     const user = userEvent.setup();
     renderSetup();
-    // The chip lives in each card's body, so expand all four before reading them.
-    await expandCard(user, 'LinkedIn');
-    await expandCard(user, 'Meta (Instagram)');
-    await expandCard(user, 'YouTube');
-    await expandCard(user, 'X');
-    expect(screen.getByText('Connected')).toBeInTheDocument();
-    expect(screen.getByText('Connection failed')).toBeInTheDocument();
-    expect(screen.getByText('Not verified')).toBeInTheDocument();
-    expect(screen.getByText('Skipped')).toBeInTheDocument();
+    // The chip lives in the selected lane's detail body, and only ONE lane is open
+    // at a time (master-detail) - so select each in turn and read its chip in place.
+    for (const [label, chip] of [
+      ['LinkedIn', 'Connected'],
+      ['Meta (Instagram)', 'Connection failed'],
+      ['YouTube', 'Not verified'],
+      ['X', 'Skipped'],
+    ]) {
+      const region = await expandCard(user, label);
+      expect(within(region).getByText(chip)).toBeInTheDocument();
+    }
   });
 
   it('renders the "X of Y platforms ready" summary count', () => {
@@ -255,7 +293,7 @@ describe('Setup page - guided cards', () => {
   it('shows an incomplete platform\'s FULL identifier set AND a GUI Connect panel; the CLI is demoted behind a disclosure', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
+    const meta = await expandManual(user, 'Meta (Instagram)');
     // The whole Meta identifier set is editable inline (not just the required-missing
     // one), so an incomplete card is the single home for every account field.
     expect(within(meta).getByRole('textbox', { name: 'Meta Page ID' })).toBeInTheDocument();
@@ -275,7 +313,7 @@ describe('Setup page - guided cards', () => {
   it('reveals the CLI command when the "prefer your terminal?" disclosure is opened (terminal path kept)', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
+    const meta = await expandManual(user, 'Meta (Instagram)');
     await user.click(within(meta).getByRole('button', { name: /prefer your terminal/i }));
     expect(within(meta).getByText(META_SECRET_CMD)).toBeInTheDocument();
   });
@@ -283,7 +321,7 @@ describe('Setup page - guided cards', () => {
   it('GUI Connect posts the entered secret to /api/connect via connectPlatform(platform, creds)', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
+    const meta = await expandManual(user, 'Meta (Instagram)');
     await user.type(within(meta).getByLabelText('System User token'), 'EAAG-test-token');
     await user.click(within(meta).getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(connectPlatform).toHaveBeenCalledWith('meta', { systemUserToken: 'EAAG-test-token' }));
@@ -297,7 +335,7 @@ describe('Setup page - guided cards', () => {
   it('in waiting, an interactive lane shows Cancel + Check again + an "Open the sign-in page" link to the authUrl', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const youtube = await expandCard(user, 'YouTube');
+    const youtube = await expandManual(user, 'YouTube');
     await user.type(within(youtube).getByLabelText('Client ID'), '1234-abc.apps.googleusercontent.com');
     await user.type(within(youtube).getByLabelText('Client Secret'), 'GOCSPX-secret');
     await user.click(within(youtube).getByRole('button', { name: 'Connect' }));
@@ -317,7 +355,7 @@ describe('Setup page - guided cards', () => {
     connectStatus.mockResolvedValue({ ok: true, state: 'failed', detail: 'listen EADDRINUSE :::8088', authUrl: null, at: '2026-06-28T00:00:00Z' });
     const user = userEvent.setup();
     renderSetup();
-    const youtube = await expandCard(user, 'YouTube');
+    const youtube = await expandManual(user, 'YouTube');
     await user.type(within(youtube).getByLabelText('Client ID'), '1234-abc.apps.googleusercontent.com');
     await user.type(within(youtube).getByLabelText('Client Secret'), 'GOCSPX-secret');
     await user.click(within(youtube).getByRole('button', { name: 'Connect' }));
@@ -329,7 +367,7 @@ describe('Setup page - guided cards', () => {
   it('auto-saves an identifier on blur via config_set set.identifiers, echoing the config rev', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
+    const meta = await expandManual(user, 'Meta (Instagram)');
     // No Save button anymore: a dirty (non-empty, changed) value commits on blur.
     await user.type(within(meta).getByRole('textbox', { name: 'Meta Page ID' }), '123456');
     await user.tab(); // blur the field
@@ -400,70 +438,76 @@ describe('Setup page - guided cards', () => {
     // accessible name now live on Setup's identifier rows - WCAG 4.1.2 guard.)
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
+    const meta = await expandManual(user, 'Meta (Instagram)');
     const helpBtn = within(meta).getByRole('button', { name: /help.*meta page id/i });
     expect(helpBtn).toHaveAttribute('type', 'button');
     expect(within(meta).getByRole('textbox', { name: 'Meta Page ID' })).toBeInTheDocument();
   });
 
-  it('skip calls config_set with set.posting.skippedPlatforms (adds the platform id)', async () => {
+  // WP6: skip/un-skip merged into the per-lane "active in pendpost" switch. Turning the
+  // last lane of a card OFF writes BOTH keys (platforms map + skippedPlatforms); turning a
+  // lane back ON un-skips. The old skip/unskip button and the Settings platform grid are
+  // both absorbed by this one control.
+  it('turning the last active lane OFF writes platforms[..]=false AND adds the setup id to skippedPlatforms', async () => {
     const user = userEvent.setup();
     renderSetup();
     const meta = await expandCard(user, 'Meta (Instagram)');
-    await user.click(within(meta).getByRole('button', { name: /skip \/ not using/i }));
+    // Facebook is deny-by-default, so Instagram is the meta card's only active lane.
+    await user.click(within(meta).getByRole('switch', { name: /instagram active in pendpost/i }));
     await waitFor(() =>
-      expect(saveConfig).toHaveBeenCalledWith(CONFIG_REV, { posting: { skippedPlatforms: ['x', 'meta'] } }),
+      expect(saveConfig).toHaveBeenCalledWith(CONFIG_REV, { posting: { platforms: { instagram: false }, skippedPlatforms: ['x', 'meta'] } }),
     );
   });
 
-  it('un-skip calls config_set with set.posting.skippedPlatforms (removes the platform id)', async () => {
+  it('turning a lane back ON on a skipped card un-skips it (removes the setup id)', async () => {
     const user = userEvent.setup();
     renderSetup();
     const x = await expandCard(user, 'X');
-    await user.click(within(x).getByRole('button', { name: /un-skip/i }));
+    await user.click(within(x).getByRole('switch', { name: /active in pendpost/i }));
     await waitFor(() =>
-      expect(saveConfig).toHaveBeenCalledWith(CONFIG_REV, { posting: { skippedPlatforms: [] } }),
+      expect(saveConfig).toHaveBeenCalledWith(CONFIG_REV, { posting: { platforms: { x: true }, skippedPlatforms: [] } }),
     );
   });
 
   // --- the 'How to connect' disclosure (incomplete cards ONLY, collapsed) -------
-  it('renders a COLLAPSED-by-default "How to connect" disclosure on incomplete cards only', async () => {
+  // The playbook prose is no longer its own nested disclosure. Since the prompt-first
+  // rework the incomplete card leads with the copy-a-prompt hero, and ONE "Set up
+  // manually" disclosure holds the whole manual path - identifier inputs, the GUI
+  // Connect panel, the terminal CLI and the vendor steps (HowToConnect renders
+  // `inline` there: a heading, not a second collapsible). So the prose is hidden with
+  // the rest of the manual path and revealed with it, in one gesture rather than two.
+  it('hides the playbook prose behind the "Set up manually" disclosure, on incomplete cards only', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
-    const disclosure = within(meta).getByRole('button', { name: /how to connect/i });
-    // collapsed by default (the card body is open, but the inner disclosure is not)
-    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
-    // the step prose is hidden until the disclosure is expanded
-    expect(within(meta).queryByText('Create a Business app')).not.toBeInTheDocument();
-    // a connected card (linkedin) has NO disclosure (expand it to inspect the body)
+    // Before opening the manual path, the step prose is not in the tree.
+    const metaCollapsed = await expandCard(user, 'Meta (Instagram)');
+    expect(within(metaCollapsed).getByRole('button', { name: /set up manually/i })).toHaveAttribute('aria-expanded', 'false');
+    expect(within(metaCollapsed).queryByText('Create a Business app')).not.toBeInTheDocument();
+    // A connected card (linkedin) and a skipped one (x) have no manual path at all.
     const linkedin = await expandCard(user, 'LinkedIn');
-    expect(within(linkedin).queryByRole('button', { name: /how to connect/i })).not.toBeInTheDocument();
-    // a skipped card (x) has NO disclosure
+    expect(within(linkedin).queryByRole('button', { name: /set up manually/i })).not.toBeInTheDocument();
     const x = await expandCard(user, 'X');
-    expect(within(x).queryByRole('button', { name: /how to connect/i })).not.toBeInTheDocument();
+    expect(within(x).queryByRole('button', { name: /set up manually/i })).not.toBeInTheDocument();
   });
 
-  it('expands the "How to connect" disclosure to reveal the playbook portal link + steps', async () => {
+  it('reveals the playbook portal link + steps once the manual path is open', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
-    await user.click(within(meta).getByRole('button', { name: /how to connect/i }));
+    const meta = await expandManual(user, 'Meta (Instagram)');
     // the portal opens as a plain text link (not a branded button)
     const portal = within(meta).getByRole('link', { name: /developers\.facebook\.com\/apps/i });
     expect(portal).toHaveAttribute('href', META_PORTAL);
-    // the step titles are now visible
     expect(within(meta).getByText('Create a Business app')).toBeInTheDocument();
     expect(within(meta).getByText('Add the publishing products')).toBeInTheDocument();
   });
 
-  it('keeps the actionable rows (IdentifierRow + GUI Connect) OUTSIDE the How-to-connect disclosure', async () => {
+  it('puts the actionable rows (IdentifierRow + GUI Connect) in the manual path beside the prose', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
-    // the How-to-connect disclosure is collapsed, yet the actionable rows are present:
-    // the identifier inputs AND the GUI Connect panel (token field + Connect button).
-    expect(within(meta).getByRole('button', { name: /how to connect/i })).toHaveAttribute('aria-expanded', 'false');
+    const meta = await expandManual(user, 'Meta (Instagram)');
+    // One gesture surfaces BOTH the vendor prose and the controls that act on it, so
+    // the manual path never reads as instructions with no inputs to fill in.
+    expect(within(meta).getByText('Create a Business app')).toBeInTheDocument();
     expect(within(meta).getByRole('textbox', { name: 'Meta Page ID' })).toBeInTheDocument();
     expect(within(meta).getByLabelText('System User token')).toBeInTheDocument();
     expect(within(meta).getByRole('button', { name: 'Connect' })).toBeInTheDocument();
@@ -503,6 +547,74 @@ describe('Setup page - guided cards', () => {
     expect(within(meta).queryByRole('button', { name: /^validate$/i })).not.toBeInTheDocument();
   });
 
+  // --- CD-1: the note below the StatusChip must never contradict the chip -
+  // "ready to publish" ONLY on live. Every other state a connected lane can sit in
+  // (failed / unproven / blocked) is broken to some degree and now carries the same
+  // honest block instead: a plain-language reason, the platform's own message when
+  // there is one, and the debug-and-fix prompt. Previously `failed` rendered nothing
+  // at all and the probe's verdict was reachable only by hovering the chip. --------
+  it('replaces "ready to publish" with a reason + fix prompt on a connected+failed card', async () => {
+    setup = withPlatform('linkedin', { validation: { state: 'failed', ok: false, detail: 'token expired', checkedAt: null, fix: 'token invalid or expired - re-run: x' } });
+    const user = userEvent.setup();
+    renderSetup();
+    const linkedin = await expandCard(user, 'LinkedIn');
+    expect(within(linkedin).getByText('Connection failed')).toBeInTheDocument();
+    expect(within(linkedin).queryByText('This platform is connected and ready to publish.')).not.toBeInTheDocument();
+    expect(within(linkedin).getByText(/The connection stopped working/)).toBeInTheDocument();
+    expect(within(linkedin).getByRole('button', { name: /copy debug and fix prompt for linkedin/i })).toBeInTheDocument();
+  });
+
+  // The failure reason must be READABLE, not tooltip-only: a hover is not an answer
+  // to "what happened". The platform's own message renders as visible text.
+  it('renders the probe detail as visible text on a failed card, not only as a tooltip', async () => {
+    setup = withPlatform('linkedin', { validation: { state: 'failed', ok: false, detail: 'invalid_grant: token revoked', checkedAt: null, fix: null } });
+    const user = userEvent.setup();
+    renderSetup();
+    const linkedin = await expandCard(user, 'LinkedIn');
+    expect(within(linkedin).getByText(/invalid_grant: token revoked/)).toBeInTheDocument();
+  });
+
+  it('still shows "connected and ready to publish" on a connected+live card', async () => {
+    const user = userEvent.setup();
+    renderSetup();
+    // linkedin defaults to connected + live in makeSetup().
+    const linkedin = await expandCard(user, 'LinkedIn');
+    expect(within(linkedin).getByText('Connected')).toBeInTheDocument();
+    expect(within(linkedin).getByText('This platform is connected and ready to publish.')).toBeInTheDocument();
+    // A healthy lane has nothing to debug, so it carries no fix prompt.
+    expect(within(linkedin).queryByRole('button', { name: /copy debug and fix prompt/i })).not.toBeInTheDocument();
+  });
+
+  it('shows the not-checked-yet reason (not "ready to publish") on a connected+unproven card', async () => {
+    setup = withPlatform('linkedin', { validation: { state: 'unproven', ok: null, detail: null, checkedAt: null, fix: null } });
+    const user = userEvent.setup();
+    renderSetup();
+    const linkedin = await expandCard(user, 'LinkedIn');
+    expect(within(linkedin).getByText('Not verified')).toBeInTheDocument();
+    // the amber "Not verified" chip and "ready to publish" cannot both be true.
+    expect(within(linkedin).queryByText('This platform is connected and ready to publish.')).not.toBeInTheDocument();
+    expect(within(linkedin).getByText(/Not checked yet/)).toBeInTheDocument();
+    // Data honesty: the fix prompt advertises "what the platform reported", and an
+    // unproven lane has no report yet - so it gets the reason line and Validate, never
+    // a prompt implying a diagnostic exists. Enforced in buildFixPrompt (an entry with
+    // no diagnose steps yields null text), not by a state name in the render.
+    expect(within(linkedin).queryByRole('button', { name: /copy debug and fix prompt/i })).not.toBeInTheDocument();
+    expect(within(linkedin).getByRole('button', { name: /^validate$/i })).toBeInTheDocument();
+  });
+
+  // A vendor action block is a NAMED state with its own recovery, not "not verified
+  // yet": the chip says so, and the reason says re-minting will not help.
+  it('names a blocked lane on the chip and says renewing the credential will not help', async () => {
+    setup = withPlatform('meta', { status: 'connected', connected: true, missing: [], validation: { state: 'blocked', ok: null, detail: 'Probe skipped - Meta action block active', checkedAt: null, fix: 'clear the Meta action block' } });
+    const user = userEvent.setup();
+    renderSetup();
+    const meta = await expandCard(user, 'Meta (Instagram)');
+    expect(within(meta).getByText('Blocked by the platform')).toBeInTheDocument();
+    expect(within(meta).queryByText('Not verified')).not.toBeInTheDocument();
+    expect(within(meta).getByText(/renewing it will not help/)).toBeInTheDocument();
+    expect(within(meta).getByRole('button', { name: /copy debug and fix prompt for meta/i })).toBeInTheDocument();
+  });
+
   // --- the single 'Validate all' button (summary header, no platform arg) -------
   it('renders one "Validate all" button in the summary header that posts NO platform', async () => {
     const user = userEvent.setup();
@@ -521,7 +633,7 @@ describe('Setup page - guided cards', () => {
   it('announces a saved confirmation via an sr-only role=status when an identifier auto-save succeeds', async () => {
     const user = userEvent.setup();
     renderSetup();
-    const meta = await expandCard(user, 'Meta (Instagram)');
+    const meta = await expandManual(user, 'Meta (Instagram)');
     // before save the per-row status regions are silent (no announced outcome)
     const statusesBefore = within(meta).getAllByRole('status');
     expect(statusesBefore.every((s) => s.textContent === '')).toBe(true);
@@ -563,6 +675,18 @@ describe('Setup page - guided cards', () => {
 // the bottom of Setup's Meta card (the single home for everything Meta). These assert
 // the same behavior the old settings-lane suite did, now via Setup.
 describe('Setup Meta publishing lane (folded in from Settings, C1)', () => {
+  // The lane controls (kill-switch + cadence floor) render ONLY on a CONNECTED Meta
+  // card: a publishing cadence for a lane that cannot publish yet is pure noise, so
+  // the incomplete card leads with the connect path instead. These tests therefore
+  // seed meta connected + live rather than using the default incomplete fixture.
+  beforeEach(() => {
+    setup = withPlatform('meta', {
+      status: 'connected',
+      missing: [],
+      validation: { state: 'live', ok: true, detail: null, checkedAt: '2026-07-19T10:00:00Z', fix: null },
+    });
+  });
+
   it('renders editable cadence inputs seeded from account_status at the bottom of the Meta card', async () => {
     const user = userEvent.setup();
     renderSetup();
@@ -667,9 +791,9 @@ describe('Setup account fields (profile handles moved from Settings)', () => {
     renderSetup();
     // Meta + YouTube are incomplete by default; their identifier fields show inline
     // once each card is expanded.
-    const meta = await expandCard(user, 'Meta (Instagram)');
+    const meta = await expandManual(user, 'Meta (Instagram)');
     expect(within(meta).getByRole('textbox', { name: 'Instagram handle' })).toBeInTheDocument();
-    const youtube = await expandCard(user, 'YouTube');
+    const youtube = await expandManual(user, 'YouTube');
     expect(within(youtube).getByRole('textbox', { name: 'YouTube channel ID' })).toBeInTheDocument();
     expect(within(youtube).getByRole('textbox', { name: 'YouTube handle' })).toBeInTheDocument();
   });
@@ -678,5 +802,59 @@ describe('Setup account fields (profile handles moved from Settings)', () => {
     configSecrets = { metaPageToken: { present: true, tail: 'SUHy' } };
     renderSetup();
     expect(screen.queryByRole('button', { name: /credentials|zugangsdaten/i })).not.toBeInTheDocument();
+  });
+});
+
+// Spec 26 review (MINOR-6): an honest "add a bot token to enable events" Discord
+// affordance, mirroring spec 20's optional Nostr NWC wallet field exactly - optional,
+// never blocks Connect, and (server-side, lib/api.mjs) a blank value on an update is
+// simply never written, so it can never wipe an already-persisted token.
+const DISCORD_INCOMPLETE = {
+  platform: 'discord',
+  label: 'Discord',
+  status: 'incomplete',
+  mode: 'mock',
+  connected: false,
+  skipped: false,
+  missing: [{ kind: 'secret', label: 'a webhook URL', how: 'cli', action: 'node scripts/discord-social.mjs auth' }],
+  connectAction: 'node scripts/discord-social.mjs auth',
+  validation: { state: 'unproven', ok: null, detail: null, checkedAt: null, fix: 'node scripts/discord-social.mjs auth' },
+  playbook: { portalUrl: 'https://discord.com/developers/applications', appToCreate: 'a webhook', productsToAdd: [], scopes: [], steps: [] },
+};
+
+describe('Setup Discord bot-token field (spec 26 review, MINOR-6)', () => {
+  it('shows an OPTIONAL bot token field alongside the required webhook URL, and never blocks Connect on its own', async () => {
+    const user = userEvent.setup();
+    setup = makeSetup();
+    setup.platforms = [...setup.platforms, DISCORD_INCOMPLETE];
+    renderSetup();
+    const region = await expandManual(user, 'Discord');
+    const webhookField = within(region).getByLabelText('Webhook URL');
+    const botTokenField = within(region).getByLabelText('Bot token (optional, enables events)');
+    expect(webhookField).toBeInTheDocument();
+    expect(botTokenField).toBeInTheDocument();
+    const connectBtn = within(region).getByRole('button', { name: 'Connect' });
+    // All-blank: Connect stays disabled.
+    expect(connectBtn).toBeDisabled();
+    // The REQUIRED webhook URL alone is enough to enable Connect - the optional
+    // bot token never gates it.
+    await user.type(webhookField, 'https://discord.com/api/webhooks/1/abc');
+    expect(connectBtn).not.toBeDisabled();
+  });
+
+  it('shows the events capability note on a connected Discord card', async () => {
+    const user = userEvent.setup();
+    setup = makeSetup();
+    setup.platforms = [...setup.platforms, {
+      ...DISCORD_INCOMPLETE,
+      status: 'connected',
+      mode: 'live',
+      connected: true,
+      missing: [],
+      validation: { state: 'live', ok: true, detail: null, checkedAt: '2026-06-28T00:00:00Z', fix: null },
+    }];
+    renderSetup();
+    const region = await expandCard(user, 'Discord');
+    expect(within(region).getByText(/MANAGE_EVENTS/)).toBeInTheDocument();
   });
 });

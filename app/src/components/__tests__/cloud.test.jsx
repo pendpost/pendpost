@@ -17,6 +17,7 @@ let cloudState;
 let clientsState;
 let subState;
 const enableStart = vi.fn(() => Promise.resolve({ ok: true, authUrl: 'https://cloud.example/connect?state=abc' }));
+const healCloud = vi.fn(() => Promise.resolve({ ok: true, healed: true, workspaceId: 'ws_42' }));
 const ejectCloud = vi.fn(() => Promise.resolve({ ok: true, reauthChecklist: [] }));
 const signOutCloud = vi.fn(() => Promise.resolve({ ok: true }));
 const migrateCloud = vi.fn(() => Promise.resolve({ ok: true, connected: {}, tokens: { ok: true, handed: [], skipped: [] }, push: { ok: true, pushed: [], skipped: [], accepted: [], refused: [] } }));
@@ -49,6 +50,7 @@ vi.mock('../../lib/cloud.js', () => ({
   startBillingPortal: (...a) => startBillingPortal(...a),
   setSpendCap: (...a) => setSpendCap(...a),
   enableStart: (...a) => enableStart(...a),
+  healCloud: (...a) => healCloud(...a),
   ejectCloud: (...a) => ejectCloud(...a),
   signOutCloud: (...a) => signOutCloud(...a),
   migrateCloud: (...a) => migrateCloud(...a),
@@ -482,6 +484,28 @@ describe('Cloud', () => {
     await user.click(screen.getByRole('button', { name: /^upgrade to studio$/i }));
     await user.click(await screen.findByRole('button', { name: /continue to secure checkout/i }));
     await waitFor(() => expect(startCheckout).toHaveBeenCalledWith('studio', 'month'));
+  });
+
+  // The half-written state the 2026-07-16 incident left behind: baseUrl + api key
+  // survived, workspaceId gone. Routing it to the sign-in handshake would be
+  // DESTRUCTIVE (a fresh connect mints a new key and resets every brand flag), so it
+  // gets the safe one-click repair instead.
+  it('HEALABLE: key + baseUrl present but no workspaceId offers the safe reconnect, not the handshake', async () => {
+    const user = userEvent.setup();
+    cloudState = disconnected({ baseUrl: 'https://cloud.pendpost.app' });
+    renderCloud();
+    expect(screen.getByText(/restore the connection/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /sign in to the cloud/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /restore connection/i }));
+    expect(healCloud).toHaveBeenCalled();
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  it('HEALABLE: a stray key WITHOUT a surviving baseUrl still gets the ordinary sign-in', () => {
+    cloudState = disconnected(); // apiKey present, baseUrl '' - a fresh install, not the half-write
+    renderCloud();
+    expect(screen.queryByText(/restore the connection/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
   });
 
   it('has no axe violations in the disabled state', async () => {

@@ -16,8 +16,11 @@ import { vi } from 'vitest';
 
 vi.mock('../../lib/api.js', () => ({
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme', accent: '#22566d' }, activeClientId: 'acme' }),
+  usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => ({ data: undefined }),
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePresubmitCheck: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
   approvePost: vi.fn(), rejectPost: vi.fn(), deletePost: vi.fn(), unschedulePost: vi.fn(),
   reschedulePost: vi.fn(), markPosted: vi.fn(), verifyPost: vi.fn(), runPublishDue: vi.fn(),
@@ -117,14 +120,53 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(labels).not.toContain('Mastodon post');
   });
 
-  it('WordPress article: Title + Body + Excerpt + Tags, NO caption', () => {
-    renderDetail(makePost({ type: 'text', platforms: ['wordpress'], title: 'T', body: 'B', excerpt: 'E', tags: 't', caption: 'stray' }));
+  it('WordPress article: Title + Body + Excerpt + Tags + Alt text, NO caption', () => {
+    renderDetail(makePost({ type: 'text', platforms: ['wordpress'], title: 'T', body: 'B', excerpt: 'E', tags: 't', caption: 'stray', altText: 'a hero shot' }));
     const labels = contentLabels();
     expect(labels).toContain('Title');
     expect(labels).toContain('Body');
     expect(labels).toContain('Excerpt');
     expect(labels).toContain('Tags');
+    expect(labels).toContain('Alt text');
     expect(labels).not.toContain('Post text');
+  });
+
+  // Spec 13: rich long-form metadata - SEO title/description + feature-image alt
+  // apply to either blog lane, categories are WordPress-only (Ghost has none).
+  it('spec 13: WordPress article shows SEO title/description + categories + feature-image alt', () => {
+    renderDetail(makePost({
+      type: 'text', platforms: ['wordpress'], title: 'T', body: 'B',
+      metaTitle: 'SEO title', metaDescription: 'SEO desc', wpCategories: 'News', featureImageAlt: 'hero alt',
+    }));
+    const labels = contentLabels();
+    expect(labels).toContain('SEO title');
+    expect(labels).toContain('SEO description');
+    expect(labels).toContain('Categories');
+    expect(labels).toContain('Feature image alt text');
+  });
+
+  it('spec 13: Ghost article shows SEO title/description + feature-image alt, NO categories', () => {
+    renderDetail(makePost({
+      type: 'text', platforms: ['ghost'], title: 'T', body: 'B',
+      metaTitle: 'SEO title', metaDescription: 'SEO desc', featureImageAlt: 'hero alt',
+    }));
+    const labels = contentLabels();
+    expect(labels).toContain('SEO title');
+    expect(labels).toContain('SEO description');
+    expect(labels).toContain('Feature image alt text');
+    expect(labels).not.toContain('Categories');
+  });
+
+  it('X: Alt text rides alongside the tweet text (spec 21 live lane)', () => {
+    renderDetail(makePost({ type: 'video', platforms: ['x'], caption: 'base', altText: 'a red bicycle' }));
+    const labels = contentLabels();
+    expect(labels).toContain('Post text');
+    expect(labels).toContain('Alt text');
+  });
+
+  it('a linkedin-only post never shows Alt text (not a spec-21 lane)', () => {
+    renderDetail(makePost({ type: 'text', platforms: ['linkedin'], caption: 'c', title: 'T', liDescription: 'ld', link: 'https://a', image: 'https://i' }));
+    expect(contentLabels()).not.toContain('Alt text');
   });
 
   it('Ghost article: adds the canonical URL + newsletter flag in Details', () => {
@@ -132,6 +174,40 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(within(screen.getByRole('dialog')).getByText('Details')).toBeInTheDocument();
     expect(screen.getByText('Canonical URL')).toBeInTheDocument();
     expect(screen.getByText('Send as newsletter')).toBeInTheDocument();
+  });
+
+  // Spec 01: the three newsletter refinements ride ghostEmail and appear as their
+  // own Details rows only when the post actually carries them.
+  it('Ghost article: newsletter/segment/email-only refinements show in Details', () => {
+    renderDetail(makePost({
+      type: 'text', platforms: ['ghost'], title: 'T', body: 'B', ghostEmail: true,
+      newsletter: 'weekly', emailSegment: 'paid', emailOnly: true,
+    }));
+    expect(screen.getByText('Newsletter')).toBeInTheDocument();
+    expect(screen.getByText('weekly')).toBeInTheDocument();
+    expect(screen.getByText('Audience segment')).toBeInTheDocument();
+    expect(screen.getByText('Paid members')).toBeInTheDocument();
+    expect(screen.getByText('Email-only')).toBeInTheDocument();
+  });
+
+  it('Ghost article: no newsletter/segment rows when unset (identical to today)', () => {
+    renderDetail(makePost({ type: 'text', platforms: ['ghost'], title: 'T', body: 'B', ghostEmail: true }));
+    expect(screen.queryByText('Newsletter')).not.toBeInTheDocument();
+    expect(screen.queryByText('Audience segment')).not.toBeInTheDocument();
+    expect(screen.queryByText('Email-only')).not.toBeInTheDocument();
+  });
+
+  // Spec 27: draft/pending-review publish status - a read-only Details row
+  // (like ghostEmail), shown ONLY when the post actually carries it.
+  it('WordPress article: shows "Publish as draft" in Details when publishAsDraft is set', () => {
+    renderDetail(makePost({ type: 'text', platforms: ['wordpress'], title: 'T', body: 'B', publishAsDraft: true }));
+    expect(within(screen.getByRole('dialog')).getByText('Details')).toBeInTheDocument();
+    expect(screen.getByText('Publish as draft')).toBeInTheDocument();
+  });
+
+  it('WordPress article: no "Publish as draft" row when unset (identical to today)', () => {
+    renderDetail(makePost({ type: 'text', platforms: ['wordpress'], title: 'T', body: 'B' }));
+    expect(screen.queryByText('Publish as draft')).not.toBeInTheDocument();
   });
 
   it('LinkedIn text: Title + Link description + link/image extras', () => {
@@ -144,11 +220,41 @@ describe('PostDetail — platform-relevant fields', () => {
   });
 
   it.each([
-    ['telegram'], ['discord'], ['tiktok'], ['reddit'], ['pinterest'],
+    ['telegram'], ['tiktok'], ['reddit'],
   ])('%s: shows just the post text, no platform-specific fields', (platform) => {
     renderDetail(makePost({ type: 'video', platforms: [platform], caption: 'c' }));
     const labels = contentLabels();
     expect(labels).toEqual(['Post text']);
+  });
+
+  // Spec 26: discord ALSO shows the two forum/thread-targeting fields
+  // (dcThreadName/dcThreadId) - plain EDITABLE fields whenever discord targets
+  // the post, distinct from the caption-only siblings above.
+  it('discord: shows the post text + the forum thread-targeting fields', () => {
+    renderDetail(makePost({ type: 'video', platforms: ['discord'], caption: 'c' }));
+    const labels = contentLabels();
+    expect(labels).toEqual(['Post text', 'Forum thread name', 'Existing thread id']);
+  });
+
+  // Pinterest is a caption-only lane like its siblings above, PLUS the spec-21
+  // alt-text field (Pinterest is one of the three live alt-text lanes).
+  it('pinterest: shows the post text + alt text (spec 21 live lane)', () => {
+    renderDetail(makePost({ type: 'video', platforms: ['pinterest'], caption: 'c' }));
+    const labels = contentLabels();
+    expect(labels).toEqual(['Post text', 'Alt text']);
+  });
+
+  // Spec 17: the board-section target, shown as a Details row ONLY when set - a
+  // no-section pinterest post shows no row (byte-identical to before this spec).
+  it('pinterest: shows a Details row for pinBoardSection only when set', () => {
+    renderDetail(makePost({ type: 'video', platforms: ['pinterest'], caption: 'c', pinBoardSection: 'sec123' }));
+    expect(screen.getByText('Board section')).toBeInTheDocument();
+    expect(screen.getByText('sec123')).toBeInTheDocument();
+  });
+
+  it('pinterest: no Details row for pinBoardSection when unset', () => {
+    renderDetail(makePost({ type: 'video', platforms: ['pinterest'], caption: 'c' }));
+    expect(screen.queryByText('Board section')).not.toBeInTheDocument();
   });
 
   it('GBP: post text + a Details row summarising the local-post intent', () => {
@@ -164,6 +270,21 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(screen.getByText('2 stickers')).toBeInTheDocument();
   });
 
+  // Sticker honesty (platform-constraints): once the story is POSTED the count
+  // summary becomes the add-by-hand checklist - the engine publishes no sticker
+  // parameters, so the live story has none of these until the operator adds them.
+  it('a POSTED IG story lists each sticker as an add-by-hand checklist', () => {
+    renderDetail(makePost({
+      type: 'story', platforms: ['instagram'], caption: 'c', derivedState: 'posted', ids: { igMediaId: 'ig1' },
+      interactiveStory: { stickers: [{ kind: 'poll', question: 'Which?', options: ['A', 'B'] }, { kind: 'mention', handle: 'someone' }] },
+    }));
+    expect(screen.getByText('Story stickers')).toBeInTheDocument();
+    expect(screen.queryByText('2 stickers')).not.toBeInTheDocument();
+    expect(screen.getByText('Poll: Which? - A / B')).toBeInTheDocument();
+    expect(screen.getByText('Mention: @someone')).toBeInTheDocument();
+    expect(screen.getByText(/Add these by hand in the Instagram app/)).toBeInTheDocument();
+  });
+
   it('Multi-platform X + YouTube: union of both field sets', () => {
     renderDetail(makePost({ type: 'youtube-short', platforms: ['x', 'youtube'], caption: 'c', xCaption: 'x', title: 'T', description: 'D' }));
     const labels = contentLabels();
@@ -171,6 +292,17 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(labels).toContain('X post');
     expect(labels).toContain('Title');
     expect(labels).toContain('Description');
+  });
+
+  // US-CMT-10: comments are a visible control on a posted, comment-capable post -
+  // never only an overflow entry beside Delete.
+  it('a POSTED comment-capable post shows the visible Comments control (not in the overflow)', async () => {
+    renderDetail(makePost({ type: 'reel', platforms: ['instagram'], caption: 'c', derivedState: 'posted', ids: { igMediaId: 'ig1' } }));
+    expect(screen.getByRole('button', { name: /Comments/ })).toBeInTheDocument();
+    const overflow = screen.getByRole('button', { name: 'More actions' });
+    const user = (await import('@testing-library/user-event')).default.setup();
+    await user.click(overflow);
+    expect(screen.queryByRole('menuitem', { name: /Comments/ })).not.toBeInTheDocument();
   });
 
   it('a posted YouTube post renders its fields read-only (no textboxes)', () => {

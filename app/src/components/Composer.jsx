@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft } from 'lucide-react';
-import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, createPost, updatePost, lintText } from '../lib/api.js';
+import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check } from 'lucide-react';
+import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, useRedditFlairs, usePinterestBoardSections, createPost, updatePost, lintText } from '../lib/api.js';
 import { useT, useLocale } from '../lib/i18n.js';
-import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform } from '../lib/format.js';
-import { PLATFORM_META, INNER_SURFACE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW } from './ui.jsx';
+import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia } from '../lib/format.js';
+import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
@@ -12,7 +12,7 @@ import { Tip } from './ui/Tooltip.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 // Content-driven textarea height (mirrors PostDetail's ContentField, punch-list
 // 2.5): grow from the content's newline count and a wrapped-line estimate
@@ -129,7 +129,24 @@ const specBadges = (a, t) => {
 
 // Visual video picker: a cover-thumbnail grid in a popover, searchable, with
 // used/unused + resolution folders, replacing the bare filename dropdown.
-export function VideoPicker({ assets, assetsDir, value, onChange }) {
+// CT-1: `placeholderKey` lets a caller override the empty-state label - the
+// CarouselPicker below reuses this SAME component per slide but a carousel is
+// usually images, so "Choose video (data/media)" is wrong there; it passes
+// 'composer.media.choose' ("Choose media") instead. The single-media picker
+// (a real video slot) keeps the default 'composer.video.choose'.
+// H4: the client half of two hand-copied server tables (lib/carousel.mjs
+// CAROUSEL_LANE_LIMITS). They live at module scope so test/enumeration-drift.test.mjs
+// can regex-read both literals; keep them as single-line object literals with no nested
+// braces or that guard goes blind. CAROUSEL_LANE_NOMIX is guarded on arrival rather
+// than after a second miss.
+const CAROUSEL_LANE_MAX = { x: 4, mastodon: 4, pinterest: 5, instagram: 10, telegram: 10, discord: 10, linkedin: 20, reddit: 20 };
+const CAROUSEL_LANE_NOMIX = { x: true, mastodon: true };
+// The structural bound lib/writes.mjs enforces at save. Used when no carousel-capable
+// lane is targeted yet: the previous fallback of 10 was invented and hid the Add control
+// on a lawful album.
+const CAROUSEL_STRUCTURAL_MAX = 20;
+
+export function VideoPicker({ assets, assetsDir, value, onChange, placeholderKey = 'composer.video.choose', optionDisabledReason = null }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -164,15 +181,15 @@ export function VideoPicker({ assets, assetsDir, value, onChange }) {
               // only as the empty-state "pick a video" affordance below.
               <CoverThumb media={selected} className="h-9 w-6 shrink-0 rounded" />
             ) : (
-              <Clapperboard size={16} className="shrink-0 text-zinc-400" aria-hidden="true" />
+              <Clapperboard size={16} className="shrink-0 text-zinc-500" aria-hidden="true" />
             )}
-            <span className="flex-1 truncate text-left">{selected ? selected.file : t('composer.video.choose')}</span>
-            {value ? null : <ChevronDown size={14} className="shrink-0 text-zinc-400" aria-hidden="true" />}
+            <span className="flex-1 truncate text-left">{selected ? selected.file : t(placeholderKey)}</span>
+            {value ? null : <ChevronDown size={14} className="shrink-0 text-zinc-500" aria-hidden="true" />}
           </button>
         </PopoverTrigger>
         {value ? (
           <Tip label={t('composer.video.removeSelected')}>
-            <button type="button" aria-label={t('composer.video.removeSelected')} onClick={() => onChange('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-400 transition hover:bg-zinc-300/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-600/50">
+            <button type="button" aria-label={t('composer.video.removeSelected')} onClick={() => onChange('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 transition hover:bg-zinc-300/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-600/50">
               <X size={14} aria-hidden="true" />
             </button>
           </Tip>
@@ -181,7 +198,7 @@ export function VideoPicker({ assets, assetsDir, value, onChange }) {
       <PopoverContent className="w-[420px] max-w-[90vw] space-y-2 p-3" align="start">
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
-            <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400" aria-hidden="true" />
+            <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" aria-hidden="true" />
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('composer.video.searchPlaceholder')} className={`${FIELD_CLS} pl-8`} />
           </div>
         </div>
@@ -200,12 +217,22 @@ export function VideoPicker({ assets, assetsDir, value, onChange }) {
         <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto">
           {shown.length ? shown.map((a) => {
             const isSel = `${assetsDir}/${a.file}` === value;
+            // H4, canon "prevent at the control": an option the target lane cannot
+            // accept renders disabled with its reason a hover away, rather than being
+            // pickable and refused later at Pruefen. aria-disabled, NEVER the native
+            // `disabled` attribute: `disabled` swallows pointer events, so the tooltip
+            // would never fire and "the reason is a hover away" would be a lie.
+            // optionDisabledReason defaults to null, so the single-media picker renders
+            // exactly as before.
+            const reason = optionDisabledReason ? optionDisabledReason(a) : null;
             return (
-              <Tip key={a.file} label={a.file}>
+              <Tip key={a.file} label={reason || a.file}>
                 <button
                   type="button"
-                  onClick={() => { onChange(`${assetsDir}/${a.file}`); setOpen(false); }}
-                  className={`overflow-hidden rounded-lg text-left ring-1 transition ${isSel ? 'ring-2 ring-brand' : 'ring-zinc-900/10 hover:ring-brand/40 dark:ring-white/10'}`}
+                  aria-disabled={reason ? true : undefined}
+                  aria-label={reason ? `${a.file}: ${reason}` : undefined}
+                  onClick={reason ? undefined : () => { onChange(`${assetsDir}/${a.file}`); setOpen(false); }}
+                  className={`overflow-hidden rounded-lg text-left ring-1 transition ${reason ? 'cursor-not-allowed opacity-40' : ''} ${isSel ? 'ring-2 ring-brand' : 'ring-zinc-900/10 hover:ring-brand/40 dark:ring-white/10'}`}
                 >
                   {/* US-ASSET-13: cover JPEG, else the video's own first frame -
                       never a bare icon (CoverThumb owns that fallback). */}
@@ -214,13 +241,13 @@ export function VideoPicker({ assets, assetsDir, value, onChange }) {
                     <p className="truncate text-[10px] font-bold">{a.file}</p>
                     <div className="flex items-center gap-1">
                       {specBadges(a, t)}
-                      {a.probe?.durationSec ? <span className="text-[9px] text-zinc-400">{a.probe.durationSec}s</span> : null}
+                      {a.probe?.durationSec ? <span className="text-[9px] text-zinc-500">{a.probe.durationSec}s</span> : null}
                     </div>
                   </div>
                 </button>
               </Tip>
             );
-          }) : <p className="col-span-3 py-6 text-center text-[11px] text-zinc-400">{t('composer.video.noMatches')}</p>}
+          }) : <p className="col-span-3 py-6 text-center text-[11px] text-zinc-500">{t('composer.video.noMatches')}</p>}
         </div>
       </PopoverContent>
     </Popover>
@@ -242,7 +269,7 @@ const STICKER_KINDS = [
 ];
 const STICKER_META = Object.fromEntries(STICKER_KINDS.map((s) => [s.kind, s]));
 
-const STICKER_FIELD_CLS = `w-full rounded-lg border-0 px-2.5 py-1.5 text-xs ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+const STICKER_FIELD_CLS = `w-full rounded-lg border-0 px-2.5 py-1.5 text-xs ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 // The labeled, keyboard-operable fields for one sticker (the authoritative
 // content; the preview overlay is decoration). Each kind exposes its own inputs.
@@ -349,7 +376,7 @@ export function InteractiveFields({
                     label={meta.api === 'supported' ? t('composer.sticker.api.supportedHint') : t('composer.sticker.api.previewHint')}
                   />
                   <Tip label={t('composer.interactive.removeSticker')}>
-                    <button type="button" onClick={() => removeSticker(i)} aria-label={t('composer.interactive.removeStickerKind', { kind: t(`composer.sticker.${sticker.kind}.label`) })} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                    <button type="button" onClick={() => removeSticker(i)} aria-label={t('composer.interactive.removeStickerKind', { kind: t(`composer.sticker.${sticker.kind}.label`) })} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                       <Trash2 size={12} aria-hidden="true" />
                     </button>
                   </Tip>
@@ -391,6 +418,228 @@ export function InteractiveFields({
   );
 }
 
+// Spec 14: rich link/CTA (Pattern P1) - Telegram inline CTA buttons + link-
+// preview/format control, and a Discord rich embed card. Each is a single
+// structured object riding its own lane-exclusive gate (rel.tgCta / rel.dcEmbed),
+// modeled on GbpFields below (:451) + the InteractiveFields add/remove idiom above.
+
+const TG_CTA_EMPTY = { buttons: [], linkPreview: true, format: 'plain' };
+function tgCtaFormState(c) {
+  return {
+    ...TG_CTA_EMPTY,
+    ...(c || {}),
+    buttons: Array.isArray(c?.buttons) ? c.buttons.map((b) => ({ label: b.label || '', url: b.url || '' })) : [],
+  };
+}
+
+// Telegram allows more than 4 inline buttons; pendpost caps the authoring
+// surface there to keep it lean (spec 14 §4).
+const TG_CTA_MAX_BUTTONS = 4;
+
+export function TelegramCtaFields({ cta, onChange }) {
+  const t = useT();
+  const set = (patch) => onChange({ ...cta, ...patch });
+  const addButton = () => set({ buttons: [...cta.buttons, { label: '', url: '' }] });
+  const patchButton = (i, patch) => set({ buttons: cta.buttons.map((b, idx) => (idx === i ? { ...b, ...patch } : b)) });
+  const removeButton = (i) => set({ buttons: cta.buttons.filter((_, idx) => idx !== i) });
+  return (
+    <section className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className={EYEBROW}>{t('composer.tgcta.heading')}</h3>
+        {cta.buttons.length < TG_CTA_MAX_BUTTONS ? (
+          <button type="button" onClick={addButton} className="flex items-center gap-1 rounded-lg bg-zinc-200/60 px-2 py-1 text-[11px] font-bold transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60">
+            <Plus size={12} aria-hidden="true" />
+            {t('composer.tgcta.addButton')}
+          </button>
+        ) : null}
+      </div>
+      {cta.buttons.length ? (
+        <ul className="space-y-1.5">
+          {cta.buttons.map((b, i) => (
+            <li key={i} className="flex items-center gap-1.5">
+              <input aria-label={t('composer.tgcta.buttonLabel')} placeholder={t('composer.tgcta.buttonLabel')} value={b.label} onChange={(e) => patchButton(i, { label: e.target.value })} className={STICKER_FIELD_CLS} />
+              <input aria-label={t('composer.tgcta.buttonUrl')} placeholder="https://example.com" value={b.url} onChange={(e) => patchButton(i, { url: e.target.value })} className={STICKER_FIELD_CLS} />
+              <Tip label={t('composer.tgcta.removeButton')}>
+                <button type="button" onClick={() => removeButton(i)} aria-label={t('composer.tgcta.removeButton')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                  <Trash2 size={12} aria-hidden="true" />
+                </button>
+              </Tip>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.tgcta.noButtons')}</p>
+      )}
+      <div className="flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs font-bold">
+          <input
+            type="checkbox"
+            checked={cta.linkPreview !== false}
+            onChange={(e) => set({ linkPreview: e.target.checked })}
+            className="h-4 w-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+          />
+          {t('composer.tgcta.linkPreview')}
+        </label>
+        <div className="flex items-center gap-1.5">
+          <label className={EYEBROW} htmlFor="composer-tgcta-format">{t('composer.tgcta.format')}</label>
+          <select id="composer-tgcta-format" value={cta.format} onChange={(e) => set({ format: e.target.value })} className={FIELD_CLS}>
+            <option value="plain">{t('composer.tgcta.format.plain')}</option>
+            <option value="html">{t('composer.tgcta.format.html')}</option>
+          </select>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// Spec 26 review (MAJOR-2): an <input type="datetime-local"> value carries no
+// timezone ('2027-01-01T18:00'). `Date.parse`/`new Date(...)` interpret that
+// zone-less shape using the BROWSER's own local timezone (the ECMAScript
+// date-time string grammar), which is exactly the wall-clock moment the
+// operator meant to author - so converting through Date and back out to a
+// full ISO-8601 string (with a 'Z'/offset) HERE, at the browser layer, is the
+// correct fix for the wrong-hour live event (a bare local string sent
+// verbatim to Discord was being read back 1-2h off, or rejected with a 400).
+function dcEventLocalToIso(localValue) {
+  if (!localValue) return '';
+  const ms = Date.parse(localValue);
+  return Number.isNaN(ms) ? '' : new Date(ms).toISOString();
+}
+// The inverse: render a stored full-ISO dcEvent time (an agent-authored '…Z'
+// start, or this Composer's own post-fix save) back into the zone-less
+// "YYYY-MM-DDTHH:mm" shape the datetime-local control needs, so it round-trips
+// on open instead of rendering blank (MINOR-4's display half).
+function isoToDatetimeLocalValue(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Spec 26: Discord guild-scheduled-event intent, modelled on GBP_EMPTY/
+// gbpFormState below (flat, controlled form state; every field present).
+// entityType/channelId/description carry no Composer UI control (the
+// authoring surface only ever creates an EXTERNAL event - see
+// DiscordEventFields below) but are still tracked in state so an
+// agent-authored voice/stage event round-trips byte-identical through an
+// unrelated owner edit instead of being silently dropped (MINOR-4).
+const DC_EVENT_EMPTY = { name: '', startTime: '', endTime: '', location: '', entityType: '', channelId: '', description: '' };
+function dcEventFormState(e) {
+  const out = { ...DC_EVENT_EMPTY, ...(e || {}) };
+  out.name = String(out.name || '');
+  out.startTime = isoToDatetimeLocalValue(out.startTime);
+  out.endTime = isoToDatetimeLocalValue(out.endTime);
+  for (const k of ['location', 'entityType', 'channelId', 'description']) out[k] = String(out[k] || '');
+  return out;
+}
+
+// The Discord guild-scheduled-event authoring group (spec 26), modelled 1:1 on
+// GbpFields (:574): name + start + optional end + optional location - the
+// Composer's authoring surface only ever creates an EXTERNAL-type event (no
+// channel picker), so entityType/channelId are agent/MCP-only fields. Rendered
+// NESTED inside the merged discord subsection below (DiscordEmbedFields), not
+// as its own top-level section - the §99 rule ("26 discord merges into ONE
+// discord Composer subsection with 14's dcEmbed").
+function DiscordEventFields({ dcEvent, onChange }) {
+  const t = useT();
+  const set = (patch) => onChange({ ...dcEvent, ...patch });
+  return (
+    <div className="space-y-3 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
+      <h4 className={EYEBROW}>{t('composer.dcevent.heading')}</h4>
+      <div className="space-y-1.5">
+        <label className={EYEBROW} htmlFor="composer-dcevent-name">{t('composer.dcevent.name')}</label>
+        <input id="composer-dcevent-name" value={dcEvent.name} onChange={(e) => set({ name: e.target.value })} className={FIELD_CLS} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <label className={EYEBROW} htmlFor="composer-dcevent-start">{t('composer.dcevent.start')}</label>
+          <input id="composer-dcevent-start" type="datetime-local" value={dcEvent.startTime} onChange={(e) => set({ startTime: e.target.value })} className={FIELD_CLS} />
+        </div>
+        <div className="space-y-1.5">
+          <label className={EYEBROW} htmlFor="composer-dcevent-end">{t('composer.dcevent.end')}</label>
+          <input id="composer-dcevent-end" type="datetime-local" value={dcEvent.endTime} onChange={(e) => set({ endTime: e.target.value })} className={FIELD_CLS} />
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <label className={EYEBROW} htmlFor="composer-dcevent-location">{t('composer.dcevent.location')}</label>
+        <input id="composer-dcevent-location" value={dcEvent.location} onChange={(e) => set({ location: e.target.value })} placeholder={t('composer.dcevent.locationPlaceholder')} className={FIELD_CLS} />
+      </div>
+    </div>
+  );
+}
+
+const DC_EMBED_EMPTY = { title: '', description: '', url: '', color: '' };
+// A saved dcEmbed.color persists as an integer (the Discord wire format); the
+// authoring field is a plain hex-string input (mirrors gbpFormState's date
+// slicing - convert the stored shape to what the control expects on load).
+// The string members are coerced through String(... || '') so a persisted
+// null (the tool prose teaches "set a field to null to remove it" - and
+// validateFieldValues accepts null string members) never reaches a `.trim()`
+// on a controlled input and white-screens the editor.
+function dcEmbedFormState(e) {
+  const out = { ...DC_EMBED_EMPTY, ...(e || {}) };
+  for (const k of ['title', 'description', 'url']) out[k] = String(out[k] || '');
+  out.color = typeof out.color === 'number' && Number.isInteger(out.color)
+    ? `#${out.color.toString(16).padStart(6, '0').toUpperCase()}`
+    : String(out.color || '');
+  return out;
+}
+
+// The ONE merged Discord Composer subsection (spec 14's rich embed card PLUS
+// spec 26's forum/thread targeting + guild-event group), shown only when the
+// discord lane is targeted. Buttons/`components` are a documented Pattern P9
+// gate - an honest one-line hint, not a live control (embeds send on any
+// webhook today). The three thread/event props are optional so a standalone
+// caller (the spec-14 component test) that renders only { embed, onChange }
+// still gets the embed card with no crash and no extra DOM.
+export function DiscordEmbedFields({ embed, onChange, threadName, threadId, onThreadNameChange, onThreadIdChange, dcEvent, onDcEventChange }) {
+  const t = useT();
+  const set = (patch) => onChange({ ...embed, ...patch });
+  return (
+    <section className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+      <h3 className={EYEBROW}>{t('composer.dcembed.heading')}</h3>
+      <div className="space-y-1.5">
+        <label className={EYEBROW} htmlFor="composer-dcembed-title">{t('composer.dcembed.title')}</label>
+        <input id="composer-dcembed-title" value={embed.title} onChange={(e) => set({ title: e.target.value })} className={FIELD_CLS} />
+      </div>
+      <div className="space-y-1.5">
+        <label className={EYEBROW} htmlFor="composer-dcembed-description">{t('composer.dcembed.description')}</label>
+        <textarea id="composer-dcembed-description" value={embed.description} onChange={(e) => set({ description: e.target.value })} rows={2} className={`${FIELD_CLS} resize-y`} />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <label className={EYEBROW} htmlFor="composer-dcembed-url">{t('composer.dcembed.url')}</label>
+          <input id="composer-dcembed-url" value={embed.url} onChange={(e) => set({ url: e.target.value })} placeholder="https://example.com" className={FIELD_CLS} />
+        </div>
+        <div className="space-y-1.5">
+          <label className={EYEBROW} htmlFor="composer-dcembed-color">{t('composer.dcembed.color')}</label>
+          <input id="composer-dcembed-color" value={embed.color} onChange={(e) => set({ color: e.target.value })} placeholder="#5865F2" className={FIELD_CLS} />
+        </div>
+      </div>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.dcembed.buttonsGated')}</p>
+
+      {onThreadNameChange && onThreadIdChange ? (
+        <div className="space-y-1.5 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-dc-thread-name">{t('composer.field.dcThreadName')}</label>
+              <input id="composer-dc-thread-name" value={threadName} onChange={(e) => onThreadNameChange(e.target.value)} placeholder={t('composer.field.dcThreadNamePlaceholder')} className={FIELD_CLS} />
+            </div>
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-dc-thread-id">{t('composer.field.dcThreadId')}</label>
+              <input id="composer-dc-thread-id" value={threadId} onChange={(e) => onThreadIdChange(e.target.value)} placeholder="123456789012345678" className={FIELD_CLS} />
+            </div>
+          </div>
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.hint.dcThreadExclusive')}</p>
+        </div>
+      ) : null}
+
+      {onDcEventChange ? <DiscordEventFields dcEvent={dcEvent} onChange={onDcEventChange} /> : null}
+    </section>
+  );
+}
+
 // Shared over-limit counter idiom (r2-1/r2-3), used by the X (280) and Mastodon
 // (500) note overrides. Over limit it pairs the red color with a lucide
 // AlertTriangle icon + an over-limit word + an sr-only severity prefix (never
@@ -402,7 +651,7 @@ export function CharCounter({ id, len, max, over }) {
   return (
     <p
       id={id}
-      className={`flex items-center gap-1 text-[11px] font-bold tabular-nums ${over ? 'text-red-600 dark:text-red-400' : 'text-zinc-400 dark:text-zinc-500'}`}
+      className={`flex items-center gap-1 text-[11px] font-bold tabular-nums ${over ? 'text-red-600 dark:text-red-400' : 'text-zinc-500 dark:text-zinc-400'}`}
     >
       {over ? <AlertTriangle size={12} className="shrink-0" aria-hidden="true" /> : null}
       {over ? <span className="sr-only">{t('composer.field.xCounterSeverity')} </span> : null}
@@ -519,6 +768,270 @@ function GbpFields({ gbp, onChange }) {
   );
 }
 
+// Spec 25: disclosure & interaction settings (Pattern P1). TikTok's interaction/
+// disclosure post_info flags as a structured group (modeled on GbpFields above);
+// Mastodon's content-warning and X's reply-audience enum are single fields
+// rendered inline near their lane's own caption/reply-to block below.
+
+// The seven TikTok post_info toggles, in menu order. brandedContent/brandOrganic
+// are TikTok's own "Branded content"/"Your brand" disclosure pair; aiGenerated is
+// the AI-label. Every flag is audit-gated server-side for an unaudited app
+// (Pattern P9) - the toggle always renders (honest, matches TikTok's own
+// creator-tools UI); TikTok enforces or rejects it at publish time.
+const TT_INTERACTION_CHECKS = ['disableComment', 'disableDuet', 'disableStitch', 'aiGenerated', 'brandedContent', 'brandOrganic'];
+const TT_INTERACTION_EMPTY = { disableComment: false, disableDuet: false, disableStitch: false, aiGenerated: false, brandedContent: false, brandOrganic: false, coverTimestampMs: '' };
+
+// The flat TikTok interaction form state: every flag present (controlled
+// checkboxes) + the cover-frame timestamp as a string (numeric <input> friendly),
+// seeded from a saved post.ttInteraction on edit.
+function ttInteractionFormState(i) {
+  const out = { ...TT_INTERACTION_EMPTY, ...(i || {}) };
+  for (const k of TT_INTERACTION_CHECKS) out[k] = out[k] === true;
+  out.coverTimestampMs = out.coverTimestampMs === undefined || out.coverTimestampMs === null ? '' : String(out.coverTimestampMs);
+  return out;
+}
+
+// The TikTok interaction/disclosure authoring section, shown only when the
+// tiktok lane is targeted.
+export function TiktokFields({ interaction, onChange }) {
+  const t = useT();
+  const set = (patch) => onChange({ ...interaction, ...patch });
+  return (
+    <section className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+      <h3 className={EYEBROW}>{t('composer.tiktok.heading')}</h3>
+      <div className="grid grid-cols-2 gap-2">
+        {TT_INTERACTION_CHECKS.map((k) => (
+          <label key={k} className="flex items-center gap-2 text-xs font-bold">
+            <input
+              type="checkbox"
+              checked={interaction[k]}
+              onChange={(e) => set({ [k]: e.target.checked })}
+              className="h-4 w-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            />
+            {t(`composer.tiktok.${k}`)}
+          </label>
+        ))}
+      </div>
+      <div className="space-y-1.5">
+        <label className={EYEBROW} htmlFor="composer-tiktok-cover-ts">{t('composer.tiktok.coverTimestamp')}</label>
+        <input id="composer-tiktok-cover-ts" type="number" min="0" value={interaction.coverTimestampMs} onChange={(e) => set({ coverTimestampMs: e.target.value })} className={FIELD_CLS} />
+      </div>
+    </section>
+  );
+}
+
+// X's reply_settings CREATE enum (who may reply). The '' option is the UI's
+// "Default (everyone)" - it omits the param, which IS how X expresses "everyone"
+// (the create API 400s on reply_settings:'everyone', so it is deliberately not
+// an option here).
+const X_REPLY_SETTINGS = ['following', 'mentionedUsers', 'subscribers', 'verified'];
+
+// Spec 10: native poll authoring (Pattern P1), shown ONLY for a type=poll post.
+// The QUESTION is the shared caption above; this block owns the choices + duration.
+// Per-lane native option caps (mirrors lib/writes.mjs POLL_OPTION_CAP); nostr is
+// uncapped. The effective max for a post is the MIN across its targeted poll lanes,
+// so the add-option control + the hint never offer more than the tightest lane.
+const POLL_LANE_MAX = { x: 4, linkedin: 4, mastodon: 4, reddit: 6, telegram: 10, discord: 10 };
+function pollMaxOptions(platforms) {
+  const caps = (platforms || []).map((p) => POLL_LANE_MAX[p]).filter((n) => typeof n === 'number');
+  return caps.length ? Math.min(...caps) : 10;
+}
+
+// Flat poll form state: at least two option rows (controlled inputs), a duration in
+// minutes, and the multi-select flag - seeded from a saved post.poll on edit.
+function pollFormState(p) {
+  if (!p || typeof p !== 'object') return { options: ['', ''], durationMinutes: POLL_DEFAULT_DURATION, multiple: false };
+  const raw = Array.isArray(p.options) ? p.options.map((o) => String(o || '')) : [];
+  const options = raw.length >= 2 ? raw : [...raw, ...Array(2 - raw.length).fill('')];
+  return { options, durationMinutes: Number(p.durationMinutes) || POLL_DEFAULT_DURATION, multiple: p.multiple === true };
+}
+
+// The poll options/duration authoring section. `max` is the tightest targeted-lane
+// option cap; removing an option is blocked at 2 (a poll needs at least two choices),
+// and adding is blocked at `max`.
+export function PollFields({ poll, onChange, max }) {
+  const t = useT();
+  const setOption = (i, val) => onChange({ ...poll, options: poll.options.map((o, idx) => (idx === i ? val : o)) });
+  const addOption = () => onChange({ ...poll, options: [...poll.options, ''] });
+  const removeOption = (i) => onChange({ ...poll, options: poll.options.filter((_, idx) => idx !== i) });
+  return (
+    <section className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className={EYEBROW}>{t('composer.poll.heading')}</h3>
+        {poll.options.length < max ? (
+          <button type="button" onClick={addOption} className="flex items-center gap-1 rounded-lg bg-zinc-200/60 px-2 py-1 text-[11px] font-bold transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60">
+            <Plus size={12} aria-hidden="true" />
+            {t('composer.poll.addOption')}
+          </button>
+        ) : null}
+      </div>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.poll.question')}</p>
+      <ul className="space-y-1.5">
+        {poll.options.map((o, i) => (
+          <li key={i} className="flex items-center gap-1.5">
+            <input
+              aria-label={t('composer.poll.option', { n: i + 1 })}
+              placeholder={t('composer.poll.option', { n: i + 1 })}
+              value={o}
+              onChange={(e) => setOption(i, e.target.value)}
+              className={STICKER_FIELD_CLS}
+            />
+            {poll.options.length > 2 ? (
+              <Tip label={t('composer.poll.removeOption')}>
+                <button type="button" onClick={() => removeOption(i)} aria-label={t('composer.poll.removeOption')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                  <Trash2 size={12} aria-hidden="true" />
+                </button>
+              </Tip>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.poll.hint', { max })}</p>
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-1.5">
+          <label className={EYEBROW} htmlFor="composer-poll-duration">{t('composer.poll.duration')}</label>
+          <select id="composer-poll-duration" value={poll.durationMinutes} onChange={(e) => onChange({ ...poll, durationMinutes: Number(e.target.value) })} className={FIELD_CLS}>
+            {/* A non-preset (e.g. MCP-authored) durationMinutes isn't among the presets;
+                synthesize an option so the select shows + preserves it instead of
+                silently rendering the first preset (mirrors PostDetail's "<n> min"
+                fallback). */}
+            {!pollDurationKey(poll.durationMinutes) ? (
+              <option value={poll.durationMinutes}>{t('postDetail.poll.minutes', { count: poll.durationMinutes })}</option>
+            ) : null}
+            {POLL_DURATIONS.map((d) => (
+              <option key={d.key} value={d.minutes}>{t(`composer.poll.duration.${d.key}`)}</option>
+            ))}
+          </select>
+        </div>
+        <label className="flex items-center gap-2 text-xs font-bold">
+          <input
+            type="checkbox"
+            checked={poll.multiple}
+            onChange={(e) => onChange({ ...poll, multiple: e.target.checked })}
+            className="h-4 w-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+          />
+          {t('composer.poll.multiple')}
+        </label>
+      </div>
+    </section>
+  );
+}
+
+// Spec 05: native carousel authoring (Pattern P1), shown ONLY for a type=carousel post.
+// The ordered slides are an array of media path strings (the same `${assetsDir}/${file}`
+// shape the single VideoPicker emits); each row reuses the VideoPicker so a slide is
+// picked exactly like a single video. Add/remove keep the count within 2..max, and the
+// up/down controls reorder (the album order is what publishes). `max` is the tightest
+// targeted-lane cap so the add control never offers more than the strictest lane allows.
+// A carousel of fewer than two slides is still SAVEABLE (Pruefen surfaces "needs 2").
+export function CarouselPicker({ assets, assetsDir, items, onChange, max, slideUrls, onSlideUrlChange, showSlideUrl, platforms = [] }) {
+  const t = useT();
+  // Spec 39: image-kind detection by extension, mirroring lib/carousel.mjs
+  // carouselItemKind (video extensions upload locally; everything else is an
+  // image slide, which IG publishes from its public per-slide url).
+  const isImageRef = (ref) => !/\.(mp4|mov|m4v|webm)$/i.test(String(ref || ''));
+  // Display always shows at least two rows (a carousel needs two); the padded rows are
+  // the array we mutate, so editing an empty slot writes back a real two-slot array.
+  const rows = items.length >= 2 ? items : [...items, ...Array(2 - items.length).fill('')];
+  const setSlot = (i, val) => onChange(rows.map((v, idx) => (idx === i ? val : v)));
+  const addSlot = () => onChange([...rows, '']);
+  const removeSlot = (i) => onChange(rows.filter((_, idx) => idx !== i));
+  const move = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= rows.length) return;
+    const next = [...rows];
+    [next[i], next[j]] = [next[j], next[i]];
+    onChange(next);
+  };
+  // H4: X cannot mix images and video in one album. Prevent it at the control rather
+  // than letting the author form the album and having Pruefen refuse it afterwards.
+  // The reason is computed per SLOT against the OTHER slots, so replacing the very slide
+  // that set the kind is never blocked by itself. When the other slots already hold both
+  // kinds (possible on legacy data), nothing is disabled: that would be a dead end, and
+  // the album is already mixed.
+  const noMixLane = (platforms || []).find((p) => CAROUSEL_LANE_NOMIX[p]) || null;
+  const kindOf = (ref) => (isImageRef(ref) ? 'image' : 'video');
+  const slotOptionReason = (i) => (asset) => {
+    if (!noMixLane) return null;
+    const others = rows.filter((v, idx) => idx !== i && v).map(kindOf);
+    if (!others.length) return null;
+    return others.includes(kindOf(asset.file)) ? null : t('blockers.validate.carouselNoMix', { platform: noMixLane });
+  };
+  // The Add control stops vanishing at the cap and becomes disabled-with-reason: one
+  // state machine instead of two. A control that disappears answers nothing, because the
+  // author cannot tell "at the cap" from "this build has no Add button".
+  const atCap = rows.length >= max;
+  const addReason = atCap ? t('composer.carousel.atCap', { max }) : null;
+  return (
+    <section className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+      <div className="flex items-center justify-between gap-2">
+        <h3 className={EYEBROW}>{t('composer.carousel.heading')}</h3>
+        <Tip label={addReason || t('composer.carousel.add')}>
+          <button
+            type="button"
+            aria-disabled={atCap ? true : undefined}
+            aria-label={addReason ? `${t('composer.carousel.add')}: ${addReason}` : undefined}
+            onClick={atCap ? undefined : addSlot}
+            className={`flex items-center gap-1 rounded-lg bg-zinc-200/60 px-2 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 ${atCap ? 'cursor-not-allowed opacity-40' : 'hover:bg-zinc-300/60 dark:hover:bg-zinc-700/60'}`}
+          >
+            <Plus size={12} aria-hidden="true" />
+            {t('composer.carousel.add')}
+          </button>
+        </Tip>
+      </div>
+      <ul className="space-y-1.5">
+        {rows.map((val, i) => (
+          <li key={i} className="flex items-center gap-1.5">
+            <span className="w-4 shrink-0 text-center text-[11px] font-bold text-zinc-500" aria-hidden="true">{i + 1}</span>
+            <div className="min-w-0 flex-1 space-y-1">
+              <VideoPicker assets={assets} assetsDir={assetsDir} value={val} onChange={(v) => setSlot(i, v)} placeholderKey="composer.media.choose" optionDisabledReason={slotOptionReason(i)} />
+              {showSlideUrl && val && isImageRef(val) ? (
+                <input
+                  value={(slideUrls && slideUrls[val]) || ''}
+                  onChange={(e) => onSlideUrlChange(val, e.target.value)}
+                  placeholder="https://res.cloudinary.com/<your-cloud>/..."
+                  aria-label={t('composer.carousel.slideUrl')}
+                  className={`${STICKER_FIELD_CLS}`}
+                />
+              ) : null}
+            </div>
+            <Tip label={t('composer.carousel.moveUp')}>
+              <button type="button" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t('composer.carousel.moveUp')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <ChevronDown size={12} className="rotate-180" aria-hidden="true" />
+              </button>
+            </Tip>
+            <Tip label={t('composer.carousel.moveDown')}>
+              <button type="button" onClick={() => move(i, 1)} disabled={i === rows.length - 1} aria-label={t('composer.carousel.moveDown')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <ChevronDown size={12} aria-hidden="true" />
+              </button>
+            </Tip>
+            {rows.length > 2 ? (
+              <Tip label={t('composer.carousel.remove')}>
+                <button type="button" onClick={() => removeSlot(i)} aria-label={t('composer.carousel.remove')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                  <Trash2 size={12} aria-hidden="true" />
+                </button>
+              </Tip>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.carousel.hint', { max })}{showSlideUrl ? ` ${t('composer.carousel.slideUrlHint')}` : ''}</p>
+    </section>
+  );
+}
+
+// Spec 05: the Composer's carousel state seed - the ordered slide REFS taken from the RAW
+// post.mediaItems (each { file } | { path }), NOT the resolved post.media.items[]. A slide
+// not yet on disk resolves to path:null; a resolved seed would drop it (it.path is falsy),
+// and because save sends the FULL slide set that silent drop would permanently delete the
+// slide from the plan on ANY later edit. Each raw ref becomes its path-or-file string (the
+// VideoPicker value shape); blanks are filtered. Shared by the state AND the isDirty
+// snapshot so an unedited carousel never reads as dirty.
+function carouselSeedRefs(isEdit, post) {
+  if (!isEdit || !Array.isArray(post?.mediaItems)) return [];
+  return post.mediaItems.map((it) => (it && (it.path || it.file)) || '').filter(Boolean);
+}
+
 // Create + edit composer as a full page. Edit mode never touches approval/cover/
 // publish fields - those have their own controls in PostDetail.
 export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting, onStartThread }) {
@@ -534,14 +1047,22 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // the save action so the owner sees a bad post before publishing. Validation
   // is server-side against the persisted post, so create-before-save shows
   // nothing (gated off until first save). Read-only; never writes/pokes a lane.
-  const { data: platformValidate } = usePlatformValidate(post?.campaign, post?.id, isEdit);
-  const { data: validateMedia } = useValidateMedia(post?.campaign, post?.id, isEdit);
+  const { data: platformValidate } = usePlatformValidate(post?.campaign, post?.id, isEdit, post?.rev);
+  // CI-2: skip the probe for a media-less SAVED type (text/poll/nostr-longform) -
+  // no local media to spec-check, and the server 404s (media_missing) otherwise
+  // (console noise, never a real advisory).
+  const { data: validateMedia } = useValidateMedia(post?.campaign, post?.id, isEdit && postNeedsMedia(post), post?.rev);
   // B9: in create mode an "Attach to a post" CTA may pass a seed { mediaPath, type }
   // built from the same data.dir VideoPicker reads, so the media path matches the
   // canonical `${assetsDir}/${file}` shape and the picker shows it as selected. The
   // seed is ignored in edit mode (the post's own fields win).
   const seedMediaPath = !isEdit ? seed?.mediaPath || '' : '';
+  // U: the ordered slide refs a library multi-select attach seeds a fresh album with.
+  const seedMediaItems = !isEdit && Array.isArray(seed?.mediaItems) ? seed.mediaItems.filter(Boolean) : [];
   const seedType = !isEdit && TYPES.includes(seed?.type) ? seed.type : null;
+  // The Radar "answer as a post" path seeds a starting caption (the thread's line + link);
+  // plain pre-fill, same rules as the media seed - create mode only, gated createPost unchanged.
+  const seedCaption = !isEdit ? seed?.caption || '' : '';
 
   const [campaign, setCampaign] = useState(isEdit ? post.campaign : campaigns.find((c) => c.active)?.id || campaigns[0]?.id || '');
   const [id, setId] = useState(isEdit ? post.id : '');
@@ -549,12 +1070,43 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [type, setType] = useState(isEdit ? post.type : seedType || 'reel');
   const [platforms, setPlatforms] = useState(isEdit ? post.platforms : ['instagram']);
   const [scheduledIso, setScheduledIso] = useState(isEdit ? post.scheduledAt || null : null);
-  const [caption, setCaption] = useState(isEdit ? post.caption : '');
+  const [caption, setCaption] = useState(isEdit ? post.caption : seedCaption);
   const [firstComment, setFirstComment] = useState(isEdit ? post.firstComment || '' : '');
+  const [altText, setAltText] = useState(isEdit ? post.altText || '' : '');
   const [title, setTitle] = useState(isEdit ? post.title || '' : '');
   const [link, setLink] = useState(isEdit ? post.link || '' : '');
   const [image, setImage] = useState(isEdit ? post.image || '' : '');
+  // Specs 17+39: the public media URL for the URL-only lanes (pinterest pin /
+  // video-pin cover, instagram feed IMAGE container). The operator vouches it
+  // serves the same image as the attached local render.
+  const [imageUrl, setImageUrl] = useState(isEdit ? post.imageUrl || '' : '');
   const [mediaPath, setMediaPath] = useState(isEdit ? post.media?.path || '' : seedMediaPath);
+  // Spec 05: native-carousel ordered slides as an array of media ref strings (the same
+  // `${assetsDir}/${file}` shape the single VideoPicker emits for a resolved pick),
+  // serialized to mediaItems:[{file}|{path}] at save time. Seeded from the RAW
+  // post.mediaItems (surfaced verbatim on the DTO), NOT the resolved post.media.items[]:
+  // a slide whose file is not yet on disk (path:null, e.g. an MCP-authored { file:'c.jpg' }
+  // before the render lands) resolves to path:null and would be DROPPED by a resolved seed,
+  // so ANY later save (which sends the full slide set) would silently delete it from the
+  // plan. Seeding from raw preserves every ref (PostDetail already tolerates a missing
+  // slide with an amber badge). carouselRawRefs remembers each seeded ref's ORIGINAL
+  // { file } vs { path } shape so an untouched unresolved slide round-trips losslessly on
+  // save (a new picker pick is an absolute path -> { path }); see mediaItemsPayload.
+  const [mediaItems, setMediaItems] = useState(isEdit ? carouselSeedRefs(isEdit, post) : seedMediaItems);
+  const carouselRawRefs = useRef(new Map(
+    (isEdit && Array.isArray(post.mediaItems) ? post.mediaItems : [])
+      .filter((it) => it && (it.path || it.file))
+      .map((it) => [String(it.path || it.file), it.path ? { path: it.path } : { file: it.file }]),
+  ));
+  // Spec 39: per-slide PUBLIC urls (IG IMAGE children publish from these), keyed by
+  // the same ref string as carouselRawRefs so reorder/remove keeps each url with
+  // its slide. Editable in the CarouselPicker for image-kind slides when
+  // instagram is targeted; blank removes the url on save.
+  const [slideUrls, setSlideUrls] = useState(() => Object.fromEntries(
+    (isEdit && Array.isArray(post?.mediaItems) ? post.mediaItems : [])
+      .filter((it) => it && (it.path || it.file) && it.url)
+      .map((it) => [String(it.path || it.file), it.url]),
+  ));
   const [description, setDescription] = useState(isEdit ? post.description || '' : '');
   const [liDescription, setLiDescription] = useState(isEdit ? post.liDescription || '' : '');
   // X per-platform tweet-text override (capped 280); empty falls back to caption.
@@ -570,15 +1122,64 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // "also send as newsletter" opt-in.
   const [body, setBody] = useState(isEdit ? post.body || '' : '');
   const [excerpt, setExcerpt] = useState(isEdit ? post.excerpt || '' : '');
+  // Spec 13: rich long-form metadata - SEO meta title/description + feature-image
+  // alt (wordpress/ghost), WordPress-only category taxonomy (distinct from tags).
+  const [metaTitle, setMetaTitle] = useState(isEdit ? post.metaTitle || '' : '');
+  const [metaDescription, setMetaDescription] = useState(isEdit ? post.metaDescription || '' : '');
+  const [wpCategories, setWpCategories] = useState(isEdit ? post.wpCategories || '' : '');
+  const [featureImageAlt, setFeatureImageAlt] = useState(isEdit ? post.featureImageAlt || '' : '');
+  // Spec 27: draft/pending-review publish status - hand off a native WordPress
+  // draft or the TikTok inbox for a human to finish + publish. Approval (§H.2)
+  // still gates whether the engine may act at all; this only changes the
+  // destination status once that gate has passed.
+  const [publishAsDraft, setPublishAsDraft] = useState(isEdit ? post.publishAsDraft === true : false);
   const [canonicalUrl, setCanonicalUrl] = useState(isEdit ? post.canonicalUrl || '' : '');
   const [ghostEmail, setGhostEmail] = useState(isEdit ? post.ghostEmail === true : false);
+  // Spec 01: Ghost newsletter refinements, nested under the ghostEmail opt-in -
+  // which newsletter (blank = first active), which audience segment (blank =
+  // every subscriber), and email-only (no web version).
+  const [newsletter, setNewsletter] = useState(isEdit ? post.newsletter || '' : '');
+  const [emailSegment, setEmailSegment] = useState(isEdit ? post.emailSegment || '' : '');
+  const [emailOnly, setEmailOnly] = useState(isEdit ? post.emailOnly === true : false);
   // Per-platform note overrides (additive xCaption pattern); empty falls back
   // to the shared caption.
   const [mastodonCaption, setMastodonCaption] = useState(isEdit ? post.mastodonCaption || '' : '');
   const [nostrCaption, setNostrCaption] = useState(isEdit ? post.nostrCaption || '' : '');
+  // Spec 16: the Reddit link submission URL + the picked link-flair template (id + the
+  // editable-template text). The flair select drives both id and text together.
+  const [redditUrl, setRedditUrl] = useState(isEdit ? post.redditUrl || '' : '');
+  const [redditFlairId, setRedditFlairId] = useState(isEdit ? post.redditFlairId || '' : '');
+  const [redditFlairText, setRedditFlairText] = useState(isEdit ? post.redditFlairText || '' : '');
+  // Spec 36: the per-post destination subreddit (falls back to the connection default).
+  const [redditSubreddit, setRedditSubreddit] = useState(isEdit ? post.redditSubreddit || '' : '');
+  // Spec 37: organic-vs-promotional. Default PROMO (absence = promo, the safe manual-tier
+  // default); an existing post is organic only when isPromo === false was explicitly set.
+  const [isPromo, setIsPromo] = useState(isEdit ? post.isPromo !== false : true);
+  // Spec 17: the Pinterest board-section target (rides POST /v5/pins on either pin path).
+  const [pinBoardSection, setPinBoardSection] = useState(isEdit ? post.pinBoardSection || '' : '');
   // GBP local-post intent as flat form state; serialized back to a post.gbp
   // object (or null when it says nothing) at save time.
   const [gbp, setGbp] = useState(isEdit ? gbpFormState(post.gbp) : gbpFormState(null));
+  // Spec 14: Telegram CTA + Discord embed, as flat form state serialized back to
+  // post.tgCta/post.dcEmbed (or null when neither carries content) at save time.
+  const [tgCta, setTgCta] = useState(isEdit ? tgCtaFormState(post.tgCta) : tgCtaFormState(null));
+  const [dcEmbed, setDcEmbed] = useState(isEdit ? dcEmbedFormState(post.dcEmbed) : dcEmbedFormState(null));
+  // Spec 26: Discord forum/thread targeting (plain content strings, mutually
+  // exclusive - platformValidate warns) + the guild-scheduled-event intent as
+  // flat form state (mirrors dcEmbed/gbp), serialized back to post.dcEvent (or
+  // null when it says nothing) at save time.
+  const [dcThreadName, setDcThreadName] = useState(isEdit ? post.dcThreadName || '' : '');
+  const [dcThreadId, setDcThreadId] = useState(isEdit ? post.dcThreadId || '' : '');
+  const [dcEvent, setDcEvent] = useState(isEdit ? dcEventFormState(post.dcEvent) : dcEventFormState(null));
+  // Spec 25: disclosure & interaction settings - TikTok interaction/disclosure
+  // flags (structured, mirrors gbp/tgCta/dcEmbed), a Mastodon content-warning
+  // text, and an X reply-audience enum.
+  const [ttInteraction, setTtInteraction] = useState(isEdit ? ttInteractionFormState(post.ttInteraction) : ttInteractionFormState(null));
+  const [spoilerText, setSpoilerText] = useState(isEdit ? post.spoilerText || '' : '');
+  const [xReplySettings, setXReplySettings] = useState(isEdit ? post.xReplySettings || '' : '');
+  // Spec 10: native-poll options/duration as flat form state, serialized back to
+  // post.poll (or null for a non-poll post) at save time.
+  const [poll, setPoll] = useState(isEdit ? pollFormState(post.poll) : pollFormState(null));
   // FR4: interactive-story stickers + per-post hashtags override. hashtagsMode
   // 'global' inherits the global presets (hashtags payload = null); 'custom' sends
   // the typed list. On edit, an existing post.hashtags array switches to custom.
@@ -594,6 +1195,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // idRef so a keyboard user lands on the blocking field, not just an alert.
   const platformsFieldsetRef = useRef(null);
   const campaignSelectRef = useRef(null);
+  const scheduleFieldRef = useRef(null);
   // B9: guard the one-shot SRT caption seed so it runs at most once (and only
   // until the operator starts editing the caption).
   const srtSeededRef = useRef(false);
@@ -610,10 +1212,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     scheduledIso: isEdit ? post.scheduledAt || null : null,
     caption: isEdit ? post.caption : '',
     firstComment: isEdit ? post.firstComment || '' : '',
+    altText: isEdit ? post.altText || '' : '',
     title: isEdit ? post.title || '' : '',
     link: isEdit ? post.link || '' : '',
     image: isEdit ? post.image || '' : '',
+    imageUrl: isEdit ? post.imageUrl || '' : '',
     mediaPath: isEdit ? post.media?.path || '' : seedMediaPath,
+    mediaItems: isEdit ? carouselSeedRefs(isEdit, post) : seedMediaItems,
+    slideUrls: Object.fromEntries((isEdit && Array.isArray(post?.mediaItems) ? post.mediaItems : []).filter((it) => it && (it.path || it.file) && it.url).map((it) => [String(it.path || it.file), it.url])),
     description: isEdit ? post.description || '' : '',
     liDescription: isEdit ? post.liDescription || '' : '',
     xCaption: isEdit ? post.xCaption || '' : '',
@@ -622,11 +1228,34 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     blogSlug: isEdit ? post.blogSlug || '' : '',
     body: isEdit ? post.body || '' : '',
     excerpt: isEdit ? post.excerpt || '' : '',
+    metaTitle: isEdit ? post.metaTitle || '' : '',
+    metaDescription: isEdit ? post.metaDescription || '' : '',
+    wpCategories: isEdit ? post.wpCategories || '' : '',
+    featureImageAlt: isEdit ? post.featureImageAlt || '' : '',
+    publishAsDraft: isEdit ? post.publishAsDraft === true : false,
     canonicalUrl: isEdit ? post.canonicalUrl || '' : '',
     ghostEmail: isEdit ? post.ghostEmail === true : false,
+    newsletter: isEdit ? post.newsletter || '' : '',
+    emailSegment: isEdit ? post.emailSegment || '' : '',
+    emailOnly: isEdit ? post.emailOnly === true : false,
     mastodonCaption: isEdit ? post.mastodonCaption || '' : '',
     nostrCaption: isEdit ? post.nostrCaption || '' : '',
+    redditUrl: isEdit ? post.redditUrl || '' : '',
+    redditFlairId: isEdit ? post.redditFlairId || '' : '',
+    redditFlairText: isEdit ? post.redditFlairText || '' : '',
+    redditSubreddit: isEdit ? post.redditSubreddit || '' : '',
+    isPromo: isEdit ? post.isPromo !== false : true,
+    pinBoardSection: isEdit ? post.pinBoardSection || '' : '',
     gbp: isEdit ? gbpFormState(post.gbp) : gbpFormState(null),
+    tgCta: isEdit ? tgCtaFormState(post.tgCta) : tgCtaFormState(null),
+    dcEmbed: isEdit ? dcEmbedFormState(post.dcEmbed) : dcEmbedFormState(null),
+    dcThreadName: isEdit ? post.dcThreadName || '' : '',
+    dcThreadId: isEdit ? post.dcThreadId || '' : '',
+    dcEvent: isEdit ? dcEventFormState(post.dcEvent) : dcEventFormState(null),
+    ttInteraction: isEdit ? ttInteractionFormState(post.ttInteraction) : ttInteractionFormState(null),
+    spoilerText: isEdit ? post.spoilerText || '' : '',
+    xReplySettings: isEdit ? post.xReplySettings || '' : '',
+    poll: isEdit ? pollFormState(post.poll) : pollFormState(null),
     stickers: isEdit ? post.interactiveStory?.stickers || [] : [],
     hashtagsMode: isEdit && Array.isArray(post.hashtags) ? 'custom' : 'global',
     hashtags: isEdit && Array.isArray(post.hashtags) ? post.hashtags.join(' ') : '',
@@ -637,6 +1266,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const lintPlatform = useMemo(() => representativePlatform(platforms), [platforms]);
   const lint = useLint(caption, lintPlatform);
   const descLint = useLint(description, lintPlatform);
+  const commentLint = useLint(firstComment, lintPlatform); // S4: anti-slop the first comment too
   const assets = useMemo(() => assetsData?.assets || [], [assetsData]);
   const assetsDir = assetsData?.dir || '';
   // B10: the inherited global hashtag presets, read from the active client's
@@ -648,20 +1278,46 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const campaignPosts = useMemo(() => campaigns.find((c) => c.id === campaign)?.posts || [], [campaigns, campaign]);
   // The picker offers only connected + enabled + not-skipped lanes, EXCEPT it always
   // keeps any lane the post being edited already targets so a real target is never
-  // silently dropped. Union of visiblePlatforms(accounts, posting) and the current
-  // selection, in PLATFORMS order. Falls back to the full list when accounts/posting
-  // are unavailable, so the picker is never empty on any render path.
+  // silently dropped. Union of visiblePlatforms(accounts, posting) and the post's
+  // ORIGINAL targets (never the live selection: derived from the selection, deselecting
+  // a targeted-but-unconnected lane unrendered its chip on the first click with no way
+  // back), in PLATFORMS order. Falls back to the full list when accounts/posting are
+  // unavailable, so the picker is never empty on any render path.
   const pickerPlatforms = useMemo(() => {
     if (!accounts) return PLATFORMS;
     const visible = visiblePlatforms(accounts, posting);
-    const allowed = new Set([...visible, ...platforms]);
+    const allowed = new Set([...visible, ...(isEdit ? post.platforms : [])]);
     return PLATFORMS.filter((p) => allowed.has(p));
-  }, [accounts, posting, platforms]);
+  }, [accounts, posting, isEdit, post]);
+  // Are all offered platforms selected? Drives the select-all/clear control's label.
+  const allPlatformsSelected = pickerPlatforms.length > 0 && pickerPlatforms.every((p) => platforms.includes(p));
   // The SHARED field-relevance model (lib/format.js), consumed identically by the
   // PostDetail review dialog so the authoring form and the review view can never
   // drift on which fields a post uses. Every conditional field below gates on
   // `rel.<field>` instead of an ad-hoc inline check.
   const rel = useMemo(() => fieldRelevance(platforms, type), [platforms, type]);
+  // Spec 16: the connected subreddit + its link-flair templates for the flair picker.
+  // Only fetched when reddit is actually targeted (rel.redditFlairId), so a non-reddit
+  // post never hits the read. A scope-absent/failed read resolves ok:false -> the picker
+  // shows an honest "flair unavailable" affordance (publishing still works flair-less).
+  const connectedSubreddit = accounts?.reddit?.subreddit || '';
+  // Spec 36: the flair picker + hints key to the EFFECTIVE sub - the per-post
+  // redditSubreddit (a leading r/ stripped) else the connection default.
+  const effectiveSubreddit = (redditSubreddit || '').replace(/^\/?r\//, '').trim() || connectedSubreddit;
+  const { data: redditFlairsData, isLoading: redditFlairsLoading, isError: redditFlairsError } = useRedditFlairs(effectiveSubreddit, rel.redditFlairId);
+  const redditFlairs = useMemo(() => (redditFlairsData?.ok ? redditFlairsData.items || [] : []), [redditFlairsData]);
+  // A transport failure (react-query isError, data:undefined) OR an explicit ok:false read
+  // both mean "couldn't load flairs" - map BOTH to the unavailable affordance, never the
+  // empty "no flairs" state (which would masquerade a failed read as a flair-less sub).
+  const redditFlairsUnavailable = Boolean(redditFlairsError) || (Boolean(redditFlairsData) && redditFlairsData.ok === false);
+  // Spec 17: the connected board's sections for the Pinterest section picker. Only
+  // fetched when pinterest is actually targeted (rel.pinBoardSection); a read
+  // failure resolves ok:false (never a false-empty items:[]) so the select shows an
+  // honest "unavailable" affordance - publishing still works with no section picked.
+  const pinterestBoardId = accounts?.pinterest?.boardId || '';
+  const { data: pinterestSectionsData, isLoading: pinterestSectionsLoading, isError: pinterestSectionsError } = usePinterestBoardSections(pinterestBoardId, rel.pinBoardSection);
+  const pinterestSections = useMemo(() => (pinterestSectionsData?.ok ? pinterestSectionsData.items || [] : []), [pinterestSectionsData]);
+  const pinterestSectionsUnavailable = Boolean(pinterestSectionsError) || (Boolean(pinterestSectionsData) && pinterestSectionsData.ok === false);
   // Single-lane override collapse (shared rule, lib/format.js): an X-only /
   // Mastodon-only / Nostr-only post authors ONE text — the caption — so its
   // override field is hidden unless it already carries content (saved on the
@@ -676,13 +1332,22 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // is targeted - WordPress and Ghost publish title + markdown body (falling
   // back to the caption), excerpt, hero image and tags.
   const isArticle = platforms.includes('wordpress') || platforms.includes('ghost');
+  // Spec 18: a Nostr NIP-23 long-form article (kind 30023) - reuses the blog long-form
+  // authoring fields (title/body/excerpt/image/hashtags); media-less (the image is a
+  // URL tag, not an uploaded render). Only offered when nostr is targeted.
+  const isNostrArticle = platforms.includes('nostr') && type === 'nostr-longform';
   const showGbp = rel.gbp;
-  const needsMedia = type !== 'text';
-  // Nothing to preview: a pure text post with no link and no image, targeting
-  // neither a blog lane nor LinkedIn, renders no card (PostPreview returns null).
-  // Mirror that here so we hide the "Vorschau" label + toggle rather than leave
-  // an empty labelled region dangling over nothing.
-  const nothingToPreview = !isLinkedinArticle && !isArticle && type === 'text' && !link && !image;
+  // A poll is media-less like a text post - hide the VideoPicker (spec 10). A carousel
+  // is media-BACKED but multi-file, so it swaps the single VideoPicker for the
+  // CarouselPicker (spec 05) - hide the single picker here. A nostr-longform article is
+  // media-less too (spec 18: the header image is a URL, not a local render).
+  const needsMedia = type !== 'text' && type !== 'poll' && type !== 'carousel' && type !== 'nostr-longform';
+  // Nothing to preview: a pure text/poll/carousel/nostr-longform post with no link and
+  // no image, targeting neither a blog lane nor LinkedIn, renders no single-media card
+  // (PostPreview returns null). Mirror that here so we hide the "Vorschau" label +
+  // toggle rather than leave an empty labelled region dangling over nothing (a carousel
+  // previews its slides inline in the CarouselPicker, not the single-media card).
+  const nothingToPreview = !isLinkedinArticle && !isArticle && (type === 'text' || type === 'poll' || type === 'carousel' || type === 'nostr-longform') && !link && !image;
   const showFirstComment = rel.firstComment;
   // FR4: interactive-story authoring applies only to an Instagram story - there is
   // no story surface to attach stickers to for any other type or platform.
@@ -704,11 +1369,12 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const isDirty = useMemo(
     () => JSON.stringify({
       campaign, id, type, platforms, scheduledIso, caption, firstComment, title,
-      link, image, mediaPath, description, liDescription, xCaption, xReplyTo, tags, blogSlug,
-      body, excerpt, canonicalUrl, ghostEmail, mastodonCaption, nostrCaption, gbp,
-      stickers, hashtagsMode, hashtags,
+      link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug,
+      body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent,
+      ttInteraction, spoilerText, xReplySettings, poll,
+      stickers, hashtagsMode, hashtags, altText,
     }) !== initialSnapshot,
-    [campaign, id, type, platforms, scheduledIso, caption, firstComment, title, link, image, mediaPath, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, canonicalUrl, ghostEmail, mastodonCaption, nostrCaption, gbp, stickers, hashtagsMode, hashtags, initialSnapshot],
+    [campaign, id, type, platforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
   );
 
   const requestClose = async () => {
@@ -721,6 +1387,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           : t('composer.discard.body'),
         confirmLabel: t('composer.discard.confirm'),
         danger: true,
+        rememberKey: 'composer.discard',
       });
       if (!ok) return;
     }
@@ -776,6 +1443,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     body: t('composer.stranded.body'),
     confirmLabel: t('composer.stranded.confirm'),
     danger: true,
+    rememberKey: 'composer.strand',
   });
 
   const onTypeChange = async (next) => {
@@ -824,6 +1492,135 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     return out;
   })();
 
+  // Spec 14: tgCta is null unless at least one complete button exists OR the
+  // preview/format flags are non-default (a plain post needs no tgCta object -
+  // the "byte-identical" empty scenario). An incomplete row (label typed, url
+  // still empty, or vice versa) is dropped rather than sent half-formed; a
+  // present-but-malformed url is kept so the server rejects it (bad-URL scenario).
+  const tgCtaPayload = (() => {
+    if (!rel.tgCta) return null;
+    const buttons = tgCta.buttons
+      .filter((b) => b.label.trim() && b.url.trim())
+      .map((b) => ({ label: b.label.trim(), url: b.url.trim() }));
+    const nonDefault = buttons.length > 0 || tgCta.linkPreview !== true || tgCta.format !== 'plain';
+    return nonDefault ? { buttons, linkPreview: tgCta.linkPreview, format: tgCta.format } : null;
+  })();
+  // dcEmbed is null unless a field carries content. color is authored as a hex
+  // string (#RRGGBB) and converted to the Discord wire integer here; an
+  // unparsable value is simply omitted (never sent as garbage).
+  const dcEmbedPayload = (() => {
+    if (!rel.dcEmbed) return null;
+    const out = {};
+    if (dcEmbed.title.trim()) out.title = dcEmbed.title.trim();
+    if (dcEmbed.description.trim()) out.description = dcEmbed.description.trim();
+    if (dcEmbed.url.trim()) out.url = dcEmbed.url.trim();
+    const hexMatch = /^#?([0-9a-fA-F]{6})$/.exec(dcEmbed.color.trim());
+    if (hexMatch) out.color = parseInt(hexMatch[1], 16);
+    return Object.keys(out).length ? out : null;
+  })();
+
+  // Spec 26 review: dcEvent is null unless the group is COMPLETE enough for
+  // lib/writes.mjs to accept it - name + a parseable startTime always
+  // required, plus (voice/stage) a channelId, or (external, the default) a
+  // parseable endTime + non-empty location. An incomplete group (e.g. a
+  // name-only draft, or an external event with no end/location yet) is
+  // OMITTED from the payload entirely, mirroring the tgCta button-completeness
+  // precedent above, rather than sent half-filled - validateFieldValues now
+  // REJECTS an incomplete dcEvent outright (MAJOR-1), which would otherwise
+  // block the WHOLE post save on a stray dcEvent.startTime:'' (MINOR-5).
+  // entityType/channelId/description are carried through even though the
+  // Composer never authors them itself, so an agent-authored voice/stage
+  // event survives an unrelated owner tweak (MINOR-4). The <input
+  // type="datetime-local"> value has no timezone, so it is converted to a
+  // full ISO-8601 string (via the browser's own Date) HERE, at save time
+  // (MAJOR-2) - never sent to the server verbatim.
+  const dcEventPayload = (() => {
+    if (!rel.dcEmbed) return null;
+    const name = dcEvent.name.trim();
+    const startIso = dcEventLocalToIso(dcEvent.startTime);
+    if (!name || !startIso) return null;
+    const entityType = dcEvent.entityType === 'voice' || dcEvent.entityType === 'stage' ? dcEvent.entityType : '';
+    const isVoiceOrStage = Boolean(entityType);
+    const channelId = dcEvent.channelId.trim();
+    if (isVoiceOrStage && !channelId) return null;
+    const endIso = dcEventLocalToIso(dcEvent.endTime);
+    const location = dcEvent.location.trim();
+    if (!isVoiceOrStage && (!endIso || !location)) return null;
+    const out = { name, startTime: startIso };
+    if (endIso) out.endTime = endIso;
+    if (location) out.location = location;
+    if (entityType) out.entityType = entityType;
+    if (channelId) out.channelId = channelId;
+    if (dcEvent.description.trim()) out.description = dcEvent.description.trim();
+    return out;
+  })();
+
+  // Spec 25: ttInteraction is null unless at least one flag is toggled or a cover
+  // timestamp is set (a plain upload needs no ttInteraction object - the "byte-
+  // identical empty scenario"). Only true flags are sent (an untouched checkbox
+  // is never forced false).
+  const ttInteractionPayload = (() => {
+    if (!rel.ttInteraction) return null;
+    const out = {};
+    for (const k of TT_INTERACTION_CHECKS) if (ttInteraction[k]) out[k] = true;
+    // Floor a decimal (e.g. 1500.5) to a whole millisecond so it is preserved
+    // rather than silently dropped by the integer check (validateFieldValues
+    // requires a non-negative INTEGER coverTimestampMs).
+    const ms = Math.floor(Number(ttInteraction.coverTimestampMs));
+    if (ttInteraction.coverTimestampMs !== '' && Number.isInteger(ms) && ms >= 0) out.coverTimestampMs = ms;
+    return Object.keys(out).length ? out : null;
+  })();
+
+  // Spec 10: the poll object (options trimmed + de-blanked, duration, multi-select).
+  // Sent WHENEVER type=poll (rel.poll) - even with < 2 options - so the draft saves
+  // and Prüfen (platform_validate) surfaces the "needs at least 2 options" problem
+  // (spec §2); a non-poll post sends null (clears any stale poll). `multiple` rides
+  // only when set, mirroring the byte-identical-empty idiom of the sibling blocks.
+  const pollMax = pollMaxOptions(platforms);
+  const pollPayload = rel.poll
+    ? { options: poll.options.map((o) => o.trim()).filter(Boolean), durationMinutes: poll.durationMinutes, ...(poll.multiple ? { multiple: true } : {}) }
+    : null;
+
+  // Spec 05: the ordered carousel slides ({ path } refs, blanks dropped). Sent WHENEVER
+  // type=carousel (rel.mediaItems) - even with < 2 slides - so the draft saves and Prüfen
+  // surfaces the "needs at least 2 media items" problem (spec §2); a non-carousel post
+  // sends null (clears any stale slide set). The tightest targeted-lane cap gates the
+  // add control in the picker (min across x=4/pinterest=5/ig=telegram=discord=10/li=20/
+  // reddit=20).
+  const carouselMax = (() => {
+    const caps = (platforms || []).map((p) => CAROUSEL_LANE_MAX[p]).filter((n) => typeof n === 'number');
+    // H4: with no carousel-capable lane targeted, the bound is the STRUCTURAL one the
+    // server enforces. The old fallback of 10 was invented and hid Add on a lawful album.
+    return caps.length ? Math.min(...caps) : CAROUSEL_STRUCTURAL_MAX;
+  })();
+  // Preserve each ref's ORIGINAL { file } vs { path } shape on save: an untouched seeded
+  // slide re-emits verbatim (a relative { file } stays { file } - flattening it to { path }
+  // would mis-anchor its on-disk resolution), while a freshly picked slide (an absolute
+  // `${assetsDir}/${file}` value not in the ref map) serializes to { path }. This is what
+  // makes an unresolved MCP-authored slide survive a round-trip save instead of vanishing.
+  const mediaItemsPayload = rel.mediaItems
+    ? mediaItems.map((p) => String(p || '').trim()).filter(Boolean).map((p) => {
+      const { url: _seededUrl, ...base } = carouselRawRefs.current.get(p) || { path: p };
+      const u = String(slideUrls[p] || '').trim();
+      return u ? { ...base, url: u } : base;
+    })
+    : null;
+
+  // The preview's media for a CAROUSEL, resolved from the slides actually picked in this
+  // form. Without it the preview always read post.media.items as empty and printed
+  // "No slides yet" directly above two attached slides: the screen contradicting itself
+  // in one glance. Resolved the same way selectedAsset resolves the single picker, so a
+  // ref that is not in the library yet reads honestly as exists:false rather than
+  // vanishing.
+  const previewItems = type === 'carousel'
+    ? mediaItems.map((ref) => String(ref || '').trim()).filter(Boolean).map((ref) => {
+      const a = assets.find((x) => `${assetsDir}/${x.file}` === ref);
+      return a
+        ? { file: a.file, url: a.url, path: ref, exists: true, resolution: a.checks?.resolution || null }
+        : { file: ref.split('/').pop() || null, url: null, path: ref, exists: false, resolution: null };
+    })
+    : [];
+
   const previewPost = {
     type,
     platforms,
@@ -837,7 +1634,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     xCaption,
     tags,
     interactiveStory: interactiveStoryPayload,
-    media: selectedAsset ? { url: selectedAsset.url, cover: selectedAsset.cover || null, file: selectedAsset.file } : null,
+    media: type === 'carousel'
+      ? { url: null, cover: null, file: null, items: previewItems }
+      : (selectedAsset ? { url: selectedAsset.url, cover: selectedAsset.cover || null, file: selectedAsset.file } : null),
   };
 
   const save = async () => {
@@ -857,7 +1656,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     }
     if (!platforms.length) {
       setError(t('composer.error.noPlatform'));
-      platformsFieldsetRef.current?.querySelector('button')?.focus();
+      // The platform chips carry aria-pressed; the select-all control does not, so this
+      // targets the first actual platform toggle, not the select-all button beside it.
+      platformsFieldsetRef.current?.querySelector('button[aria-pressed]')?.focus();
       return;
     }
     // US-CFG-12: on a brand-new project the campaign select is empty; refuse to
@@ -866,6 +1667,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     if (!isEdit && !campaign) {
       setError(t('composer.error.noCampaign'));
       campaignSelectRef.current?.focus();
+      return;
+    }
+    // A Termin (date+time) is mandatory - a time-less post never publishes, so it
+    // may not be saved without one (mirrors the server createPost gate). Covers
+    // create AND edit; both branches send scheduledAt: scheduledIso below.
+    if (!scheduledIso) {
+      setError(t('composer.error.noSchedule'));
+      scheduleFieldRef.current?.querySelector('button')?.focus();
       return;
     }
     setBusy(true);
@@ -880,6 +1689,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           title: title || null,
           link: link || null,
           image: image || null,
+          imageUrl: imageUrl.trim() || null,
           path: mediaPath || null,
           description: description || null,
           liDescription: liDescription || null,
@@ -889,13 +1699,40 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           blogSlug: blogSlug || null,
           body: body || null,
           excerpt: excerpt || null,
+          metaTitle: metaTitle || null,
+          metaDescription: metaDescription || null,
+          wpCategories: wpCategories || null,
+          featureImageAlt: featureImageAlt || null,
+          publishAsDraft: publishAsDraft === true ? true : null,
           canonicalUrl: canonicalUrl || null,
           ghostEmail: ghostEmail === true ? true : null,
+          newsletter: newsletter || null,
+          emailSegment: emailSegment || null,
+          emailOnly: emailOnly === true ? true : null,
           mastodonCaption: mastodonCaption || null,
           nostrCaption: nostrCaption || null,
+          redditUrl: redditUrl || null,
+          redditFlairId: redditFlairId || null,
+          redditFlairText: redditFlairText || null,
+          redditSubreddit: redditSubreddit || null,
+          // Spec 37: persist FALSE (organic) only; clear (null) when promo so absence
+          // reads as promo. NOT `|| null` - that would drop the meaningful false.
+          isPromo: isPromo === false ? false : null,
+          pinBoardSection: pinBoardSection || null,
           gbp: gbpPayload,
+          tgCta: tgCtaPayload,
+          dcEmbed: dcEmbedPayload,
+          dcThreadName: dcThreadName || null,
+          dcThreadId: dcThreadId || null,
+          dcEvent: dcEventPayload,
+          ttInteraction: ttInteractionPayload,
+          spoilerText: spoilerText || null,
+          xReplySettings: xReplySettings || null,
+          poll: pollPayload,
+          mediaItems: mediaItemsPayload,
           interactiveStory: interactiveStoryPayload,
           hashtags: hashtagsPayload,
+          altText: altText || null,
         });
       } else {
         await createPost(campaign, {
@@ -908,6 +1745,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           title: title || undefined,
           link: link || undefined,
           image: image || undefined,
+          imageUrl: imageUrl.trim() || undefined,
           path: mediaPath || undefined,
           description: description || undefined,
           liDescription: liDescription || undefined,
@@ -917,13 +1755,39 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           blogSlug: blogSlug || undefined,
           body: body || undefined,
           excerpt: excerpt || undefined,
+          metaTitle: metaTitle || undefined,
+          metaDescription: metaDescription || undefined,
+          wpCategories: wpCategories || undefined,
+          featureImageAlt: featureImageAlt || undefined,
+          publishAsDraft: publishAsDraft === true ? true : undefined,
           canonicalUrl: canonicalUrl || undefined,
           ghostEmail: ghostEmail === true ? true : undefined,
+          newsletter: newsletter || undefined,
+          emailSegment: emailSegment || undefined,
+          emailOnly: emailOnly === true ? true : undefined,
           mastodonCaption: mastodonCaption || undefined,
           nostrCaption: nostrCaption || undefined,
+          redditUrl: redditUrl || undefined,
+          redditFlairId: redditFlairId || undefined,
+          redditFlairText: redditFlairText || undefined,
+          redditSubreddit: redditSubreddit || undefined,
+          // Spec 37: send FALSE (organic) only; omit when promo (absence = promo).
+          isPromo: isPromo === false ? false : undefined,
+          pinBoardSection: pinBoardSection || undefined,
           gbp: gbpPayload || undefined,
+          tgCta: tgCtaPayload || undefined,
+          dcEmbed: dcEmbedPayload || undefined,
+          dcThreadName: dcThreadName || undefined,
+          dcThreadId: dcThreadId || undefined,
+          dcEvent: dcEventPayload || undefined,
+          ttInteraction: ttInteractionPayload || undefined,
+          spoilerText: spoilerText || undefined,
+          xReplySettings: xReplySettings || undefined,
+          poll: pollPayload || undefined,
+          mediaItems: mediaItemsPayload && mediaItemsPayload.length ? mediaItemsPayload : undefined,
           interactiveStory: interactiveStoryPayload || undefined,
           hashtags: hashtagsPayload || undefined,
+          altText: altText || undefined,
         });
       }
       queryClient.invalidateQueries({ queryKey: ['plans'] });
@@ -963,7 +1827,20 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
         <div className="space-y-4">
           {/* Platforms first: they gate every conditional field below. */}
           <fieldset ref={platformsFieldsetRef} className="space-y-1.5">
-            <legend className={EYEBROW}>{t('composer.field.platforms')}</legend>
+            <div className="flex items-center justify-between gap-3">
+              <legend className={EYEBROW}>{t('composer.field.platforms')}</legend>
+              {/* Multi-select is the whole point: one post, every ticked platform. A
+                  select-all/clear control makes that obvious and fast. */}
+              {pickerPlatforms.length > 1 ? (
+                <button
+                  type="button"
+                  onClick={() => setPlatforms(allPlatformsSelected ? [] : [...pickerPlatforms])}
+                  className="text-[11px] font-bold text-brand transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                >
+                  {allPlatformsSelected ? t('composer.platforms.clear') : t('composer.platforms.all')}
+                </button>
+              ) : null}
+            </div>
             <div className="flex flex-wrap gap-1.5">
               {pickerPlatforms.map((p) => {
                 const meta = PLATFORM_META[p];
@@ -978,16 +1855,25 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                     aria-pressed={active}
                     className={`flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
                       active
-                        ? 'bg-brand/10 text-brand ring-brand/30 dark:bg-brand-light/10 dark:text-brand-light dark:ring-brand-light/30'
+                        ? 'bg-brand text-white ring-brand dark:bg-brand-light dark:text-zinc-900 dark:ring-brand-light'
                         : 'text-zinc-500 ring-zinc-900/10 hover:bg-zinc-200/40 dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-zinc-800/40'
                     }`}
                   >
-                    <Icon size={13} className={active ? meta.color : ''} aria-hidden="true" />
+                    {active
+                      ? <Check size={13} aria-hidden="true" />
+                      : <Icon size={13} className={meta.color} aria-hidden="true" />}
                     {meta.label}
                   </button>
                 );
               })}
             </div>
+            {/* One calm line so the shared-content model is legible: the same post,
+                caption and media publish to every selected platform. */}
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              {platforms.length > 1
+                ? t('composer.platforms.hintMulti', { n: platforms.length })
+                : t('composer.platforms.hint')}
+            </p>
           </fieldset>
 
           {/* Discoverability: a single X post can grow into a real thread. This
@@ -1036,15 +1922,21 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                   rewrites the format. */}
               <select id="composer-type" value={type} onChange={(e) => onTypeChange(e.target.value)} className={`${FIELD_CLS} h-10`}>
                 {TYPES.filter((ty) => ty === type || (platforms.length ? platforms.some((p) => formatsForPlatform(p).includes(ty)) : true)).map((ty) => (
-                  <option key={ty} value={ty}>{t(`type.${ty}`)}</option>
+                  <option key={ty} value={ty}>{typeOptionLabel(t, platforms, ty)}</option>
                 ))}
               </select>
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1.5" ref={scheduleFieldRef}>
               <label className={EYEBROW}>{t('composer.field.schedule')}</label>
               <DateTimePicker value={scheduledIso} onChange={setScheduledIso} triggerClassName={`${FIELD_CLS} h-10`} />
             </div>
           </div>
+
+          {/* Spec 18: a one-line note that a Nostr article is a NIP-23 kind-30023 post
+              and re-publishing edits it in place (the stable d identifier). */}
+          {isNostrArticle ? (
+            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.nostr.longformHint')}</p>
+          ) : null}
 
           {needsMedia ? (
             <div className="space-y-1.5">
@@ -1110,6 +2002,23 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
+          {/* Spec 25: who may reply to the tweet (reply_settings) - an
+              interaction/comment control. X has no paid-partnership/branded-
+              content create param (not API-exposed), so this is the one
+              disclosure/interaction toggle X actually offers today. Unset (the
+              default option) keeps X's own default (everyone). */}
+          {rel.xReplySettings ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-x-reply-settings">{t('composer.field.xReplySettings')}</label>
+              <select id="composer-x-reply-settings" value={xReplySettings} onChange={(e) => setXReplySettings(e.target.value)} className={FIELD_CLS}>
+                <option value="">{t('composer.field.xReplySettings.default')}</option>
+                {X_REPLY_SETTINGS.map((v) => (
+                  <option key={v} value={v}>{t(`composer.field.xReplySettings.${v}`)}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
+
           {rel.mastodonCaption && hiddenOverride !== 'mastodonCaption' ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-mastodon-caption">{t('composer.field.mastodonCaption')}</label>
@@ -1124,6 +2033,16 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
               />
               <CharCounter id="composer-mastodon-counter" len={mastodonLen} max={CAPTION_CAPS.mastodon} over={mastodonOver} />
               <p role="status" aria-live="polite" className="sr-only">{mastodonOverAnnounce}</p>
+            </div>
+          ) : null}
+
+          {/* Spec 25: a Mastodon content warning - non-empty text also marks the
+              status sensitive:true, so it renders behind the CW until expanded. */}
+          {rel.spoilerText ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-spoiler-text">{t('composer.field.spoilerText')}</label>
+              <input id="composer-spoiler-text" value={spoilerText} onChange={(e) => setSpoilerText(e.target.value)} placeholder={t('composer.field.spoilerTextPlaceholder')} className={FIELD_CLS} />
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.spoilerTextHint')}</p>
             </div>
           ) : null}
 
@@ -1145,6 +2064,18 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-comment">{t('composer.field.firstComment')}</label>
               <textarea id="composer-comment" value={firstComment} onChange={(e) => setFirstComment(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+              <LintPanel lint={commentLint} />
+            </div>
+          ) : null}
+
+          {/* Spec 21: cross-lane image alt-text (X media metadata, WordPress
+              attachment alt_text/caption, Pinterest pin alt_text). Meaningful only
+              with an image; each engine no-ops when the post carries none. */}
+          {rel.altText ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-alt-text">{t('composer.field.altText')}</label>
+              <textarea id="composer-alt-text" value={altText} onChange={(e) => setAltText(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.altTextHint')}</p>
             </div>
           ) : null}
 
@@ -1176,6 +2107,11 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 <label className={EYEBROW} htmlFor="composer-body">{t('composer.field.body')}</label>
                 <textarea id="composer-body" value={body} onChange={(e) => setBody(e.target.value)} rows={10} className={`${FIELD_CLS} resize-y font-mono leading-relaxed`} />
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.bodyHint')}</p>
+                {/* Spec 18: an article's content IS the body (no caption fallback on the
+                    nostr lane), so an empty body is a publish blocker - surface it early. */}
+                {isNostrArticle && !body.trim() ? (
+                  <p role="status" className="text-[11px] text-amber-600 dark:text-amber-300">{t('composer.nostr.bodyRequired')}</p>
+                ) : null}
               </div>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-excerpt">{t('composer.field.excerpt')}</label>
@@ -1183,6 +2119,59 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.excerptHint')}</p>
               </div>
             </>
+          ) : null}
+
+          {/* Spec 13: rich long-form metadata - SEO meta title/description +
+              feature-image alt (wordpress/ghost), WordPress-only category
+              taxonomy (distinct from tags, resolved/auto-created on publish). */}
+          {rel.metaTitle ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-meta-title">{t('composer.field.metaTitle')}</label>
+              <input id="composer-meta-title" value={metaTitle} onChange={(e) => setMetaTitle(e.target.value)} className={FIELD_CLS} />
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.metaTitleHint')}</p>
+            </div>
+          ) : null}
+
+          {rel.metaDescription ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-meta-description">{t('composer.field.metaDescription')}</label>
+              <textarea id="composer-meta-description" value={metaDescription} onChange={(e) => setMetaDescription(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.metaDescriptionHint')}</p>
+            </div>
+          ) : null}
+
+          {rel.wpCategories ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-wp-categories">{t('composer.field.wpCategories')}</label>
+              <input id="composer-wp-categories" value={wpCategories} onChange={(e) => setWpCategories(e.target.value)} placeholder={t('composer.field.wpCategoriesPlaceholder')} className={FIELD_CLS} />
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.wpCategoriesHint')}</p>
+            </div>
+          ) : null}
+
+          {rel.featureImageAlt ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-feature-image-alt">{t('composer.field.featureImageAlt')}</label>
+              <input id="composer-feature-image-alt" value={featureImageAlt} onChange={(e) => setFeatureImageAlt(e.target.value)} className={FIELD_CLS} />
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.featureImageAltHint')}</p>
+            </div>
+          ) : null}
+
+          {/* Spec 27: draft/pending-review publish status - a native WordPress
+              draft or the TikTok inbox, for a human to finish + publish. Approval
+              (§H.2) still gates whether the engine may act; this never bypasses it. */}
+          {rel.publishAsDraft ? (
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-2 text-xs font-bold">
+                <input
+                  type="checkbox"
+                  checked={publishAsDraft}
+                  onChange={(e) => setPublishAsDraft(e.target.checked)}
+                  className="h-4 w-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                />
+                {t('composer.field.publishAsDraft')}
+              </label>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.publishAsDraftHint')}</p>
+            </div>
           ) : null}
 
           {rel.link ? (
@@ -1201,6 +2190,132 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
+          {/* Specs 17+39: the public media URL the URL-only lanes fetch (pinterest
+              pin image / video-pin cover, instagram feed IMAGE container). The
+              operator vouches it serves the same image as the local render - the
+              engine cannot fetch it to compare (local-first, no network client). */}
+          {rel.imageUrl ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-image-url">{t('composer.field.imageUrl')}</label>
+              <input id="composer-image-url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={FIELD_CLS} />
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.imageUrlHint')}</p>
+            </div>
+          ) : null}
+
+          {/* Spec 37: organic-vs-promotional. Reddit gates self-promotion (~9:1 norm); a
+              promo post always stays MANUAL (Offene Aktionen). Marking a post organic lets a
+              WARM account auto-post it after approval - so it defaults PROMO (checked) and the
+              operator opts into organic by unchecking. Every reddit post still needs a distinct
+              human approval; this only changes the post-approval tier. */}
+          {rel.isPromo ? (
+            <div className="space-y-1.5">
+              <label className="flex items-center gap-2 text-xs font-bold">
+                <input
+                  type="checkbox"
+                  checked={isPromo}
+                  onChange={(e) => setIsPromo(e.target.checked)}
+                  className="h-4 w-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                />
+                {t('composer.field.isPromo')}
+              </label>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.isPromoHint')}</p>
+            </div>
+          ) : null}
+
+          {/* Spec 36: the per-post destination subreddit (falls back to the connection
+              default REDDIT_SUBREDDIT when blank). Drives the flair picker's read. */}
+          {rel.redditSubreddit ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-reddit-subreddit">{t('composer.field.redditSubreddit')}</label>
+              <input id="composer-reddit-subreddit" value={redditSubreddit} onChange={(e) => setRedditSubreddit(e.target.value)} placeholder={connectedSubreddit} className={FIELD_CLS} />
+            </div>
+          ) : null}
+
+          {/* Spec 16: the Reddit link submission URL (a type=text reddit post with a URL
+              publishes as a `link`; without one it is a self/text post). */}
+          {rel.redditUrl ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-reddit-url">{t('composer.field.redditUrl')}</label>
+              <input id="composer-reddit-url" value={redditUrl} onChange={(e) => setRedditUrl(e.target.value)} placeholder="https://example.com/article" className={FIELD_CLS} />
+            </div>
+          ) : null}
+
+          {/* Spec 16: the link-flair picker (reddit_list_flairs). States: loading (a
+              disabled spinner option), unavailable (scope/config - an honest hint,
+              publishing still works flair-less), empty (no templates on the sub), and
+              the populated select. Picking an editable template carries its flair_text. */}
+          {rel.redditFlairId ? (
+            <div className="space-y-1.5">
+              {/* The visible header is a span (not a <label htmlFor>) because the control
+                  below is conditional - the loading/populated states render a select
+                  (named via aria-label), the empty/unavailable states render a hint. */}
+              <span className={EYEBROW}>{t('composer.field.redditFlair')}</span>
+              {!effectiveSubreddit ? (
+                // No connected subreddit yet - a neutral nudge, never a fake "r/reddit".
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.reddit.flairNoSub')}</p>
+              ) : redditFlairsLoading ? (
+                <select aria-label={t('composer.field.redditFlair')} disabled className={FIELD_CLS}>
+                  <option>{t('composer.reddit.flairLoading')}</option>
+                </select>
+              ) : redditFlairsUnavailable ? (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.reddit.flairUnavailable', { sub: effectiveSubreddit })}</p>
+              ) : redditFlairs.length ? (
+                <select
+                  aria-label={t('composer.field.redditFlair')}
+                  value={redditFlairId}
+                  onChange={(e) => {
+                    const picked = redditFlairs.find((f) => f.id === e.target.value);
+                    setRedditFlairId(e.target.value);
+                    // flair_text only rides an EDITABLE template (Reddit ignores it otherwise).
+                    setRedditFlairText(picked && picked.editable ? (picked.text || '') : '');
+                  }}
+                  className={FIELD_CLS}
+                >
+                  <option value="">{t('composer.reddit.flairNone')}</option>
+                  {redditFlairs.map((f) => (
+                    <option key={f.id} value={f.id}>{f.text || f.id}</option>
+                  ))}
+                </select>
+              ) : (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.reddit.flairEmpty', { sub: effectiveSubreddit })}</p>
+              )}
+            </div>
+          ) : null}
+
+          {/* Spec 17: the Pinterest board-section picker (pinterest_list_board_sections).
+              States: loading (a disabled spinner option), unavailable (scope/config - an
+              honest hint, publishing still works section-less), empty (board has no
+              sections), and the populated select. A video pin also needs a public cover
+              (imageUrl) - the hint always shows for a video-typed post. */}
+          {rel.pinBoardSection ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-pin-board-section">{t('composer.field.pinBoardSection')}</label>
+              {pinterestSectionsLoading ? (
+                <select id="composer-pin-board-section" disabled className={FIELD_CLS}>
+                  <option>{t('composer.pinterest.sectionsLoading')}</option>
+                </select>
+              ) : pinterestSectionsUnavailable ? (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.pinterest.sectionsUnavailable')}</p>
+              ) : (
+                <select
+                  id="composer-pin-board-section"
+                  value={pinBoardSection}
+                  onChange={(e) => setPinBoardSection(e.target.value)}
+                  className={FIELD_CLS}
+                >
+                  <option value="">{t('composer.pinterest.sectionRoot')}</option>
+                  {pinterestSections.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              )}
+              {!pinterestSectionsLoading && !pinterestSectionsUnavailable && !pinterestSections.length ? (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.pinterest.sectionEmpty')}</p>
+              ) : null}
+              {type === 'video' ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.pinterest.coverHint')}</p> : null}
+            </div>
+          ) : null}
+
           {rel.canonicalUrl ? (
             <>
               <div className="space-y-1.5">
@@ -1216,6 +2331,37 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 />
                 {t('composer.field.ghostEmail')}
               </label>
+              {/* Spec 01: newsletter/segment/email-only refine the ghostEmail
+                  opt-in above - hidden until it is checked. */}
+              {ghostEmail ? (
+                <div className="space-y-3 pl-1">
+                  <div className="space-y-1.5">
+                    <label className={EYEBROW} htmlFor="composer-newsletter">{t('composer.field.newsletter')}</label>
+                    <input id="composer-newsletter" value={newsletter} onChange={(e) => setNewsletter(e.target.value)} placeholder={t('composer.field.newsletterPlaceholder')} className={FIELD_CLS} />
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.newsletterHint')}</p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className={EYEBROW} htmlFor="composer-email-segment">{t('composer.field.emailSegment')}</label>
+                    <select id="composer-email-segment" value={emailSegment} onChange={(e) => setEmailSegment(e.target.value)} className={FIELD_CLS}>
+                      <option value="">{t('composer.field.emailSegment.all')}</option>
+                      <option value="free">{t('composer.field.emailSegment.free')}</option>
+                      <option value="paid">{t('composer.field.emailSegment.paid')}</option>
+                    </select>
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.emailSegmentHint')}</p>
+                  </div>
+                  <label className="flex items-center gap-2 text-xs font-bold">
+                    <input
+                      id="composer-email-only"
+                      type="checkbox"
+                      checked={emailOnly}
+                      onChange={(e) => setEmailOnly(e.target.checked)}
+                      className="h-4 w-4 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                    />
+                    {t('composer.field.emailOnly')}
+                  </label>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.emailOnlyHint')}</p>
+                </div>
+              ) : null}
             </>
           ) : null}
 
@@ -1251,6 +2397,45 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           ) : null}
 
           {showGbp ? <GbpFields gbp={gbp} onChange={setGbp} /> : null}
+
+          {/* Spec 14: rich link/CTA - Telegram inline buttons + link-preview/
+              format control, and a Discord rich embed card. */}
+          {rel.tgCta ? <TelegramCtaFields cta={tgCta} onChange={setTgCta} /> : null}
+          {rel.dcEmbed ? (
+            <DiscordEmbedFields
+              embed={dcEmbed}
+              onChange={setDcEmbed}
+              threadName={dcThreadName}
+              threadId={dcThreadId}
+              onThreadNameChange={setDcThreadName}
+              onThreadIdChange={setDcThreadId}
+              dcEvent={dcEvent}
+              onDcEventChange={setDcEvent}
+            />
+          ) : null}
+
+          {/* Spec 25: TikTok interaction/disclosure toggles. */}
+          {rel.ttInteraction ? <TiktokFields interaction={ttInteraction} onChange={setTtInteraction} /> : null}
+
+          {/* Spec 10: native poll options + duration (type=poll only; the question is
+              the caption above). Media-less, so the VideoPicker is hidden. */}
+          {rel.poll ? <PollFields poll={poll} onChange={setPoll} max={pollMax} /> : null}
+
+          {/* Spec 05: native carousel ordered slides (type=carousel only). Media-BACKED,
+              so it replaces the single VideoPicker (needsMedia is false for a carousel). */}
+          {rel.mediaItems ? (
+            <CarouselPicker
+              assets={assets}
+              assetsDir={assetsDir}
+              items={mediaItems}
+              onChange={setMediaItems}
+              max={carouselMax}
+              slideUrls={slideUrls}
+              onSlideUrlChange={(ref, url) => setSlideUrls((prev) => ({ ...prev, [ref]: url }))}
+              showSlideUrl={platforms.includes('instagram')}
+              platforms={platforms}
+            />
+          ) : null}
 
           {/* Small-viewport preview (finding #56): the sticky <aside> is hidden
               below lg, so surface the same preview behind a toggle here. Hidden
@@ -1294,7 +2479,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <button type="button" onClick={requestClose} className="rounded-xl px-3.5 py-2 text-sm font-bold text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60">
               {t('composer.cancel')}
             </button>
-            <button type="button" onClick={save} disabled={busy} className="flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:bg-brand-light dark:text-zinc-900">
+            <button type="button" onClick={save} disabled={busy} className={`flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}>
               {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
               {isEdit ? t('composer.save') : t('composer.createDraft')}
             </button>

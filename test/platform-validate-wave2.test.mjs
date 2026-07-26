@@ -76,6 +76,9 @@ fs.writeFileSync(path.join(campDir, 'post-plan.json'), JSON.stringify({
     post('gh-notitle', ['ghost']),
     post('gh-nobody', ['ghost'], { title: 'A fine post', caption: '' }),
     post('gh-excerpt', ['ghost'], { title: 'A fine post', excerpt: 'e'.repeat(320) }),
+    // Spec 01 Fix #2: email-only without the newsletter opt-in is advisory-only.
+    post('gh-emailonly-noopt', ['ghost'], { title: 'A fine post', emailOnly: true }),
+    post('gh-emailonly-ok', ['ghost'], { title: 'A fine post', ghostEmail: true, emailOnly: true }),
     post('no-notext', ['nostr'], { caption: '' }),
     post('no-override', ['nostr'], { caption: '', nostrCaption: 'a note signed into the void' }),
     post('no-media', ['nostr'], { type: 'reel', path: 'data/media/clip.mp4' }),
@@ -84,6 +87,14 @@ fs.writeFileSync(path.join(campDir, 'post-plan.json'), JSON.stringify({
     post('gbp-event-full', ['gbp'], { gbp: { topic: 'event', eventTitle: 'Launch party', eventStart: '2099-01-02', eventEnd: '2099-01-03' } }),
     post('gbp-media-nourl', ['gbp'], { type: 'reel', path: 'data/media/clip.mp4' }),
     post('gbp-media-url', ['gbp'], { type: 'reel', path: 'data/media/clip.mp4', image: 'https://example.com/promo.jpg' }),
+    // Sticker honesty (platform-constraints): authored story stickers are stored +
+    // previewed but the engine publishes NO sticker parameters - advisory only.
+    post('ig-story-stickers', ['instagram'], { type: 'story', path: 'data/media/clip.mp4', interactiveStory: { stickers: [{ kind: 'poll', question: 'Which?', options: ['A', 'B'] }, { kind: 'mention', handle: 'someone' }] } }),
+    post('ig-story-plain', ['instagram'], { type: 'story', path: 'data/media/clip.mp4' }),
+    // US-VAL-10: X counts each URL as t.co's fixed 23 chars. 250 letters + a
+    // 90-char URL = 341 raw but 273 weighted (fits); 300 plain letters = over.
+    post('x-url-fits', ['x'], { caption: `${'a'.repeat(250)} https://example.com/${'p'.repeat(69)}` }),
+    post('x-plain-over', ['x'], { caption: 'b'.repeat(300) }),
   ],
 }, null, 2));
 
@@ -185,6 +196,13 @@ try {
   ok(ghExcerpt.problems.length === 0 && ghExcerpt.ready === true, 'ghost: a 320-char excerpt is NOT a blocker (the engine truncates)');
   ok(ghExcerpt.warnings.some((w) => /300/.test(w)), 'ghost: the over-long excerpt carries a 300-cap truncation warning');
 
+  // ===== (6b, spec 01 Fix #2) ghost email-only without the newsletter opt-in ====
+  const ghEmailOnlyNoOpt = (await validate('gh-emailonly-noopt')).ghost;
+  ok(ghEmailOnlyNoOpt.problems.length === 0 && ghEmailOnlyNoOpt.ready === true, 'ghost: email-only without ghostEmail is NOT a blocker (advisory only)');
+  ok(ghEmailOnlyNoOpt.warnings.some((w) => /email-only/i.test(w) && /newsletter/i.test(w)), 'ghost: email-only without the newsletter opt-in carries an advisory warning (the engine drops email_only, content is not vanished)');
+  const ghEmailOnlyOk = (await validate('gh-emailonly-ok')).ghost;
+  ok(!ghEmailOnlyOk.warnings.some((w) => /email-only/i.test(w)), 'ghost: email-only WITH ghostEmail carries no email-only warning (the intended email send)');
+
   // ===== (7) nostr: text presence (nostrCaption || caption); media publishes text only =====
   const nNoText = (await validate('no-notext')).nostr;
   ok(nNoText.ready === false && nNoText.problems.some((p) => /note text/i.test(p)), 'nostr: a post with no text blocks (nothing to sign)');
@@ -207,7 +225,21 @@ try {
   const gMediaUrl = (await validate('gbp-media-url')).gbp;
   ok(gMediaUrl.warnings.length === 0 && gMediaUrl.ready === true, 'gbp: a media post WITH post.image set is clean (the URL is what v4 takes)');
 
-  console.log(`[platform-validate-wave2] OK - mastodon/wordpress/ghost/nostr/gbp readiness: connectivity + half-setups block with needsSetup, content shapes match the engines, advisory warnings never gate ready (${pass} assertions).`);
+  // ===== sticker honesty: authored IG story stickers warn (advisory), never block =====
+  const igStick = (await validate('ig-story-stickers')).instagram;
+  ok(igStick.warnings.some((w) => /sticker/i.test(w) && /by hand/i.test(w)), 'instagram story: authored stickers carry the add-by-hand advisory warning (the engine publishes no sticker parameters)');
+  ok(!igStick.problems.some((p) => /sticker/i.test(p)), 'instagram story: the sticker warning is ADVISORY - it never appears among the blocking problems');
+  ok(/2 story sticker/.test(igStick.warnings.find((w) => /sticker/i.test(w)) || ''), 'instagram story: the warning counts EVERY authored sticker (mention included - pendpost sends no sticker parameters at all)');
+  const igPlain = (await validate('ig-story-plain')).instagram;
+  ok(!igPlain.warnings.some((w) => /sticker/i.test(w)), 'instagram story: a sticker-less story carries no sticker warning');
+
+  // ===== US-VAL-10: X length counts like X counts (URLs weighted at 23) =====
+  const xFits = (await validate('x-url-fits')).x;
+  ok(!xFits.problems.some((p) => /caps at 280/.test(p)), 'x: a link-heavy tweet that fits WEIGHTED (each URL = 23) carries no length problem despite raw length > 280');
+  const xOver = (await validate('x-plain-over')).x;
+  ok(xOver.problems.some((p) => /300 chars weighted/.test(p) && /caps at 280/.test(p)), 'x: a genuinely-over plain tweet still blocks, naming the weighted count');
+
+  console.log(`[platform-validate-wave2] OK - mastodon/wordpress/ghost/nostr/gbp readiness: connectivity + half-setups block with needsSetup, content shapes match the engines, advisory warnings never gate ready, IG story stickers warn advisory-only, X length weights URLs at 23 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

@@ -18,7 +18,7 @@ import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import { sendJson, errorBody, logLine, VERSION } from './lib/util.mjs';
+import { sendJson, errorBody, logLine, VERSION, daemonPort } from './lib/util.mjs';
 import { REPO_ROOT } from './lib/dashboard.mjs';
 import { handleApi } from './lib/api.mjs';
 import { handleMcp } from './lib/mcp.mjs';
@@ -27,12 +27,16 @@ import { serveStatic } from './lib/static.mjs';
 import { absorbMetaBlockSentinel } from './lib/accounts.mjs';
 import { initMultiClient } from './lib/multi-client.mjs';
 import { bootScheduler } from './lib/scheduler.mjs';
-import { bootCoverBackfill } from './lib/writes.mjs';
+import { bootCoverBackfill, bootScheduleBackfill } from './lib/writes.mjs';
 import { bootApprovalNotifier } from './lib/notify.mjs';
+import { healConnection } from './lib/cloud-client.mjs';
 import { startHealthSchedule } from './lib/health.mjs';
 import { authGateEnabled, checkAuth } from './lib/flags.mjs';
 
-const PORT = Number(process.env.PENDPOST_PORT || 8090);
+// Resolved by lib/util.mjs so the default lives in ONE place: lib/agent-runner.mjs must
+// tell a spawned agent which port to dial, and a second `|| 8090` here would be a silent
+// drift the day someone changes it.
+const PORT = daemonPort();
 // Loopback by default - this is a local tool. PENDPOST_HOST exists ONLY so the
 // container image can bind 0.0.0.0 inside its own network namespace; the host
 // still exposes it on 127.0.0.1 (docker-compose maps 127.0.0.1:8090:8090).
@@ -47,6 +51,9 @@ const ALLOWED_ORIGINS = new Set([
   `http://localhost:${PORT}`,
   'http://127.0.0.1:5179',
   'http://localhost:5179',
+  // The mock Studio (launch.json app-mock, port 5181): same loopback dev affordance as 5179.
+  'http://127.0.0.1:5181',
+  'http://localhost:5181',
 ]);
 
 // DNS-rebinding defense: a malicious site can rebind its hostname to
@@ -59,6 +66,8 @@ const ALLOWED_HOSTS = new Set([
   `localhost:${PORT}`,
   '127.0.0.1:5179',
   'localhost:5179',
+  '127.0.0.1:5181',
+  'localhost:5181',
 ]);
 
 // Optional always-on hardening (site-docs/always-on.mdx). When the auth gate is
@@ -171,4 +180,17 @@ server.listen(PORT, HOST, () => {
   // every active client's cover-less media. Fire-and-forget so it never delays
   // listen; idempotent, so it is a near-no-op on every boot after the first.
   bootCoverBackfill();
+  // The repair half of the Termin invariant: createPost fences every write path, but
+  // cannot reach rows already on disk (written before the gate, hand-edited, restored
+  // from a backup). A dateless post mints zero publish lanes and rots as 'waiting-due'
+  // forever, so heal it here. Same posture as the cover backfill - fire-and-forget,
+  // idempotent, a near-no-op once clean - but refuses in dev:live (schedule state).
+  bootScheduleBackfill();
+  // Heal a half-written cloud connection (api key present, workspaceId lost from
+  // cloud.json): one authenticated read re-links the install. Fire-and-forget and a
+  // no-op when connected or keyless, so it never delays boot or touches brand flags.
+  healConnection().then(
+    (r) => { if (r.healed) logLine('ok', `cloud connection healed (workspace ${r.workspaceId})`); },
+    () => { /* best-effort: the Cloud page's reconnect action retries on demand */ },
+  );
 });

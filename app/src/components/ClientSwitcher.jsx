@@ -135,7 +135,7 @@ export default function ClientSwitcher({ onManage }) {
             </span>
             <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{t('clientSwitcher.activeSublabel')}</span>
           </span>
-          <ChevronsUpDown size={15} className="shrink-0 text-zinc-400" aria-hidden="true" />
+          <ChevronsUpDown size={15} className="shrink-0 text-zinc-500" aria-hidden="true" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-60" aria-labelledby="clients-switcher-heading">
@@ -164,7 +164,7 @@ export default function ClientSwitcher({ onManage }) {
                   <span className="min-w-0 flex-1 truncate text-sm font-bold">{c.displayName}</span>
                   <ClientHealthDot client={c} t={t} />
                   {isBusy ? (
-                    <Loader2 size={15} className="shrink-0 animate-spin text-zinc-400" aria-label={t('clientSwitcher.switching')} />
+                    <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500" aria-label={t('clientSwitcher.switching')} />
                   ) : isActive ? (
                     <Check size={15} className="shrink-0 text-brand dark:text-brand-light" aria-label={t('clientSwitcher.active')} />
                   ) : null}
@@ -205,9 +205,9 @@ export default function ClientSwitcher({ onManage }) {
                         <span className="min-w-0 flex-1 truncate text-sm">{c.displayName}</span>
                         <ClientHealthDot client={c} t={t} />
                         {isBusy ? (
-                          <Loader2 size={15} className="shrink-0 animate-spin text-zinc-400" aria-label={t('clientSwitcher.switching')} />
+                          <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500" aria-label={t('clientSwitcher.switching')} />
                         ) : (
-                          <span className="shrink-0 text-[10px] font-bold tracking-tight text-zinc-400">
+                          <span className="shrink-0 text-[10px] font-bold tracking-tight text-zinc-500">
                             {dormant ? t('clientSwitcher.defaultHint') : t('clientSwitcher.archived')}
                           </span>
                         )}

@@ -117,6 +117,41 @@ try {
   ok(Object.isFrozen(job) && Object.isFrozen(job.identity) && Object.isFrozen(job.payloadRef.ids), 'the envelope is deeply frozen (immutable contract)');
   ok(buildPublishJob(basePost, 'meta', { ...metaCtx, clientId: 'acme' }).jobId === 'acme:c1:p1:meta', 'the builder read no disk: a bogus PENDPOST_ROOT had no effect on the pure result');
 
+  // ---- (10) spec 18: a nostr-longform post yields the SAME publish-job/1 envelope
+  // The envelope carries identity/approval/lane/command, NOT post content (the cloud
+  // worker reads body/excerpt/image from the SYNCED plan, already POST_CONTENT_FIELDS),
+  // so a new TYPE needs NO publish-job/N bump and NO envelope edit - nostr is already
+  // in KNOWN_LANES. This locks that invariant.
+  const ARTICLE_BODY = 'do-not-leak-this-article-body-text';
+  const nostrLongPost = {
+    ...basePost, platforms: ['nostr'], type: 'nostr-longform',
+    caption: '', body: ARTICLE_BODY, excerpt: 'a short summary', title: 'An article',
+    ids: { ...basePost.ids, nostrEventId: null },
+  };
+  const nostrJob = buildPublishJob(nostrLongPost, 'nostr', { ...metaCtx, command: 'publish-due', timeoutMs: 120_000, lanePlatforms: ['nostr'] });
+  ok(nostrJob.version === PUBLISH_JOB_VERSION && nostrJob.version === 'publish-job/1', 'a nostr-longform post yields the SAME publish-job/1 envelope (no version bump for a new TYPE)');
+  ok(nostrJob.jobId === 'default:c1:p1:nostr', 'the nostr-longform job keeps the deterministic clientId:campaign:postId:lane jobId');
+  for (const k of ['identity', 'lane', 'engine', 'delivery', 'approval', 'payloadRef']) {
+    ok(Object.prototype.hasOwnProperty.call(nostrJob, k), `the nostr-longform envelope has the required top-level key '${k}'`);
+  }
+  ok(!JSON.stringify(nostrJob).includes(ARTICLE_BODY), 'the article body never appears in the envelope (content stays in the synced plan, not the job)');
+  ok(validatePublishJob(nostrJob).ok === true, 'validatePublishJob accepts the nostr-longform job unchanged (envelope shape is type-agnostic)');
+
+  // ---- (11) spec 45 regression: EVERY engine lane the scheduler dispatches MUST be a
+  // KNOWN_LANE, or buildPublishJob refuses it at fire time with unknown_lane. The dedicated
+  // `youtube-reply` lane (a due-now Radar comment that cannot ride the native `youtube`
+  // upload lane, scheduler.mjs ENGINES) was registered in the scheduler but missing from
+  // KNOWN_LANES, so every approved YouTube Radar reply was refused with
+  // "unknown engine lane 'youtube-reply'" - observed live in the Activity log. Lock the
+  // scheduler<->publish-job lane sets TOGETHER so a lane can never drift out of one again.
+  const { ENGINES } = await import('../lib/scheduler.mjs');
+  for (const lane of Object.keys(ENGINES)) {
+    ok(
+      !throwsWith(() => buildPublishJob({ ...basePost, platforms: ['x'] }, lane, { ...metaCtx, lanePlatforms: ['x'] }), 'unknown_lane'),
+      `scheduler engine lane '${lane}' is a KNOWN_LANE (buildPublishJob does not refuse it with unknown_lane)`,
+    );
+  }
+
   console.log(`[publish-job] OK - publish-job/1 envelope shape, approval fence (unapproved + self-approval refused), no-secret + no-actor guarantee, validator parity, purity (${pass} assertions).`);
 } catch (err) {
   console.error(`[publish-job] FAIL: ${err.message}`);

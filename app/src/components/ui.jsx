@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText } from 'lucide-react';
-import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, postDisplayStatusKey, mediaAspect } from '../lib/format.js';
+import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText, PlugZap, HelpCircle, Tag } from 'lucide-react';
+import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, postDisplayStatusKey, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
 import { MediaLightbox } from './ui/MediaLightbox.jsx';
+import { CarouselPreview } from './ui/CarouselPreview.jsx';
+import { Checkbox } from './ui/Checkbox.jsx';
+import { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW } from './ui/tokens.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
 
@@ -124,6 +127,25 @@ function GbpLogo({ size = 16, className = '', ...props }) {
     </svg>
   );
 }
+// Radar (beta) SEARCH-source marks (spec 33). Bluesky butterfly + the Hacker News
+// "Y" square. These two are LISTENING sources, never publish targets - they only ever
+// render as a Radar source badge (the Composer/Setup never show them).
+function BlueskyLogo({ size = 16, className = '', ...props }) {
+  const labelled = props['aria-label'];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
+      <path d="M5.77 3.63C8.33 5.55 11.08 9.44 12 11.53c.92-2.09 3.67-5.98 6.23-7.9C20.07 2.25 23 1.14 23 4.48c0 .67-.38 5.6-.61 6.4-.78 2.79-3.62 3.5-6.15 3.07 4.42.75 5.55 3.24 3.12 5.73-4.62 4.73-6.64-1.19-7.16-2.71-.1-.28-.14-.41-.2-.29-.06-.12-.1.01-.2.29-.52 1.52-2.54 7.44-7.16 2.71-2.43-2.49-1.3-4.98 3.12-5.73-2.53.43-5.37-.28-6.15-3.07C1.38 10.08 1 5.15 1 4.48c0-3.34 2.93-2.23 4.77-.85z" />
+    </svg>
+  );
+}
+function HackerNewsLogo({ size = 16, className = '', ...props }) {
+  const labelled = props['aria-label'];
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
+      <path d="M0 0v24h24V0H0zm12.6 13.5V18h-1.3v-4.5L7.8 6.6h1.5l2.6 5.1 2.6-5.1h1.5l-3.4 6.9z" />
+    </svg>
+  );
+}
 
 export const PLATFORM_META = {
   facebook: { Icon: Facebook, color: 'text-[#1877F2]', label: 'Facebook' },
@@ -141,6 +163,9 @@ export const PLATFORM_META = {
   ghost: { Icon: GhostLogo, color: 'text-zinc-900 dark:text-zinc-100', label: 'Ghost' },
   nostr: { Icon: NostrLogo, color: 'text-[#8E30EB]', label: 'Nostr' },
   gbp: { Icon: GbpLogo, color: 'text-[#4285F4]', label: 'Google Business Profile' },
+  // Radar (beta) SEARCH sources (spec 33) - listening only, never publish targets.
+  bluesky: { Icon: BlueskyLogo, color: 'text-[#0085FF]', label: 'Bluesky' },
+  hackernews: { Icon: HackerNewsLogo, color: 'text-[#FF6600]', label: 'Hacker News' },
 };
 
 export function PlatformIcons({ platforms, size = 13 }) {
@@ -181,8 +206,21 @@ export function StatusPill({ state, short = false }) {
   );
 }
 
-export function ApprovalPill({ approval, editedSinceApproval = false }) {
+export function ApprovalPill({ approval, editedSinceApproval = false, handOff = false }) {
   const t = useT();
+  // The lane cannot publish, so "waiting for approval" is the wrong promise: there is no
+  // approval to wait for. This pill REPLACES it (never stacks beside it) and states the
+  // CONSEQUENCE, not the cause - "you post this yourself", which is the thing the operator
+  // has to know and the only thing that will actually happen. Sky, matching the hand-off
+  // button it belongs to; icon+text, never colour alone.
+  if (handOff) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30">
+        <PlugZap size={11} className="shrink-0" aria-hidden="true" />
+        {t('approval.postYourself')}
+      </span>
+    );
+  }
   // Trust gate: an approved post whose content changed after approval reads as a
   // distinct amber "re-approve" pill, NOT the settled green (which is hidden). The
   // publish gate refuses it until re-approval, so it belongs in the attention tone.
@@ -252,14 +290,28 @@ export function CoverThumb({ media, image, className = '' }) {
     // object-top crop deterministically discarded the bottom quarter (UX-12).
     return <img src={src} alt="" loading="lazy" onError={() => setErrored(true)} className={`${PLACEHOLDER} object-cover ${className}`} />;
   }
+  // Spec 05: a carousel has no single file (media.url/cover are BOTH null on the DTO),
+  // so every branch below fell through to the "text post" tile and an album read as a
+  // text post in the Planner, the Freigaben cards, the Published list and the run-now
+  // dialog. Slide 1 IS the album's cover, so substitute it and let the existing
+  // image/video branches do their normal job (a video album still gets a real frame).
+  //
+  // Keyed on the MEDIA (items[]), never on post.type - CoverThumb never sees the post.
+  // That is what keeps the other call sites safe: every non-carousel DTO ships
+  // items: [] (lib/plans.mjs) and an asset object has no items key at all. `find` on a
+  // present url rather than items[0], so a missing slide 1 still shows a real picture
+  // instead of a broken tile; the album-level "a slide is missing" fact is carried by
+  // the preview and by platform_validate, not by a thumbnail.
+  const slide = Array.isArray(media?.items) ? media.items.find((it) => it?.url) : null;
+  const shown = slide ? { ...media, url: slide.url } : media;
   // A4: a still-image asset IS its own preview - render its bytes as an <img>, never
   // a <video> (a <video> pointed at a JPEG/PNG shows a broken/black box). This branch
   // sits BEFORE the video fallback so kind:'image' (or an image URL) always wins.
-  const isImage = media?.kind === 'image' || /\.(jpe?g|png)$/i.test(media?.url || '');
-  if (isImage && media?.url && !errored) {
+  const isImage = isImageMedia(shown);
+  if (isImage && shown?.url && !errored) {
     return (
       <img
-        src={media.url}
+        src={shown.url}
         alt=""
         loading="lazy"
         onError={() => setErrored(true)}
@@ -272,10 +324,10 @@ export function CoverThumb({ media, image, className = '' }) {
   // keeps it light (metadata, not the whole file); we seek to 20% of the clip -
   // past blank intros/title cards, where there's real content - falling back to a
   // 0.1s nudge when the duration is unknown.
-  if (media?.url && !errored) {
+  if (shown?.url && !errored) {
     return (
       <video
-        src={media.url}
+        src={shown.url}
         muted
         playsInline
         preload="metadata"
@@ -294,7 +346,7 @@ export function CoverThumb({ media, image, className = '' }) {
   // Genuine text post (no media) or a media load failure: an intentional tile,
   // not a broken/empty square. Decorative - the row's title/caption carries the text.
   return (
-    <div className={`grid place-items-center ${PLACEHOLDER} text-zinc-400 dark:text-zinc-500 ${className}`} aria-hidden="true">
+    <div className={`grid place-items-center ${PLACEHOLDER} text-zinc-500 dark:text-zinc-400 ${className}`} aria-hidden="true">
       <FileText size={18} aria-hidden="true" />
     </div>
   );
@@ -354,7 +406,7 @@ export function LinkCardPreview({ image, title, link }) {
         <CardHero image={image} noImageLabel={t('ui.linkCard.noImage')} />
         <div className="space-y-0.5 p-3">
           <p className="break-words text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || 'pendpost'}</p>
-          {host ? <p className="break-words text-[11px] tracking-tight text-zinc-400 dark:text-zinc-500">{host}</p> : null}
+          {host ? <p className="break-words text-[11px] tracking-tight text-zinc-500 dark:text-zinc-400">{host}</p> : null}
         </div>
       </div>
     </div>
@@ -389,7 +441,7 @@ function YoutubeMeta({ title, description, tags }) {
       {/* break-words: a long unbroken token (e.g. a tracking URL in the description)
           must wrap, not force the whole two-column body to scroll sideways. */}
       {description ? <p className="whitespace-pre-wrap break-words text-xs text-zinc-600 dark:text-zinc-300">{description}</p> : null}
-      {tags ? <p className="break-words text-[11px] text-zinc-400 dark:text-zinc-500">{tags}</p> : null}
+      {tags ? <p className="break-words text-[11px] text-zinc-500 dark:text-zinc-400">{tags}</p> : null}
     </div>
   );
 }
@@ -400,7 +452,7 @@ function YoutubeMeta({ title, description, tags }) {
 // youtube-longform -> 16:9 + a title/description/tags panel. object-contain so a
 // source whose aspect does not match its type letterboxes instead of cropping.
 // videoRef is threaded through for PostDetail's cover-frame scrubber.
-export function PostPreview({ post, videoRef }) {
+export function PostPreview({ post, videoRef, onEdit }) {
   const t = useT();
   // The fullscreen viewer ({ kind, startAt }) and a fallback ref so the inline ->
   // fullscreen handoff works even where the parent passes no videoRef (Composer).
@@ -419,12 +471,31 @@ export function PostPreview({ post, videoRef }) {
     if (!post.link && !post.image) return null;
     return <LinkCardPreview image={post.image} title={post.title} link={post.link} />;
   }
+  // Flywheel: a MEDIA-LESS type has nothing to preview and must never reach the red
+  // alert below. A poll and a nostr-longform carry a media object with a null url (the
+  // DTO always emits one), so both fell straight through to "no media selected" in the
+  // review dialog - the SAME type-blind fallthrough as text and then carousel, found by
+  // the TYPES-iterating guard the moment it was written. Render nothing, exactly as a
+  // pure text post already does: an empty column is honest, a red error is not.
+  // (A richer article card for nostr-longform is a separate, additive question.)
+  if (!postNeedsMedia(post)) return null;
+  // Spec 05: an album has NO single media.url (both it and media.file derive from the
+  // one file/path a carousel never has, see lib/plans.mjs), so it could never match the
+  // branch below and fell through to the red "no media selected" alert - the exact bug
+  // this fixes, and the SECOND time a per-type render stranded on a type-blind error
+  // state (see the text-post note above). Guarded on the type and placed before the
+  // media.url branch, so no other format's path is reordered.
+  if (post.type === 'carousel') {
+    const { aspect, ratio, mixed } = carouselFrame(post.media?.items);
+    return <CarouselPreview items={post.media?.items} aspect={aspect} ratio={ratio} mixed={mixed} onEdit={onEdit} />;
+  }
   if (post.media?.url) {
     const aspect = mediaAspect(post);
     const isYt = post.type === 'youtube-short' || post.type === 'youtube-longform';
     // A4: a still-image asset is its own preview - show it as an <img>, never a
-    // <video> (which would paint a broken/black box at a JPEG). Mirrors CoverThumb.
-    const isImage = post.media.kind === 'image' || /\.(jpe?g|png)$/i.test(post.media.url || '');
+    // <video> (which would paint a broken/black box at a JPEG). Same helper as
+    // CoverThumb and the PostDetail cover gate, so the three cannot disagree.
+    const isImage = isImageMedia(post.media);
     // FR4: the interactive-story sticker overlay rides on the 9:16 story/reel path
     // only; the relative wrapper anchors the absolutely-positioned layer.
     const showStickers = post.type === 'story' && Boolean(post.interactiveStory?.stickers?.length);
@@ -493,6 +564,29 @@ export function PostPreview({ post, videoRef }) {
   );
 }
 
+// U: the select-all control, lifted out of Freigaben so the approval queue and the media
+// library share ONE control rather than growing a second selection idiom. The label keys
+// are props because the two surfaces name their nouns differently; everything else about
+// the behaviour (indeterminate middle state, hidden when there is nothing to select) is
+// identical and now lives in one place.
+export function SelectAllControl({ total, selectedCount, onToggle, allKey, clearKey }) {
+  const t = useT();
+  const allSelected = total > 0 && selectedCount === total;
+  const someSelected = selectedCount > 0 && selectedCount < total;
+  if (total === 0) return null;
+  return (
+    <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+      <Checkbox
+        checked={allSelected}
+        indeterminate={someSelected}
+        onChange={onToggle}
+        aria-label={allSelected ? t(clearKey) : t(allKey)}
+      />
+      {allSelected ? t(clearKey) : t(allKey)}
+    </label>
+  );
+}
+
 // Read-only advisory blocker rows (B2). Surfaces platform_validate problems[]/
 // warnings[] (and validate_media spec-check failures) as quiet rows so the owner
 // learns of a bad post BEFORE publish - never at publish. Pure presentation: it
@@ -530,20 +624,92 @@ function BlockerRow({ severity, children }) {
 // Derive advisory rows from a validate_media result's spec checks. Only the
 // FAILING checks surface (wrong resolution / bad codec / no faststart); a clean
 // probe yields nothing. checks === null (no probe) yields nothing too.
+// H1: an album folds N slides into this same shape and additionally carries `slides`
+// (how many were judgeable) plus per-check `failing` counts. When they are present the
+// count-bearing copy is used, because the single-media wording ("Resolution isn't a
+// standard size") would imply ONE file and send the owner looking for the wrong thing.
+// A single-media post has neither field and renders byte-identically to before.
 function mediaCheckRows(checks, t) {
   if (!checks) return [];
+  const n = checks.slides;
+  const failing = checks.failing;
+  const perSlide = typeof n === 'number' && failing;
+  const row = (key, single, params) => (perSlide
+    ? { key, text: t(`blockers.media.slides.${key}`, { count: failing[key === 'codec' ? 'codecOk' : key], n }) }
+    : { key, text: t(single, params) });
   const rows = [];
-  if (checks.resolution === 'other') rows.push({ key: 'resolution', text: t('blockers.media.resolution', { resolution: checks.resolution }) });
-  if (checks.codecOk === false) rows.push({ key: 'codec', text: t('blockers.media.codec') });
-  if (checks.faststart === false) rows.push({ key: 'faststart', text: t('blockers.media.faststart') });
+  if (checks.resolution === 'other') rows.push(row('resolution', 'blockers.media.resolution', { resolution: checks.resolution }));
+  if (checks.codecOk === false) rows.push(row('codec', 'blockers.media.codec'));
+  if (checks.faststart === false) rows.push(row('faststart', 'blockers.media.faststart'));
   return rows;
 }
 
-export function PlatformBlockers({ platformValidate, validateMedia, approval, editedSinceApproval = false, showApproval = true, onNavigate, className = '' }) {
+// Pre-submit rows (spec 09) carry { code, text } instead of a plain string -
+// platformValidate's engine-authored strings pass straight through (already
+// English, see the file-header note above), but presubmit rows are genuinely
+// LOCALIZED: `code` resolves to a `blockers.presubmit.<code>` string in both
+// locale packs, with `text` (the platform-specific detail: a rule fragment, a
+// subreddit-type word, a privacy enum value) as the {text} interpolation var
+// for the codes that use one. A code with no matching key falls back to the
+// raw code id (i18n's own missing-key convention), never a blank row.
+//
+// Some codes carry a RAW reddit enum as {text} (submissionType -> self/link,
+// restricted -> the subreddit_type restricted/private); interpolating it verbatim
+// would leak an English API token into the de-CH sentence, so each is mapped to a
+// localized noun FIRST via its own locale sub-namespace, then passed as {text}. An
+// unknown enum falls back to the raw value (never blank).
+const PRESUBMIT_ENUM_NS = { submissionType: 'type', restricted: 'subredditType' };
+function presubmitRowText(t, row) {
+  let text = row.text || '';
+  const ns = PRESUBMIT_ENUM_NS[row.code];
+  if (ns && text) {
+    const noun = t(`blockers.presubmit.${ns}.${text}`);
+    if (noun && noun !== `blockers.presubmit.${ns}.${text}`) text = noun;
+  }
+  return t(`blockers.presubmit.${row.code}`, { text });
+}
+
+// Spec 39 §4j: platformValidate's problems[] stays the stable English engine face
+// (REST/MCP bytes untouched); the PARALLEL problemCodes[i] localizes a coded row
+// via the blockers.validate.* locale namespace with its params - presubmitRowText's exact
+// idiom, one row at a time. Only the four spec-39-owned strings carry codes
+// today; every uncoded row (problemCodes[i] === null) and every code missing
+// from a locale pack falls back to the raw English problem, never a blank row.
+function validateRowText(t, problem, code) {
+  if (!code || !code.code) return problem;
+  const key = `blockers.${code.code}`;
+  const translated = t(key, code.params || {});
+  return translated === key ? problem : translated;
+}
+
+// Does the blockers panel already carry a "Set up <lane>" link for this lane?
+//
+// ONE predicate, exported, because the answer is needed in two places: the panel that
+// renders the link, and the delivery line above it that carries the same escape hatch as a
+// glyph. Two controls for one job, ~120px apart, is the duplication - but the glyph cannot
+// simply go: it is the FALLBACK for when platform-validate has no data (loading, offline,
+// error), and dropping it then leaves the "not connected" fact with no way out at all.
+// So the glyph yields only when the labelled link is genuinely there. Deriving that from
+// the same source both components already read beats mirroring the panel's internals.
+export function setupLinkOffered(platformValidate, platform, onNavigate) {
+  if (typeof onNavigate !== 'function') return false;
+  const rows = platformValidate?.ok ? platformValidate.platforms || {} : {};
+  return Boolean(rows[platform]?.needsSetup);
+}
+
+export function PlatformBlockers({ platformValidate, presubmit, validateMedia, approval, editedSinceApproval = false, showApproval = true, onNavigate, onFix, className = '' }) {
   const t = useT();
   const platforms = platformValidate?.ok ? platformValidate.platforms || {} : {};
-  const entries = Object.entries(platforms);
-  const hasPlatformRows = entries.some(([, v]) => (v.problems?.length || 0) + (v.warnings?.length || 0) > 0);
+  // Spec 09: an optional second source, keyed the SAME way (platform -> {ready,
+  // problems, warnings}) - merged into the identical per-platform rows below so
+  // the panel stays ONE surface, two sources. Only reddit/tiktok ever populate it.
+  const presubmitPlatforms = presubmit?.ok ? presubmit.platforms || {} : {};
+  const platformKeys = [...new Set([...Object.keys(platforms), ...Object.keys(presubmitPlatforms)])];
+  const entries = platformKeys.map((k) => [k, platforms[k] || { problems: [], warnings: [], needsSetup: false }]);
+  const hasPlatformRows = entries.some(([k, v]) => {
+    const pre = presubmitPlatforms[k];
+    return (v.problems?.length || 0) + (v.warnings?.length || 0) + (pre?.problems?.length || 0) + (pre?.warnings?.length || 0) > 0;
+  });
   const mediaRows = mediaCheckRows(validateMedia?.ok ? validateMedia.checks : null, t);
   // A draft/pending/rejected post isn't a fault - it's just waiting for the owner's
   // approval. Surface it as ONE neutral line - but ONLY where the approval state isn't
@@ -570,14 +736,32 @@ export function PlatformBlockers({ platformValidate, validateMedia, approval, ed
       {entries.map(([platform, v]) => {
         const problems = v.problems || [];
         const warnings = v.warnings || [];
-        if (!problems.length && !warnings.length) return null;
+        // Spec 09: presubmit's own problems/warnings for this SAME platform,
+        // localized (raw {code,text} -> a translated sentence). Always rendered
+        // regardless of the setup-link collapse below - a subreddit/creator rule
+        // is a distinct concern from "is this lane connected."
+        const pre = presubmitPlatforms[platform];
+        // A closed set of valid values gets a control, not advice (canon: prevent at the
+        // control). The flair picker already exists - it is the Composer's, spec 16, with
+        // its own loading / unavailable / empty / populated states - so this row OPENS it
+        // rather than growing a second picker in a second place for the same job.
+        const flairRow = (pre?.problems || []).find((r) => r.code === 'flairRequired');
+        const showFlairFix = Boolean(flairRow) && typeof onFix === 'function';
+        const presubmitProblems = (pre?.problems || [])
+          .filter((r) => !(showFlairFix && r.code === 'flairRequired'))
+          .map((r) => presubmitRowText(t, r));
+        const presubmitWarnings = (pre?.warnings || []).map((r) => presubmitRowText(t, r));
+        // showFlairFix counts: the flair row is REMOVED from presubmitProblems (it renders
+        // as the action below instead), so a lane whose only finding is the missing flair
+        // would otherwise fall through this guard and drop the very control it needs.
+        if (!problems.length && !warnings.length && !presubmitProblems.length && !presubmitWarnings.length && !showFlairFix) return null;
         const meta = PLATFORM_META[platform];
         const Icon = meta?.Icon;
         const label = meta?.label || platform;
         // The lane isn't connected: collapse the raw auth string to ONE amber
         // "Set up <lane>" link that opens Setup (where the connect action lives),
         // instead of platform jargon the owner can't act on inline.
-        const showSetupLink = v.needsSetup && typeof onNavigate === 'function';
+        const showSetupLink = setupLinkOffered(platformValidate, platform, onNavigate);
         return (
           <div key={platform} className="space-y-1">
             <p className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
@@ -585,11 +769,30 @@ export function PlatformBlockers({ platformValidate, validateMedia, approval, ed
               {label}
             </p>
             <ul className="space-y-1 pl-0.5">
+              {/* PS-2: the presubmit rows (reddit/tiktok rules - "is this post
+                  allowed", a concern distinct from "is this lane connected", per
+                  the comment above) precede the connection-status row within each
+                  severity tier, rather than the setup link jumping the queue. */}
+              {showFlairFix ? (
+                <li>
+                  <button
+                    type="button"
+                    onClick={onFix}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-600 transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300"
+                  >
+                    <Tag size={12} aria-hidden="true" />
+                    {t('blockers.flairFix')}
+                  </button>
+                </li>
+              ) : null}
+              {presubmitProblems.map((p, i) => (
+                <BlockerRow key={`pp-${i}`} severity="action">{p}</BlockerRow>
+              ))}
               {showSetupLink ? (
                 <li>
                   <button
                     type="button"
-                    onClick={() => onNavigate('setup')}
+                    onClick={() => onNavigate('setup', platform)}
                     className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-600 transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300"
                   >
                     <Wrench size={12} aria-hidden="true" />
@@ -600,9 +803,12 @@ export function PlatformBlockers({ platformValidate, validateMedia, approval, ed
                 // Remaining problems (media, caption, policy) are amber "needs action"
                 // rows the owner can fix - never a generic red error.
                 problems.map((p, i) => (
-                  <BlockerRow key={`p-${i}`} severity="action">{p}</BlockerRow>
+                  <BlockerRow key={`p-${i}`} severity="action">{validateRowText(t, p, v.problemCodes?.[i])}</BlockerRow>
                 ))
               )}
+              {presubmitWarnings.map((w, i) => (
+                <BlockerRow key={`pw-${i}`} severity="warning">{w}</BlockerRow>
+              ))}
               {warnings.map((w, i) => (
                 <BlockerRow key={`w-${i}`} severity="warning">{w}</BlockerRow>
               ))}
@@ -644,15 +850,38 @@ export function Skeleton({ className = '' }) {
   return <div className={`animate-pulse rounded-xl bg-zinc-300/40 dark:bg-zinc-700/40 ${className}`} />;
 }
 
-// Light-mode hairline + dark ring for inner surfaces sitting on glass panels
-// (UX-01: white-on-white alpha alone loses every edge in light mode).
-export const INNER_SURFACE = 'bg-zinc-100 ring-1 ring-zinc-900/5 dark:bg-zinc-800 dark:ring-white/10';
+// The four shared tokens now live at ui/tokens.js (a leaf both ui.jsx and the ui/
+// primitives can depend on, so a primitive needing one cannot form an import cycle).
+// Imported at the top and re-exported here, so every existing `from '../ui.jsx'` import
+// keeps working unchanged. It has to be an import + export pair, not a bare
+// `export ... from`: a re-export creates no local binding, so this file's own uses of
+// EYEBROW/INNER_SURFACE would throw at render time.
+export { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW };
 
-// DS-1: the single eyebrow micro-label token. Sentence case (never all-caps),
-// tiny, bold, tight tracking - the anti-slop replacement for the retired
-// all-caps eyebrow class (roadmap.md DS-1; brand-guide.md "No all-caps
-// labels"). Every eyebrow across the dashboard resolves to this.
-export const EYEBROW = 'text-[11px] font-bold tracking-tight text-zinc-400 dark:text-zinc-500';
+// The single section-header shape shared across Settings and its Radar sub-sections:
+// a title, an optional discoverable "?" explainer (the house Tip, keyboard/SR
+// reachable - never native title=), and an optional right-aligned action slot (an
+// "Add" button, a status chip). It replaces the old title + permanently-stacked
+// subtitle paragraph so every section reads as one design language and the why-text
+// stays a hover away instead of crowding the surface.
+export function SectionHeading({ title, tip, action }) {
+  const t = useT();
+  return (
+    <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <h3 className="text-sm font-bold">{title}</h3>
+        {tip ? (
+          <Tip label={tip}>
+            <button type="button" aria-label={t('settings.fieldHelp', { field: title })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
+              <HelpCircle size={13} aria-hidden="true" />
+            </button>
+          </Tip>
+        ) : null}
+      </div>
+      {action ? <div className="ml-auto shrink-0">{action}</div> : null}
+    </div>
+  );
+}
 
 // US-FR-05: the time-chip colour legend. Driven by the canonical TIME_CHIP_META so
 // the three tones (green/amber/red) and their icons can NEVER drift from the

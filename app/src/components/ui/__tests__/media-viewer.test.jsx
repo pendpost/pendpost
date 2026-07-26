@@ -58,6 +58,79 @@ describe('MediaLightbox (full-viewport viewer)', () => {
   });
 });
 
+// Spec 05: an album is reviewed slide by slide, and the slides are often text-bearing
+// information cards, so reading them at full size IS the review job. Without stepping
+// that costs one open/close cycle per slide. The viewer stays STATELESS - the caller
+// owns the index - so there is only ever one source of truth for "which slide".
+describe('MediaLightbox as an album viewer', () => {
+  const gallery = (extra = {}) => (
+    <MediaLightbox kind="image" src="blob:s3" count={7} index={2} onIndex={extra.onIndex} onClose={extra.onClose || (() => {})} />
+  );
+
+  it('stays byte-identical for a single-source caller (no stepper, no readout)', () => {
+    render(<MediaLightbox kind="image" src="blob:img" onClose={() => {}} />);
+    expect(screen.queryByRole('button', { name: 'Next slide' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Previous slide' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Slide \d+ of \d+/)).not.toBeInTheDocument();
+  });
+
+  it('shows a stepper and the position only when the caller passes a count and a handler', () => {
+    const onIndex = vi.fn();
+    render(gallery({ onIndex }));
+    expect(screen.getByRole('button', { name: 'Previous slide' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next slide' })).toBeInTheDocument();
+    expect(screen.getByText('Slide 3 of 7')).toBeInTheDocument();
+  });
+
+  it('reports the next and previous index to the caller rather than moving itself', () => {
+    const onIndex = vi.fn();
+    render(gallery({ onIndex }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next slide' }));
+    expect(onIndex).toHaveBeenCalledWith(3);
+    fireEvent.click(screen.getByRole('button', { name: 'Previous slide' }));
+    expect(onIndex).toHaveBeenCalledWith(1);
+  });
+
+  it('wraps at both ends, so a reviewer is never stuck on the last slide', () => {
+    const onIndex = vi.fn();
+    const { rerender } = render(<MediaLightbox kind="image" src="s" count={3} index={2} onIndex={onIndex} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next slide' }));
+    expect(onIndex).toHaveBeenCalledWith(0);
+    rerender(<MediaLightbox kind="image" src="s" count={3} index={0} onIndex={onIndex} onClose={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Previous slide' }));
+    expect(onIndex).toHaveBeenCalledWith(2);
+  });
+
+  it('steps on the arrow keys and stops them bubbling to the panel underneath', () => {
+    const onIndex = vi.fn();
+    render(gallery({ onIndex }));
+    const panel = screen.getByRole('dialog').querySelector('[tabindex="-1"]');
+    for (const [key, expected] of [['ArrowRight', 3], ['ArrowLeft', 1]]) {
+      const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      const stop = vi.spyOn(event, 'stopPropagation');
+      panel.dispatchEvent(event);
+      expect(onIndex).toHaveBeenCalledWith(expected);
+      expect(stop).toHaveBeenCalled();
+    }
+  });
+
+  it('ignores the arrow keys for a single-source caller (no accidental capture)', () => {
+    const onClose = vi.fn();
+    render(<MediaLightbox kind="image" src="blob:img" onClose={onClose} />);
+    const panel = screen.getByRole('dialog').querySelector('[tabindex="-1"]');
+    panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('still closes on Escape while in album mode', () => {
+    const onClose = vi.fn();
+    render(gallery({ onIndex: vi.fn(), onClose }));
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    screen.getByRole('dialog').querySelector('[tabindex="-1"]').dispatchEvent(event);
+    expect(onClose).toHaveBeenCalled();
+  });
+});
+
 describe('PostPreview integration', () => {
   it('opens the fullscreen viewer when the inline player is expanded', () => {
     render(<PostPreview post={{ type: 'reel', platforms: ['instagram'], media: { url: 'blob:abc', cover: null, file: 'r.mp4' } }} />);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { visiblePlatforms, platformEnabled, PLATFORMS } from '../../lib/format.js';
+import { visiblePlatforms, platformEnabled, presentPlatforms, PLATFORMS } from '../../lib/format.js';
 
 // visiblePlatforms is the SINGLE source of truth for "show only the relevant
 // platform logos": a display platform appears ONLY where it is connected AND
@@ -120,6 +120,59 @@ describe('visiblePlatforms', () => {
     );
     const order = PLATFORMS.filter((p) => v.includes(p));
     expect(v).toEqual(order);
+  });
+});
+
+// Spec 40 6.8: the filter bar drew its chips from visiblePlatforms alone, which
+// requires platformConnected AND membership of PLATFORMS. A Radar reply lane like
+// bluesky has neither (no accounts entry, absent from PLATFORMS), so a bluesky post
+// sat in the queue with no chip that could ever select it - invisible to the filter.
+// presentPlatforms mirrors the presentTypes idiom (App.jsx): union what is connected
+// with what is actually ON the loaded posts, so any lane holding real posts is
+// filterable, today's bluesky and any future lane alike.
+describe('presentPlatforms', () => {
+  const postsOn = (...platforms) => platforms.map((p, i) => ({ id: `p${i}`, platforms: [p] }));
+
+  it('keeps every connected platform even with no posts loaded', () => {
+    expect(presentPlatforms(accountsWith('linkedin'), {}, [])).toEqual(['linkedin']);
+  });
+
+  it('adds a lane that is unconnected but present on a post (the bluesky hole)', () => {
+    const v = presentPlatforms(accountsWith('linkedin'), {}, postsOn('bluesky'));
+    expect(v).toContain('bluesky');
+    expect(v).toContain('linkedin');
+  });
+
+  it('adds reddit from a post even when reddit is not connected', () => {
+    expect(presentPlatforms(accountsWith(), {}, postsOn('reddit'))).toContain('reddit');
+  });
+
+  it('never duplicates a platform that is both connected and on a post', () => {
+    const v = presentPlatforms(accountsWith('linkedin'), {}, postsOn('linkedin', 'linkedin'));
+    expect(v.filter((p) => p === 'linkedin')).toHaveLength(1);
+  });
+
+  it('keeps an ACTIVE pick visible so the chip filtering the view can be clicked off', () => {
+    // The last bluesky post just left the scope while bluesky is still selected.
+    // Dropping the chip would strand the operator on an empty view with no way out.
+    expect(presentPlatforms(accountsWith('linkedin'), {}, [], ['bluesky'])).toContain('bluesky');
+  });
+
+  it('orders known lanes in PLATFORMS order, with off-list lanes after them', () => {
+    const v = presentPlatforms(accountsWith('linkedin'), {}, postsOn('bluesky', 'x'));
+    expect(v).toEqual(['linkedin', 'x', 'bluesky']);
+  });
+
+  it('respects the deny-by-default policy for a CONNECTED lane, but still shows it if a post targets it', () => {
+    // Facebook stays hidden when Meta is connected but the policy has not opted in...
+    expect(presentPlatforms(accountsWith('meta'), {}, [])).not.toContain('facebook');
+    // ...yet a real Facebook post in the queue must be filterable, or it is invisible.
+    expect(presentPlatforms(accountsWith('meta'), {}, postsOn('facebook'))).toContain('facebook');
+  });
+
+  it('is defensive about missing accounts / posts', () => {
+    expect(presentPlatforms(undefined, undefined, undefined)).toEqual([]);
+    expect(presentPlatforms(undefined, undefined, [{ id: 'x' }])).toEqual([]);
   });
 });
 

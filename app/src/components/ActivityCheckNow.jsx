@@ -26,6 +26,7 @@ export default function ActivityCheckNow() {
       body: name ? t('activity.checkNow.confirm.body', { client: name }) : t('activity.checkNow.confirm.bodyNoClient'),
       confirmLabel: t('activity.checkNow.confirm.confirmLabel'),
       danger: true,
+      rememberKey: 'activity.checkNow',
     });
     if (!ok) throw { canceled: true }; // fail-closed: cancel => no publish
     await runPublishDue();

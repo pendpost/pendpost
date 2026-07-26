@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-26
+
+The largest release since 1.0: a full Radar listening-and-reply engine, native carousel/album publishing across every capable lane, and per-brand token sealing that hardens always-on delivery. Roughly forty capability specs landed since 1.4.0. Major version because Radar and multi-slide albums reshape the product surface, not because of a breaking API change.
+
+### Added
+- Radar: a listening-and-reply engine. pendpost scans where your buyers ask questions (Reddit, Mastodon, Bluesky, Hacker News, X, YouTube, Nostr), scores each signal for buying/service-seeking intent in EN and de/de-CH, and drafts a product-aware reply behind a human approval fence. Scanning runs on your own agent — you can watch the child's transcript stream onto the job — and daily research arms itself from a chosen cadence, off by default and budgeted. Score-gated auto-reply, a warmth/karma builder for Reddit, author-reply read-back, and a GEO (AI-visibility) layer round it out.
+- Carousel and album publishing end to end. A native multi-image / multi-slide post type flows through the composer, validation, the full-screen viewer, and delivery — with real albums on Mastodon and Instagram, image-carousel children on Instagram, carousel pins on Pinterest, and a public media-mirror seam for lanes that need per-slide URLs.
+- Per-brand token sealing. Credentials are now sealed and resolved by brand and carry their destination in the delivery envelope, so an always-on job publishes to the account it was approved for. The cloud worker and local backstop share one atomic publish-claim lease, making a double-post structurally impossible.
+- New and extended platform lanes and verbs: native polls; Ghost members + newsletter management; Pinterest board/board-section CRUD and native video pins; GBP reviews, media library and attributes; Nostr NIP-23 long-form, NIP-96/98 media upload, and zaps; Discord forum/thread targeting and scheduled events; cross-lane profile editing; edit-after-publish for YouTube/Telegram/Discord; universal self first-comment; cross-lane image alt-text; YouTube playlist management; richer own-account insights (reach, engagement, watch-time, audience demographics).
+- Inbox: read and reply to inbound comments, moderate comments, and react as the brand (like/favourite/boost/emoji), with a webhook/realtime ingestion seam.
+- An always-on humanizer gate on every outbound-text seam, and multi-select asset attach replacing the one-at-a-time flow.
+
+### Changed
+- Setup was rebuilt into a prompt-first, master-detail page: a grouped rail with one open lane, platform and Radar toggles living on each card, connected-account discovery, and one-press credential adopt to reuse another client's agent. The old Settings grid is retired.
+- Freigaben/Approvals now say where each post publishes and prove it after the fact, sort newest-first with a per-tab control, can revive a rejected post to draft, and guard bulk-approve when offline.
+- App polish throughout: Radar feed at scale with duplicate grouping, insights that lead with primary metrics, an activity feed that leads with content over bookkeeping, a resizable sidebar rail, and "don't show again" opt-outs across recurring confirm/prompt gates.
+- The web marketing site gained an outcome-led hero with a full-loop approval demo, scannable pricing, and a consistent CTA.
+
+### Fixed
+- Cloud delivery hardening: failed and already-posted jobs stop being re-fired forever, a half-written connection heals instead of reading disconnected, stale cloud-failures clear on reconcile, and reconcile failures log their real HTTP status.
+- Carousel correctness: albums render instead of erroring, derive their frame and ratio from the real slides, no longer strand slides as unused files, and speak de-CH in every blocker.
+- A broad correctness sweep across Radar, planner, composer, inbox, insights and the setup flow — including honest empty/refused states and a11y fixes.
+
 ## [1.4.0] - 2026-07-08
 
 ### Added

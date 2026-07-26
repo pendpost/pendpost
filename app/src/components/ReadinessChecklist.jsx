@@ -11,7 +11,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, AlertCircle, Play, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
 import { usePendpostHealth, setSchedulerRunning } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { INNER_SURFACE, EYEBROW } from './ui.jsx';
+import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 
 // A pendpost_health blocker arrives as { code, params } (the locale-INDEPENDENT face
 // of the English blockers[]); render it via t() so the readiness panel localizes.
@@ -38,26 +38,55 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
     return hideWhenReady ? null : <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('readiness.loading')}</p>;
   }
 
-  const { ready, schedulerRunning, blockers = [], blockerCodes = [] } = data;
-
-  // Planner placement: stay quiet when everything is ready, so the happy path is
-  // uncluttered. The first-run panel always renders (it confirms readiness too).
-  if (hideWhenReady && ready) return null;
+  const { ready: serverReady, schedulerRunning, blockers = [], blockerCodes = [] } = data;
 
   // Build calm, actionable blocker rows from the machine codes (localized via
   // t()), falling back to the English blockers[] for older servers. The
   // scheduler-off blocker is NOT a Setup link - it is covered by the dedicated
   // Start button below - so it renders as a calm note rather than a dead-end.
   const usingCodes = blockerCodes.length > 0;
+  // PER-POST blockers do not belong here. This panel is the SETUP checklist and every
+  // row it renders deep-links to Setup, which cannot fix a post a platform rejected.
+  // Worse, blocker.overdueUnpublished carried the failure reason in its params and had
+  // no key in either locale pack, so t() fell back to printing the literal string
+  // "blocker.overdueUnpublished" and threw the reason away - the one bridge that existed
+  // between a stuck post and the operator, rendering as a raw key. The post's own row and
+  // detail view now carry that state (format.js publish-failed, PostDetail failure block).
+  // pendpost_health still emits the blocker: it is the agent's face, and blockers[] is
+  // readable English there.
+  const perPost = new Set(['blocker.overdueUnpublished']);
   // Keep the locale-INDEPENDENT code on each item so the list can key on it
   // rather than the rendered (localized) text - two distinct blockers can
   // localize to identical strings (e.g. duplicate "not connected" lanes),
   // which would collide as React keys and break list reconciliation.
-  const items = (usingCodes ? blockerCodes : blockers).map((b) => {
+  const items = (usingCodes ? blockerCodes.filter((b) => !perPost.has(b.code)) : blockers).map((b) => {
     const isScheduler = usingCodes ? b.code === 'blocker.schedulerOff' : /scheduler is off/i.test(b);
     return { text: usingCodes ? renderBlocker(t, b) : b, code: usingCodes ? b.code : undefined, toSetup: !isScheduler };
   });
-  const blockerCount = ready ? 0 : items.length;
+  // Ready FOR THIS PANEL: the server can report not-ready purely because of a per-post
+  // blocker we just filtered out. Deriving readiness from the rows that actually render
+  // keeps the badge count, the empty list and the "all set" line from contradicting each
+  // other. The post itself still shows its failure - this panel simply is not its home.
+  const ready = serverReady || items.length === 0;
+  // US-ONB-12: a fresh workspace repeats the same "not connected" sentence once
+  // per lane - eight identical rows of homework. Identical not-connected rows
+  // collapse into ONE aggregate row ("N of M connected - open Setup") naming the
+  // lanes on a muted second line; lanes with DISTINCT states (failed, blocked,
+  // unproven) keep their own rows, because those are different problems.
+  const notConnected = usingCodes ? items.filter((it) => it.code === 'blocker.lane.notConnected') : [];
+  const collapseLanes = notConnected.length >= 2;
+  const rows = collapseLanes ? items.filter((it) => it.code !== 'blocker.lane.notConnected') : items;
+  const setupPlatforms = Array.isArray(data.setup?.platforms) ? data.setup.platforms.filter((pp) => pp.status !== 'skipped') : null;
+  const aggregate = collapseLanes ? {
+    text: setupPlatforms
+      ? t('readiness.aggregate.connected', { connected: setupPlatforms.length - notConnected.length, total: setupPlatforms.length })
+      : t('readiness.aggregate.notConnected', { count: notConnected.length }),
+    lanes: (usingCodes ? blockerCodes : []).filter((b) => b.code === 'blocker.lane.notConnected').map((b) => b.params?.label).filter(Boolean).join(' · '),
+  } : null;
+  // Planner placement: stay quiet when everything is ready, so the happy path is
+  // uncluttered. The first-run panel always renders (it confirms readiness too).
+  if (hideWhenReady && ready) return null;
+  const blockerCount = ready ? 0 : rows.length + (aggregate ? 1 : 0);
 
   const startScheduler = async () => {
     if (busy) return;
@@ -83,7 +112,7 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
             aria-expanded={open}
             aria-controls={open ? 'readiness-content' : undefined}
             aria-label={!open && blockerCount ? t('readiness.expandCount', { count: blockerCount }) : (open ? t('readiness.collapse') : t('readiness.expand'))}
-            className="flex items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-bold text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
+            className="flex min-h-[24px] items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-bold text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
           >
             {!open && blockerCount ? (
               // Pair the count with an AlertCircle glyph so the collapsed badge
@@ -117,7 +146,23 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
             </div>
           ) : (
             <ul className="space-y-1.5">
-              {items.map((item, i) => (
+              {aggregate ? (
+                <li key="aggregate-not-connected">
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('setup')}
+                    className={`group flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-1 hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
+                  >
+                    <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-xs">{aggregate.text}</span>
+                      {aggregate.lanes ? <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{aggregate.lanes}</span> : null}
+                    </span>
+                    <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
+                  </button>
+                </li>
+              ) : null}
+              {rows.map((item, i) => (
                 <li key={`${i}-${item.code ?? item.text}`}>
                   {item.toSetup ? (
                     // Calm + clickable: zinc (not amber-alarm), deep-links to Setup
@@ -127,13 +172,13 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
                       onClick={() => onNavigate('setup')}
                       className={`group flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-1 hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
                     >
-                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" />
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                       <span className="min-w-0 flex-1 text-xs">{item.text}</span>
-                      <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-400 transition group-hover:translate-x-0.5" aria-hidden="true" />
+                      <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
                     </button>
                   ) : (
                     <div className={`flex items-start gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" />
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
                       <span className="min-w-0 text-xs">{item.text}</span>
                     </div>
                   )}
@@ -151,7 +196,7 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
                 disabled={busy || !ready}
                 aria-label={!ready ? t('readiness.scheduler.waiting') : t('readiness.startScheduler')}
                 title={!ready ? t('readiness.scheduler.waiting') : undefined}
-                className="flex items-center gap-1.5 rounded-xl bg-brand px-3 py-2 text-xs font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:bg-brand-light dark:text-zinc-900"
+                className={`flex items-center gap-1.5 rounded-xl bg-brand px-3 py-2 text-xs font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}
               >
                 {busy ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
                 {t('readiness.startScheduler')}

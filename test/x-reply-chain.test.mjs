@@ -74,11 +74,17 @@ const { runMockCommand } = await import('../lib/drivers/mock-driver.mjs');
 const dir = fsm.mkdtempSync(pathm.join(osm.tmpdir(), 'pendpost-xreply-'));
 const planPath = pathm.join(dir, 'post-plan.json');
 const mkPlan = (posts) => fsm.writeFileSync(planPath, JSON.stringify({ campaign: 'thread-c', posts }, null, 2));
+// mock-driver's handlePublish enforces eligible() (approval + due) even under
+// --only (mirrors the real scheduler's approval fence) - every post published
+// below via --only needs approval:'approved' + a past scheduledAt to reach the
+// thread logic under test at all.
+const PAST = '2020-01-01T00:00:00Z';
+const approved = { approval: 'approved', scheduledAt: PAST };
 
 // (a) parent not yet published -> the child DEFERS with a structured result.
 mkPlan([
   { id: 'p1', platforms: ['x'], type: 'text', caption: 'root' },
-  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'p1' },
+  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'p1', ...approved },
 ]);
 const deferred = await runMockCommand({ platform: 'x', command: 'publish-due', planPath, only: 'p2' });
 check('unpublished parent defers the reply (parent_unpublished, deferred:true, never silent)', () => {
@@ -94,7 +100,7 @@ check('unpublished parent defers the reply (parent_unpublished, deferred:true, n
 // (b) parent published -> the reply publishes.
 mkPlan([
   { id: 'p1', platforms: ['x'], type: 'text', caption: 'root', xPostId: '111' },
-  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'p1' },
+  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'p1', ...approved },
 ]);
 const published = await runMockCommand({ platform: 'x', command: 'publish-due', planPath, only: 'p2' });
 check('published parent lets the reply publish', () => {
@@ -106,7 +112,7 @@ check('published parent lets the reply publish', () => {
 
 // (c) dangling reference -> terminal parent_missing (a config error, not a defer).
 mkPlan([
-  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'ghost' },
+  { id: 'p2', platforms: ['x'], type: 'text', caption: 'reply', xReplyTo: 'ghost', ...approved },
 ]);
 const missing = await runMockCommand({ platform: 'x', command: 'publish-due', planPath, only: 'p2' });
 check('dangling xReplyTo is terminal parent_missing (not deferred)', () => {

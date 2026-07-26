@@ -130,11 +130,51 @@ try {
   writeRegistry({ acmesocial: { script: 'scripts/acmesocial-social.mjs', platforms: ['acmesocial'], credentialEnvKeys: ['ACMESOCIAL_TOKEN'] } });
   const { execFileSync } = await import('node:child_process');
   const parityOut = execFileSync(process.execPath, [path.join(REPO, 'test', 'parity-check.mjs')], { encoding: 'utf8' });
-  // 69 = 68 + POST /api/campaigns/<id>/internal (campaign_set_internal).
-  ok(/69 routes, 48 tools.*0 documented UI-only/.test(parityOut),
+  // 84 routes / 63 tools = +2 GBP reviews (GET /api/reviews + POST /api/reviews/reply,
+  // list_reviews + reply_to_review - spec 03) + 1 nostr zap (POST .../zap + send_zap - spec 20)
+  // + 1 edit-after-publish (POST .../edit-published + edit_published - spec 12)
+  // + 1 discord-event (POST .../discord-event + discord_schedule_event - spec 26).
+  // 85 routes / 64 tools = +1 pinterest board-sections (GET /api/pinterest/board-sections +
+  // pinterest_list_board_sections - spec 17).
+  // 89 routes / 68 tools = +4 GBP location media + attributes (GET+POST /api/gbp/media,
+  // GET+POST /api/gbp/attributes, gbp_media_list + gbp_media_add + gbp_attributes_get +
+  // gbp_attributes_set - spec 19).
+  // 93 routes / 72 tools = +4 cross-lane profile edit (POST /api/accounts/<lane>/profile +
+  // <lane>_update_profile for mastodon/nostr/telegram/youtube - spec 28).
+  // 98 routes / 77 tools = +5 Pinterest board/section CRUD (GET+POST /api/pinterest/boards,
+  // PATCH /api/pinterest/boards/:boardId, POST+PATCH .../sections[/:sectionId] +
+  // pinterest_boards_list + pinterest_board_create/update + pinterest_board_section_
+  // create/update - spec 29).
+  // 104 routes / 83 tools = +6 Ghost members/newsletters (GET+POST /api/ghost/members,
+  // POST /api/ghost/members/import, GET+POST /api/ghost/newsletters, POST
+  // /api/ghost/newsletters/update + ghost_members + ghost_newsletters +
+  // ghost_member_create + ghost_members_import + ghost_newsletter_create +
+  // ghost_newsletter_update - spec 30).
+  // 110 routes / 89 tools = +6 social-graph & list actions (POST /api/mastodon/pin,
+  // POST /api/mastodon/follow, GET+POST /api/nostr/relay-list, GET /api/nostr/list/:kind,
+  // POST /api/nostr/list + mastodon_pin + mastodon_follow + nostr_relay_list_get +
+  // nostr_relay_list_set + nostr_list_get + nostr_list_set - spec 31).
+  // 111 routes / 90 tools = +1 webhook/realtime ingestion seam READ (GET /api/cloud/events
+  // + list_inbound_events - spec 23).
+  // 113 routes / 92 tools = +2 Radar (beta) listening seam READS (GET /api/radar/scan +
+  // GET /api/radar + radar_scan + radar_list - spec 32).
+  // 114 routes / 93 tools = +1 Radar triage WRITE (POST /api/radar/triage + radar_triage - spec 32 review).
+  // 115 routes / 94 tools = +1 Radar close-the-loop WRITE (POST /api/radar/reply + radar_queue_reply - spec 34).
+  // 116 routes / 95 tools = +1 Radar GEO footprint WRITE (POST /api/radar/footprint + radar_footprint_log - spec 35).
+  // 117 routes / 96 tools = +1 Radar agent-ingest WRITE (POST /api/radar/ingest + radar_ingest - spec 38).
+  // 119 routes / 97 tools = +agent_recheck & its POST twin, +POST /api/agent/connect (spec 41);
+  // the connect route is deliberately tool-less - a human pastes the credential, never an agent.
+  // 121 / 99 = +radar_agent_scan + radar_agent_stop and their twins (spec 41): Scan now spawns
+  // the operator's own agent instead of running a keyword match.
+  // 123 / 101 = +radar_agent_comparison + radar_draft_comparison (spec 42): the agent drafts the
+  // comparison page the backlog has been asking for since spec 35 with no button attached.
+  // 124 / 102 = +radar_followup_check (spec 44 author-reply): the on-demand author-reply check.
+  // 125 routes = +POST /api/agent/adopt (tool-less by design, a human dashboard ceremony).
+  // 126 routes = +POST /api/cloud/heal (operator-only with the other /api/cloud/* ceremonies).
+  ok(/126 routes, 102 tools.*0 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 67/43 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 126/102 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

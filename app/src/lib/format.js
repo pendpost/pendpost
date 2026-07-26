@@ -59,6 +59,55 @@ export function setCardAccent(value) {
   } catch { /* ignore */ }
 }
 
+// Sidebar rail width in px: a client-side display preference (localStorage), synced
+// in-module and persisted, mirroring the card-accent pattern above. The rail is a
+// fixed 240px drawer below lg, so this only ever applies to the desktop rail; the
+// resizer that writes it is hidden there. Bounds are static on purpose: the rail
+// only exists at >= 1024px, so SIDEBAR_WIDTH_MAX can never squeeze the main column.
+const SIDEBAR_WIDTH_KEY = 'pendpost-sidebar-width';
+export const SIDEBAR_WIDTH_DEFAULT = 240;
+export const SIDEBAR_WIDTH_MIN = 200;
+export const SIDEBAR_WIDTH_MAX = 400;
+
+// Clamp to the valid range, rejecting anything non-numeric. A hand-edited or stale
+// key falls back to the default rather than laying out the app from garbage.
+export function clampSidebarWidth(value) {
+  // Number(null) is 0 and Number('') is 0 - both finite, both would silently clamp to
+  // the minimum instead of falling back. Only a real number or a numeric string counts.
+  const numeric = typeof value === 'number'
+    || (typeof value === 'string' && value.trim() !== '' && Number.isFinite(Number(value)));
+  if (!numeric) return SIDEBAR_WIDTH_DEFAULT;
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return SIDEBAR_WIDTH_DEFAULT;
+  return Math.min(SIDEBAR_WIDTH_MAX, Math.max(SIDEBAR_WIDTH_MIN, n));
+}
+
+let _sidebarWidth = SIDEBAR_WIDTH_DEFAULT;
+try {
+  const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(SIDEBAR_WIDTH_KEY) : null;
+  if (stored !== null && stored !== '' && Number.isFinite(Number(stored))) _sidebarWidth = clampSidebarWidth(stored);
+} catch { /* localStorage unavailable (private mode) */ }
+
+export function getSidebarWidth() { return _sidebarWidth; }
+export function setSidebarWidth(value) {
+  _sidebarWidth = clampSidebarWidth(value);
+  try {
+    if (_sidebarWidth === SIDEBAR_WIDTH_DEFAULT) localStorage.removeItem(SIDEBAR_WIDTH_KEY);
+    else localStorage.setItem(SIDEBAR_WIDTH_KEY, String(_sidebarWidth));
+  } catch { /* ignore */ }
+}
+
+// Push the current width onto documentElement as --sidebar-w, which Tailwind's
+// `w-sidebar` utility reads. Kept here so the drag path can write the var straight
+// from a pointermove without a React render.
+export function applySidebarWidth(value) {
+  const px = clampSidebarWidth(value);
+  if (typeof document !== 'undefined') {
+    document.documentElement.style.setProperty('--sidebar-w', `${px}px`);
+  }
+  return px;
+}
+
 // The hour12 override for a resolved display locale: de-CH (any non-en-US) is always
 // 24-hour; en-US follows the preference (auto = no override, i.e. its 12-hour default).
 function hour12For(loc) {
@@ -68,23 +117,40 @@ function hour12For(loc) {
   return {};
 }
 
+// The ONE post-date comparator. Four copies of
+// `Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt)` were inline across Planner
+// and Freigaben, and adding a direction to one of them would have made a fifth.
+//
+// Sorts on scheduledAt, the date the cards actually SHOW, so a reader can re-derive the
+// order from the screen. `dir` is 1 for oldest-first, -1 for newest-first.
+//
+// An undated post sorts LAST in BOTH directions: it is not "the newest", and flipping
+// the direction must not float it to the top. That is why the missing check sits outside
+// the direction multiplier rather than relying on a '9999' sentinel string.
+export function comparePostDate(a, b, dir = 1) {
+  const ta = Date.parse(a?.scheduledAt || '');
+  const tb = Date.parse(b?.scheduledAt || '');
+  const aMissing = Number.isNaN(ta);
+  const bMissing = Number.isNaN(tb);
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  return dir * (ta - tb);
+}
+
 export function fmtTime(iso) {
   const loc = dateLocale();
   return new Intl.DateTimeFormat(loc, { timeZone: TZ, hour: '2-digit', minute: '2-digit', ...hour12For(loc) }).format(new Date(iso));
 }
 
+// The FULL stamp - every component (weekday + date + time) - as opposed to
+// fmtStampShort (no weekday) and fmtTime (time only). "Full" names the component
+// set, not the verbosity: it reads "Mi, 22.07.26 · 09:00", not "Mittwoch, 22. Juli
+// 2026 um 09:00", which was too long for the dense rows and pickers that use it.
+// Composed from the two helpers below rather than a third Intl.DateTimeFormat, so
+// the app can only ever have ONE date style and ONE time style.
 export function fmtFull(iso) {
-  const loc = dateLocale();
-  return new Intl.DateTimeFormat(loc, {
-    timeZone: TZ,
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-    ...hour12For(loc),
-  }).format(new Date(iso));
+  return `${fmtDayShort(new Date(iso))}, ${fmtStampShort(iso)}`;
 }
 
 // Relative schedule label for the triage/detail identity line ("in 2 days",
@@ -209,6 +275,10 @@ export const STATE_META = {
   'verify-failed': { cls: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 ring-orange-500/30', dot: 'bg-orange-500', Icon: AlertTriangle },
   'waiting-due': { cls: 'bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', dot: 'bg-sky-500', Icon: Clock },
   overdue: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', dot: 'bg-red-500', Icon: OctagonX },
+  // The platform refused it (lib/plans.mjs lastFailureFor). Same red as overdue - it is a
+  // real failure, not the softer orange of a fired-but-unconfirmed post - but its own icon
+  // and label, because "overdue" reads as "pendpost was not running" and that is a lie here.
+  'publish-failed': { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', dot: 'bg-red-500', Icon: AlertTriangle },
   parked: { cls: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 ring-zinc-500/30', dot: 'bg-zinc-400', Icon: PauseCircle },
 };
 
@@ -298,6 +368,9 @@ export const STATUS_PILL_META = {
   // mislabel it the red "Overdue". Mirrors STATE_META's verify-failed orange so the
   // calendar pill/accent/dot match the StatusPill on the detail + run-now surfaces.
   'verify-failed': { cls: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 ring-orange-500/30', bar: 'bg-orange-500', strip: 'bg-orange-500/10', dot: 'bg-orange-500', Icon: AlertTriangle },
+  // Same red as overdue (a refusal IS a failure), different icon + label: "Overdue" tells
+  // the owner pendpost was not running, which is the wrong thing to go fix.
+  'publish-failed': { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', bar: 'bg-red-500', strip: 'bg-red-500/10', dot: 'bg-red-500', Icon: AlertTriangle },
   scheduled: { cls: 'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-sky-500', Icon: CalendarClock },
   posted: { cls: 'bg-zinc-500/10 text-emerald-700/80 dark:text-emerald-400/70 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-emerald-500', Icon: CheckCircle },
   parked: { cls: 'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-zinc-400', Icon: PauseCircle },
@@ -320,7 +393,12 @@ export function postIsDimmed(post) {
 // renders verify-failed directly) on the detail + run-now surfaces. Filtering stays
 // on postStatusKey, so the Status filter is unchanged.
 export function postDisplayStatusKey(post) {
-  return post.derivedState === 'verify-failed' ? 'verify-failed' : postStatusKey(post);
+  if (post.derivedState === 'verify-failed') return 'verify-failed';
+  // Same reasoning for a REFUSED post: it filters as overdue, but showing the owner
+  // "past due, pendpost wasn't running" when a platform actually rejected the post sends
+  // them to start a scheduler that is already running. The reason rides on post.lastFailure.
+  if (post.derivedState === 'publish-failed') return 'publish-failed';
+  return postStatusKey(post);
 }
 
 // Month-cell status dot, derived from the SAME visible bucket as the card pill
@@ -383,9 +461,260 @@ export function activeCampaigns(campaigns) {
   return (campaigns || []).filter((c) => c.active === true);
 }
 
+// ── Spec 37: the account-warmth publish ADVISORY judge (app-side MIRROR twin) ──────────
+// A mirror of lib/lane-readiness.mjs#laneReadiness. The browser bundle cannot import lib/
+// (server boundary - the same reason postNeedsMedia above is duplicated), so this is a
+// hand-kept twin. ONE shared fixture (lib/lane-readiness.mjs READINESS_CASES) guards that
+// this twin and the engine judge never drift (app twin test + node test both iterate it).
+// After the 2026-07-13 reversal the judge no longer routes: it returns { advisories }
+// (display-only warnings that accumulate); every approved reddit post auto-publishes. Keep
+// the RULES and the advisory { code, params } shapes byte-identical to the engine.
+export const MANUAL_LANES = new Set(['reddit']); // mirror of lib/lane-readiness.mjs (the fence)
+export const WARMTH_MIN_AGE_DAYS = 30;
+export const WARMTH_MIN_KARMA = 100;
+export function laneReadiness(lane, inputs = {}) {
+  if (!MANUAL_LANES.has(lane)) return { advisories: [] };
+  const { accountAgeDays, linkKarma, commentKarma, subRequirementsMet, isPromo } = inputs || {};
+  const advisories = [];
+  if (isPromo !== false) advisories.push({ code: 'promo', params: {} });
+  const age = Number(accountAgeDays);
+  const lk = Number(linkKarma);
+  const ck = Number(commentKarma);
+  const karmaKnown = Number.isFinite(lk) && Number.isFinite(ck);
+  const karma = karmaKnown ? lk + ck : null;
+  if (!Number.isFinite(age) || !karmaKnown || age < WARMTH_MIN_AGE_DAYS || karma < WARMTH_MIN_KARMA) {
+    advisories.push({ code: 'cold', params: { ageDays: Number.isFinite(age) ? age : null, karma } });
+  }
+  if (subRequirementsMet !== true) advisories.push({ code: 'subRequirements', params: {} });
+  return { advisories };
+}
+
+// Extract the reddit warmth (state.reddit.warmth, surfaced on the setup reddit entry)
+// into laneReadiness's warmth inputs. A missing warmth passes undefined age/karma so the
+// judge fail-closes to 'cold'. `setup` is the useSetup() payload ({ platforms:[...] }).
+export function redditWarmthInputs(setup) {
+  const w = (setup?.platforms || []).find((p) => p.platform === 'reddit')?.warmth || null;
+  return {
+    accountAgeDays: w ? w.ageDays : undefined,
+    linkKarma: w ? w.linkKarma : undefined,
+    commentKarma: w ? w.commentKarma : undefined,
+  };
+}
+export function redditWarmth(setup) {
+  return (setup?.platforms || []).find((p) => p.platform === 'reddit')?.warmth || null;
+}
+
+// The Reddit karma builder (warm-up mode). A cold account's posts get filtered, so the loop is:
+// comment genuinely to earn standing, watch the numbers climb, and only post once warm. These
+// helpers are pure and display-only; the warm threshold is the SAME WARMTH_MIN_* the judge uses,
+// so the gauge and the `cold` advisory can never disagree.
+
+// The account's standing derived from the cached warmth ({ ageDays, linkKarma, commentKarma,
+// karma }). Returns null when warmth was never probed (the gauge then shows a connect/measure
+// prompt, never a fabricated 0 - data honesty). `warm` is true ONLY when BOTH gates are known
+// and met, matching laneReadiness's `cold` predicate exactly.
+export function warmthStanding(warmth) {
+  if (!warmth || typeof warmth !== 'object') return null;
+  const age = Number(warmth.ageDays);
+  const lk = Number(warmth.linkKarma);
+  const ck = Number(warmth.commentKarma);
+  const ageKnown = Number.isFinite(age);
+  const karmaKnown = Number.isFinite(lk) && Number.isFinite(ck);
+  const karma = karmaKnown ? lk + ck : (Number.isFinite(Number(warmth.karma)) ? Number(warmth.karma) : null);
+  const warm = ageKnown && karma != null && age >= WARMTH_MIN_AGE_DAYS && karma >= WARMTH_MIN_KARMA;
+  return {
+    ageDays: ageKnown ? age : null,
+    linkKarma: Number.isFinite(lk) ? lk : null,
+    commentKarma: Number.isFinite(ck) ? ck : null,
+    karma,
+    warm,
+    // How far to warm, per gate; 0 once met, null when the input was never measured.
+    toKarma: karma == null ? null : Math.max(0, WARMTH_MIN_KARMA - karma),
+    toDays: ageKnown ? Math.max(0, WARMTH_MIN_AGE_DAYS - age) : null,
+  };
+}
+
+// A warm-up (karma) query: the one flag that turns an ordinary Radar query into a karma builder.
+export function isWarmupQuery(q) { return Boolean(q && q.warmup === true); }
+
+// Is this signal a karma-building item? True iff the saved search it matched is a warm-up query.
+// Signals carry only the query ID (matchedQuery), so the query list is the source of truth.
+export function signalIsKarma(signal, radar) {
+  const qid = signal && signal.matchedQuery;
+  if (!qid) return false;
+  const qs = Array.isArray(radar?.queries) ? radar.queries : [];
+  return qs.some((q) => isWarmupQuery(q) && q.id === qid);
+}
+
+// A karma item is a POST IDEA (a non-promo post to submit) rather than a comment target when it
+// points at the subreddit itself instead of a thread: a real Reddit thread permalink carries
+// `/comments/`, a subreddit link does not. The warm-up scan brief writes post ideas exactly that
+// way (subreddit url, drafted post in the text), so the shape is the marker - no extra field to
+// store. Caller gates this behind signalIsKarma so an ordinary reddit thread never qualifies.
+export function signalIsPostIdea(signal) {
+  if (!signal || signal.source !== 'reddit') return false;
+  const url = String(signal.url || '');
+  return /^https?:\/\//.test(url) && !/\/comments\//.test(url);
+}
+
+// The post's lanes that pendpost CANNOT publish to, because they are not connected - read
+// from pendpost_health's setup (lib/setup.mjs), the same shape redditWarmth reads.
+//
+// Why this exists: approving is a no-op on an unconnected lane. setApproval checks the actor
+// and self-approval and never connectivity, and the button was never disabled, so the one
+// place an operator decides whether a post goes out was the one place that could not tell
+// them it would not. The post then sat in the queue failing at publish time, forever.
+//
+// A 'skipped' lane is deliberately NOT unconnected: the operator said they are not using it,
+// so the post is theirs to place and there is nothing to fix. Only an incomplete lane - one
+// that is meant to work and does not - earns the hand-off. Unknown platform ids are ignored
+// rather than guessed at: absence of evidence is not evidence of disconnection, and a false
+// "you must post this yourself" on a working lane is the worse error.
+export function unconnectedLanes(post, setup) {
+  const rows = setup?.platforms;
+  if (!Array.isArray(rows) || !rows.length) return [];
+  return (post?.platforms || []).filter((p) => {
+    const row = rows.find((r) => r.platform === p || r.platform === setupIdOf(p));
+    return row ? row.status === 'incomplete' : false;
+  });
+}
+
+// Where the operator is supposed to put a post pendpost cannot publish for them.
+//
+// Why this exists: the hand-off copied the caption and then opened `radarReplyTo.url ||
+// externalUrl`, which a normal planned post carries neither of. So the button handed back a
+// clipboard and no destination, and nothing on screen said where the text was meant to go.
+// That is the dead end the hand-off was built to remove, one step further along.
+//
+// ONE rule for the table, so this never becomes a pile of per-platform guesses: every entry
+// is the platform's OWN documented share/submit intent, built only from values we already
+// hold. A lane we cannot resolve honestly returns { platform, url: null } - the destination
+// NAME is still true and the UI says it plainly, but no URL is ever invented (the
+// derivePermalinks discipline, lib/plans.mjs). Reddit-without-a-subreddit additionally
+// carries reason: 'noSubreddit' so the UI can offer the fix instead of silence.
+//
+// Note which lanes can resolve at all while DISCONNECTED, because that is the whole case
+// here: reddit works because the subreddit is a PLAN field (per-post, spec 36) with a config
+// default behind it, and mastodon works because MASTODON_INSTANCE_URL is readable while the
+// token is missing. Everything else has nothing to build from until it is connected.
+export const HANDOFF_URL_BUDGET = 2000;
+
+function withinBudget(url) {
+  return url.length <= HANDOFF_URL_BUDGET;
+}
+
+export function handOffTarget(post, platform, accounts) {
+  const caption = String(post?.caption || '').trim();
+  if (platform === 'reddit') {
+    const sub = String(post?.redditSubreddit || accounts?.reddit?.subreddit || '')
+      .replace(/^\/?r\//, '')
+      .trim();
+    if (!sub) return { platform, url: null, reason: 'noSubreddit' };
+    const base = `https://www.reddit.com/r/${sub}/submit`;
+    const label = `r/${sub}`;
+    const q = new URLSearchParams();
+    const title = String(post?.title || '').trim();
+    if (title) q.set('title', title);
+    // A link post prefills the URL field; a self post prefills the body. Never both:
+    // reddit's submit page is one or the other, and sending both picks for the operator.
+    const link = String(post?.redditUrl || '').trim();
+    if (link) q.set('url', link);
+    else if (caption) q.set('text', caption);
+    const full = `${base}?${q}`;
+    if (withinBudget(full)) return { platform, url: full, label, truncated: false };
+    // Over budget: drop the body, keep the title. The caption is on the clipboard either
+    // way, so the operator loses a paste, not the text - and the hint says so.
+    q.delete('text');
+    const short = q.size ? `${base}?${q}` : base;
+    return { platform, url: short, label, truncated: true };
+  }
+  if (platform === 'x') {
+    const url = caption ? `https://x.com/intent/post?text=${encodeURIComponent(caption)}` : 'https://x.com/intent/post';
+    return withinBudget(url)
+      ? { platform, url, label: 'X', truncated: false }
+      : { platform, url: 'https://x.com/intent/post', label: 'X', truncated: true };
+  }
+  if (platform === 'mastodon') {
+    const instance = String(accounts?.mastodon?.instanceUrl || '').replace(/\/+$/, '').trim();
+    if (!instance) return { platform, url: null };
+    const label = instance.replace(/^https?:\/\//, '');
+    const url = caption ? `${instance}/share?text=${encodeURIComponent(caption)}` : `${instance}/share`;
+    return withinBudget(url)
+      ? { platform, url, label, truncated: false }
+      : { platform, url: `${instance}/share`, label, truncated: true };
+  }
+  return { platform, url: null };
+}
+
+// A radar reply-to / signal carries the source post's canonical URL on the AUTHOR's own
+// instance (Mastodon status.url). Opening that lands the operator as an anonymous visitor on
+// a remote instance ("Sign in to continue") even though they're signed into their OWN
+// instance. When the source is Mastodon and we know our home instance, rewrite the link so the
+// thread opens where the operator is already signed in: the status is federated onto our
+// instance under externalId (the SAME id the reply fires at - NOT the id in the remote url,
+// which is the author-instance id), so /@author/externalId is the local thread. Non-Mastodon
+// sources and the disconnected case pass the URL through unchanged, mirroring handOffTarget.
+export function mastodonThreadUrl({ source, url, author, externalId } = {}, accounts) {
+  if (source !== 'mastodon') return url || null;
+  const instance = String(accounts?.mastodon?.instanceUrl || '').replace(/\/+$/, '').trim();
+  if (!instance) return url || null;
+  const acct = String(author || '').replace(/^@/, '').trim();
+  const id = String(externalId || '').trim();
+  if (acct && id) return `${instance}/@${acct}/${id}`;               // full thread, logged in
+  if (url) return `${instance}/authorize_interaction?uri=${encodeURIComponent(url)}`; // resolver fallback
+  return url || null;
+}
+
+// The publish advisories for ONE reddit post, as displayed in the app (the Freigaben warmth
+// warning). Fed by the post's isPromo + the cached warmth + subRequirementsMet. These are
+// display-only: every approved reddit post auto-publishes regardless (owner: warn-and-allow).
+// `subRequirementsMet` defaults true (optimistic) because the app does not run a live per-card
+// presubmit - a genuinely sub-unmet post's subreddit problems surface via the PlatformBlockers panel.
+export function redditPostReadiness(post, setup, subRequirementsMet = true) {
+  if (!(post?.platforms || []).includes('reddit')) return { advisories: [] };
+  // A Radar reply-to-external (spec 34) is human-gated and handled entirely by the radar path -
+  // it is NOT a warmth-screened submission, so it carries no advisories here.
+  if (post?.radarReplyTo) return { advisories: [] };
+  return laneReadiness('reddit', { ...redditWarmthInputs(setup), isPromo: post?.isPromo, subRequirementsMet });
+}
+
+// DISPLAY ONLY (deliberately not in the judge, and not in the shared READINESS_CASES fixture):
+// `cold` and `promo` together is not two pieces of news, it is one. A new account posting a
+// promotional link is precisely the pattern Reddit's sitewide spam filter exists to catch, and
+// showing the two as separate "heads-up" clauses is what let a launch post go out and get
+// filtered. Collapsed, the operator gets one sentence that says what to DO instead. The engine
+// judge (lib/lane-readiness.mjs) still emits both codes unchanged, so nothing downstream of it
+// moves - this is a rendering merge, and the twin tests passing untouched is the proof.
+function collapseColdPromo(list) {
+  const cold = list.find((a) => a.code === 'cold');
+  if (!cold || !list.some((a) => a.code === 'promo')) return list;
+  // Keep the cold advisory's params (the age/karma numbers the sentence quotes) and drop the
+  // promo row; any other advisory (subRequirements) keeps its own place after it.
+  return [{ code: 'coldPromo', params: cold.params }, ...list.filter((a) => a.code !== 'cold' && a.code !== 'promo')];
+}
+
+// Localize the accumulated advisories ({ code, params }[]) into one warning string - used by
+// the Freigaben warmth warning. `t` is injected (this stays a pure helper). A null age/karma
+// (warmth never probed) renders as "?" so the sentence never says "null". The locale strings
+// use {n} (days) / {k} (karma), matching Setup's setup.reddit.warmth.cold.
+export function readinessAdvisoryText(t, advisories) {
+  const list = collapseColdPromo(Array.isArray(advisories) ? advisories.filter((a) => a && a.code) : []);
+  if (!list.length) return '';
+  return list
+    .map((a) => {
+      const p = a.params || {};
+      return t(`readiness.reason.${a.code}`, {
+        n: p.ageDays == null ? '?' : p.ageDays,
+        k: p.karma == null ? '?' : p.karma,
+      });
+    })
+    .join(' · ');
+}
+
 export const TYPE_LABEL = {
-  reel: 'Reel', story: 'Story', video: 'Video', text: 'Text',
+  reel: 'Reel', story: 'Story', video: 'Video', text: 'Text', poll: 'Poll', carousel: 'Carousel',
   'youtube-short': 'YouTube Short', 'youtube-longform': 'YouTube Video', image: 'Image',
+  'nostr-longform': 'Nostr article',
 };
 
 // C+D: the single source of truth for a post's media-container aspect, keyed by
@@ -399,6 +728,12 @@ const TYPE_ASPECT = {
   video: 'aspect-[4/5]', // feed video
   image: 'aspect-square',
   text: 'aspect-[1.91/1]', // matches the LinkedIn card preview ratio
+  'nostr-longform': 'aspect-[1.91/1]', // spec 18: a NIP-23 article card (reuses text's ratio)
+  poll: 'aspect-[1.91/1]', // spec 10: a media-less text-card ratio (no media box)
+  // Spec 05: the FALLBACK box for an album whose slides are not probed yet. The real
+  // shape comes from carouselFrame(media.items) via mediaAspect below - square is only
+  // the honest "unknown" default (IG's own default album frame), never a claim.
+  carousel: 'aspect-square',
   reel: 'aspect-[9/16]', story: 'aspect-[9/16]', 'youtube-short': 'aspect-[9/16]',
 };
 export function coverAspect(type) {
@@ -415,48 +750,211 @@ export const RES_ASPECT = {
   'square-1x1': 'aspect-square',
 };
 
+// The same probed labels as a HUMAN-READABLE ratio, for the one place a carousel
+// can honestly state its shape: the album itself. Deliberately a twin of RES_ASPECT
+// rather than a merge - one is a Tailwind box class, the other is copy - and 'other'
+// is absent from both on purpose (an off-spec file has no ratio to claim).
+export const RES_RATIO = {
+  'story-9x16': '9:16',
+  'feed-4x5': '4:5',
+  'square-1x1': '1:1',
+};
+
+// Spec 05: a carousel has no single media file, so its frame and its ratio have to
+// come from the resolved SLIDES (post.media.items[], lib/plans.mjs resolveMediaItems)
+// rather than from the type. Returns:
+//   aspect - the box to draw. The FIRST probed slide wins, because that is the shape
+//            the lane crops the album to; with object-contain an odd slide then
+//            letterboxes visibly instead of being silently cropped.
+//   ratio  - claimed ONLY when every probed slide agrees. Same honesty rule as
+//            typeRatio below: silence beats a ratio that is wrong for some slide.
+//   mixed  - true when the probed slides disagree, so the UI can say so. Not a
+//            blocker: a mixed album publishes, it just crops on IG.
+// 'other' and an unprobed null are "unknown", NOT a third shape - an unscanned slide
+// must never make a uniform album read as mixed.
+export function carouselFrame(items) {
+  const labels = (Array.isArray(items) ? items : [])
+    .map((it) => it?.resolution)
+    .filter((r) => r && r !== 'other');
+  const shapes = [...new Set(labels)];
+  return {
+    aspect: RES_ASPECT[labels[0]] || coverAspect('carousel'),
+    ratio: shapes.length === 1 ? RES_RATIO[shapes[0]] : null,
+    mixed: shapes.length > 1,
+  };
+}
+
 // The cover box aspect for a PLANNER post: drive it off the media file's real
 // measured shape when the asset scan has probed it (post.media.resolution), so a
 // LinkedIn 4:5 video reads 4:5 and a 9:16 one reads 9:16 - instead of forcing every
 // `video` type into one 4:5 box. Falls back to the type-keyed coverAspect when the
 // probe is unknown ('other', not yet scanned, or a media-less text post).
 export function mediaAspect(post) {
+  // Spec 05: a carousel's shape lives on its slides, never on the (always null)
+  // single media.resolution. Handled HERE rather than at each call site so the
+  // Planner card, the preview and every future consumer are fixed at once.
+  if (post?.type === 'carousel') return carouselFrame(post?.media?.items).aspect;
   return RES_ASPECT[post?.media?.resolution] || coverAspect(post?.type);
 }
+
+// Is this post's media a still image? The server's probe is authoritative
+// (lib/assets.mjs IMAGE_CODECS -> media.kind), and the extension test only covers
+// the window before a new file is scanned. Deliberately keyed on the MEDIA, not on
+// post.type: a mistyped post (type=video carrying a JPEG) still renders honestly,
+// and every consumer asks the question the same way. Drives the preview's img-vs-
+// video branch, the file-row icon, and the cover editor's gate - which is why it
+// lives here instead of being re-derived at each call site.
+export function isImageMedia(media) {
+  return media?.kind === 'image' || /\.(jpe?g|png)$/i.test(media?.url || '');
+}
+// CI-2 / mirrors lib/plans.mjs#postNeedsMedia (server, kept as a small local copy
+// so the browser bundle never imports the server-only lib module - same pattern as
+// PostDetail's COMMENT_CAPABLE_PLATFORMS/EDIT_LANE_ID). Text/article posts
+// (LinkedIn), native polls (spec 10) and Nostr NIP-23 long-form articles (spec 18)
+// carry no media by design; every other type does. Gates the validate-media probe
+// (useValidateMedia) so a media-less post never fires GET .../validate-media - the
+// server 404s (media_missing) on a post with no file/path, which is expected there
+// but is just console noise on a type that was never going to have media.
+export function postNeedsMedia(post) {
+  return !['text', 'poll', 'nostr-longform'].includes(post?.type);
+}
+
 export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'];
 
 // The authorable post formats, in menu order. Shared by the Composer's format
 // select and the PostDetail quick-edit select so the two lists can never drift.
-export const TYPES = ['reel', 'story', 'video', 'text', 'youtube-short', 'youtube-longform'];
+// 'poll' (spec 10) is a media-less native poll offered only on the seven poll lanes.
+// 'carousel' (spec 05) is a media-backed native album offered only on the carousel lanes.
+// 'image' (spec 16) is a media-BACKED single-image TYPE offered ONLY on reddit (a Reddit
+// image submission); it is an OPT_IN format (below) so it never leaks to another lane.
+export const TYPES = ['reel', 'story', 'video', 'text', 'youtube-short', 'youtube-longform', 'poll', 'carousel', 'image', 'nostr-longform'];
 
 // A12: the formats a given lane can actually publish, so a text-only lane
 // (x/mastodon/nostr/…) is never offered "Reel"/"Story" and a feed lane is never
 // offered a YouTube format. The visual feeds (instagram/tiktok) take reel/story/
 // video; youtube takes its two native formats + plain video; every text/chat/blog
-// lane publishes text or a plain video. A lane absent from this map (e.g.
-// pinterest) or an empty/unknown id returns the full TYPES — conservative, so a
-// caller never strips a valid format (no regression). For a MULTI-platform post
-// the caller unions each lane's set (in TYPES order).
+// lane publishes text or a plain video. EVERY real lane has an explicit entry below;
+// an empty/unknown id falls back to BASE_FALLBACK_FORMATS (never the full TYPES), which
+// deliberately EXCLUDES the opt-in TYPEs (poll/carousel) so a newly added TYPE can never
+// auto-leak to an unlisted lane - the pinterest-offered-Poll regression this fixes (a
+// lane opts IN to poll/carousel by unioning it into its own array, never via the fallback).
+// For a MULTI-platform post the caller unions each lane's set (in TYPES order).
 const VISUAL_LANE_FORMATS = ['reel', 'story', 'video'];
 const TEXT_LANE_FORMATS = ['text', 'video'];
+// Spec 10: the seven poll-capable lanes ADD 'poll' to their format list via their OWN
+// array (`[...TEXT_LANE_FORMATS, 'poll']`) - never by mutating the shared
+// TEXT_LANE_FORMATS const, which would leak the poll format to fb/wordpress/ghost/gbp
+// (they also use it but publish no native poll).
+const POLL_LANE_FORMATS = [...TEXT_LANE_FORMATS, 'poll'];
+// Spec 05: the carousel-capable lanes ADD 'carousel' to their format list via their OWN
+// array - never by mutating a shared const, which would leak the native-album format to
+// fb/tiktok/mastodon/nostr/... (they assemble no carousel: FB stays reel-gated, tiktok
+// photo-mode + mastodon/nostr have no engine branch). instagram rides the visual set;
+// x/linkedin/telegram/discord/reddit ride the poll set; pinterest has its OWN explicit
+// entry (below) so it offers carousel WITHOUT the poll leak the old full-TYPES fallback
+// caused (spec 05 review #7 - pinterest has no poll engine).
+const VISUAL_CAROUSEL_FORMATS = [...VISUAL_LANE_FORMATS, 'carousel'];
+const POLL_CAROUSEL_FORMATS = [...POLL_LANE_FORMATS, 'carousel'];
+// The opt-in TYPEs kept OUT of the fallback so no future TYPE auto-leaks to an unlisted
+// lane; a lane offers one only by unioning it into its own array above. Spec 16 adds
+// 'image' here so the Reddit-only image TYPE can never leak to another lane's format
+// select; spec 18 adds 'nostr-longform' so the Nostr-only NIP-23 article TYPE stays
+// nostr-exclusive (only nostr unions it in below).
+const OPT_IN_FORMATS = ['poll', 'carousel', 'image', 'nostr-longform'];
+const BASE_FALLBACK_FORMATS = TYPES.filter((t) => !OPT_IN_FORMATS.includes(t));
+// Spec 16: reddit ADDS 'image' to its own array (never via the fallback) - so ONLY reddit
+// offers the image submission TYPE, alongside the poll + carousel it already gained.
+const REDDIT_FORMATS = [...POLL_CAROUSEL_FORMATS, 'image'];
+// Spec 17: pinterest's PLATFORM_FORMATS is now an EXPLICIT, HONEST list of what the
+// pin engine actually publishes - a native video pin (type=video, spec 17), a native
+// carousel pin (type=carousel, spec 05) and a plain image pin (type=image, the
+// same public-imageUrl path reddit's type=image also opts into). It no longer
+// borrows reel/story/text/youtube-short/youtube-longform from the base fallback -
+// the pin engine never assembled those as anything but an untyped image pin, so
+// offering them was a leftover from the pre-spec-05 full-TYPES fallback (tidy fold-
+// in flagged by spec 17). Existing posts of a since-dropped type keep publishing
+// (cmdPublishDue still branches on post.type, not on this offered set) - this only
+// changes what the Composer/PostDetail format selects OFFER going forward.
 const PLATFORM_FORMATS = {
-  instagram: VISUAL_LANE_FORMATS,
+  // Spec 39: instagram ADDS 'image' to its own array (never via the shared consts -
+  // the OPT_IN anti-leak rule): the feed IMAGE container publishes from the public
+  // imageUrl, the same transport pinterest's image pin uses.
+  instagram: [...VISUAL_CAROUSEL_FORMATS, 'image'],
   tiktok: VISUAL_LANE_FORMATS,
   youtube: ['youtube-short', 'youtube-longform', 'video'],
   facebook: TEXT_LANE_FORMATS,
-  linkedin: TEXT_LANE_FORMATS,
-  x: TEXT_LANE_FORMATS,
-  telegram: TEXT_LANE_FORMATS,
-  discord: TEXT_LANE_FORMATS,
-  reddit: TEXT_LANE_FORMATS,
-  mastodon: TEXT_LANE_FORMATS,
+  linkedin: POLL_CAROUSEL_FORMATS,
+  x: POLL_CAROUSEL_FORMATS,
+  telegram: POLL_CAROUSEL_FORMATS,
+  discord: POLL_CAROUSEL_FORMATS,
+  reddit: REDDIT_FORMATS,
+  pinterest: ['video', 'carousel', 'image'],
+  // E2: mastodon assembles a native album of up to 4 attachments, so it gets its OWN
+  // array with 'carousel' rather than mutating the shared POLL_LANE_FORMATS const, which
+  // would leak the format to fb/tiktok/nostr, none of which assemble one.
+  mastodon: [...POLL_LANE_FORMATS, 'carousel'],
   wordpress: TEXT_LANE_FORMATS,
   ghost: TEXT_LANE_FORMATS,
-  nostr: TEXT_LANE_FORMATS,
+  // Spec 18: nostr ADDS the NIP-23 long-form article to its own array (never via the
+  // fallback) - so ONLY nostr offers 'nostr-longform', alongside the poll it already had.
+  nostr: [...POLL_LANE_FORMATS, 'nostr-longform'],
   gbp: TEXT_LANE_FORMATS,
 };
 export function formatsForPlatform(platformId) {
-  return PLATFORM_FORMATS[platformId] || TYPES;
+  return PLATFORM_FORMATS[platformId] || BASE_FALLBACK_FORMATS;
+}
+
+// The aspect ratio each lane RECOMMENDS for a format, shown in brackets next to the
+// format name so an operator renders the right shape before attaching media.
+//
+// Sparse ON PURPOSE. A lane with no canonical ratio (telegram/discord/reddit/
+// mastodon/nostr/wordpress/ghost/gbp accept whatever you send) has no entry, and its
+// formats render label-only rather than inventing a spec that does not exist. That is
+// also why this is NOT a type-keyed default with per-lane overrides: a default would
+// have to print "Video (16:9)" on Telegram, which has no such rule.
+//
+// Distinct from TYPE_ASPECT above, which is a LAYOUT box (how tall to draw the
+// preview, and overridden by the real probed resolution). The two legitimately
+// disagree - X video is 16:9 here, 4:5 there - so they must not be merged.
+//
+// instagram.image shipped with spec 39 (the feed IMAGE container; 4:5 is IG's
+// recommended portrait feed ratio).
+//
+// NO `carousel` entry for instagram/x/linkedin, on purpose. Those lanes accept more
+// than one album shape (IG publishes 1:1 AND 4:5 children; X and LinkedIn pin no
+// ratio at all), so the old `carousel: '1:1'` was an invented spec - it printed
+// "Karussell (1:1)" over a real 1080x1350 album. A carousel's actual constraint is
+// "every slide the same shape", which no single ratio can express, so the album
+// REPORTS its measured shape via carouselFrame instead of the label CLAIMING one.
+// pinterest keeps its entry: 2:3 is the same recommendation it makes for every pin
+// format, so it is a real rule rather than a guess.
+const PLATFORM_TYPE_RATIO = {
+  instagram: { reel: '9:16', story: '9:16', video: '4:5', image: '4:5' },
+  tiktok: { reel: '9:16', story: '9:16', video: '9:16' },
+  youtube: { 'youtube-short': '9:16', 'youtube-longform': '16:9', video: '16:9' },
+  x: { video: '16:9' },
+  linkedin: { video: '16:9' },
+  facebook: { video: '16:9' },
+  pinterest: { video: '2:3', image: '2:3', carousel: '2:3' },
+};
+
+// The ratio to show for a format on THIS post's target lanes. A post can target
+// several lanes at once and one file cannot be two shapes, so this reports a ratio
+// only when every targeted lane that HAS a rule agrees. An x+mastodon video reads
+// 16:9 (mastodon has no rule, so it does not object); an instagram+x video reports
+// nothing, because 4:5 and 16:9 are both wrong for the other lane and silence is
+// honest where no single answer is right.
+export function typeRatio(platforms, type) {
+  const ratios = new Set((platforms || []).map((p) => PLATFORM_TYPE_RATIO[p]?.[type]).filter(Boolean));
+  return ratios.size === 1 ? [...ratios][0] : null;
+}
+
+// The ONE format-option label, so the Composer's select and the PostDetail select
+// (twins that must never drift) read identically: "Reel (9:16)", or a bare "Reel"
+// when no targeted lane pins a ratio.
+export function typeOptionLabel(t, platforms, type) {
+  const ratio = typeRatio(platforms, type);
+  return ratio ? `${t(`type.${type}`)} (${ratio})` : t(`type.${type}`);
 }
 
 // ── Per-platform field relevance ──────────────────────────────────────────────
@@ -474,7 +972,9 @@ export function formatsForPlatform(platformId) {
 //     xCaption (x), mastodonCaption (mastodon), nostrCaption (nostr).
 //   - youtube: title + description + tags + blogSlug (+ firstComment).
 //   - wordpress/ghost: title + body + excerpt + tags + image (ghost adds
-//     canonicalUrl + the newsletter opt-in ghostEmail).
+//     canonicalUrl + the newsletter opt-in ghostEmail, refined by newsletter/
+//     emailSegment/emailOnly, spec 01) + metaTitle/metaDescription/
+//     featureImageAlt (spec 13; wpCategories is WordPress-only).
 //   - linkedin text/article: title + liDescription + link + image.
 //   - instagram: firstComment (feed) OR interactiveStory + hashtags (story).
 //   - gbp: the local-post intent object.
@@ -489,23 +989,106 @@ const FIELD_PLATFORMS = {
   mastodonCaption: ['mastodon'],
   nostrCaption: ['nostr'],
   // The pinned first comment: Instagram posts it under a feed post, YouTube pins
-  // it on the video (scripts/yt-social.mjs postComment). Stories have no comment.
-  firstComment: ['instagram', 'youtube'],
+  // it on the video (scripts/yt-social.mjs postComment); LinkedIn posts it as a
+  // comment on the org's own share right after publish (spec 11, scripts/
+  // linkedin-social.mjs postComment). Stories have no comment.
+  firstComment: ['instagram', 'youtube', 'linkedin'],
   interactiveStory: ['instagram'],
-  hashtags: ['instagram'],
-  title: ['youtube', 'linkedin', 'wordpress', 'ghost'],
+  // Spec 18: a Nostr NIP-23 article's hashtags map to `t` topic tags.
+  hashtags: ['instagram', 'nostr'],
+  // Spec 18: a Nostr long-form article also reads title/body/excerpt/image (the
+  // shared blog long-form fields), so those badge the nostr lane too.
+  title: ['youtube', 'linkedin', 'wordpress', 'ghost', 'nostr'],
   description: ['youtube'],
   tags: ['youtube', 'wordpress', 'ghost'],
   blogSlug: ['youtube'],
-  body: ['wordpress', 'ghost'],
-  excerpt: ['wordpress', 'ghost'],
+  body: ['wordpress', 'ghost', 'nostr'],
+  excerpt: ['wordpress', 'ghost', 'nostr'],
   canonicalUrl: ['ghost'],
   ghostEmail: ['ghost'],
+  // Spec 01: Ghost newsletter refinements riding the ghostEmail opt-in - which
+  // newsletter, which audience segment, and email-only (no web version).
+  newsletter: ['ghost'],
+  emailSegment: ['ghost'],
+  emailOnly: ['ghost'],
   link: ['linkedin'],
-  image: ['linkedin', 'wordpress', 'ghost'],
+  image: ['linkedin', 'wordpress', 'ghost', 'nostr'],
+  // Specs 17+39: the PUBLIC media URL for the URL-only lanes - the pinterest pin
+  // image / video-pin cover, and the instagram feed IMAGE container. Distinct from
+  // `image` above (the LinkedIn/blog article decoration on a TEXT post).
+  imageUrl: ['pinterest', 'instagram'],
   liDescription: ['linkedin'],
   gbp: ['gbp'],
+  // Specs 21+39: cross-lane image alt-text (X media metadata, WordPress attachment
+  // alt_text/caption, Pinterest pin alt_text, Instagram feed-IMAGE container
+  // alt_text - spec 39 closed the IG coverage gate).
+  altText: ['x', 'wordpress', 'pinterest', 'instagram'],
+  // Spec 13: rich long-form metadata - SEO meta title/description (Yoast/
+  // RankMath on WordPress, native on Ghost) and the feature-image alt text (both
+  // blog lanes). wpCategories is WordPress-only taxonomy, distinct from tags -
+  // Ghost has no categories concept (tags + native meta cover it).
+  metaTitle: ['wordpress', 'ghost'],
+  metaDescription: ['wordpress', 'ghost'],
+  featureImageAlt: ['wordpress', 'ghost'],
+  wpCategories: ['wordpress'],
+  // Spec 27: draft/pending-review publish status - hand off to a native
+  // WordPress draft or the TikTok inbox for a human to finish + publish.
+  publishAsDraft: ['wordpress', 'ghost', 'tiktok'],
+  // Spec 14: rich link/CTA - Telegram inline buttons + link-preview/format
+  // control, and a Discord rich embed card. Each is lane-exclusive (one
+  // structured object per lane, never shared).
+  tgCta: ['telegram'],
+  dcEmbed: ['discord'],
+  // Spec 26: Discord forum/thread targeting - a webhook posts into a specific
+  // forum/media-channel thread (new via dcThreadName, or an existing one via
+  // dcThreadId). Discord-only, mutually exclusive (platformValidate warns).
+  dcThreadName: ['discord'],
+  dcThreadId: ['discord'],
+  // Spec 25: disclosure & interaction settings - TikTok interaction/disclosure
+  // post_info flags (duet/stitch/comment, AI-label, branded-content, cover
+  // frame), a Mastodon content-warning (spoiler_text + sensitive), and an X
+  // reply-audience enum (reply_settings). Each is lane-exclusive.
+  ttInteraction: ['tiktok'],
+  spoilerText: ['mastodon'],
+  xReplySettings: ['x'],
+  // Spec 10: the native-poll object feeds the seven poll-capable lanes (the label
+  // icons show which of the post's targets carry the poll).
+  poll: ['x', 'linkedin', 'telegram', 'discord', 'mastodon', 'reddit', 'nostr'],
+  // Spec 05: the native-carousel slide set feeds the seven carousel-capable lanes.
+  mediaItems: ['instagram', 'x', 'linkedin', 'telegram', 'discord', 'reddit', 'pinterest', 'mastodon'],
+  // Spec 16: the Reddit link submission URL + the picked link-flair template - all
+  // reddit-exclusive (the engine reads them only on the reddit lane).
+  redditUrl: ['reddit'],
+  redditFlairId: ['reddit'],
+  redditFlairText: ['reddit'],
+  // Spec 36: the per-post destination subreddit (falls back to the connection
+  // default REDDIT_SUBREDDIT). Reddit-exclusive - the engine reads it only there.
+  redditSubreddit: ['reddit'],
+  // Spec 37: organic-vs-promotional flag. Reddit-exclusive - it decides the reddit
+  // publish tier (a promo post always degrades to manual). ABSENCE = promo.
+  isPromo: ['reddit'],
+  // Spec 17: the Pinterest board-section target - rides POST /v5/pins on either
+  // the image or the native-video pin path. Pinterest-exclusive.
+  pinBoardSection: ['pinterest'],
 };
+
+// Spec 10: the offered poll durations, in menu order. `minutes` is what persists on
+// post.poll.durationMinutes; `key` selects the i18n label (composer.poll.duration.<key>).
+// Shared by the Composer's duration <select> AND the PostDetail read-only recap so the
+// two never label the same duration differently.
+export const POLL_DURATIONS = [
+  { minutes: 5, key: '5min' },
+  { minutes: 60, key: '1h' },
+  { minutes: 1440, key: '1d' },
+  { minutes: 4320, key: '3d' },
+  { minutes: 10080, key: '7d' },
+];
+export const POLL_DEFAULT_DURATION = 1440;
+// The i18n label key for a stored duration, or null for a non-preset value (the
+// caller falls back to "<n> min").
+export function pollDurationKey(minutes) {
+  return POLL_DURATIONS.find((d) => d.minutes === minutes)?.key || null;
+}
 
 // The pure relevance map for a post's (platforms, type): true iff at least one
 // targeted platform consumes the field. Mirrors the Composer's conditional-field
@@ -516,29 +1099,94 @@ export function fieldRelevance(platforms = [], type = 'reel') {
   const has = (p) => platforms.includes(p);
   const anyBlog = has('wordpress') || has('ghost');
   const liArticle = has('linkedin') && type === 'text'; // Composer isLinkedinArticle
+  // Spec 18: a Nostr NIP-23 long-form article reuses the blog long-form authoring UI
+  // (title/body/excerpt/image/hashtags). Its content is the Markdown body, so the
+  // short-note caption + nostrCaption are meaningless for it - suppressed below to keep
+  // the article authoring surface clean (net-simplify).
+  const nostrLong = has('nostr') && type === 'nostr-longform';
   return {
-    caption: CAPTION_PLATFORMS.some(has),
+    caption: CAPTION_PLATFORMS.some(has) && !nostrLong,
     xCaption: has('x'),
     xReplyTo: has('x'),
     mastodonCaption: has('mastodon'),
-    nostrCaption: has('nostr'),
+    nostrCaption: has('nostr') && !nostrLong,
     // Instagram: feed only (a story has no comment). YouTube: any video (pinned
-    // first comment). scripts/yt-social.mjs + meta-social.mjs both consume it.
-    firstComment: (has('instagram') && type !== 'story') || has('youtube'),
+    // first comment). LinkedIn: any share type (spec 11 - unlike an IG story, a
+    // LinkedIn share always has a comment surface). scripts/yt-social.mjs +
+    // meta-social.mjs + linkedin-social.mjs all consume it.
+    firstComment: (has('instagram') && type !== 'story') || has('youtube') || has('linkedin'),
     interactiveStory: has('instagram') && type === 'story',
-    hashtags: has('instagram') && type === 'story',
-    title: has('youtube') || has('linkedin') || anyBlog,
+    // Spec 18: a Nostr article's hashtags map to NIP-23 `t` topic tags.
+    hashtags: (has('instagram') && type === 'story') || nostrLong,
+    title: has('youtube') || has('linkedin') || anyBlog || nostrLong,
     description: has('youtube'),
     tags: has('youtube') || anyBlog,
     blogSlug: has('youtube'),
-    body: anyBlog,
-    excerpt: anyBlog,
+    body: anyBlog || nostrLong,
+    excerpt: anyBlog || nostrLong,
     canonicalUrl: has('ghost'),
     ghostEmail: has('ghost'),
+    newsletter: has('ghost'),
+    emailSegment: has('ghost'),
+    emailOnly: has('ghost'),
     link: liArticle,
-    image: liArticle || anyBlog,
+    image: liArticle || anyBlog || nostrLong,
+    // Specs 17+39: the public media URL. The asymmetry is DELIBERATE and must not
+    // be tidied into symmetry: pinterest is NOT type-gated because a pinterest
+    // VIDEO pin also requires imageUrl as its cover_image_url; instagram needs it
+    // only for the feed IMAGE type.
+    imageUrl: has('pinterest') || (has('instagram') && type === 'image'),
     liDescription: liArticle,
     gbp: has('gbp'),
+    // Meaningful only alongside an uploadable image; each engine no-ops when the
+    // post carries none (honest, avoids type-coupling in this relevance map).
+    altText: has('x') || has('wordpress') || has('pinterest') || has('instagram'),
+    // Spec 13: rich long-form metadata - SEO meta + feature-image alt apply to
+    // either blog lane; wpCategories is WordPress-only (Ghost has no categories).
+    metaTitle: anyBlog,
+    metaDescription: anyBlog,
+    featureImageAlt: anyBlog,
+    wpCategories: has('wordpress'),
+    // Spec 27: draft/pending-review publish status - WordPress `status=draft`
+    // or the TikTok inbox upload. Approval (§H.2) is untouched; this only
+    // changes the destination status once the engine is already allowed to act.
+    publishAsDraft: has('wordpress') || has('ghost') || has('tiktok'),
+    // Spec 14: rich link/CTA - Telegram inline CTA buttons + link-preview/
+    // format control; Discord rich embed card. Not type-gated (both lanes'
+    // sendMessage/webhook accept them regardless of type).
+    tgCta: has('telegram'),
+    dcEmbed: has('discord'),
+    // Spec 26: Discord forum/thread targeting fields - not type-gated (the
+    // webhook accepts them regardless of post type).
+    dcThreadName: has('discord'),
+    dcThreadId: has('discord'),
+    // Spec 25: disclosure & interaction settings. Not type-gated (each engine's
+    // publish path accepts the field regardless of post type).
+    ttInteraction: has('tiktok'),
+    spoilerText: has('mastodon'),
+    xReplySettings: has('x'),
+    // Spec 10: the poll options/duration block is type-gated (like interactiveStory).
+    // The format select only offers 'poll' on the seven poll lanes, so a poll-typed
+    // post already targets a poll-capable lane.
+    poll: type === 'poll',
+    // Spec 05: the carousel slide picker is type-gated. The format select only offers
+    // 'carousel' on the seven carousel lanes, so a carousel-typed post already targets
+    // a carousel-capable lane.
+    mediaItems: type === 'carousel',
+    // Spec 16: the Reddit link URL + flair picker apply whenever reddit is targeted
+    // (not type-gated - a link post is type=text+redditUrl, and any reddit post can
+    // carry a flair). The engine ignores them on every other lane.
+    redditUrl: has('reddit'),
+    redditFlairId: has('reddit'),
+    redditFlairText: has('reddit'),
+    // Spec 36: the per-post subreddit target applies whenever reddit is targeted.
+    redditSubreddit: has('reddit'),
+    // Spec 37: the organic/promotional toggle applies whenever reddit is targeted
+    // (not type-gated - any reddit post carries the flag; the engine ignores it elsewhere).
+    isPromo: has('reddit'),
+    // Spec 17: the board-section picker applies whenever pinterest is targeted
+    // (not type-gated - both the image and native-video pin path accept it).
+    pinBoardSection: has('pinterest'),
   };
 }
 
@@ -551,8 +1199,15 @@ const EDITABLE_FIELDS = [
   { key: 'caption', kind: 'textarea' },
   { key: 'xCaption', kind: 'textarea' },
   { key: 'xReplyTo', kind: 'input' },
+  // Spec 26: Discord forum/thread targeting - the thread to post into (a NEW
+  // forum thread by name, or an EXISTING thread by id; mutually exclusive).
+  { key: 'dcThreadName', kind: 'input' },
+  { key: 'dcThreadId', kind: 'input' },
   { key: 'mastodonCaption', kind: 'textarea' },
   { key: 'nostrCaption', kind: 'textarea' },
+  // Spec 25: Mastodon content-warning text - the sibling short-note override
+  // fields carry it, so it sits with them here.
+  { key: 'spoilerText', kind: 'input' },
   { key: 'title', kind: 'input' },
   { key: 'description', kind: 'textarea' },
   { key: 'body', kind: 'textarea', mono: true },
@@ -560,11 +1215,29 @@ const EDITABLE_FIELDS = [
   { key: 'liDescription', kind: 'textarea' },
   { key: 'tags', kind: 'input' },
   { key: 'firstComment', kind: 'textarea' },
+  { key: 'altText', kind: 'textarea' },
+  // Spec 13: rich long-form metadata (WordPress/Ghost).
+  { key: 'metaTitle', kind: 'input' },
+  { key: 'metaDescription', kind: 'textarea' },
+  { key: 'wpCategories', kind: 'input' },
+  { key: 'featureImageAlt', kind: 'input' },
 ];
 
 // The relevant-but-read-only extras (authored in the Composer, shown here for
 // review completeness): supporting URLs/flags + the structured intent objects.
-const EXTRA_FIELDS = ['link', 'image', 'canonicalUrl', 'blogSlug', 'ghostEmail', 'hashtags', 'gbp', 'interactiveStory'];
+// Spec 16: redditUrl (the link submission target) + redditFlairId (rendered as a flair
+// chip - PostExtras shows redditFlairText || redditFlairId) ride here as read-only review
+// rows. redditFlairText is intentionally NOT listed (it rides the redditFlairId chip).
+// Spec 36: redditSubreddit (the per-post target) rides here as a read-only review row
+// shown only when set - mirroring its spec-16 siblings redditUrl/redditFlairId, so a
+// no-subreddit post's Details block stays byte-identical to today.
+// Spec 37: isPromo rides here as a read-only review row (shown only when a post is
+// explicitly ORGANIC, isPromo === false - the informative case; a promo/unset post shows
+// no row, byte-identical to before). Editing happens in the Composer, matching the
+// established boolean pattern (publishAsDraft/emailOnly are authored in the Composer and
+// reviewed read-only here - ContentField only renders text controls). Net-simplify: no
+// second edit surface for the same flag.
+const EXTRA_FIELDS = ['link', 'image', 'imageUrl', 'redditUrl', 'redditFlairId', 'redditSubreddit', 'isPromo', 'pinBoardSection', 'canonicalUrl', 'blogSlug', 'ghostEmail', 'newsletter', 'emailSegment', 'emailOnly', 'hashtags', 'gbp', 'interactiveStory', 'publishAsDraft', 'tgCta', 'dcEmbed', 'ttInteraction', 'xReplySettings', 'poll'];
 
 // The platforms (in PLATFORMS order) that `field` feeds on THIS post — its
 // declared platform set intersected with the post's targets.
@@ -671,6 +1344,83 @@ export function visiblePlatforms(accounts, posting) {
   });
 }
 
+// The Radar sources a scan can actually search right now: the evidence behind whether
+// "Scan now" renders, and behind the per-source rows that say why a source is quiet.
+//
+// hackernews is ALWAYS scannable - it needs no credential (RADAR_SOURCE_SCOPE.hackernews
+// is null; the engine queries Algolia unauthenticated). It used to be excluded here, back
+// when an agent copy-paste block was the primary path and the engine scan was a demoted
+// fallback that "must not show for every operator". That block is gone and pendpost's own
+// scan is the only scan, so the premise died and the conclusion inverts: excluding a
+// working keyless source would leave the zero-credential operator with no way to scan at
+// all, which is the dead end the demotion was trying to avoid in the first place.
+//
+// The credentialed three keep two honest signals, no third: reddit/mastodon ride their
+// Setup connection (the accountStatus every other surface reads); bluesky has no Setup
+// card at all (creds are .env-only), so its only evidence is the persisted last-scan
+// status - a source that returned ok ran with working credentials. `web` is agent-ingested
+// and never searchable.
+const KEYLESS_RADAR_SOURCES = ['hackernews'];
+const ENGINE_RADAR_SOURCES = ['reddit', 'mastodon', 'bluesky'];
+const SETUP_RADAR_SOURCES = ['reddit', 'mastodon'];
+export function scannableRadarSources(accounts, sources) {
+  const credentialed = ENGINE_RADAR_SOURCES.filter((src) => {
+    if (SETUP_RADAR_SOURCES.includes(src) && platformConnected(src, accounts)) return true;
+    return sources?.[src]?.ok === true;
+  });
+  return [...KEYLESS_RADAR_SOURCES, ...credentialed];
+}
+
+// The client mirror of lib/radar.mjs effectiveRadarSources (WP6): which sources this
+// project's scans cover, for the glyph strips. Same rules - explicit flag wins, searchable
+// lanes default ON, agent-found reply lanes default ON when connected (accounts evidence, or
+// a persisted ok scan for .env-only bluesky). Driven by the SERVER's capability table
+// (feed.capabilities) so the client never hardcodes one. `web` is never a scan target.
+export function effectiveRadarSourcesClient(radar, capabilities, accounts, sourceStatus) {
+  const flags = radar && radar.sources && typeof radar.sources === 'object' ? radar.sources : {};
+  return Object.keys(capabilities || {}).filter((id) => {
+    if (id === 'web') return false;
+    const f = flags[id];
+    const flag = f && typeof f === 'object' ? f.scan : undefined;
+    if (flag === false) return false;
+    if (flag === true) return true;
+    if (capabilities[id]?.search === true) return true;
+    return platformConnected(id, accounts) || sourceStatus?.[id]?.ok === true;
+  });
+}
+
+// The connect state of ONE Radar source, for the per-source rows: 'keyless' (no credential
+// exists to give it), 'scanning' (credentialed and searched), or 'needsConnecting'. Split
+// out from scannableRadarSources because the rows must distinguish "nothing to connect" from
+// "connected" - collapsing those two into one green state is how the panel used to imply it
+// was searching Reddit when Reddit was never wired up.
+export function radarSourceState(src, accounts, sources) {
+  if (KEYLESS_RADAR_SOURCES.includes(src)) return 'keyless';
+  return scannableRadarSources(accounts, sources).includes(src) ? 'scanning' : 'needsConnecting';
+}
+
+// The platform chips the filter bar offers. visiblePlatforms answers "which lanes
+// may I post to" (connected + enabled), which is the WRONG question for a filter:
+// a lane can hold real posts without being connected or even being in PLATFORMS.
+// Radar's bluesky replies are exactly that - no accounts entry, absent from
+// PLATFORMS - so they sat in the queue with no chip that could ever select them.
+//
+// So union what is connected with what is actually ON the loaded posts, mirroring
+// the presentTypes idiom (App.jsx): a lane holding posts is filterable, today's
+// bluesky and any future lane alike. `selected` keeps an ACTIVE pick visible even
+// after its last post leaves the scope, so the chip filtering the view can always be
+// clicked off. Known lanes keep PLATFORMS order; off-list lanes follow, sorted for
+// a stable bar. The caller still drops any id with no PLATFORM_META (no icon/label).
+export function presentPlatforms(accounts, posting, posts = [], selected = []) {
+  const connected = visiblePlatforms(accounts, posting);
+  const pool = new Set(connected);
+  for (const post of posts || []) for (const p of post.platforms || []) pool.add(p);
+  for (const p of selected || []) pool.add(p);
+  const known = PLATFORMS.filter((p) => pool.has(p));
+  const extra = [...pool].filter((p) => !PLATFORMS.includes(p)).sort();
+  return [...known, ...extra];
+}
+
 // The platforms whose OWN scheduler fires a future post (Facebook
 // scheduled_publish_time, YouTube publishAt, Mastodon scheduled_at, WordPress
 // status 'future', Ghost scheduled + published_at), so it publishes on time even
@@ -693,9 +1443,22 @@ export function deliveryMode(platform) {
 // ('native' self-schedules, 'local' needs pendpost running). Reuses setupIdOf so
 // facebook/instagram resolve to the 'meta' cloud lane - no second platform->lane map.
 // 'cloud' and 'native' both mean "fires without the user"; only 'local' needs action.
-export function effectiveDelivery(platform, { cloudOn = false, cloudLanes = [] } = {}) {
+export function effectiveDelivery(platform, { cloudOn = false, cloudLanes = [], type = null, localOnlyTypes = [] } = {}) {
+  // H6: some post FORMATS the cloud cannot fire at all (a carousel, a nostr longform),
+  // whatever the lane's capability says. The capability endpoint is lane-shaped and
+  // structurally cannot answer a per-type question, so the list arrives as an option
+  // (lib/capabilities.mjs LOCAL_ONLY_TYPES, carried on the capabilities shape).
+  //
+  // Checked BEFORE the cloud lane check, because the format outranks the lane: an album
+  // on LinkedIn with the cloud on still needs this machine awake. NOT before the native
+  // check below, though - a self-scheduling platform holds the post itself, so the Mac
+  // being asleep is irrelevant there and claiming otherwise would be a false alarm.
+  //
+  // Both new options default to inert, so every existing call site is byte-identical.
+  const base = deliveryMode(platform);
+  if (base !== 'native' && type && localOnlyTypes.includes(type)) return 'local';
   if (cloudOn && cloudLanes.includes(setupIdOf(platform))) return 'cloud';
-  return deliveryMode(platform);
+  return base;
 }
 
 // One filterable status per post. Approval states (draft/pending/rejected) take
@@ -708,9 +1471,29 @@ export function postStatusKey(post) {
   if (post.approval === 'pending') return 'pending';
   if (post.derivedState === 'overdue') return 'overdue';
   if (post.derivedState === 'verify-failed') return 'overdue'; // read back not-live: needs attention
+  if (post.derivedState === 'publish-failed') return 'overdue'; // the platform refused it: needs attention
   if (post.derivedState === 'posted' || post.derivedState === 'verified-live') return 'posted';
   if (post.derivedState === 'parked') return 'parked';
   return 'scheduled';
+}
+
+// LATE = the due time passed and the post still has not published. For a post on a
+// CLOUD or NATIVE lane this holds whatever its approval state - a post awaiting a
+// decision past its slot HAS missed it, and that is the at-risk fact worth alarming on.
+// Two kinds are exempt while unapproved, upstream in deriveState (their due clock starts
+// at approval): a radar reply, and a self-post / local-only post (reddit/tiktok/
+// pinterest/gbp) that nothing but the owner can fire - see lib/plans.mjs awaitingApproval.
+//
+// ONE predicate, used by BOTH the alarm count (App.jsx overdueCount -> the red
+// "Nicht veroeffentlicht" banner + the Ueberfaellig chip) AND the 'overdue' status
+// filter (matchesFilters). That is the point: the banner and the list it sends you to
+// are now the same set BY CONSTRUCTION, so the count can never sit above an empty list.
+// Distinct from postStatusKey's 'overdue' BUCKET, which is the card's collapsed label
+// and correctly yields to the approval axis - a late draft still reads "Entwurf" on its
+// card, but it is still late, still counted, and now still reachable.
+export function isLate(post) {
+  if (!post) return false;
+  return post.derivedState === 'overdue' || postStatusKey(post) === 'overdue';
 }
 
 // A post the scheduler would act on RIGHT NOW, mirroring runDue's gate
@@ -727,7 +1510,13 @@ export function postStatusKey(post) {
 export function isDueNow(post) {
   if (!post) return false;
   if (post.approval !== 'approved') return false;
-  if (post.derivedState === 'overdue') return post.type === 'text' || Boolean(post.media?.exists);
+  // Stale approval: edited after it was blessed, so eligibleDuePosts refuses it
+  // (lib/scheduler.mjs) until re-approval. Without this the run-now surface would
+  // promise a fire the engine silently declines.
+  if (post.editedSinceApproval) return false;
+  // A refused post is still due - retrying by hand is the whole recovery, so run-now must
+  // keep offering it rather than hiding the one control that resolves the state.
+  if (post.derivedState === 'overdue' || post.derivedState === 'publish-failed') return post.type === 'text' || Boolean(post.media?.exists);
   if (isYouTubeReleaseDue(post)) return true;
   return false;
 }
@@ -758,13 +1547,34 @@ export const STATUS_FILTERS = [
 export function matchesFilters(post, platformFilter = [], typeFilter = [], statusFilter = []) {
   const pOk = !platformFilter.length || (post.platforms || []).some((p) => platformFilter.includes(p));
   const tOk = !typeFilter.length || typeFilter.includes(post.type);
-  const sOk = !statusFilter.length || statusFilter.includes(postStatusKey(post));
+  // 'overdue' is the AT-RISK view, not just a pill bucket: it must CONTAIN every post
+  // the alarm counts (isLate) - including one that is late while still awaiting a
+  // decision, whose collapsed bucket is 'draft'/'pending'. Matching on the bucket alone
+  // would structurally hide exactly the posts the banner is shouting about, which is how
+  // "Nicht veroeffentlicht: 1" could sit above an empty list.
+  const sOk = !statusFilter.length
+    || statusFilter.includes(postStatusKey(post))
+    || (statusFilter.includes('overdue') && isLate(post));
   return pOk && tOk && sOk;
+}
+
+// Actionable = still needs an approval decision, so it belongs in the "To review" queue
+// and the sidebar pending badge. A decision settles a post either way: approved and
+// rejected both leave the queue (the owner has decided). Two carve-outs keep it honest:
+// an edited-since-approval post is approval:'approved' but its content diverged from what
+// was blessed, so it needs a FRESH decision; a rejected post whose content is reworked is
+// reverted to 'draft' by the engine (updatePost) and re-enters on its own. A posted post
+// is never actionable. SINGLE SOURCE OF TRUTH - Freigaben (the queue + tab count) and App
+// (the sidebar badge) both import this, so the badge and the list can never disagree.
+export function isActionable(post) {
+  return post.derivedState !== 'posted'
+    && post.approval !== 'rejected'
+    && (post.approval !== 'approved' || post.editedSinceApproval);
 }
 
 // Suggest the next free post id for a type: a short type prefix + the lowest
 // unused integer (r1, st1, v1, yts1, ...). Editable in the composer.
-const TYPE_PREFIX = { reel: 'r', story: 'st', video: 'v', text: 'txt', 'youtube-short': 'yts', 'youtube-longform': 'ytv', image: 'img' };
+const TYPE_PREFIX = { reel: 'r', story: 'st', video: 'v', text: 'txt', poll: 'pl', carousel: 'car', 'youtube-short': 'yts', 'youtube-longform': 'ytv', image: 'img', 'nostr-longform': 'na' };
 export function suggestPostId(type, posts = []) {
   const prefix = TYPE_PREFIX[type] || 'p';
   const used = new Set((posts || []).map((p) => p.id));

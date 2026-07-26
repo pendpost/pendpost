@@ -56,6 +56,42 @@
  * The public permalink comes back on the created post's `link` field - it is
  * logged on publish and surfaced through verify.
  *
+ * SEO metadata (spec 13, rich long-form metadata):
+ *   post.wpCategories    comma-separated CATEGORY names ("News, Guides") - a
+ *                        distinct WordPress taxonomy from tags. Each name is
+ *                        resolved/created like a tag (resolveCategoryIds), but
+ *                        UNLIKE a tag a create failure is NON-fatal: it soft-
+ *                        warns, pushes a {action:'set-seo', ok:false} result
+ *                        row, and the post publishes without that one category.
+ *   post.metaTitle       optional SEO meta title -> Yoast's _yoast_wpseo_title.
+ *   post.metaDescription optional SEO meta description -> Yoast's
+ *                        _yoast_wpseo_metadesc.
+ *   post.canonicalUrl    (already existed for Ghost) also threads to Yoast's
+ *                        _yoast_wpseo_canonical when a post targets wordpress.
+ *   All three meta keys are BEST-EFFORT: sent embedded in the SAME create/
+ *   schedule body as the rest of the payload, never a separate call. A site
+ *   that has not registered these keys with show_in_rest (the common Yoast/
+ *   RankMath protected-meta default) just silently drops them - the article
+ *   still publishes, never rejected over an unregistered meta key.
+ *   post.featureImageAlt optional alt-text for the article's FEATURE IMAGE
+ *                        specifically (distinct from the cross-lane altText
+ *                        field, spec 21) - a follow-up attachment update, same
+ *                        fail-soft mechanism as altText (a failure never blocks
+ *                        the article; it pushes a {action:'set-seo', ok:false}
+ *                        row instead).
+ *
+ * DRAFT / PENDING-REVIEW HANDOFF (spec 27):
+ *   post.publishAsDraft  optional boolean. true creates the post with
+ *                        status='draft' instead of 'publish' (or 'future') so a
+ *                        human finishes it (internal links, blocks, etc.) in
+ *                        wp-admin. Approval is UNCHANGED - only an already-
+ *                        approved post reaches this code path; the flag only
+ *                        picks the destination status. `schedule` falls back to
+ *                        the immediate draft-create path (no date_gmt/'future' -
+ *                        a draft has no scheduled fire). The local post is
+ *                        marked posted/handed-off exactly like a live publish,
+ *                        so it never re-fires; the result row carries draft:true.
+ *
  * Commands:
  *   auth | connect   validate the application password (GET /users/me); writes nothing
  *   refresh          no-op (application passwords are long-lived) - sibling parity
@@ -257,21 +293,92 @@ async function resolveTagIds(names) {
   return ids;
 }
 
-// Shared content assembly for publish-due and schedule: resolve tag ids, upload
-// the featured image, render the markdown - everything except status/date.
+// post.wpCategories is a comma-separated string ("News, Guides") - mirrors
+// tagNames(post), but a distinct WordPress taxonomy (categories vs tags).
+function categoryNames(post) {
+  return String(post.wpCategories || '').split(',').map((c) => c.trim()).filter(Boolean);
+}
+
+// Resolve each category name to an id: exact match (decoded, case-insensitive)
+// first, then create - race-safe via term_exists, same as resolveTagIds. UNLIKE
+// resolveTagIds, a genuine create failure is NON-FATAL here (spec 13 §3: "on a
+// create error, soft-warns and publishes without that category - never blocks
+// the post"), so it logs + pushes a structured result row and skips the name
+// rather than throwing (which would abort the whole article).
+async function resolveCategoryIds(post, names) {
+  const ids = [];
+  for (const name of names) {
+    const found = await wp('GET', `/categories?search=${encodeURIComponent(name)}&per_page=100`);
+    const hit = (Array.isArray(found) ? found : []).find((c) => decodeEntities(c.name).toLowerCase() === name.toLowerCase());
+    if (hit) { ids.push(hit.id); continue; }
+    try {
+      const created = await wp('POST', '/categories', { body: { name } });
+      ids.push(created.id);
+    } catch (err) {
+      const existingId = err.wpCode === 'term_exists' ? err.wpData?.term_id : null;
+      if (existingId) { ids.push(existingId); continue; }
+      console.log(`[warn] ${post.id}: category "${name}" could not be created - publishing without it (${err.message}).`);
+      RUN.results.push({ postId: post.id, platform: 'wordpress', action: 'set-seo', ok: false, errorMessage: `category "${name}": ${err.message}`.slice(0, 300) });
+    }
+  }
+  return ids;
+}
+
+// Shared content assembly for publish-due and schedule: resolve tag/category
+// ids, upload the featured image, render the markdown - everything except
+// status/date.
 async function buildPayload(post, { title, md, featuredPath }) {
   const tagIds = await resolveTagIds(tagNames(post));
+  const categoryIds = await resolveCategoryIds(post, categoryNames(post));
   let featuredMediaId = null;
   if (featuredPath) {
     const media = await wp('POST', '/media', {
       raw: { buffer: fs.readFileSync(featuredPath), contentType: imageContentType(featuredPath), filename: path.basename(featuredPath) },
     });
     featuredMediaId = media.id;
+    // Spec 21: alt-text - the raw sideload above cannot carry metadata, so a
+    // follow-up attachment update sets alt_text + caption. Fail-soft: a failed
+    // metadata update never blocks the article publish, but (matching the X lane,
+    // scripts/x-social.mjs) it pushes a structured set-alt:ok:false result row so
+    // the failure is visible to the operator as an Activity sub-row (spec §6).
+    if (post.altText) {
+      try {
+        await wp('POST', `/media/${media.id}`, { body: { alt_text: post.altText, caption: post.altText } });
+      } catch (err) {
+        console.error(`[warn] ${post.id}: alt-text update failed for media ${media.id} - ${err.message}`);
+        RUN.results.push({ postId: post.id, platform: 'wordpress', action: 'set-alt', ok: false, errorMessage: err.message.slice(0, 300) });
+      }
+    }
+    // Spec 13: feature-image alt - a SEPARATE optional field from the generic
+    // altText above (describes specifically the article's feature image, wired
+    // for wordpress AND ghost). Same fail-soft mechanism, own result-row action
+    // ('set-seo') so it is distinguishable from a spec-21 altText failure.
+    if (post.featureImageAlt) {
+      try {
+        await wp('POST', `/media/${media.id}`, { body: { alt_text: post.featureImageAlt } });
+      } catch (err) {
+        console.error(`[warn] ${post.id}: feature-image alt update failed for media ${media.id} - ${err.message}`);
+        RUN.results.push({ postId: post.id, platform: 'wordpress', action: 'set-seo', ok: false, errorMessage: err.message.slice(0, 300) });
+      }
+    }
   }
   const payload = { title, content: mdToHtml(md), tags: tagIds };
+  if (categoryIds.length) payload.categories = categoryIds;
   const excerpt = excerptFor(post);
   if (excerpt) payload.excerpt = excerpt;
   if (featuredMediaId) payload.featured_media = featuredMediaId;
+  // Spec 13: SEO meta (Yoast key names; RankMath's rank_math_title/
+  // rank_math_description are a documented per-site alias, not a second field -
+  // §4). Best-effort, embedded in the SAME body as the rest of the payload (see
+  // the file-header gotcha): an unregistered/protected key is silently dropped
+  // by WordPress rather than rejecting the whole post.
+  if (post.metaTitle || post.metaDescription || post.canonicalUrl) {
+    payload.meta = {
+      ...(post.metaTitle ? { _yoast_wpseo_title: post.metaTitle } : {}),
+      ...(post.metaDescription ? { _yoast_wpseo_metadesc: post.metaDescription } : {}),
+      ...(post.canonicalUrl ? { _yoast_wpseo_canonical: post.canonicalUrl } : {}),
+    };
+  }
   return payload;
 }
 
@@ -370,10 +477,14 @@ async function cmdPublishDue(args) {
       continue;
     }
 
-    console.log(`[info] ${post.id}: publishing "${title}" to ${siteHost()}...`);
+    // Spec 27: publishAsDraft hands off a native draft instead of a live post -
+    // the engine still only reaches here for an APPROVED, due post (the
+    // approval fence above is untouched); the flag only picks the status.
+    const draftHandoff = post.publishAsDraft === true;
+    console.log(`[info] ${post.id}: ${draftHandoff ? 'creating a draft of' : 'publishing'} "${title}" on ${siteHost()}...`);
     try {
       const payload = await buildPayload(post, content);
-      payload.status = 'publish';
+      payload.status = draftHandoff ? 'draft' : 'publish';
       const resp = await wp('POST', '/posts', { body: payload });
       if (!resp?.id) throw new Error(`create returned no id: ${JSON.stringify(resp).slice(0, 200)}`);
 
@@ -382,8 +493,8 @@ async function cmdPublishDue(args) {
       post.postedAt = new Date(now).toISOString();
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'wordpress', action: 'publish', ok: true, errorCode: null, errorMessage: null, actor: ACTOR });
       await savePlan(abs, plan, [post.id]);
-      RUN.results.push({ postId: post.id, platform: 'wordpress', action: 'publish', ok: true, id: String(resp.id) });
-      console.log(`[ok] ${post.id}: published on WordPress (post ${resp.id}) - ${resp.link || '(no link returned)'}`);
+      RUN.results.push({ postId: post.id, platform: 'wordpress', action: 'publish', ok: true, id: String(resp.id), ...(draftHandoff ? { draft: true } : {}) });
+      console.log(`[ok] ${post.id}: ${draftHandoff ? 'created as a draft' : 'published'} on WordPress (post ${resp.id})${resp.link ? ` - ${resp.link}` : ''}.`);
       published += 1;
     } catch (err) {
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'wordpress', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), actor: ACTOR });
@@ -426,21 +537,27 @@ async function cmdSchedule(args) {
     if (!content) continue;
     const { title, md, featuredPath } = content;
     const pastDue = dueMs <= now;
+    // Spec 27: a draft handoff always falls back to the immediate draft-create
+    // path - a draft has no scheduled fire, so there is nothing for wp-cron to
+    // do with a future date_gmt. Approval was already checked above; this only
+    // changes which status the immediate create uses.
+    const draftHandoff = post.publishAsDraft === true;
+    const immediate = pastDue || draftHandoff;
 
     if (args['dry-run']) {
-      console.log(pastDue
-        ? `[dry] ${post.id}: past due - would publish "${title}" immediately.`
+      console.log(immediate
+        ? `[dry] ${post.id}: would ${draftHandoff ? 'create a draft of' : 'publish'} "${title}" immediately${pastDue && !draftHandoff ? ' (past due)' : ''}.`
         : `[dry] ${post.id}: would natively schedule "${title}" (status 'future', date_gmt ${new Date(dueMs).toISOString()}${featuredPath ? `, featured image ${path.basename(featuredPath)}` : ''}).`);
       continue;
     }
 
-    console.log(pastDue
-      ? `[info] ${post.id}: past due - publishing "${title}" to ${siteHost()} immediately...`
+    console.log(immediate
+      ? `[info] ${post.id}: ${draftHandoff ? 'creating a draft of' : 'past due - publishing'} "${title}" on ${siteHost()}...`
       : `[info] ${post.id}: natively scheduling "${title}" on ${siteHost()} for ${new Date(dueMs).toISOString()}...`);
     try {
       const payload = await buildPayload(post, content);
-      if (pastDue) {
-        payload.status = 'publish';
+      if (immediate) {
+        payload.status = draftHandoff ? 'draft' : 'publish';
       } else {
         payload.status = 'future';
         // date_gmt (not date): unambiguous UTC, independent of the site timezone.
@@ -451,13 +568,13 @@ async function cmdSchedule(args) {
       if (!resp?.id) throw new Error(`create returned no id: ${JSON.stringify(resp).slice(0, 200)}`);
 
       post.wordpressPostId = String(resp.id);
-      if (pastDue) {
+      if (immediate) {
         post.status = 'posted';
         post.postedAt = new Date(now).toISOString();
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'wordpress', action: 'publish', ok: true, errorCode: null, errorMessage: null, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
-        RUN.results.push({ postId: post.id, platform: 'wordpress', action: 'publish', ok: true, id: String(resp.id) });
-        console.log(`[ok] ${post.id}: published on WordPress (post ${resp.id}) - ${resp.link || '(no link returned)'}`);
+        RUN.results.push({ postId: post.id, platform: 'wordpress', action: 'publish', ok: true, id: String(resp.id), ...(draftHandoff ? { draft: true } : {}) });
+        console.log(`[ok] ${post.id}: ${draftHandoff ? 'created as a draft' : 'published'} on WordPress (post ${resp.id})${resp.link ? ` - ${resp.link}` : ''}.`);
         published += 1;
       } else {
         post.status = 'scheduled';
@@ -468,14 +585,14 @@ async function cmdSchedule(args) {
         scheduled += 1;
       }
     } catch (err) {
-      const action = pastDue ? 'publish' : 'schedule-native';
+      const action = immediate ? 'publish' : 'schedule-native';
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'wordpress', action, ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), actor: ACTOR });
       await savePlan(abs, plan, [post.id]);
       RUN.results.push({ postId: post.id, platform: 'wordpress', action, ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
-      console.error(`[err] ${post.id}: WordPress ${pastDue ? 'publish' : 'schedule'} failed - ${err.message}`);
+      console.error(`[err] ${post.id}: WordPress ${immediate ? (draftHandoff ? 'draft-create' : 'publish') : 'schedule'} failed - ${err.message}`);
     }
   }
-  console.log(`[done] schedule complete - ${scheduled} natively scheduled, ${published} published (past due).`);
+  console.log(`[done] schedule complete - ${scheduled} natively scheduled, ${published} published (past due/draft).`);
 }
 
 // Recover a natively-scheduled post wp-cron left 'future' past its date (verify
@@ -588,6 +705,30 @@ async function cmdProbe() {
   }
 }
 
+// Connected-account discovery (spec 22, Pattern P3): who does this Application
+// Password authenticate as? WordPress is a single-site identity, so it is one
+// identity + one "page" asset (the site). Reads creds via readEnv so a missing
+// password degrades to an ok:false row, never process.exit past the envelope. Reuses
+// the same /users/me?context=edit identity read. Takes no --plan.
+async function cmdDiscover() {
+  const { discoverOk, discoverNeedsScope, discoverAuthError } = await import('../lib/discovery.mjs');
+  if (!siteUrl() || !readEnv('WORDPRESS_USERNAME') || !readEnv('WORDPRESS_APP_PASSWORD')) {
+    RUN.results.push(discoverNeedsScope('wordpress'));
+    return;
+  }
+  try {
+    const me = await wp('GET', '/users/me?context=edit');
+    const host = siteHost();
+    RUN.results.push(discoverOk('wordpress', {
+      identity: { id: String(me.id ?? host), handle: me.slug || null, name: me.name || host, avatarUrl: me.avatar_urls?.['96'] },
+      assets: [{ kind: 'page', id: host, name: host, current: true, meta: me.capabilities?.publish_posts ? { canPublish: true } : undefined }],
+      selected: {},
+    }));
+  } catch (err) {
+    RUN.results.push(discoverAuthError('wordpress', err.message || err));
+  }
+}
+
 // ---------- main ----------
 
 function parseArgs(argv) {
@@ -604,9 +745,30 @@ function parseArgs(argv) {
   return args;
 }
 
+// The inbound-engagement seam (spec 02, Pattern P6): read + reply to inbound
+// comments on this lane's own posts. Thin wrappers over the shared, source-agnostic
+// REST in lib/comments.mjs (dynamic import so the publish hot path's module graph is
+// untouched). The result is merged onto RUN so main() emits the normalized
+// { items } / { id } envelope; a needs_scope degrade sets ok:false (P9).
+async function cmdComments(args) {
+  const { runLaneComments } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneComments('wordpress', args));
+}
+async function cmdReply(args) {
+  const { runLaneReply } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneReply('wordpress', args));
+}
+async function cmdModerate(args) {
+  const { runLaneModerate } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneModerate('wordpress', args));
+}
+
 const COMMANDS = {
   auth: cmdAuth,
   connect: cmdAuth,
+  comments: cmdComments,
+  reply: cmdReply,
+  moderate: cmdModerate,
   refresh: cmdRefresh,
   validate: cmdValidate,
   schedule: cmdSchedule,
@@ -617,6 +779,7 @@ const COMMANDS = {
   insights: cmdInsights,
   delete: cmdDelete,
   probe: cmdProbe,
+  discover: cmdDiscover,
 };
 
 async function main() {
@@ -630,6 +793,8 @@ async function main() {
       platform: 'wordpress', command: commandName,
       planPath: typeof args.plan === 'string' ? path.resolve(String(args.plan)) : null,
       only: typeof args.only === 'string' ? args.only : null,
+      // spec 06: the moderate verb carries its action so the mock can branch per-lane.
+      action: typeof args.action === 'string' ? args.action : null,
     });
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
     else console.error(`[mock] wordpress ${commandName}: ${envelope.results.length} result(s)`);

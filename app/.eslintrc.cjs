@@ -13,4 +13,11 @@ module.exports = {
     'react/prop-types': 'off',
     'react/react-in-jsx-scope': 'off',
   },
+  overrides: [
+    {
+      // Vitest test files run in Node (jsdom): Node globals are legitimate there.
+      files: ['**/__tests__/**', '**/*.test.js', '**/*.test.jsx'],
+      env: { node: true },
+    },
+  ],
 };

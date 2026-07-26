@@ -24,6 +24,7 @@
  *   schedule  --plan <post-plan.json> [--only <id>] [--dry-run]     natively schedule (private + publishAt)
  *   release   --plan <post-plan.json> [--only <id>]                 make a private-overdue scheduled video public now (no re-upload)
  *   status    --plan <post-plan.json>                               per-entry live state
+ *   demographics --plan <post-plan.json>                            account-scoped viewer age/gender breakdown (needs yt-analytics.readonly)
  *   delete    --id <videoId>                                        delete a video (cleanup / unschedule)
  *
  * Credentials live in gitignored .env (same convention as the siblings):
@@ -51,10 +52,14 @@ const AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const UPLOAD = 'https://www.googleapis.com/upload/youtube/v3/videos';
 const API = 'https://www.googleapis.com/youtube/v3';
-// youtube.force-ssl is REQUIRED by captions.insert + commentThreads.insert. Adding
-// it changes the consent scope set: re-run `yt-social.mjs auth` to mint a refresh
-// token that carries it, or caption/comment writes 403.
-const SCOPES = 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.force-ssl';
+// The Analytics API is a SEPARATE host from the Data API (API, above) - account-
+// scoped demographics (spec 07) reads reports from here, never videos.list.
+const ANALYTICS_API = 'https://youtubeanalytics.googleapis.com/v2';
+// youtube.force-ssl is REQUIRED by captions.insert + commentThreads.insert.
+// yt-analytics.readonly (spec 07) is REQUIRED by the demographics report. Adding
+// either changes the consent scope set: re-run `yt-social.mjs auth` to mint a
+// refresh token that carries it, or the corresponding call 403s.
+const SCOPES = 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/yt-analytics.readonly';
 const DEFAULT_REDIRECT = 'http://localhost:8088/callback';
 const CATEGORY_EDUCATION = '27';
 
@@ -147,7 +152,17 @@ async function api(method, pathname, { query, body, token } = {}) {
   if (!res.ok) {
     const e = data.error || {};
     const reason = e.errors?.[0]?.reason || '';
-    throw new Error(`YouTube ${method} ${pathname}: HTTP ${res.status} ${reason} - ${e.message || text || ''}`);
+    const err = new Error(`YouTube ${method} ${pathname}: HTTP ${res.status} ${reason} - ${e.message || text || ''}`);
+    // Status AND reason ride the error object (mirrors fetchYtWatchTime's own
+    // thrown error below) so a 403 can be classified needs_scope (P9) without
+    // re-parsing the message text - the playlist verbs (spec 15) are the first
+    // api() callers that need this. reason (the Google error's errors[0].reason,
+    // e.g. quotaExceeded/insufficientPermissions) lets ytNeedsScope tell a quota
+    // 403 apart from an actual missing-scope 403 (spec-15 quota mislabel fix,
+    // spec-28 review NIT-8) - quota exhaustion is NOT "reconnect to authorize".
+    err.status = res.status;
+    err.reason = reason;
+    throw err;
   }
   return data;
 }
@@ -202,7 +217,10 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'ytCaptionId', 'ytCommentId', 'status', 'postedAt', 'attempts'];
+// ytPlaylistItems (spec 15): the optional [{playlistId,itemId}] membership echo a
+// successful playlist-add writes onto the post, so PostDetail can show "In: Series A"
+// with no re-fetch - engine-owned like every other minted id above.
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'ytCaptionId', 'ytCommentId', 'ytPlaylistItems', 'status', 'postedAt', 'attempts', 'radarReplyState'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -263,7 +281,9 @@ function appendAttempt(post, entry) {
 }
 
 // Machine-readable run envelope for --json mode (consumed by the pendpost scheduler).
-const RUN = { results: [], blocked368: false };
+// Exported (spec 28, mirrors telegram-social.mjs's RUN) so a profile-edit test can
+// read the accumulated result rows after driving cmdProfile in-process.
+export const RUN = { results: [], blocked368: false };
 let JSON_MODE = false;
 let ACTOR = 'cli';
 
@@ -721,6 +741,36 @@ async function cmdDelete(args) {
 
 // ---------- main ----------
 
+// Supplementary watch-time time-series (spec 08, Pattern P5): estimatedMinutesWatched
+// + averageViewDuration per video via the YouTube Analytics API (the SAME host/scope
+// cmdDemographics already uses - yt-analytics.readonly). A wide, fixed start date
+// covers a video's whole lifetime regardless of when it published. Returns null on
+// any failure (403 = scope not granted, or any other error) - the CALLER folds that
+// into "no extra fields, base statistics still stand" (P9), so this never throws
+// past itself and never blocks the base metrics.
+async function fetchYtWatchTime(token, videoId) {
+  const url = new URL(`${ANALYTICS_API}/reports`);
+  url.searchParams.set('ids', 'channel==MINE');
+  url.searchParams.set('dimensions', 'video');
+  url.searchParams.set('metrics', 'estimatedMinutesWatched,averageViewDuration');
+  url.searchParams.set('filters', `video==${videoId}`);
+  url.searchParams.set('startDate', '2005-01-01');
+  url.searchParams.set('endDate', new Date().toISOString().slice(0, 10));
+  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+  if (!res.ok) {
+    const err = new Error(`YouTube Analytics GET /reports: HTTP ${res.status} - ${data.error?.message || text || ''}`);
+    err.status = res.status;
+    throw err;
+  }
+  const row = data.rows?.[0];
+  if (!row) return null;
+  const [, minutesWatched, avgViewDuration] = row;
+  return { watchTimeMin: Number(minutesWatched) || 0, avgViewSec: Number(avgViewDuration) || 0 };
+}
+
 // Read-only metrics fetch (Phase E): videos.list part=statistics is the one
 // stable, quota-cheap (1 unit) metrics surface. One batched call for all ids.
 // Writes NOTHING - pendpost stores the envelope in its own state.json.
@@ -760,10 +810,90 @@ async function cmdInsights(args) {
       comments: Number(s.commentCount ?? 0),
       privacyStatus: v.status?.privacyStatus || null,
     };
+    // Spec 08: watch-time is a SEPARATE, scope-gated call - a missing
+    // yt-analytics.readonly grant (or any other failure) degrades silently
+    // (P9): the row stays ok:true and the base statistics above still render.
+    try {
+      const extra = await fetchYtWatchTime(token, post.ytVideoId);
+      if (extra) Object.assign(metrics, extra);
+    } catch (err) {
+      if (err.status === 403) console.log(`[warn] ${post.id}: watch-time needs yt-analytics.readonly - base stats only.`);
+      else console.log(`[warn] ${post.id}: watch-time fetch failed - ${String(err.message || err).slice(0, 200)}`);
+    }
     RUN.results.push({ postId: post.id, platform: 'youtube', action: 'insights', ok: true, id: post.ytVideoId, metrics });
     console.log(`[ok] ${post.id}: YT ${JSON.stringify(metrics)}`);
   }
   console.log(`[done] insights complete - ${RUN.results.filter((r) => r.ok).length} fetched.`);
+}
+
+// Parse a YouTube Analytics reports() response (rows of [ageGroup, gender,
+// viewerPercentage]) into {age:{...}, gender:{...}} - each bucket sums its
+// viewerPercentage across the other dimension, so age/gender are independently
+// browsable even though the report is jointly dimensioned.
+function parseYtDemographics(data) {
+  const age = {};
+  const gender = {};
+  for (const row of data?.rows || []) {
+    const [ageGroup, genderVal, pct] = row;
+    const v = Number(pct) || 0;
+    if (ageGroup) age[ageGroup] = Number(((age[ageGroup] || 0) + v).toFixed(2));
+    if (genderVal) gender[genderVal] = Number(((gender[genderVal] || 0) + v).toFixed(2));
+  }
+  return { age, gender };
+}
+
+// Account-scoped channel demographics (spec 07, Pattern P5) - called ONCE per
+// evidence campaign by the insights sweep's generic account pass (spec 04). Reads
+// the YouTube Analytics API (a DIFFERENT host from the Data API `api()` targets),
+// so it has its own fetch here rather than reusing api(). Needs the
+// yt-analytics.readonly scope; missing it degrades to the structured needs_scope
+// shape (P9), never a throw. Emits ONE account row { postId:null,
+// platform:'youtube', action:'demographics', ok, scope:'account', demographics:{} }.
+async function cmdDemographics() {
+  const accountRow = (extra) => ({ postId: null, platform: 'youtube', action: 'demographics', scope: 'account', ...extra });
+  let token;
+  try {
+    token = await getAccessToken();
+  } catch (err) {
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) }));
+    return;
+  }
+  const end = new Date();
+  const start = new Date(end.getTime() - 90 * 24 * 60 * 60 * 1000); // a wide window - demographics change slowly
+  const fmt = (d) => d.toISOString().slice(0, 10);
+  const url = new URL(`${ANALYTICS_API}/reports`);
+  url.searchParams.set('ids', 'channel==MINE');
+  url.searchParams.set('dimensions', 'ageGroup,gender');
+  url.searchParams.set('metrics', 'viewerPercentage');
+  url.searchParams.set('startDate', fmt(start));
+  url.searchParams.set('endDate', fmt(end));
+  try {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const text = await res.text();
+    let data;
+    try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
+    if (!res.ok) {
+      const e = data.error || {};
+      const reason = e.errors?.[0]?.reason || '';
+      const err = new Error(`YouTube Analytics GET /reports: HTTP ${res.status} ${reason} - ${e.message || text || ''}`);
+      err.status = res.status;
+      err.reason = reason;
+      throw err;
+    }
+    RUN.results.push(accountRow({ ok: true, demographics: parseYtDemographics(data) }));
+    console.log('[ok] demographics fetched.');
+  } catch (err) {
+    // spec-15 quota mislabel fix: a quota/rate-limit 403 is NOT "reconnect to
+    // authorize" (ytNeedsScope excludes it) - it reads engine_failure with the
+    // real message instead.
+    if (ytNeedsScope(err)) {
+      RUN.results.push(accountRow({ ok: false, error: 'needs_scope', scope: 'yt-analytics.readonly' }));
+      console.log('[warn] demographics: yt-analytics.readonly scope not granted - no audience data available yet.');
+      return;
+    }
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) }));
+    console.log(`[warn] demographics failed: ${String(err.message || err).slice(0, 200)}`);
+  }
 }
 
 // Post-hoc thumbnail application for already-uploaded videos (ytVideoId set +
@@ -899,6 +1029,86 @@ async function cmdComment(args) {
   console.log(`[done] comment complete - ${posted} comment(s) posted.`);
 }
 
+// Spec 45: publish-radar - the Radar reply-to-external lane for YouTube. YouTube's `schedule`
+// command NATIVELY schedules a VIDEO UPLOAD (fires BEFORE due, requires a media file), so a
+// Radar reply - a due-now, media-less top-level COMMENT on an EXTERNAL video - cannot ride it.
+// This dedicated command mirrors scripts/bluesky-social.mjs cmdPublishDue: it fires ONLY a post
+// carrying post.radarReplyTo (never a general upload), posting a top-level comment via
+// commentThreads.insert on rr.externalId (the videoId). The scheduler routes it here through the
+// LOCAL-only `youtube-reply` lane (lib/scheduler.mjs). It reached here only after a DISTINCT
+// human approved it - YouTube is absent from RADAR_AUTO_REPLY_LANES, so a public comment on a
+// stranger's video is NEVER auto-posted. Fail-closed: a gone/404 video (deleted / comments
+// disabled) => radar_target_gone (TERMINAL - lanesFor stops firing the lane), 401/403 =>
+// needs_scope, anything else => engine_failure. LIVE-only (mock mode is a no-op).
+async function cmdPublishRadar(args) {
+  if (resolveMode('youtube') === 'mock') { console.log('[mock] publish-radar is live-only - skipped in mock mode (no real YouTube call).'); return; }
+  const { abs, plan } = loadPlan(args.plan);
+  const now = Date.now();
+  let token = null;
+  for (const post of plan.posts || []) {
+    if (args.only && post.id !== args.only) continue;
+    if (!post.radarReplyTo) continue; // this lane fires ONLY Radar replies - never a general upload
+    const rr = post.radarReplyTo;
+    // WRONG-TARGET guard: fire ONLY when the reply's source is this lane. A source<->platform
+    // mismatch is rejected at create (validateFieldValues); this is the fire-time backstop.
+    if (rr.source !== 'youtube') { RUN.results.push({ postId: post.id, platform: 'youtube', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `radarReplyTo.source '${rr.source}' does not match the youtube lane` }); continue; }
+    if (post.executionMode !== 'fully-scheduled') continue;
+    if (post.status === 'posted' || post.ytCommentId) continue; // idempotent - a fired reply never re-posts
+    if (post.radarReplyState === 'target_gone') continue; // terminal - never re-attempt a dead video
+    if ((post.approval || 'draft') !== 'approved') { console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`); continue; }
+    const dueMs = Date.parse(post.scheduledAt);
+    if (Number.isNaN(dueMs) || dueMs > now) continue;
+    const body = String(post.caption || '').trim();
+    if (!body) { RUN.results.push({ postId: post.id, platform: 'youtube', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'radar reply needs a caption' }); continue; }
+    if (args['dry-run']) { console.log(`[dry] ${post.id}: would comment on video ${rr.externalId} (${body.length} chars).`); continue; }
+    if (!token) {
+      try { token = await getAccessToken(); }
+      catch (err) { RUN.results.push({ postId: post.id, platform: 'youtube', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: String(err.message || err).slice(0, 200) }); continue; }
+    }
+    try {
+      // postComment sets snippet.videoId = rr.externalId (the video the comment lands under).
+      const thread = await postComment(String(rr.externalId), body, token);
+      post.ytCommentId = thread.id;
+      post.status = 'posted';
+      post.postedAt = new Date(now).toISOString();
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'publish', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'publish', ok: true, id: thread.id, radarReply: rr.externalId });
+      console.log(`[ok] ${post.id}: commented on YouTube video ${rr.externalId} (${thread.id}).`);
+    } catch (err) {
+      const status = err && err.status;
+      const gone = status === 404; // a deleted video / comments disabled - TERMINAL, never re-fired
+      const code = gone ? 'radar_target_gone' : ((status === 401 || status === 403) ? 'needs_scope' : 'engine_failure');
+      if (gone) post.radarReplyState = 'target_gone';
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'publish', ok: false, errorCode: code, errorMessage: String(err.message || err).slice(0, 300), lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'publish', ok: false, errorCode: code, errorMessage: String(err.message || err).slice(0, 300) });
+    }
+  }
+}
+
+// Shared GET-merge-PUT over channels?part=brandingSettings(,localizations) (spec 28):
+// generalizes cmdFeatured's original inline GET-merge-PUT so cmdProfile reuses the
+// EXACT same read-merge-write shape instead of duplicating it. `parts` controls which
+// parts are requested/written - cmdFeatured only ever touches brandingSettings
+// (unchanged behavior); cmdProfile also touches localizations when the operator
+// supplies a --localizations override. `mergeFn({brandingSettings, localizations})`
+// returns the merged `{brandingSettings, localizations}` to PUT back; only the parts
+// named in `parts` are sent, so a caller that never asked for localizations can never
+// accidentally clobber it (the Data API only mutates the parts named in the request).
+async function updateBranding(token, parts, mergeFn) {
+  const partStr = parts.join(',');
+  const chan = await api('GET', '/channels', { query: { part: partStr, mine: 'true' }, token });
+  const channel = chan.items && chan.items[0];
+  if (!channel) throw new Error('no YouTube channel on this account');
+  const patch = mergeFn({ brandingSettings: channel.brandingSettings || {}, localizations: channel.localizations || {} });
+  const body = { id: channel.id };
+  if (parts.includes('brandingSettings')) body.brandingSettings = patch.brandingSettings;
+  if (parts.includes('localizations')) body.localizations = patch.localizations;
+  await api('PUT', '/channels', { query: { part: partStr }, body, token });
+  return channel;
+}
+
 // Set the channel's featured video (unsubscribedTrailer, shown on the channel
 // homepage to non-subscribers) via channels.update?part=brandingSettings: resolve
 // the videoId (--id, else --plan/--only -> post.ytVideoId), GET current branding,
@@ -928,12 +1138,9 @@ async function cmdFeatured(args) {
   } catch (err) {
     console.warn(`[warn] could not check video privacy - ${err.message}`);
   }
-  const chan = await api('GET', '/channels', { query: { part: 'brandingSettings', mine: 'true' }, token });
-  const channel = chan.items && chan.items[0];
-  if (!channel) throw new Error('no YouTube channel on this account');
-  const branding = channel.brandingSettings || {};
-  const merged = { channel: { ...(branding.channel || {}), unsubscribedTrailer: videoId } };
-  await api('PUT', '/channels', { query: { part: 'brandingSettings' }, body: { id: channel.id, brandingSettings: merged }, token });
+  const channel = await updateBranding(token, ['brandingSettings'], ({ brandingSettings }) => ({
+    brandingSettings: { ...brandingSettings, channel: { ...(brandingSettings.channel || {}), unsubscribedTrailer: videoId } },
+  }));
   console.log(`[ok] channel trailer (featured video) set to ${videoId} on channel ${channel.id}.`);
   console.log('     Verify in YouTube Studio -> Customization -> Layout.');
 }
@@ -956,6 +1163,154 @@ async function cmdProbe() {
     else RUN.results.push({ platform: 'youtube', action: 'probe', ok: false, detail: 'Token valid, but no YouTube channel found' });
   } catch (err) {
     RUN.results.push({ platform: 'youtube', action: 'probe', ok: false, detail: String(err.message || err).slice(0, 200) });
+  }
+}
+
+// ---------- profile editing (spec 28 - the shipped X `profile` pattern, cloned) ----------
+//
+// YouTube's channel "profile" is brandingSettings (description/keywords/country/
+// defaultLanguage) + localizations (per-language description overrides) - NOT
+// snippet.title, which channels.update never accepts (the channel display name is
+// account-level, set outside the Data API - spec §3). `apply` reuses updateBranding()
+// (the GET-merge-PUT cmdFeatured established above) so a partial edit never clobbers
+// fields the operator did not touch.
+
+// The SAME 403->needs_scope classification api()'s err.status enables elsewhere
+// (spec 15 playlists was the first caller); the `youtube` (write) scope is required
+// for channels.update (youtube.readonly cannot write branding).
+//
+// spec-15 quota mislabel fix (also resolves spec-28 review NIT-8): a 403 can be
+// Google's quota/rate-limit signal instead of a genuinely missing OAuth scope -
+// reading it as "authorize" tells the owner to reconnect when the real fix is
+// "wait" (or raise the quota). EXCLUDE the quota reasons so those read
+// engine_failure (with the real message) instead.
+const YT_QUOTA_REASONS = new Set(['quotaExceeded', 'rateLimitExceeded', 'dailyLimitExceeded']);
+function ytNeedsScope(err) {
+  return Boolean(err) && err.status === 403 && !YT_QUOTA_REASONS.has(err.reason);
+}
+
+export async function cmdProfile(args) {
+  if (!readEnv('YT_REFRESH_TOKEN') || !readEnv('YT_CLIENT_ID') || !readEnv('YT_CLIENT_SECRET')) {
+    throw new Error('YouTube profile editing needs YT_CLIENT_ID/YT_CLIENT_SECRET/YT_REFRESH_TOKEN in .env (run `auth` first).');
+  }
+
+  // --probe: the STEP 0 access-tier gate. Non-mutating: read the channel identity only.
+  if (args.probe) {
+    const expected = readEnv('YT_CHANNEL_ID') || null;
+    try {
+      const token = await getAccessToken();
+      const chan = await api('GET', '/channels', { query: { part: 'id,snippet', mine: 'true' }, token });
+      const ch = chan.items?.[0];
+      if (!ch) { RUN.results.push({ platform: 'youtube', action: 'profile-probe', ok: false, tier: 'error', detail: 'token valid, but no YouTube channel found' }); return; }
+      const handleMatches = expected ? expected === ch.id : null;
+      RUN.results.push({ platform: 'youtube', action: 'profile-probe', ok: true, tier: 'permitted', channelId: ch.id, expectedChannelId: expected, handleMatches, detail: `${ch.snippet?.title || 'Channel'} (${ch.id})${expected ? ` (expected ${expected}${handleMatches ? '' : ' - MISMATCH'})` : ''}` });
+    } catch (err) {
+      const tier = ytNeedsScope(err) ? 'blocked' : 'error';
+      RUN.results.push({ platform: 'youtube', action: 'profile-probe', ok: false, tier, detail: String(err.message || err).slice(0, 300) });
+    }
+    return;
+  }
+
+  const description = typeof args.description === 'string' ? args.description : null;
+  const keywords = typeof args.keywords === 'string' ? args.keywords : null;
+  const country = typeof args.country === 'string' ? args.country : null;
+  const defaultLanguage = typeof args.defaultLanguage === 'string' ? args.defaultLanguage : null;
+  let localizations = null;
+  if (typeof args.localizations === 'string' && args.localizations.trim()) {
+    try { localizations = JSON.parse(args.localizations); } catch { throw new Error('--localizations must be valid JSON ({"<lang>":{"description":"..."}, ...}).'); }
+  }
+  if (description == null && keywords == null && country == null && defaultLanguage == null && !localizations) {
+    throw new Error('nothing to update - pass at least one of --description --keywords --country --defaultLanguage --localizations (or --probe).');
+  }
+  if (description != null && description.length > 1000) throw new Error(`--description is ${description.length} chars - YouTube caps the channel description at 1000.`);
+
+  const token = await getAccessToken();
+
+  // Wrong-account guard: never edit a sibling client's channel.
+  const expected = readEnv('YT_CHANNEL_ID');
+  if (!expected) throw new Error('YT_CHANNEL_ID is not set in .env - refusing to edit a channel I cannot identify (run `discover` first, or set YT_CHANNEL_ID).');
+  const identity = await api('GET', '/channels', { query: { part: 'id', mine: 'true' }, token });
+  const actualId = identity.items?.[0]?.id;
+  if (!actualId) throw new Error('could not read the authenticated channel id - aborting before any profile edit.');
+  if (actualId !== expected) throw new Error(`refusing to edit profile: authenticated channel is ${actualId} but .env expects ${expected} (YT_CHANNEL_ID) - wrong account, aborted.`);
+
+  if (args['dry-run']) {
+    const changes = [];
+    if (description != null) changes.push(`description(${description.length})`);
+    if (keywords != null) changes.push(`keywords="${keywords}"`);
+    if (country != null) changes.push(`country="${country}"`);
+    if (defaultLanguage != null) changes.push(`defaultLanguage="${defaultLanguage}"`);
+    if (localizations) changes.push(`localizations(${Object.keys(localizations).length} locale(s))`);
+    console.error(`[dry] ${actualId}: would update ${changes.join(', ')}.`);
+    RUN.results.push({ platform: 'youtube', action: 'profile-dry-run', ok: true, channelId: actualId, changes });
+    return;
+  }
+
+  const parts = localizations ? ['brandingSettings', 'localizations'] : ['brandingSettings'];
+  try {
+    const channel = await updateBranding(token, parts, ({ brandingSettings, localizations: currentLoc }) => {
+      const channelBranding = { ...(brandingSettings.channel || {}) };
+      if (description != null) channelBranding.description = description;
+      if (keywords != null) channelBranding.keywords = keywords;
+      if (country != null) channelBranding.country = country;
+      if (defaultLanguage != null) channelBranding.defaultLanguage = defaultLanguage;
+      const mergedLoc = { ...currentLoc };
+      if (localizations) {
+        for (const [lang, val] of Object.entries(localizations)) mergedLoc[lang] = { ...(mergedLoc[lang] || {}), ...val };
+      }
+      return { brandingSettings: { ...brandingSettings, channel: channelBranding }, localizations: mergedLoc };
+    });
+    RUN.results.push({ platform: 'youtube', action: 'profile-update', ok: true, channelId: channel.id });
+    console.error(`[ok] channel ${channel.id}: branding updated.`);
+  } catch (err) {
+    if (ytNeedsScope(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'profile-update', ok: false, error: 'needs_scope', scope: 'youtube', errorMessage: String(err.message || err).slice(0, 300) });
+      console.error(`[err] profile update needs the youtube (write) scope - ${err.message}`);
+      return;
+    }
+    RUN.results.push({ platform: 'youtube', action: 'profile-update', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) });
+    console.error(`[err] profile-update failed - ${err.message}`);
+  }
+}
+
+// Connected-account discovery (spec 22, Pattern P3): who does this token
+// authenticate as, and which channels can it manage? Reads env creds via readEnv
+// (NOT requireEnv) so a missing token degrades to an ok:false row instead of
+// process.exit-ing past the --json envelope (models cmdProbe). Reuses the same
+// channels.list identity read; a Brand Account may own several channels (mine +
+// managedByMe), so it lists them all to pick from. Takes no --plan.
+async function cmdDiscover() {
+  const { discoverOk, discoverNeedsScope, discoverAuthError, markCurrent } = await import('../lib/discovery.mjs');
+  if (!readEnv('YT_REFRESH_TOKEN') || !readEnv('YT_CLIENT_ID') || !readEnv('YT_CLIENT_SECRET')) {
+    RUN.results.push(discoverNeedsScope('youtube'));
+    return;
+  }
+  try {
+    const token = await getAccessToken();
+    const own = await api('GET', '/channels', { query: { part: 'snippet,contentDetails', mine: 'true' }, token });
+    const items = [...(own.items || [])];
+    try {
+      const managed = await api('GET', '/channels', { query: { part: 'snippet,contentDetails', managedByMe: 'true' }, token });
+      for (const ch of managed.items || []) if (!items.some((c) => c.id === ch.id)) items.push(ch);
+    } catch { /* managedByMe needs a Content Owner credential; ignore when absent */ }
+    const sealed = readEnv('YT_CHANNEL_ID') || null;
+    if (!items.length) {
+      RUN.results.push(discoverOk('youtube', { identity: { id: '', name: 'YouTube' }, assets: [], selected: { ytChannelId: sealed } }));
+      return;
+    }
+    const assets = markCurrent(items.map((ch) => ({
+      kind: 'channel', id: ch.id, name: ch.snippet?.title || ch.id,
+      meta: ch.snippet?.customUrl ? { handle: ch.snippet.customUrl } : undefined,
+    })), sealed);
+    const primary = assets.find((a) => a.current) || assets[0];
+    const primaryRaw = items.find((ch) => ch.id === primary.id) || items[0];
+    RUN.results.push(discoverOk('youtube', {
+      identity: { id: primary.id, handle: primaryRaw.snippet?.customUrl || null, name: primary.name, avatarUrl: primaryRaw.snippet?.thumbnails?.default?.url },
+      assets,
+      selected: { ytChannelId: sealed },
+    }));
+  } catch (err) {
+    RUN.results.push(discoverAuthError('youtube', err.message || err));
   }
 }
 
@@ -1060,6 +1415,197 @@ async function cmdRelease(args) {
   console.log('[done] release complete.');
 }
 
+// ---------- edit (spec 12, Pattern P3+P9): push a metadata edit to an already-
+// published video, WITHOUT re-uploading bytes ----------
+// videos.update part=snippet REPLACES the whole snippet, and categoryId is a
+// REQUIRED field on update (mirrors the part=status "must re-send
+// selfDeclaredMadeForKids" gotcha at cmdRelease above) - so buildMeta's full
+// snippet (it already sets categoryId/title/description/tags/language) is
+// re-sent verbatim. Never touches status (privacy/schedule unchanged) and never
+// insertVideo (no re-upload). A post with no ytVideoId no-ops with a clear
+// result, so a bare CLI run is safe - it never mints/clears an id.
+export async function cmdEdit(args) {
+  const { abs, plan } = loadPlan(args.plan);
+  const targets = (plan.posts || []).filter((p) => (!args.only || p.id === args.only) && isYouTube(p));
+  if (!targets.length) { console.log('[done] edit complete - no matching posts.'); return; }
+  // Spec 12 review (nit #6): mint the token LAZILY, only once a post that actually
+  // NEEDS the API call is reached - not upfront. requireEnv() (inside
+  // getAccessToken) hard process.exit(1)s on missing creds, so minting it before
+  // the no-minted-id skip check crashed a bare CLI `edit` over unminted posts
+  // instead of emitting the clean skip row below.
+  let token = null;
+  let edited = 0;
+  for (const post of targets) {
+    if (!post.ytVideoId) {
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'edit', ok: true, skipped: 'no_minted_id' });
+      console.log(`[skip] ${post.id}: no ytVideoId - nothing published to edit yet.`);
+      continue;
+    }
+    if (!token) token = await getAccessToken();
+    try {
+      const meta = buildMeta(post);
+      await api('PUT', '/videos', { query: { part: 'snippet' }, body: { id: post.ytVideoId, snippet: meta.snippet }, token });
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'edit', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'edit', ok: true, id: post.ytVideoId });
+      console.log(`[ok] ${post.id}: video ${post.ytVideoId} snippet updated.`);
+      edited += 1;
+    } catch (err) {
+      if (ytNeedsScope(err)) {
+        RUN.results.push({ postId: post.id, platform: 'youtube', action: 'edit', ok: false, error: 'needs_scope', scope: 'youtube' });
+        console.log(`[warn] ${post.id}: edit needs the youtube (or youtube.force-ssl) write scope - reconnect to grant it.`);
+        continue;
+      }
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'edit', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'youtube', action: 'edit', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+      console.error(`[err] ${post.id}: edit failed - ${err.message}`);
+    }
+  }
+  console.log(`[done] edit complete - ${edited} video(s) updated.`);
+}
+
+// ---------- playlists (spec 15, Pattern P3+P4+P9) ----------
+// pendpost publishes videos but never files them into a playlist - the operator
+// used to open YouTube Studio after every upload to do that by hand. These three
+// verbs (list/create/add) close that gap with zero new deps, riding the SAME
+// getAccessToken()/api() the rest of the engine uses. A 403 (a token minted before
+// this feature shipped, with only youtube.upload) degrades to the structured
+// needs_scope shape (P9), never a throw - a reconnect grants the fuller scope.
+
+// GET /playlists - this channel's playlists (paged). contentDetails is requested
+// ALONGSIDE the spec's literal snippet,status (itemCount lives only in
+// contentDetails - snippet/status alone cannot produce it).
+async function cmdPlaylistsList() {
+  const token = await getAccessToken();
+  try {
+    const playlists = [];
+    let pageToken;
+    do {
+      const data = await api('GET', '/playlists', {
+        query: { part: 'snippet,status,contentDetails', mine: 'true', maxResults: 50, ...(pageToken ? { pageToken } : {}) },
+        token,
+      });
+      for (const p of data.items || []) {
+        playlists.push({ id: p.id, title: p.snippet?.title || p.id, privacy: p.status?.privacyStatus || null, itemCount: p.contentDetails?.itemCount ?? 0 });
+      }
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+    RUN.results.push({ platform: 'youtube', action: 'playlists-list', ok: true, playlists });
+    console.log(`[ok] playlists-list: ${playlists.length} playlist(s).`);
+  } catch (err) {
+    if (ytNeedsScope(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'playlists-list', ok: false, error: 'needs_scope', scope: 'youtube' });
+      console.log('[warn] playlists-list: needs the youtube (or youtube.force-ssl) scope - reconnect to grant it.');
+      return;
+    }
+    RUN.results.push({ platform: 'youtube', action: 'playlists-list', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) });
+    console.error(`[err] playlists-list failed - ${err.message}`);
+  }
+}
+
+// POST /playlists - create a playlist. Takes --title (NOT --plan), like probe/
+// featured - deliberately NOT added to the plan-required guard in main().
+async function cmdPlaylistCreate(args) {
+  if (typeof args.title !== 'string' || !args.title.trim()) {
+    console.error('[err] playlist-create requires --title "..." [--description "..."] [--privacy public|unlisted|private]');
+    process.exit(2);
+  }
+  const token = await getAccessToken();
+  const privacyStatus = typeof args.privacy === 'string' && args.privacy.trim() ? args.privacy.trim() : 'private';
+  try {
+    const data = await api('POST', '/playlists', {
+      query: { part: 'snippet,status' },
+      body: {
+        snippet: { title: args.title, description: typeof args.description === 'string' ? args.description : '' },
+        status: { privacyStatus },
+      },
+      token,
+    });
+    RUN.results.push({ platform: 'youtube', action: 'playlist-create', ok: true, id: data.id, title: data.snippet?.title || args.title });
+    console.log(`[ok] playlist-create: "${data.snippet?.title || args.title}" (${data.id}).`);
+  } catch (err) {
+    if (ytNeedsScope(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'playlist-create', ok: false, error: 'needs_scope', scope: 'youtube' });
+      console.log('[warn] playlist-create: needs the youtube (or youtube.force-ssl) write scope - reconnect to grant it.');
+      return;
+    }
+    RUN.results.push({ platform: 'youtube', action: 'playlist-create', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) });
+    console.error(`[err] playlist-create failed - ${err.message}`);
+  }
+}
+
+// POST /playlistItems - add a PUBLISHED video to a playlist. videoId resolves
+// --id, else --plan/--only -> post.ytVideoId (cmdFeatured's exact pattern above).
+// Pre-lists the playlist for a dup check (YouTube allows duplicate items; report
+// honestly rather than double-adding). On a fresh add against a plan entry, echoes
+// post.ytPlaylistItems (engine-owned, ENGINE_OWNED_FIELDS) so a concurrent
+// caption/cover save never loses the membership record.
+async function cmdPlaylistAdd(args) {
+  const playlistId = typeof args['playlist-id'] === 'string' ? args['playlist-id'] : null;
+  let videoId = typeof args.id === 'string' ? args.id : null;
+  let abs = null;
+  let plan = null;
+  let post = null;
+  if (args.plan) {
+    ({ abs, plan } = loadPlan(args.plan));
+    if (args.only) {
+      post = (plan.posts || []).find((p) => p.id === args.only && isYouTube(p));
+      if (!videoId && post && post.ytVideoId) videoId = post.ytVideoId;
+    }
+  }
+  if (!playlistId || !videoId) {
+    console.error('[err] playlist-add requires --playlist-id <id> and --id <videoId> (or --plan <p> --only <postId> with a scheduled ytVideoId).');
+    process.exit(2);
+  }
+  const token = await getAccessToken();
+  try {
+    let existingItemId = null;
+    let pageToken;
+    do {
+      const data = await api('GET', '/playlistItems', {
+        query: { part: 'snippet', playlistId, maxResults: 50, ...(pageToken ? { pageToken } : {}) },
+        token,
+      });
+      const hit = (data.items || []).find((it) => it.snippet?.resourceId?.videoId === videoId);
+      if (hit) { existingItemId = hit.id; break; }
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+
+    if (existingItemId) {
+      RUN.results.push({ platform: 'youtube', action: 'playlist-add', ok: true, id: existingItemId, playlistId, videoId, duplicate: true });
+      console.log(`[ok] playlist-add: ${videoId} already in playlist ${playlistId} (item ${existingItemId}) - not re-added.`);
+      return;
+    }
+
+    const item = await api('POST', '/playlistItems', {
+      query: { part: 'snippet' },
+      body: { snippet: { playlistId, resourceId: { kind: 'youtube#video', videoId } } },
+      token,
+    });
+    RUN.results.push({ platform: 'youtube', action: 'playlist-add', ok: true, id: item.id, playlistId, videoId });
+    console.log(`[ok] playlist-add: ${videoId} added to playlist ${playlistId} (item ${item.id}).`);
+
+    // Echo the membership ONLY when the resolved video actually IS this post's
+    // published video. An explicit --id override for a DIFFERENT video is an ad-hoc
+    // add; recording it on this post's ytPlaylistItems would be a false membership
+    // (the post's own video was never added). So guard on post.ytVideoId === videoId.
+    if (post && abs && post.ytVideoId === videoId) {
+      post.ytPlaylistItems = Array.isArray(post.ytPlaylistItems) ? post.ytPlaylistItems : [];
+      post.ytPlaylistItems.push({ playlistId, itemId: item.id });
+      await savePlan(abs, plan, [post.id]);
+    }
+  } catch (err) {
+    if (ytNeedsScope(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'playlist-add', ok: false, error: 'needs_scope', scope: 'youtube' });
+      console.log('[warn] playlist-add: needs the youtube (or youtube.force-ssl) write scope - reconnect to grant it.');
+      return;
+    }
+    RUN.results.push({ platform: 'youtube', action: 'playlist-add', ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) });
+    console.error(`[err] playlist-add failed - ${err.message}`);
+  }
+}
+
 function parseArgs(argv) {
   const args = { _: [] };
   for (let i = 2; i < argv.length; i++) {
@@ -1076,12 +1622,36 @@ function parseArgs(argv) {
   return args;
 }
 
+// The inbound-engagement seam (spec 02, Pattern P6): read + reply to inbound
+// comments on this lane's own posts. Thin wrappers over the shared, source-agnostic
+// REST in lib/comments.mjs (dynamic import so the publish hot path's module graph is
+// untouched). The result is merged onto RUN so main() emits the normalized
+// { items } / { id } envelope; a needs_scope degrade sets ok:false (P9). Distinct
+// from the existing `comment` verb (the YouTube first-comment-on-publish).
+async function cmdComments(args) {
+  const { runLaneComments } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneComments('youtube', args));
+}
+async function cmdReply(args) {
+  const { runLaneReply } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneReply('youtube', args));
+}
+async function cmdModerate(args) {
+  const { runLaneModerate } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneModerate('youtube', args));
+}
+
 const COMMANDS = {
   auth: cmdAuth,
+  comments: cmdComments,
+  reply: cmdReply,
+  moderate: cmdModerate,
   validate: cmdValidate,
   publish: cmdPublish,
   schedule: cmdSchedule,
+  'publish-radar': cmdPublishRadar,
   release: cmdRelease,
+  edit: cmdEdit,
   status: cmdStatus,
   verify: cmdVerify,
   delete: cmdDelete,
@@ -1090,7 +1660,13 @@ const COMMANDS = {
   comment: cmdComment,
   featured: cmdFeatured,
   insights: cmdInsights,
+  demographics: cmdDemographics,
   probe: cmdProbe,
+  profile: cmdProfile,
+  discover: cmdDiscover,
+  'playlists-list': cmdPlaylistsList,
+  'playlist-create': cmdPlaylistCreate,
+  'playlist-add': cmdPlaylistAdd,
 };
 
 async function main() {
@@ -1108,6 +1684,19 @@ async function main() {
       platform: 'youtube', command: commandName,
       planPath: typeof args.plan === 'string' ? path.resolve(String(args.plan)) : null,
       only: typeof args.only === 'string' ? args.only : null,
+      // Spec 15 (playlists): playlist-create/playlist-add take extra flags the
+      // shared plan/only pair cannot carry - forwarded here (every OTHER lane's
+      // command ignores these, so this is harmless everywhere else).
+      title: typeof args.title === 'string' ? args.title : null,
+      description: typeof args.description === 'string' ? args.description : null,
+      privacy: typeof args.privacy === 'string' ? args.privacy : null,
+      playlistId: typeof args['playlist-id'] === 'string' ? args['playlist-id'] : null,
+      videoId: typeof args.id === 'string' ? args.id : null,
+      // spec 06: the moderate verb carries its action so the mock can branch per-lane.
+      action: typeof args.action === 'string' ? args.action : null,
+      // spec 28 review: the profile verb's --probe flag, so mock mode can
+      // distinguish a probe (read-only tier check) from an apply.
+      probe: args.probe === true,
     });
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
     else console.error(`[mock] youtube ${commandName}: ${envelope.results.length} result(s)`);
@@ -1118,7 +1707,7 @@ async function main() {
     console.error(`Usage: node scripts/yt-social.mjs <${Object.keys(COMMANDS).join('|')}> [options]`);
     process.exit(2);
   }
-  if (['schedule', 'release', 'status', 'set-thumbnail', 'caption', 'comment', 'insights', 'verify'].includes(args._[0]) && !args.plan) {
+  if (['schedule', 'publish-radar', 'release', 'edit', 'status', 'set-thumbnail', 'caption', 'comment', 'insights', 'verify', 'demographics'].includes(args._[0]) && !args.plan) {
     console.error(`[err] ${args._[0]} requires --plan <post-plan.json>`);
     process.exit(2);
   }
@@ -1126,8 +1715,22 @@ async function main() {
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
-main().catch(async (err) => {
-  console.error('[err]', err.message || err);
-  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
-  process.exit(1);
-});
+// CLI entry - only when executed directly, never when imported (spec 28: a
+// profile-edit test drives cmdProfile in-process against a stubbed global.fetch,
+// mirroring nostr-social.mjs/telegram-social.mjs/x-social.mjs/discord-social.mjs's
+// identical guard - importing this file must never race main() against the
+// importing process's own argv).
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(async (err) => {
+    console.error('[err]', err.message || err);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    process.exit(1);
+  });
+}
+
+// Test-only export (spec 45): postComment is pure over its (videoId, text, token) inputs +
+// globalThis.fetch (via api()), so a stubbed-fetch test can prove a Radar reply's externalId
+// (the video id) lands as snippet.videoId in the real commentThreads.insert body without
+// spawning the CLI or the real Data API - YouTube's API host is a hardcoded literal (not
+// env-overridable), so a live-local-server proof (like the Mastodon lane) is not feasible here.
+export { postComment };

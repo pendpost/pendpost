@@ -85,6 +85,30 @@ describe('ReadinessChecklist', () => {
   });
 });
 
+// US-ONB-12: identical not-connected rows collapse into ONE aggregate row with
+// the lanes on a muted second line; a lane in a DISTINCT state keeps its own row.
+describe('ReadinessChecklist - aggregate not-connected row (US-ONB-12)', () => {
+  it('collapses 2+ not-connected lanes into one Setup row while a failed lane keeps its own', () => {
+    healthState = {
+      ok: true, ready: false, schedulerRunning: true,
+      blockers: ['a', 'b', 'c', 'd'],
+      blockerCodes: [
+        { code: 'blocker.lane.notConnected', params: { label: 'X', cmd: 'node scripts/x-social.mjs auth' } },
+        { code: 'blocker.lane.notConnected', params: { label: 'Mastodon', cmd: 'node scripts/mastodon-social.mjs auth' } },
+        { code: 'blocker.lane.notConnected', params: { label: 'Nostr', cmd: 'node scripts/nostr-social.mjs keygen' } },
+        { code: 'blocker.lane.failed', params: { label: 'Pinterest', cmd: 'node scripts/pinterest-social.mjs auth' } },
+      ],
+    };
+    renderChecklist();
+    expect(screen.getByText('3 platforms not connected yet - open Setup')).toBeInTheDocument();
+    expect(screen.getByText('X · Mastodon · Nostr')).toBeInTheDocument();
+    // The failed lane is a different problem - it keeps its own row.
+    expect(screen.getByText(/Pinterest/)).toBeInTheDocument();
+    // No per-lane not-connected rows survive the collapse.
+    expect(screen.queryByText(/X: .*not connected/i)).not.toBeInTheDocument();
+  });
+});
+
 // When pendpost_health carries machine blockerCodes (+ params), the SPA localizes
 // them via t() instead of rendering the locale-independent English blockers[].
 // The English blockers[] stays the REST/MCP face; blockerCodes is what the UI uses.

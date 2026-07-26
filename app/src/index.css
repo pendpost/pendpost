@@ -118,6 +118,28 @@
 @keyframes pp-rest          { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
 @keyframes pp-glow-pulse    { 0%, 100% { opacity: .5; } 50% { opacity: .9; } }
 
+/* Radar scan progress - an INDETERMINATE bar (a research job on an LLM has no honest
+   percentage). The first cut swept a 1/3 segment left-to-right every 1.4s and the owner
+   called it nervous - he was right: fast spatial motion on a multi-minute job reads as
+   agitation, not progress. Now the fill holds the FULL track and only a soft sheen drifts
+   through it slowly (nothing changes size or position; canon: let only a colour move).
+   Colour comes from currentColor so the JSX's text-brand / dark:text-brand-light theme it.
+   Under reduced-motion it holds still as a solid fill. Pairs with role="progressbar"
+   aria-busy (no fabricated aria-valuenow). */
+@keyframes pp-scan          { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+.radar-scan-bar {
+  width: 100%;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, currentColor 35%, transparent) 0%,
+    currentColor 50%,
+    color-mix(in srgb, currentColor 35%, transparent) 100%);
+  background-size: 200% 100%;
+  animation: pp-scan 3.6s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .radar-scan-bar { animation: none !important; background: currentColor; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [class~="pp-anim"], [style*="pp-breathe"], [style*="pp-chevron-clear"],
   [style*="pp-rest"], [style*="pp-glow-pulse"] {

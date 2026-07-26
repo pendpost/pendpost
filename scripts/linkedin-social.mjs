@@ -23,6 +23,8 @@
  *   refresh                                                          force a token refresh (verifies programmatic refresh)
  *   validate     --plan <post-plan.json> [--only <postId>]          side-effect-free: upload HD video + preview caption, never posts
  *   publish-due  --plan <post-plan.json> [--only <postId>] [--dry-run]   publish any due LinkedIn entry
+ *                (also posts firstComment inline right after the share, spec 11)
+ *   comment      --plan <post-plan.json> [--only <postId>] [--force] [--dry-run]   post-hoc/retry firstComment (live-only)
  *   status       --plan <post-plan.json>                            list LinkedIn plan entries + live post state
  *
  * Credentials live in gitignored .env (same convention as meta-social.mjs):
@@ -38,6 +40,8 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
+import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
+import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -301,6 +305,23 @@ async function uploadArticleThumbnail(imageUrl, token) {
   return image;
 }
 
+// Spec 05: register a LOCAL image file as a LinkedIn digital-media-asset and return its
+// urn:li:image, for use as a multiImage carousel slide. Same Images API single-PUT flow
+// as uploadArticleThumbnail, but reads the bytes off disk instead of fetching a URL.
+async function uploadLocalImage(localPath, token) {
+  const bytes = fs.readFileSync(localPath);
+  const { data: init } = await api('POST', '/images', {
+    query: { action: 'initializeUpload' },
+    body: { initializeUploadRequest: { owner: orgUrn() } },
+    token,
+  });
+  const { uploadUrl, image } = init.value || {};
+  if (!uploadUrl || !image) throw new Error(`images initializeUpload returned no uploadUrl/image: ${JSON.stringify(init).slice(0, 200)}`);
+  const put = await fetch(uploadUrl, { method: 'PUT', headers: { Authorization: `Bearer ${token}` }, body: bytes });
+  if (!put.ok) throw new Error(`carousel image PUT failed: HTTP ${put.status}`);
+  return image;
+}
+
 // ---------- post creation ----------
 
 // LinkedIn "little text format": the commentary field treats \ | { } @ [ ] ( ) < > * _ ~ # as
@@ -316,7 +337,17 @@ function escapeCommentary(text) {
 // it stays clickable even on the plain text-only path.
 const isTextPost = (post) => post.type === 'text';
 
-async function createPost(post, videoUrn, token, thumbnailUrn = null) {
+// Spec 10: map a requested poll duration (minutes) to LinkedIn's fixed duration
+// enum (the API accepts only these four). A 5-min/1-hour request rounds UP to the
+// shortest supported window (ONE_DAY), so a poll is never silently dropped.
+function linkedinPollDuration(minutes) {
+  if (minutes <= 1440) return 'ONE_DAY';
+  if (minutes <= 4320) return 'THREE_DAYS';
+  if (minutes <= 10080) return 'SEVEN_DAYS';
+  return 'FOURTEEN_DAYS';
+}
+
+async function createPost(post, videoUrn, token, thumbnailUrn = null, imageUrns = null) {
   const body = {
     author: orgUrn(),
     commentary: escapeCommentary(post.caption),
@@ -325,7 +356,23 @@ async function createPost(post, videoUrn, token, thumbnailUrn = null) {
     lifecycleState: 'PUBLISHED',
     isReshareDisabledByAuthor: false,
   };
-  if (videoUrn) {
+  if (Array.isArray(imageUrns) && imageUrns.length) {
+    // Spec 05: a native multiImage post - 2..20 already-registered image URNs, in order.
+    // altText rides each image where the post carries one (single shared string here).
+    body.content = { multiImage: { images: imageUrns.map((id) => ({ id, ...(post.altText ? { altText: String(post.altText).slice(0, 4000) } : {}) })) } };
+  } else if (isPollPost(post)) {
+    // Native poll: the question is the caption; 2..4 options; single/multi vote.
+    body.content = {
+      poll: {
+        question: (post.caption || '').trim(),
+        options: pollOptions(post).map((o) => ({ text: o })),
+        settings: {
+          duration: linkedinPollDuration(pollDurationMinutes(post)),
+          voteSelectionType: pollMultiple(post) ? 'MULTIPLE_VOTE' : 'SINGLE_VOTE',
+        },
+      },
+    };
+  } else if (videoUrn) {
     // Org video post.
     body.content = { media: { title: post.title || 'pendpost', id: videoUrn } };
   } else if (post.link) {
@@ -349,6 +396,18 @@ async function createPost(post, videoUrn, token, thumbnailUrn = null) {
   return headers.get('x-restli-id');
 }
 
+// socialActions/{shareUrn}/comments - post a comment AS THE ORG on its OWN share
+// (spec 11: universal self first-comment, mirrors the YT postComment idiom
+// yt-social.mjs:369-375). LinkedIn returns the new comment's urn in the
+// x-restli-id response header, same convention as createPost above.
+async function postComment(shareUrn, text, token) {
+  const { headers } = await api('POST', `/socialActions/${encodeURIComponent(shareUrn)}/comments`, {
+    body: { actor: orgUrn(), message: { text } },
+    token,
+  });
+  return { id: headers.get('x-restli-id') };
+}
+
 // ---------- plan helpers (same shape as meta-social.mjs) ----------
 
 function loadPlan(planPath) {
@@ -358,7 +417,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'liCommentId', 'ytVideoId', 'status', 'postedAt', 'attempts'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -616,21 +675,46 @@ async function cmdPublishDue(args) {
     if (lateMin > 15) console.log(`[warn] ${post.id}: publishing ${lateMin} min late (catch-up).`);
 
     const textPost = isTextPost(post);
+    // Spec 10: a native poll org post - the question is the caption; carries no media.
+    const pollPost = isPollPost(post);
+    if (pollPost) {
+      const blocker = pollBlocker(post, post.caption, POLL_LANE_LIMITS.linkedin);
+      if (blocker) {
+        console.log(`[warn] ${post.id}: ${blocker} - skipping.`);
+        RUN.results.push(pollBlockRow(post, 'linkedin', blocker));
+        continue;
+      }
+    }
+    // Spec 05: a native multiImage post - 2..20 images, in order. Fail-closed BEFORE any
+    // upload (count/cap + slides-on-disk) so no half-registered image set is created.
+    const carouselPost = isCarouselPost(post);
+    let carouselPaths = [];
+    if (carouselPost) {
+      carouselPaths = carouselItems(post).map((it) => resolveMediaPath(plan, { file: it.file, path: it.path }));
+      const blocker = carouselBlocker(post, 'linkedin', carouselPaths.map((p) => ({ exists: Boolean(p) })));
+      if (blocker) {
+        console.log(`[warn] ${post.id}: ${blocker} - skipping.`);
+        RUN.results.push(carouselBlockRow(post, 'linkedin', blocker));
+        continue;
+      }
+    }
     let mediaPath = null;
-    if (!textPost) {
+    if (!textPost && !pollPost && !carouselPost) {
       mediaPath = resolveMediaPath(plan, post);
       if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
       if (!/\.(mp4|mov)$/i.test(mediaPath)) { console.log(`[warn] ${post.id}: not a video file - skipping (this script posts org videos).`); continue; }
     }
 
     if (args['dry-run']) {
-      console.log(textPost
+      if (pollPost) console.log(`[dry] ${post.id}: would create a PUBLISHED poll org post for ${orgUrn()} (${pollOptions(post).length} options).`);
+      else if (carouselPost) console.log(`[dry] ${post.id}: would upload ${carouselPaths.length} images + create a PUBLISHED multiImage org post for ${orgUrn()}.`);
+      else console.log(textPost
         ? `[dry] ${post.id}: would create a PUBLISHED text/article org post for ${orgUrn()}${post.image ? ` with thumbnail ${post.image}` : ' (no thumbnail)'}${post.description ? ' + card description' : ''}.`
         : `[dry] ${post.id}: would upload ${path.basename(mediaPath)} + create a PUBLISHED org post for ${orgUrn()}.`);
       continue;
     }
 
-    console.log(`[info] ${post.id}: publishing ${textPost ? 'text/article post' : 'HD render'} to ${orgUrn()}...`);
+    console.log(`[info] ${post.id}: publishing ${pollPost ? 'poll post' : (carouselPost ? 'multiImage post' : (textPost ? 'text/article post' : 'HD render'))} to ${orgUrn()}...`);
     try {
       // Article-card thumbnail: download the remote hero (post.image) + register it
       // as a LinkedIn image asset. Fail-soft - on any error the share still posts,
@@ -644,8 +728,15 @@ async function cmdPublishDue(args) {
           console.log(`[warn] ${post.id}: thumbnail upload failed (${thumbErr.message}) - posting article share without a thumbnail.`);
         }
       }
-      const videoUrn = textPost ? null : await uploadVideo(mediaPath, token, resolveCoverPath(post));
-      const postUrn = await createPost(post, videoUrn, token, thumbnailUrn);
+      const videoUrn = (textPost || pollPost || carouselPost) ? null : await uploadVideo(mediaPath, token, resolveCoverPath(post));
+      // Spec 05: register each carousel slide IN ORDER; a slide failure throws -> the
+      // catch below pushes a structured ok:false row and NO post is created (fail-closed).
+      let imageUrns = null;
+      if (carouselPost) {
+        imageUrns = [];
+        for (const slide of carouselPaths) imageUrns.push(await uploadLocalImage(slide, token));
+      }
+      const postUrn = await createPost(post, videoUrn, token, thumbnailUrn, imageUrns);
 
       post.liPostId = postUrn;
       post.status = 'posted';
@@ -655,6 +746,24 @@ async function cmdPublishDue(args) {
       RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'publish', ok: true, id: postUrn });
       console.log(`[ok] ${post.id}: published on LinkedIn (${postUrn}).`);
       published += 1;
+
+      // Spec 11: universal self first-comment - reuses pendpost's generic
+      // firstComment field, now extended to LinkedIn (mirrors the YT idiom,
+      // yt-social.mjs:665-676). Fail-soft: a comment failure never fails the
+      // already-published share; idempotent via liCommentId (a re-run - or the
+      // `comment` recovery verb - posts nothing new once it is set).
+      if (post.firstComment && !post.liCommentId) {
+        try {
+          const c = await postComment(postUrn, post.firstComment, token);
+          post.liCommentId = c.id;
+          await savePlan(abs, plan, [post.id]);
+          RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'post-comment', ok: true, id: c.id });
+          console.log(`[ok] ${post.id}: first comment posted (${c.id}).`);
+        } catch (err) {
+          RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'post-comment', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+          console.log(`[warn] ${post.id}: first comment failed - ${err.message}`);
+        }
+      }
     } catch (err) {
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'linkedin', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
       await savePlan(abs, plan, [post.id]);
@@ -664,6 +773,48 @@ async function cmdPublishDue(args) {
     }
   }
   console.log(`[done] publish-due complete - ${published} post(s) published.`);
+}
+
+// Post-hoc / standalone first-comment posting (optional retry path, spec 11) -
+// modeled exactly on YT's cmdComment (yt-social.mjs:865-900). Skips no
+// firstComment / no liPostId / already-posted (unless --force). LIVE-only
+// (absent from MOCKABLE_COMMANDS, so main()'s mock-mode routing never reaches
+// it - guard it here too, mirroring the YT precedent).
+async function cmdComment(args) {
+  if (resolveMode('linkedin') === 'mock') { console.log('[mock] comment is live-only - skipped in mock mode (no real LinkedIn call).'); return; }
+  const { abs, plan } = loadPlan(args.plan);
+  const token = args['dry-run'] ? null : await ensureFreshToken();
+  let posted = 0;
+  for (const post of plan.posts || []) {
+    if (args.only && post.id !== args.only) continue;
+    if (!isLinkedIn(post)) continue;
+    if (!post.firstComment) { if (args.only) console.log(`[skip] ${post.id}: no firstComment set.`); continue; }
+    if (!post.liPostId) { if (args.only) console.log(`[skip] ${post.id}: no liPostId yet.`); continue; }
+    if (post.liCommentId && args.force !== true) {
+      if (args.only) console.log(`[skip] ${post.id}: comment already posted (${post.liCommentId}) - pass --force to post again.`);
+      continue;
+    }
+    if (args['dry-run']) {
+      console.log(`[dry] ${post.id}: would post a comment on ${post.liPostId}:`);
+      console.log(post.firstComment.split('\n').map((l) => `        ${l}`).join('\n'));
+      continue;
+    }
+    try {
+      const c = await postComment(post.liPostId, post.firstComment, token);
+      post.liCommentId = c.id;
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'linkedin', action: 'post-comment', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'post-comment', ok: true, id: c.id });
+      console.log(`[ok] ${post.id}: comment posted (${c.id}).`);
+      posted += 1;
+    } catch (err) {
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'linkedin', action: 'post-comment', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin: 0, actor: ACTOR });
+      await savePlan(abs, plan, [post.id]);
+      RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'post-comment', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+      console.error(`[err] ${post.id}: comment failed - ${err.message}`);
+    }
+  }
+  console.log(`[done] comment complete - ${posted} comment(s) posted.`);
 }
 
 async function cmdStatus(args) {
@@ -753,6 +904,10 @@ async function cmdInsights(args) {
         comments: s.commentCount ?? null,
         shares: s.shareCount ?? null,
         clicks: s.clickCount ?? null,
+        // Spec 08: two more fields the SAME totalShareStatistics response already
+        // carries - no second call, no new scope beyond the existing org read.
+        reach: s.uniqueImpressionsCount ?? null,
+        engagement: s.engagement ?? null,
       };
       RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'insights', ok: true, id: post.liPostId, metrics });
       console.log(`[ok] ${post.id}: LI ${JSON.stringify(metrics)}`);
@@ -762,6 +917,64 @@ async function cmdInsights(args) {
     }
   }
   console.log(`[done] insights complete - ${RUN.results.filter((r) => r.ok).length} fetched.`);
+}
+
+// A follower-statistics urn (e.g. urn:li:seniority:9) has no human label without
+// a further lookup - the tail segment is the stable, honest bucket key.
+const urnTail = (urn) => String(urn || '').split(':').pop();
+const followerCount = (fc) => Number(fc?.organicFollowerCount || 0) + Number(fc?.paidFollowerCount || 0);
+
+// Parse one organizationalEntityFollowerStatistics element into
+// {seniority:{...}, function:{...}, industry:{...}, region:{...}} - the four
+// breakdowns the Community Management follower-statistics surface returns
+// alongside associationType/staffCountRange (not mapped here - out of scope).
+function parseLiDemographics(el) {
+  const mapBy = (rows, keyField) => {
+    const out = {};
+    for (const row of rows || []) {
+      const key = urnTail(row?.[keyField]);
+      if (key) out[key] = followerCount(row.followerCounts);
+    }
+    return out;
+  };
+  return {
+    seniority: mapBy(el.followerCountsBySeniority, 'seniority'),
+    function: mapBy(el.followerCountsByFunction, 'function'),
+    industry: mapBy(el.followerCountsByIndustry, 'industry'),
+    region: mapBy(el.followerCountsByRegion, 'geo'),
+  };
+}
+
+// Account-scoped follower demographics (spec 07, Pattern P5) - called ONCE per
+// evidence campaign by the insights sweep's generic account pass (spec 04). Needs
+// the Community Management API's rw_organization_admin (ADMINISTRATOR role);
+// missing it degrades to the structured needs_scope shape (P9), never a throw.
+// Emits ONE account row { postId:null, platform:'linkedin', action:'demographics',
+// ok, scope:'account', demographics:{...} }.
+async function cmdDemographics() {
+  const accountRow = (extra) => ({ postId: null, platform: 'linkedin', action: 'demographics', scope: 'account', ...extra });
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) }));
+    return;
+  }
+  try {
+    const { data } = await api('GET', `/organizationalEntityFollowerStatistics?q=organizationalEntity&organizationalEntity=${encodeURIComponent(orgUrn())}`, { token });
+    const el = data.elements?.[0];
+    if (!el) throw new Error('no organizationalEntityFollowerStatistics element in response');
+    RUN.results.push(accountRow({ ok: true, demographics: parseLiDemographics(el) }));
+    console.log('[ok] demographics fetched.');
+  } catch (err) {
+    if (/HTTP 403/.test(String(err.message || ''))) {
+      RUN.results.push(accountRow({ ok: false, error: 'needs_scope', scope: 'rw_organization_admin' }));
+      console.log('[warn] demographics: rw_organization_admin (Community Management API) not granted - no audience data available yet.');
+      return;
+    }
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 300) }));
+    console.log(`[warn] demographics failed: ${err.message}`);
+  }
 }
 
 // Read-only liveness probe for the pendpost health bar. Token introspection is the
@@ -803,15 +1016,88 @@ async function cmdProbe() {
   }
 }
 
+// The inbound-engagement seam (spec 02, Pattern P6): read + reply to inbound
+// comments on this lane's own posts. Thin wrappers over the shared, source-agnostic
+// REST in lib/comments.mjs (dynamic import so the publish hot path's module graph is
+// untouched). The result is merged onto RUN so main() emits the normalized
+// { items } / { id } envelope; a needs_scope degrade sets ok:false (P9).
+async function cmdComments(args) {
+  const { runLaneComments } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneComments('linkedin', args));
+}
+async function cmdReply(args) {
+  const { runLaneReply } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneReply('linkedin', args));
+}
+async function cmdModerate(args) {
+  const { runLaneModerate } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneModerate('linkedin', args));
+}
+async function cmdReact(args) {
+  const { runLaneReact } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneReact('linkedin', args));
+}
+
+// Connected-account discovery (spec 22, Pattern P3): which Organization Pages does
+// this member ADMINISTER? Reads LINKEDIN_ACCESS_TOKEN directly via readEnv (NOT
+// ensureFreshToken, which can process.exit on an expired token) so a missing/expired
+// credential degrades to an ok:false row, never a crash. Lists only orgs where the
+// member is an APPROVED ADMINISTRATOR (rw_organization_admin); picking one writes
+// linkedinOrgUrn. Takes no --plan.
+async function cmdDiscover() {
+  const { discoverOk, discoverNeedsScope, discoverAuthError, markCurrent } = await import('../lib/discovery.mjs');
+  const token = readEnv('LINKEDIN_ACCESS_TOKEN');
+  if (!token) { RUN.results.push(discoverNeedsScope('linkedin')); return; }
+  const sealed = readEnv('LINKEDIN_ORG_URN') || null;
+  // Read IDENTITY FIRST (OpenID userinfo) so a later organizationAcls 403 - the common
+  // "member connected but Pages scope not yet granted" case - still returns a needs_scope
+  // row that CARRIES the identity (spec §2: "identity still shows on scope-not-granted").
+  let identity = { id: 'linkedin', handle: null, name: 'LinkedIn' };
+  try {
+    const res = await fetch('https://api.linkedin.com/v2/userinfo', { headers: { Authorization: `Bearer ${token}` } });
+    if (res.ok) { const info = await res.json(); identity = { id: info.sub || 'linkedin', handle: null, name: info.name || 'LinkedIn', avatarUrl: info.picture }; }
+  } catch { /* userinfo needs the openid scope; the generic identity stands in */ }
+  try {
+    const { data: acls } = await api('GET', '/organizationAcls', { query: { q: 'roleAssignee', role: 'ADMINISTRATOR', state: 'APPROVED' }, token });
+    const urns = (acls.elements || []).map((e) => e.organization).filter(Boolean);
+    const assets = [];
+    for (const urn of urns) {
+      const numId = String(urn).split(':').pop();
+      let name = urn;
+      try {
+        const { data: org } = await api('GET', `/organizations/${numId}`, { token });
+        name = org.localizedName || org.vanityName || urn;
+      } catch { /* org name is best-effort - the urn still identifies the Page */ }
+      assets.push({ kind: 'page', id: urn, name });
+    }
+    const marked = markCurrent(assets, sealed);
+    // If userinfo was unavailable, derive the identity name from the first managed Page.
+    if (identity.name === 'LinkedIn' && marked.length) identity = { ...identity, name: marked[0].name };
+    RUN.results.push(discoverOk('linkedin', { identity, assets: marked, selected: { linkedinOrgUrn: sealed } }));
+  } catch (err) {
+    const msg = String(err.message || err);
+    // Scope 403 on the ACLs read: degrade to needs_scope but STILL carry the identity.
+    if (/HTTP 403/.test(msg)) { RUN.results.push(discoverNeedsScope('linkedin', null, identity)); return; }
+    RUN.results.push(discoverAuthError('linkedin', msg));
+  }
+}
+
 const COMMANDS = {
   auth: cmdAuth,
+  comments: cmdComments,
+  reply: cmdReply,
+  moderate: cmdModerate,
+  react: cmdReact,
   refresh: cmdRefresh,
   validate: cmdValidate,
   'publish-due': cmdPublishDue,
+  comment: cmdComment,
   status: cmdStatus,
   verify: cmdVerify,
   insights: cmdInsights,
+  demographics: cmdDemographics,
   probe: cmdProbe,
+  discover: cmdDiscover,
 };
 
 async function main() {
@@ -829,6 +1115,12 @@ async function main() {
       platform: 'linkedin', command: commandName,
       planPath: typeof args.plan === 'string' ? path.resolve(String(args.plan)) : null,
       only: typeof args.only === 'string' ? args.only : null,
+      // spec 06: the moderate verb carries its action so the mock can branch per-lane.
+      action: typeof args.action === 'string' ? args.action : null,
+      // spec 24: the react verb carries its reaction/emoji/remove so the mock can branch per-lane.
+      reaction: typeof args.reaction === 'string' ? args.reaction : null,
+      emoji: typeof args.emoji === 'string' ? args.emoji : null,
+      remove: args.remove === true,
     });
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
     else console.error(`[mock] linkedin ${commandName}: ${envelope.results.length} result(s)`);
@@ -839,7 +1131,7 @@ async function main() {
     console.error(`Usage: node scripts/linkedin-social.mjs <${Object.keys(COMMANDS).join('|')}> [options]`);
     process.exit(2);
   }
-  if (['validate', 'publish-due', 'status', 'insights', 'verify'].includes(args._[0]) && !args.plan) {
+  if (['validate', 'publish-due', 'status', 'insights', 'verify', 'comment', 'demographics'].includes(args._[0]) && !args.plan) {
     console.error(`[err] ${args._[0]} requires --plan <post-plan.json>`);
     process.exit(2);
   }

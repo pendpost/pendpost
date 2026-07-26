@@ -6,13 +6,15 @@ import { useT, useLocale, useSetLocale } from './lib/i18n.js';
 import { applyAccent, clientAccent } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
 import { useCloud, useCloudClients, useInvalidateCloud } from './lib/cloud.js';
-import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, visiblePlatforms, matchesFilters, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf } from './lib/format.js';
+import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, isLate, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './components/ui/Popover.jsx';
 import { MultiSelectDropdown } from './components/ui/MultiSelectDropdown.jsx';
 import Sidebar from './components/Sidebar.jsx';
+import SidebarResizer from './components/SidebarResizer.jsx';
 import UpdateToast from './components/UpdateToast.jsx';
+import DevReadonlyBadge from './components/DevReadonlyBadge.jsx';
 import { WeekView, MonthView, ListView } from './components/Planner.jsx';
 import PostDetail from './components/PostDetail.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
@@ -24,9 +26,10 @@ import ThreadComposer from './components/ThreadComposer.jsx';
 import Insights from './components/Insights.jsx';
 import Freigaben from './components/Freigaben.jsx';
 import Settings from './components/Settings.jsx';
-import Setup from './components/Setup.jsx';
+import Setup, { setupAttentionCount } from './components/Setup.jsx';
 import Clients from './components/Clients.jsx';
 import Cloud from './components/Cloud.jsx';
+import Radar from './components/Radar.jsx';
 import FirstRunEmptyState from './components/FirstRunEmptyState.jsx';
 import ReadinessChecklist from './components/ReadinessChecklist.jsx';
 import PlannerRunNow from './components/PlannerRunNow.jsx';
@@ -35,7 +38,7 @@ import ConnectionStatus from './components/ConnectionStatus.jsx';
 import DeliveryExplainer from './components/DeliveryExplainer.jsx';
 
 // Routable pages (hash-synced); composer/assets are still contextual overlays.
-const PAGES = ['planner', 'freigaben', 'activity', 'published', 'insights', 'assets', 'setup', 'settings', 'clients', 'cloud'];
+const PAGES = ['planner', 'freigaben', 'activity', 'published', 'insights', 'radar', 'assets', 'setup', 'settings', 'clients', 'cloud'];
 // Page id -> i18n key. The route id 'freigaben' is the internal page key and
 // stays as-is; its visible title is localized via nav.approvals. Resolved
 // through t() at render so the page chrome and the browser title agree.
@@ -46,6 +49,7 @@ const PAGE_TITLE_KEYS = {
   published: 'nav.published',
   freigaben: 'nav.approvals',
   insights: 'nav.insights',
+  radar: 'nav.radar',
   assets: 'nav.assets',
   setup: 'nav.setup',
   settings: 'nav.settings',
@@ -83,9 +87,10 @@ export default function App() {
   // One readiness read shared (react-query dedupes by key) with the embedded
   // checklist; drives the quiet planner readiness panel below (US-ONB-05).
   const { data: pendpostHealth } = usePendpostHealth();
-  // Posting policy (config.posting): drives visiblePlatforms so only connected +
-  // enabled + not-skipped lanes are offered as filters / surfaced downstream. Same
-  // ['config'] react-query key as Settings, so this dedupes (no extra fetch).
+  // Posting policy (config.posting): feeds presentPlatforms so the chips lead with
+  // the connected + enabled + not-skipped lanes (plus any lane the loaded posts
+  // actually target). Same ['config'] react-query key as Settings, so this dedupes
+  // (no extra fetch).
   const { data: configData } = useConfig(true);
   const posting = configData?.posting;
   const reschedule = useReschedule();
@@ -176,6 +181,9 @@ export default function App() {
   // The Setup lane to auto-expand + scroll to on the next Setup visit (deep-link
   // from an error's fix CTA). Cleared on leaving Setup so a later visit is clean.
   const [setupFocus, setSetupFocus] = useState(null);
+  // The Settings section to scroll to on the next Settings visit (deep-link from the
+  // Radar page's settings link). Cleared on leaving Settings so a later visit is clean.
+  const [settingsFocus, setSettingsFocus] = useState(null);
   // Triage context (approvals throughput): the ordered {campaign,id} keys of the
   // list the open post was picked from, so the detail dialog can go prev/next
   // without closing. Keys, not objects, so a plans refetch re-derives fresh posts.
@@ -193,6 +201,10 @@ export default function App() {
   const [platformFilter, setPlatformFilter] = useState([]);
   const [typeFilter, setTypeFilter] = useState([]);
   const [statusFilter, setStatusFilter] = useState([]);
+  // Freigaben's own tab ("To review" vs "All posts"), mirrored up so the shared filter
+  // bar can gate the Status filter to the "All posts" tab. On "To review" the tab IS the
+  // status axis (undecided work only), so a Status dropdown there is dead and redundant.
+  const [freigabenMode, setFreigabenMode] = useState('pending');
   // Activity-page-only filter dimensions (C7): an outcome filter (failures only,
   // derived from entry.ok) and a small set of action groups (derived from
   // entry.action). UI-only, in-memory, applied in ActivityView's useMemo.
@@ -240,10 +252,18 @@ export default function App() {
     applyAccent(accent, dark);
   }, [accent, dark]);
 
+  // Draggable rail width: push the persisted preference onto documentElement once at
+  // boot. SidebarResizer owns every change after this, writing the var directly so a
+  // drag never re-renders this tree.
+  useEffect(() => {
+    applySidebarWidth(getSidebarWidth());
+  }, []);
+
   // Clear the Setup deep-link focus whenever we leave Setup, so re-navigating to
   // the same lane later re-triggers the auto-expand (null -> id is a real change).
   useEffect(() => {
     if (page !== 'setup') setSetupFocus(null);
+    if (page !== 'settings') setSettingsFocus(null);
   }, [page]);
 
   // The browser tab is the third, non-color active-client signal (US-MC-02):
@@ -289,6 +309,13 @@ export default function App() {
   // Drop any selected type absent from the current context so a stale pick (e.g.
   // Text, then switch to Instagram) never strands an empty view.
   const effectiveTypeFilter = useMemo(() => typeFilter.filter((t) => presentTypes.includes(t)), [typeFilter, presentTypes]);
+  // Platform chips: what is CONNECTED plus what the loaded posts actually target, so
+  // a lane that holds posts without a Setup card (Radar's bluesky replies) is still
+  // filterable instead of being invisible to the bar. Same idiom as presentTypes.
+  const chipPlatforms = useMemo(
+    () => presentPlatforms(accounts, posting, scopedPosts, platformFilter),
+    [accounts, posting, scopedPosts, platformFilter],
+  );
 
   const posts = useMemo(
     () => scopedPosts.filter((p) => matchesFilters(p, platformFilter, effectiveTypeFilter, statusFilter)),
@@ -302,12 +329,24 @@ export default function App() {
   // Internal campaigns are never "live pipeline" work, so they stay out of the
   // sidebar counts / next-up unconditionally (even when the debug view reveals
   // them elsewhere) - otherwise a running validation campaign inflates pending.
-  const activePosts = useMemo(() => campaigns.filter((c) => c.active && !c.internal).flatMap((c) => c.posts || []), [campaigns]);
+  // Archived (active:false) campaigns DO count: the active flag is organizational
+  // only and never gates publishing (lib/scheduler.mjs eligibleDuePosts caller),
+  // so an archived campaign's draft still needs a decision and its approved post
+  // still fires - the owner invariant is "nothing awaiting a decision can hide".
+  const activePosts = useMemo(() => campaigns.filter((c) => !c.internal).flatMap((c) => c.posts || []), [campaigns]);
+  // The sidebar pending badge counts exactly what the Freigaben "To review" queue holds:
+  // the SHARED isActionable (lib/format.js). Reusing the one predicate is why the badge and
+  // the queue can never disagree - a rejected post leaves both together.
   const pendingCount = useMemo(
-    () => activePosts.filter((p) => p.approval !== 'approved' && p.derivedState !== 'posted').length,
+    () => activePosts.filter(isActionable).length,
     [activePosts],
   );
-  const overdueCount = useMemo(() => activePosts.filter((p) => p.derivedState === 'overdue').length, [activePosts]);
+  // The at-risk alarm counts LATE posts - including one still awaiting approval, which
+  // is exactly when the operator most needs the signal (spec 39 C1). isLate is the SAME
+  // predicate the 'overdue' status filter uses (format.js matchesFilters), so this count
+  // and the list the Ueberfaellig chip opens are the same set by construction - the
+  // banner can never sit above an empty list again.
+  const overdueCount = useMemo(() => activePosts.filter(isLate).length, [activePosts]);
   const nextPost = useMemo(() => {
     const now = Date.now();
     return activePosts
@@ -346,6 +385,13 @@ export default function App() {
   const navigateTo = (p, platform) => {
     closePost();
     setSetupFocus(p === 'setup' && platform ? setupIdOf(platform) : null);
+    // A second arg on a Settings navigation is a section token to scroll to (e.g. the
+    // Radar page's settings link passes 'radar'), mirroring the Setup deep-link above.
+    setSettingsFocus(p === 'settings' && platform ? platform : null);
+    // Plain navigation never lands on a pre-filtered page: a leftover status
+    // filter (e.g. the Ueberfaellig chip's ['overdue']) once emptied the Planner
+    // on arrival. Deep-links that WANT a filter (showOverdue) set it after this.
+    setStatusFilter([]);
     setPage(p);
   };
   // Flag/unflag the currently-scoped campaign as internal. When hiding it while
@@ -365,8 +411,20 @@ export default function App() {
   // a plain pre-fill - post creation still goes through the gated createPost path.
   const openComposer = (seed) => {
     // onNew is also wired directly to button onClick (passing a DOM event), so only
-    // accept a real seed shape (a media path) - never a SyntheticEvent.
-    const validSeed = seed && typeof seed.mediaPath === 'string' ? { mediaPath: seed.mediaPath, type: seed.type } : undefined;
+    // accept a real seed shape (a media path, or a caption text - the Radar "answer as a
+    // post" path) - never a SyntheticEvent.
+    // U: a mediaItems seed (the library's multi-select attach) is an ARRAY, and this
+    // whitelist dropped any seed without a string mediaPath - so an album attach opened a
+    // BLANK composer. That is the worst failure mode here, because it looks like a no-op
+    // rather than an error.
+    const validSeed = seed && (typeof seed.mediaPath === 'string' || Array.isArray(seed.mediaItems) || typeof seed.caption === 'string')
+      ? {
+        ...(typeof seed.mediaPath === 'string' ? { mediaPath: seed.mediaPath } : {}),
+        ...(Array.isArray(seed.mediaItems) ? { mediaItems: seed.mediaItems } : {}),
+        ...(typeof seed.caption === 'string' ? { caption: seed.caption } : {}),
+        type: seed.type,
+      }
+      : undefined;
     setComposer({ mode: 'create', seed: validSeed });
     setComposerReturn(PAGES.includes(page) ? page : 'planner');
     setPage('composer');
@@ -435,7 +493,11 @@ export default function App() {
   const rangeLabelShort =
     view === 'week' && weekStart ? fmtRangeShort(weekStart, addDays(weekStart, 6)) : fmtMonthYear(anchor);
   const showTypeChips = (page === 'planner' || page === 'freigaben') && presentTypes.length > 0;
-  const showStatusChips = page === 'planner' || page === 'freigaben';
+  // Status filters the Planner always, and Freigaben only on its "All posts" tab. On the
+  // default "To review" tab the mode toggle already scopes to undecided work, so a Status
+  // dropdown there does nothing (the list forces statusFilter to [] in pending mode) and
+  // duplicates the tab. Gating it here removes the dead, redundant control.
+  const showStatusChips = page === 'planner' || (page === 'freigaben' && freigabenMode === 'all');
   // Outcome/action chips are the activity feed's own dimensions (C7): gate them
   // to the activity page so they never bleed onto planner/freigaben/published/
   // insights, which share the filter bar but not entry.ok/entry.action.
@@ -450,6 +512,8 @@ export default function App() {
         {/* In-app updater: a branded "preparing"/"reload" nudge when a background
             rebuild swaps in a new bundle. Fixed overlay, so placement is cosmetic. */}
         <UpdateToast />
+        {/* dev:live read/compose-only marker (renders only when PENDPOST_DEV_READONLY=1). */}
+        <DevReadonlyBadge />
         <div className="relative z-10 mx-auto flex h-dvh max-w-none gap-4 overflow-hidden p-4">
           {/* Narrow-only scrim for the off-canvas sidebar drawer (mirrors the
               PostDetailMissing overlay pattern below); tapping it closes the drawer.
@@ -469,15 +533,19 @@ export default function App() {
             nextPost={nextPost}
             overdueCount={overdueCount}
             setupReady={pendpostHealth?.setup?.ready}
-            setupIncomplete={pendpostHealth?.setup?.summary?.incomplete}
+            setupIncomplete={setupAttentionCount(pendpostHealth?.setup)}
             activePage={page}
             open={sidebarOpen}
-            onNavigate={(p) => { closeSidebar(); setPage(p); }}
+            onNavigate={(p) => { closeSidebar(); navigateTo(p); }}
             onNew={(seed) => { closeSidebar(); openComposer(seed); }}
             onNewThread={(seed) => { closeSidebar(); openThreadComposer(seed); }}
             onOpenPost={(post, list) => { closeSidebar(); openPost(post, list); }}
             onShowOverdue={() => { closeSidebar(); showOverdue(); }}
           />
+
+          {/* Drag handle for the rail width. Sits inside the gap-4 above, so it
+              costs no layout width; hidden below lg, where the rail is a drawer. */}
+          <SidebarResizer />
 
           <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto scrollbar-soft">
             {page !== 'composer' ? (
@@ -627,7 +695,7 @@ export default function App() {
                     type="button"
                     onClick={() => setLocale(locale === 'de-CH' ? 'en' : 'de-CH')}
                     aria-label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}
-                    className="flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand"
                   >
                     <Languages size={14} aria-hidden="true" />
                   </button>
@@ -637,7 +705,7 @@ export default function App() {
                     type="button"
                     onClick={toggleDark}
                     aria-label={dark ? t('app.theme.toLight') : t('app.theme.toDark')}
-                    className="flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand"
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand"
                   >
                     {dark ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
                   </button>
@@ -650,7 +718,7 @@ export default function App() {
             {showFilterBar ? (
               <div className="glass-panel flex flex-wrap items-center gap-1.5 rounded-2xl px-4 py-2" role="group" aria-labelledby="filter-bar-label">
                 <span id="filter-bar-label" className={`mr-1 ${EYEBROW}`}>{t('app.filter.label')}</span>
-                {visiblePlatforms(accounts, posting).map((p) => {
+                {chipPlatforms.map((p) => {
                   const meta = PLATFORM_META[p];
                   if (!meta) return null;
                   return (
@@ -689,36 +757,38 @@ export default function App() {
                     />
                   </>
                 ) : null}
-                {/* Activity-page-only outcome + action-group chips (C7): the
-                    failures-only outcome chip (entry.ok) then one chip per
-                    curated action group (entry.action). Reuse FilterChip
-                    verbatim; status is the icon + the chip's aria-pressed text,
-                    not color alone. */}
+                {/* Activity-page-only filters (C7): the failures-only outcome chip
+                    (entry.ok) as a single boolean toggle, then the curated action
+                    groups (entry.action) collapsed into ONE multi-select dropdown -
+                    the SAME idiom Type/Status use above. Eight always-on chips were
+                    the filter bar's tallest slab of config stacked over the feed AND
+                    a second visual answer to a problem the dropdown already solves;
+                    one control, one design language. */}
                 {isActivity ? (
                   <>
                     <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
+                    {/* US-ACT-20: the icon stays NEUTRAL while the filter is off -
+                        a red alert glyph on an unapplied control reads as applied
+                        (and as a failure signal) over an all-success list. Red is
+                        spent on actual failure rows, not on this toggle. */}
                     <FilterChip
                       active={failuresOnly}
                       onClick={() => setFailuresOnly((v) => !v)}
                       icon={XCircle}
-                      color="text-red-500"
+                      color="text-zinc-500 dark:text-zinc-400"
                       label={t('activity.filter.failures')}
                     />
                     <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
-                    <span className="contents" role="group" aria-label={t('activity.action.group.aria')}>
-                      {ACTION_GROUPS.map((g) => (
-                        <FilterChip
-                          key={g.key}
-                          active={actionGroups.includes(g.key)}
-                          onClick={() => toggleFilter(setActionGroups, g.key)}
-                          label={t(g.label)}
-                        />
-                      ))}
-                    </span>
+                    <MultiSelectDropdown
+                      label={t('app.filter.action')}
+                      options={ACTION_GROUPS.map((g) => ({ key: g.key, label: t(g.label) }))}
+                      selected={actionGroups}
+                      onToggle={(k) => toggleFilter(setActionGroups, k)}
+                    />
                   </>
                 ) : null}
                 {platformFilter.length || typeFilter.length || statusFilter.length || failuresOnly || actionGroups.length ? (
-                  <button type="button" onClick={clearFilters} aria-label={t('app.filter.reset')} className="ml-1 rounded-full px-2 py-1 text-[11px] font-bold text-zinc-400 transition hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-200">
+                  <button type="button" onClick={clearFilters} aria-label={t('app.filter.reset')} className="ml-1 rounded-full px-2 py-1 text-[11px] font-bold text-zinc-500 transition hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
                     {t('app.filter.resetShort')}
                   </button>
                 ) : null}
@@ -728,7 +798,7 @@ export default function App() {
                 <div className="ml-auto">
                   <Popover>
                     <PopoverTrigger asChild>
-                      <button type="button" aria-label={t('statusLegend.title')} className="rounded-full p-1 text-zinc-400 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                      <button type="button" aria-label={t('statusLegend.title')} className="rounded-full p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                         <HelpCircle size={14} aria-hidden="true" />
                       </button>
                     </PopoverTrigger>
@@ -767,22 +837,18 @@ export default function App() {
             {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} suppressed={activeOnCloud} /> : null}
 
             <div className="glass-panel shrink-0 overflow-x-auto rounded-2xl p-4">
-              {/* At-risk framing: when the overdue filter is active (e.g. arrived via
-                  the cloud dot's "view in planner" route or the sidebar Overdue jump),
-                  a slim strip names the miss count and points at the per-post routes.
-                  The batch "run due now" action lives in the toolbar directly above, so
-                  this is framing, not a duplicate control. */}
-              {page === 'planner' && !isError && statusFilter.includes('overdue') && overdueCount > 0 ? (
-                <div role="status" className="mb-3 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-xl bg-red-500/10 px-3 py-2 ring-1 ring-red-500/20">
-                  <TriangleAlert size={15} className="shrink-0 text-red-600 dark:text-red-400" aria-hidden="true" />
-                  <p className="text-xs font-bold text-red-700 dark:text-red-300">{t('planner.atRisk.title', { n: overdueCount })}</p>
-                  <p className="text-[11px] text-red-600/80 dark:text-red-300/70">{t('planner.atRisk.hint')}</p>
-                </div>
-              ) : null}
+              {/* The at-risk strip is GONE. It only ever appeared once the owner had
+                  already filtered to overdue, so it restated the filter they had just
+                  chosen; it carried no control (two <p> tags); its count already lives in
+                  the sidebar; and its one sentence covered three unrelated situations at
+                  once - a post a platform refused, a post nobody approved, and a post that
+                  missed its slot - in the same red. Each post now says which it is on its
+                  own row (format.js publish-failed) and carries the reason and the way out
+                  in its detail view. The count and the filter are unchanged. */}
               {isError ? (
                 <div className="grid h-full place-items-center">
                   <div className="max-w-sm space-y-2 text-center">
-                    <ServerOff className="mx-auto text-zinc-400" size={28} aria-hidden="true" />
+                    <ServerOff className="mx-auto text-zinc-500" size={28} aria-hidden="true" />
                     <p className="text-sm font-bold">{t('app.error.serverUnreachable')}</p>
                     <p className="text-xs text-zinc-500 dark:text-zinc-400">
                       {t('app.error.startWith')}
@@ -790,19 +856,19 @@ export default function App() {
                   </div>
                 </div>
               ) : page === 'activity' ? (
-                <ActivityView active={page === 'activity'} platformFilter={platformFilter} failuresOnly={failuresOnly} actionGroups={actionGroups} onOpenPost={openPost} onNavigate={navigateTo} />
+                <ActivityView active={page === 'activity'} platformFilter={platformFilter} failuresOnly={failuresOnly} actionGroups={actionGroups} campaigns={campaigns} onOpenPost={openPost} onNavigate={navigateTo} onShowSystem={() => setActionGroups(['system'])} onClearFilters={clearFilters} />
               ) : page === 'published' ? (
                 <Published campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} isLoading={isLoading} />
               ) : page === 'freigaben' ? (
-                <Freigaben campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={setPage} />
+                <Freigaben campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={navigateTo} onModeChange={setFreigabenMode} />
               ) : page === 'insights' ? (
                 <Insights active={page === 'insights'} platformFilter={platformFilter} campaignFilter={campaignFilter} />
               ) : page === 'assets' ? (
                 <Assets onAttach={openComposer} />
               ) : page === 'setup' ? (
-                <Setup focus={setupFocus} />
+                <Setup focus={setupFocus} onNavigate={navigateTo} />
               ) : page === 'settings' ? (
-                <Settings />
+                <Settings focus={settingsFocus} onNavigate={navigateTo} />
               ) : page === 'clients' ? (
                 <Clients />
               ) : page === 'cloud' ? (
@@ -812,6 +878,8 @@ export default function App() {
                   deepLinkPlan={cloudLaunch.plan}
                   deepLinkInterval={cloudLaunch.interval}
                 />
+              ) : page === 'radar' ? (
+                <Radar active={page === 'radar'} campaigns={campaigns} onNavigate={navigateTo} onNewPost={openComposer} />
               ) : page === 'composer' && composer?.mode === 'thread' ? (
                 <ThreadComposer
                   seed={composer.seed}

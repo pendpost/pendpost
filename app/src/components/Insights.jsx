@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, BarChart3, ChevronDown, ChevronRight, ArrowUp, ArrowDown, AlertTriangle, Copy, Download } from 'lucide-react';
+import { RefreshCw, BarChart3, ChevronDown, ChevronRight, ArrowUp, ArrowDown, AlertTriangle, Copy, Download, MapPin } from 'lucide-react';
 import { useInsights, useDigest, fetchInsights } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { prettyCampaign, dateLocale, fmtInt } from '../lib/format.js';
@@ -37,7 +37,7 @@ function Sparkline({ values, dir, width = 56, height = 16 }) {
       ? 'text-emerald-500'
       : dir === 'down'
         ? 'text-red-500'
-        : 'text-zinc-400 dark:text-zinc-500';
+        : 'text-zinc-500 dark:text-zinc-400';
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className={color} aria-hidden="true" role="presentation">
       <polyline points={pts.join(' ')} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -136,7 +136,7 @@ function DigestMarkdown({ source }) {
         else cur.children.push(it.text);
       }
       return (
-        <ul key={key} className="ml-4 list-disc space-y-0.5 text-zinc-600 marker:text-zinc-400 dark:text-zinc-300">
+        <ul key={key} className="ml-4 list-disc space-y-0.5 text-zinc-600 marker:text-zinc-500 dark:text-zinc-300">
           {tree.map((li, li2) => (
             <li key={`${key}-${li2}`}>
               {renderInline(li.text, `${key}-${li2}`)}
@@ -154,12 +154,259 @@ function DigestMarkdown({ source }) {
   });
 }
 
+// Metric keys that are RATES (a 0-1 ratio), not counts - summing them across
+// posts is meaningless, so the per-platform totals strip skips them (they still
+// render per-post). LinkedIn `engagement` is the one such key today (spec 08
+// review #2); add any future rate metric here.
+const RATE_METRIC_KEYS = new Set(['engagement']);
+
+// UX round 4 (2026-07-21): the PRIMARY metrics per platform - the three-or-so
+// numbers that answer "how did this do" at a glance. Everything else stays one
+// "+N" disclosure away per row (nothing is dropped), so a row reads as a
+// judgment, not a data dump. One map drives BOTH the per-post chips and the
+// per-platform totals strip - never fork a second config.
+const PRIMARY_METRICS = {
+  instagram: ['views', 'reach', 'total_interactions'],
+  facebook: ['views', 'reach', 'total_interactions'],
+  linkedin: ['impressions', 'clicks', 'engagement'],
+  youtube: ['views', 'likes', 'comments'],
+  gbp: ['views', 'ctaClicks', 'calls'],
+  pinterest: ['IMPRESSION', 'PIN_CLICK', 'SAVE'],
+  telegram: ['views'],
+  ghost: ['sent', 'opened', 'clicks'],
+  nostr: ['reactions', 'zaps', 'zapSats'],
+};
+// The primary keys actually PRESENT on this payload; a platform whose primary
+// keys are absent falls back to its first three numeric keys, so a row never
+// renders empty while data exists.
+function primaryKeysFor(platform, metrics) {
+  const present = Object.keys(metrics || {}).filter((k) => typeof metrics?.[k] === 'number');
+  const wanted = (PRIMARY_METRICS[platform] || []).filter((k) => present.includes(k));
+  return wanted.length ? wanted : present.slice(0, 3);
+}
+
+// One metric chip (value + optional delta), shared by the rest/primary split.
+function MetricChip({ k, v, history, metricLabel }) {
+  const delta = metricDelta(history, k);
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] ring-1 ring-zinc-500/20">
+      <span className="text-zinc-500 dark:text-zinc-400">{metricLabel(k)}</span>
+      <span className="font-bold text-zinc-800 dark:text-zinc-100">{fmtInt(v)}</span>
+      {delta && delta.dir !== 'flat' ? (
+        <span className={`inline-flex items-center gap-0.5 font-bold ${delta.dir === 'up' ? 'text-emerald-500' : 'text-red-500'}`}>
+          {delta.dir === 'up' ? <ArrowUp size={9} aria-hidden="true" /> : <ArrowDown size={9} aria-hidden="true" />}
+          {delta.diff > 0 ? `+${fmtInt(delta.diff)}` : `-${fmtInt(Math.abs(delta.diff))}`}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// The per-row metric block: primary chips at rest, the remaining metrics behind
+// one "+N" toggle. Local state per row - expanding one row never moves another.
+function MetricChips({ entry, metricLabel, t }) {
+  const [expanded, setExpanded] = useState(false);
+  const numeric = Object.entries(entry.metrics || {}).filter(([, v]) => typeof v === 'number');
+  const primaryKeys = primaryKeysFor(entry.platform, entry.metrics);
+  const primary = numeric.filter(([k]) => primaryKeys.includes(k));
+  const rest = numeric.filter(([k]) => !primaryKeys.includes(k));
+  return (
+    <div className="flex flex-wrap justify-end gap-1">
+      {primary.map(([k, v]) => <MetricChip key={k} k={k} v={v} history={entry.history} metricLabel={metricLabel} />)}
+      {expanded ? rest.map(([k, v]) => <MetricChip key={k} k={k} v={v} history={entry.history} metricLabel={metricLabel} />) : null}
+      {rest.length ? (
+        <button
+          type="button"
+          onClick={() => setExpanded((x) => !x)}
+          aria-expanded={expanded}
+          className="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold text-zinc-500 ring-1 ring-zinc-500/20 transition hover:bg-zinc-500/10 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200"
+        >
+          {expanded ? t('insights.lessMetrics') : t('insights.moreMetrics', { count: rest.length })}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// The account-scoped GBP performance scalars, in the digest's display order. The
+// labels resolve via the shared metric.* locale keys (same map as the per-post
+// rows), so this list is the only gbp-specific thing in the generic panel.
+const GBP_ACCOUNT_METRICS = ['calls', 'websiteClicks', 'directions', 'bookings', 'conversations', 'impressions'];
+
+// One account-lane block renderer: gbp's local-performance chips + top search
+// keywords. `block` is state.insights.account.gbp = { performance, fetchedAt }.
+function GbpAccountBlock({ block, t, metricLabel }) {
+  const perf = block?.performance;
+  if (!perf) return null;
+  const meta = PLATFORM_META.gbp;
+  const Icon = meta?.Icon;
+  return (
+    <div className="space-y-2">
+      <span className="inline-flex items-center gap-1.5">
+        {Icon ? <Icon size={13} className={meta.color} aria-hidden="true" /> : null}
+        <span className="text-[11px] font-bold">{meta?.label || 'gbp'}</span>
+      </span>
+      <div className="flex flex-wrap gap-1">
+        {GBP_ACCOUNT_METRICS.map((k) => (
+          <span
+            key={k}
+            className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] ring-1 ring-zinc-500/20"
+            aria-label={t('insights.metric.aria', { platform: meta?.label || 'gbp', metric: metricLabel(k), value: fmtInt(perf[k] || 0) })}
+          >
+            <span className="text-zinc-500 dark:text-zinc-400">{metricLabel(k)}</span>
+            <span className="font-bold text-zinc-800 dark:text-zinc-100">{fmtInt(perf[k] || 0)}</span>
+          </span>
+        ))}
+      </div>
+      {Array.isArray(perf.searchKeywords) && perf.searchKeywords.length ? (
+        <div className="space-y-1">
+          <span className={EYEBROW}>{t('insights.local.keywords')}</span>
+          <div className="flex flex-wrap gap-1">
+            {perf.searchKeywords.map((kw) => (
+              <span key={kw.keyword} className={`inline-flex items-center gap-1 rounded-xl px-2 py-0.5 text-[10px] ${INNER_SURFACE}`}>
+                <span className="text-zinc-600 dark:text-zinc-300">{kw.keyword}</span>
+                <span className="font-bold text-zinc-800 dark:text-zinc-100">{fmtInt(kw.count || 0)}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Demographics sub-map key (spec 07) -> its display label. city/country/region are
+// all geographic breakdowns and share one label - the bucket key itself (a city/
+// country name or a urn tail) is what varies. Because they share ONE label, the
+// render groups them under a single "Top locations" heading (AU-1) instead of
+// repeating it; GEO_RANK orders the buckets country -> city -> region within it.
+const DEMOGRAPHIC_CATEGORY_KEYS = {
+  age: 'demographics.age', gender: 'demographics.gender',
+  country: 'demographics.geo', city: 'demographics.geo', region: 'demographics.geo',
+  seniority: 'demographics.seniority', function: 'demographics.function', industry: 'demographics.industry',
+};
+const GEO_RANK = { country: 0, city: 1, region: 2 };
+
+// Display-only humanizer for a demographics bucket key (AU-2): an all-lowercase
+// token or hyphen/underscore slug becomes Title Case words (female -> Female,
+// north-america -> North America). Tokens carrying a digit or any uppercase (age
+// ranges like 25-34, ISO country codes like US) are returned untouched so they are
+// never corrupted. Purely cosmetic - the underlying data key is never mutated.
+function humanizeBucket(key) {
+  if (typeof key !== 'string' || !/^[a-z][a-z_-]*$/.test(key)) return key;
+  return key.split(/[-_]/).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+// account.meta's demographics come specifically from Instagram's follower_demographics
+// call (Facebook has no audience-demographics equivalent), and PLATFORM_META has no
+// combined 'meta' entry - only the underlying instagram/facebook/etc. platforms - so
+// this maps the ACCOUNT lane to its representative brand icon+label.
+const ACCOUNT_LANE_ICON = { meta: 'instagram', youtube: 'youtube', linkedin: 'linkedin', pinterest: 'pinterest' };
+
+// One account-lane block renderer for the structured audience demographics (spec
+// 07, Pattern P5): age/gender/geo/seniority/... top buckets, one small labelled
+// row per category. `lane` picks the icon+brand label - the SAME component is
+// registered for every demographics-carrying lane (meta/youtube/linkedin/
+// pinterest), so there is no per-lane branching here. `block` is
+// state.insights.account[lane] = { demographics, fetchedAt }. An empty
+// demographics:{} (below the platform's follower threshold) renders the honest
+// "not enough audience yet" line instead of fabricating bars.
+function DemographicsBlock({ lane, block, t }) {
+  const demo = block?.demographics;
+  if (!demo) return null;
+  const meta = PLATFORM_META[ACCOUNT_LANE_ICON[lane] || lane];
+  const Icon = meta?.Icon;
+  const categories = Object.entries(demo).filter(([, buckets]) => buckets && Object.keys(buckets).length);
+  // Group the sub-maps by their resolved display label so the geographic buckets
+  // (country/city/region) collapse under ONE "Top locations" heading (AU-1) rather
+  // than repeating it. First-seen label order is preserved; within a group the
+  // buckets are concatenated country -> city -> region (GEO_RANK).
+  const groups = [];
+  const byLabel = new Map();
+  for (const [category, buckets] of categories) {
+    const labelKey = DEMOGRAPHIC_CATEGORY_KEYS[category] || category;
+    let group = byLabel.get(labelKey);
+    if (!group) { group = { labelKey, cats: [] }; byLabel.set(labelKey, group); groups.push(group); }
+    group.cats.push([category, buckets]);
+  }
+  return (
+    <div className="space-y-2">
+      <span className="inline-flex items-center gap-1.5">
+        {Icon ? <Icon size={13} className={meta.color} aria-hidden="true" /> : null}
+        <span className="text-[11px] font-bold">{meta?.label || lane}</span>
+      </span>
+      {groups.length ? groups.map(({ labelKey, cats }) => {
+        const top = [...cats]
+          .sort((a, b) => (GEO_RANK[a[0]] ?? 0) - (GEO_RANK[b[0]] ?? 0))
+          .flatMap(([category, buckets]) => Object.entries(buckets).sort((a, b) => b[1] - a[1]).slice(0, 5)
+            .map(([label, value]) => ({ category, label, value })));
+        return (
+          <div key={labelKey} className="space-y-1">
+            <span className={EYEBROW}>{t(labelKey)}</span>
+            <div className="flex flex-wrap gap-1">
+              {top.map(({ category, label, value }) => (
+                <span key={`${category}:${label}`} className={`inline-flex items-center gap-1 rounded-xl px-2 py-0.5 text-[10px] ${INNER_SURFACE}`}>
+                  <span className="text-zinc-600 dark:text-zinc-300">{humanizeBucket(label)}</span>
+                  <span className="font-bold text-zinc-800 dark:text-zinc-100">{fmtInt(value)}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      }) : (
+        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('insights.demographics.empty')}</p>
+      )}
+    </div>
+  );
+}
+
+// A generic account-lane metrics block (spec 08): renders whatever scalar keys
+// are stored at block.metrics as small labelled chips - no per-lane special-
+// casing, unlike GbpAccountBlock's fixed field order. Telegram has exactly one
+// honest number today (subscribers); a future account-only lane with several
+// scalars renders them all the same way, for free.
+function MetricsAccountBlock({ lane, block, t, metricLabel }) {
+  const metrics = block?.metrics;
+  const entries = metrics ? Object.entries(metrics).filter(([, v]) => typeof v === 'number') : [];
+  if (!entries.length) return null;
+  const meta = PLATFORM_META[lane];
+  const Icon = meta?.Icon;
+  return (
+    <div className="space-y-2">
+      <span className="inline-flex items-center gap-1.5">
+        {Icon ? <Icon size={13} className={meta.color} aria-hidden="true" /> : null}
+        <span className="text-[11px] font-bold">{meta?.label || lane}</span>
+      </span>
+      <div className="flex flex-wrap gap-1">
+        {entries.map(([k, v]) => (
+          <span
+            key={k}
+            className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] ring-1 ring-zinc-500/20"
+            aria-label={t('insights.metric.aria', { platform: meta?.label || lane, metric: metricLabel(k), value: fmtInt(v) })}
+          >
+            <span className="text-zinc-500 dark:text-zinc-400">{metricLabel(k)}</span>
+            <span className="font-bold text-zinc-800 dark:text-zinc-100">{fmtInt(v)}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// The "Audience & local" panel dispatch (spec 04 seam): lane -> its block renderer.
+// gbp (performance) + meta/youtube/linkedin/pinterest (demographics, spec 07) +
+// telegram (subscribers, spec 08) - a future lane adds ONE renderer here - the
+// panel gate + the render loop never change. An account lane with no renderer
+// is skipped.
+const ACCOUNT_BLOCKS = { gbp: GbpAccountBlock, meta: DemographicsBlock, youtube: DemographicsBlock, linkedin: DemographicsBlock, pinterest: DemographicsBlock, telegram: MetricsAccountBlock };
+
 export default function Insights({ active, platformFilter = [], campaignFilter = 'all' }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useInsights(active);
   const { data: digestData } = useDigest(active);
   const [digestOpen, setDigestOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   // metricLabels travels in the envelope as a stable English reference. Display
   // is localized via the metric.* locale keys; fall back to the envelope label
   // then the raw key for an unknown metric (de-CH reads German, en stays stable).
@@ -169,20 +416,34 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
     const v = t(key);
     return v === key ? (metricLabels[k] || k) : v;
   };
+  // Account-scoped store (spec 04, the "Audience & local" seam). A MAP keyed by
+  // lane; this panel is a generic CONTAINER - the collapsible appears whenever ANY
+  // account-lane block exists, and the body dispatches each lane through
+  // ACCOUNT_BLOCKS (gbp today; add a renderer there for new lanes - no gate/loop
+  // edit). Account data is client-wide, so it ignores the platform/campaign filters.
+  const account = data?.account || {};
+  const hasAccount = account && Object.keys(account).length > 0;
   // campaignFilter is a specific campaign id only when it is neither of the two
   // sentinel views ('active' = the active campaign view, 'all' = everything).
   const campaignScope = campaignFilter && campaignFilter !== 'active' && campaignFilter !== 'all' ? campaignFilter : null;
-  const items = (data?.items || []).filter(
-    (e) =>
-      (!platformFilter.length || platformFilter.includes(e.platform)) &&
-      (!campaignScope || e.campaign === campaignScope),
-  );
+  // Freshest first: what changed most recently is what the operator came to
+  // read. Stable within one sweep (equal fetchedAt), so no jumpy reorders.
+  const items = (data?.items || [])
+    .filter(
+      (e) =>
+        (!platformFilter.length || platformFilter.includes(e.platform)) &&
+        (!campaignScope || e.campaign === campaignScope),
+    )
+    .sort((a, b) => (Date.parse(b.fetchedAt || 0) || 0) - (Date.parse(a.fetchedAt || 0) || 0));
 
   // Per-platform totals (B8): summed CLIENT-SIDE over the already-filtered
   // `items` so the strip always agrees with the visible rows (it inherits the
   // platformFilter + campaignScope). Order preserves first-appearance; metric
   // order preserves first-seen per platform. Platforms with no items never
-  // appear because we only iterate the filtered items themselves.
+  // appear because we only iterate the filtered items themselves. RATE-typed
+  // metrics (LinkedIn `engagement` is a 0-1 rate, not a count) are EXCLUDED from
+  // the sum - adding rates across posts yields a meaningless number - so they
+  // show per-post but never in the totals strip (spec 08 review #2).
   const platformTotals = [];
   for (const e of items) {
     let bucket = platformTotals.find((b) => b.platform === e.platform);
@@ -191,7 +452,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
       platformTotals.push(bucket);
     }
     for (const [k, v] of Object.entries(e.metrics || {})) {
-      if (typeof v !== 'number') continue;
+      if (typeof v !== 'number' || RATE_METRIC_KEYS.has(k)) continue;
       bucket.metrics[k] = (bucket.metrics[k] || 0) + v;
     }
   }
@@ -271,7 +532,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
                 >
                   {Icon ? <Icon size={13} className={meta.color} aria-hidden="true" /> : null}
                   <span className="text-[11px] font-bold">{meta?.label || b.platform}</span>
-                  {Object.entries(b.metrics).map(([k, v]) => (
+                  {Object.entries(b.metrics).filter(([k]) => primaryKeysFor(b.platform, b.metrics).includes(k)).map(([k, v]) => (
                     <span
                       key={k}
                       className="inline-flex items-center gap-1 text-[10px]"
@@ -290,7 +551,10 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
           {items.map((e) => {
             const meta = PLATFORM_META[e.platform];
             const Icon = meta?.Icon;
-            const sparkKey = Object.keys(e.metrics || {}).find((k) => {
+            // The sparkline tracks a VISIBLE chip: primary keys first, the rest
+            // only when no primary metric carries history.
+            const sparkCandidates = [...primaryKeysFor(e.platform, e.metrics), ...Object.keys(e.metrics || {})];
+            const sparkKey = sparkCandidates.find((k) => {
               if (typeof e.metrics[k] !== 'number') return false;
               const series = (e.history || []).map((h) => h?.metrics?.[k]).filter((n) => typeof n === 'number');
               return series.length >= 2;
@@ -320,24 +584,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
                     {new Date(e.fetchedAt).toLocaleString(dateLocale(), { dateStyle: 'short', timeStyle: 'short' })}
                   </p>
                 </div>
-                <div className="flex flex-wrap justify-end gap-1">
-                  {Object.entries(e.metrics || {}).map(([k, v]) => {
-                    if (typeof v !== 'number') return null;
-                    const delta = metricDelta(e.history, k);
-                    return (
-                      <span key={k} className="inline-flex items-center gap-1 rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] ring-1 ring-zinc-500/20">
-                        <span className="text-zinc-500 dark:text-zinc-400">{metricLabel(k)}</span>
-                        <span className="font-bold text-zinc-800 dark:text-zinc-100">{fmtInt(v)}</span>
-                        {delta && delta.dir !== 'flat' ? (
-                          <span className={`inline-flex items-center gap-0.5 font-bold ${delta.dir === 'up' ? 'text-emerald-500' : 'text-red-500'}`}>
-                            {delta.dir === 'up' ? <ArrowUp size={9} aria-hidden="true" /> : <ArrowDown size={9} aria-hidden="true" />}
-                            {delta.diff > 0 ? `+${fmtInt(delta.diff)}` : `-${fmtInt(Math.abs(delta.diff))}`}
-                          </span>
-                        ) : null}
-                      </span>
-                    );
-                  })}
-                </div>
+                <MetricChips entry={e} metricLabel={metricLabel} t={t} />
                 {sparkValues ? <Sparkline values={sparkValues} dir={sparkDir} /> : null}
               </li>
             );
@@ -347,7 +594,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
       ) : (
         <div className="grid place-items-center py-12">
           <div className="max-w-xs space-y-2 text-center">
-            <BarChart3 size={26} className="mx-auto text-zinc-400" aria-hidden="true" />
+            <BarChart3 size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
             <p className="text-sm font-bold">{t('insights.empty.title')}</p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
               {t('insights.empty.body')}
@@ -366,6 +613,35 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
           </div>
         </div>
       )}
+
+      {hasAccount ? (
+        <section className="space-y-1.5">
+          <button
+            type="button"
+            onClick={() => setAccountOpen((o) => !o)}
+            aria-expanded={accountOpen}
+            aria-controls="insights-account-content"
+            className={`${EYEBROW} flex items-center gap-1 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:text-zinc-300`}
+          >
+            {accountOpen ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+            <MapPin size={12} aria-hidden="true" />
+            {t('insights.account.title')}
+          </button>
+          {accountOpen ? (
+            <div
+              id="insights-account-content"
+              role="region"
+              aria-label={t('insights.account.title')}
+              className={`max-w-4xl space-y-3 rounded-xl p-4 ${INNER_SURFACE}`}
+            >
+              {Object.entries(account).map(([lane, block]) => {
+                const Block = ACCOUNT_BLOCKS[lane];
+                return Block ? <Block key={lane} lane={lane} block={block} t={t} metricLabel={metricLabel} /> : null;
+              })}
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {digestData?.digest ? (
         <section className="space-y-1.5">

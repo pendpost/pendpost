@@ -39,10 +39,13 @@ describe('DS-1: no all-caps eyebrow micro-labels', () => {
     expect(offenders, `all-caps eyebrows remain:\n${offenders.join('\n')}`).toEqual([]);
   });
 
-  it('ui.jsx exports a single sentence-case EYEBROW token (no uppercase)', () => {
-    const uiSrc = fs.readFileSync(path.join(SRC_DIR, 'components', 'ui.jsx'), 'utf8');
+  it('the app exports a single sentence-case EYEBROW token (no uppercase)', () => {
+    // The token definitions live in ui/tokens.js now (ui.jsx re-exports them, so no
+    // consumer changed). This guard must read the DEFINITION or it would match nothing
+    // and fail, or worse, pass against a re-export and stop guarding the value.
+    const uiSrc = fs.readFileSync(path.join(SRC_DIR, 'components', 'ui', 'tokens.js'), 'utf8');
     const m = uiSrc.match(/export const EYEBROW\s*=\s*['"`]([^'"`]*)['"`]/);
-    expect(m, 'ui.jsx must export `export const EYEBROW = "..."`').toBeTruthy();
+    expect(m, 'ui/tokens.js must export `export const EYEBROW = "..."`').toBeTruthy();
     expect(m[1], 'EYEBROW must be sentence-case').not.toMatch(/uppercase/);
   });
 });

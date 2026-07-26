@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { CalendarDays, ChevronUp, ChevronDown, Plus, PauseCircle, CornerUpLeft } from 'lucide-react';
-import { dayKey, localDayKey, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread } from '../lib/format.js';
+import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { unschedulePost } from '../lib/api.js';
 import { useQueryClient } from '@tanstack/react-query';
@@ -143,7 +143,7 @@ export function PostCard({ post, onSelect, draggable, onDragStart, lane }) {
         </div>
         {/* Type + platforms collapse into one quiet meta line (was a separate type
             overlay badge + a standalone platform row competing at the same weight). */}
-        <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-bold tracking-tight text-zinc-400 dark:text-zinc-500">
+        <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400">
           <span className="truncate">{t(`type.${post.type}`)}</span>
           <span aria-hidden="true" className="h-1 w-1 shrink-0 rounded-full bg-current opacity-50" />
           <PlatformIcons platforms={post.platforms} size={12} />
@@ -166,7 +166,7 @@ function EmptyPeriod({ onNew }) {
   return (
     <div className="col-span-7 grid place-items-center py-16">
       <div className="max-w-xs space-y-2 text-center">
-        <CalendarDays size={26} className="mx-auto text-zinc-400" aria-hidden="true" />
+        <CalendarDays size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
         <p className="text-sm font-bold">{t('planner.empty.periodTitle')}</p>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
           {t('planner.empty.periodBody')}
@@ -197,7 +197,7 @@ export function WeekView({ posts, weekStart, onSelect, onMoveToDay, loading, lan
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(post);
     }
-    for (const list of map.values()) list.sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
+    for (const list of map.values()) list.sort(comparePostDate);
     return map;
   }, [posts]);
   const todayKey = localDayKey(new Date());
@@ -291,7 +291,7 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
       if (!map.has(key)) map.set(key, []);
       map.get(key).push(post);
     }
-    for (const list of map.values()) list.sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt));
+    for (const list of map.values()) list.sort(comparePostDate);
     return map;
   }, [posts]);
   const todayKey = localDayKey(new Date());
@@ -377,7 +377,7 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
                   // first hidden post (index 3) so the control is never inert.
                   onClick={() => (onShowDay ? onShowDay(day) : onSelect(dayPosts[3]))}
                   aria-label={t('planner.month.moreAria', { count: dayPosts.length - 3 })}
-                  className="w-full rounded-md px-1 py-0.5 text-left text-[10px] text-zinc-400 transition hover:bg-white/70 hover:text-zinc-600 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  className="w-full rounded-md px-1 py-0.5 text-left text-[10px] text-zinc-500 transition hover:bg-white/70 hover:text-zinc-600 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                 >
                   {t('planner.month.more', { count: dayPosts.length - 3 })}
                 </button>
@@ -442,7 +442,7 @@ function ListRow({ post, posts = [], onSelect, lane }) {
             type="button"
             aria-label={t('postDetail.action.parkTip')}
             onClick={() => park(post)}
-            className="shrink-0 rounded-md p-1 text-zinc-400 transition hover:bg-zinc-200/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
+            className="shrink-0 rounded-md p-1 text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
           >
             <PauseCircle size={15} aria-hidden="true" />
           </button>
@@ -453,19 +453,24 @@ function ListRow({ post, posts = [], onSelect, lane }) {
         onClick={() => onSelect(post)}
         className="flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
       >
-        <CoverThumb media={post.media} image={post.image} className="h-12 w-12 shrink-0 rounded-lg" />
+        {/* A text post has no thumbnail, so this renders a generic file glyph: 48px plus a
+            gap of pure decoration. Harmless on a wide row, but at 390px it was taking the
+            width the TITLE needed, and once the attention pill also earns its place on
+            mobile the title collapses to a letter and an ellipsis. Real media still shows
+            at every width; only the placeholder yields, and only on the narrow layout. */}
+        <CoverThumb media={post.media} image={post.image} className={`h-12 w-12 shrink-0 rounded-lg ${post.media?.exists || post.image ? '' : 'hidden sm:block'}`} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-bold">
             {postDisplayTitle(post, t('planner.list.untitled'))}
           </p>
-          <p className="truncate text-[11px] text-zinc-400 dark:text-zinc-500">
+          <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
             {campaignBaseLabel(post.campaign)} · {post.id} · {t(`type.${post.type}`)}
           </p>
         </div>
         {/* X thread glyph (xReplyTo): marks a chained post so it is never
             mistaken for a standalone one; the detail panel names the parent. */}
         {post.xReplyTo ? (
-          <span className="shrink-0 text-zinc-400 dark:text-zinc-500">
+          <span className="shrink-0 text-zinc-500 dark:text-zinc-400">
             <CornerUpLeft size={13} aria-hidden="true" />
             <span className="sr-only">{t('planner.list.replyChain', { id: post.xReplyTo })}</span>
           </span>
@@ -481,7 +486,11 @@ function ListRow({ post, posts = [], onSelect, lane }) {
           </span>
         ) : null}
         <PlatformIcons platforms={post.platforms} />
-        <span className="hidden items-center md:flex">
+        {/* The pill is desktop-only to keep a narrow row calm - but that hid the ONE state
+            a phone must not miss. A post needing attention (a refusal, a missed slot, an
+            unmade decision) shows its pill at every width; the settled buckets keep the
+            md: gate. needsAttention is the same predicate the card accent already uses. */}
+        <span className={`items-center ${needsAttention(post) ? 'flex' : 'hidden md:flex'}`}>
           <PostStatusPill post={post} />
         </span>
       </button>
@@ -492,7 +501,7 @@ function ListRow({ post, posts = [], onSelect, lane }) {
 export function ListView({ posts, onSelect, loading, lane }) {
   const t = useT();
   const dated = useMemo(
-    () => posts.filter((p) => p.scheduledAt).sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt)),
+    () => posts.filter((p) => p.scheduledAt).sort(comparePostDate),
     [posts],
   );
   const undated = useMemo(() => posts.filter((p) => !p.scheduledAt), [posts]);
@@ -537,7 +546,7 @@ export function ListView({ posts, onSelect, loading, lane }) {
     return (
       <div className="grid h-full place-items-center py-16">
         <div className="max-w-xs space-y-2 text-center">
-          <CalendarDays size={26} className="mx-auto text-zinc-400" aria-hidden="true" />
+          <CalendarDays size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
           <p className="text-sm font-bold">{t('planner.empty.title')}</p>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('planner.empty.body')}</p>
         </div>

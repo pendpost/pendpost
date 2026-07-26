@@ -78,6 +78,27 @@ try {
   const ledger = JSON.parse(fs.readFileSync(path.join(WS, 'data', '.mock-ledger.json'), 'utf8'));
   ok(Array.isArray(ledger) && ledger.some((e) => e.postId === POST && e.mode === 'mock'), 'mock ledger recorded the publish');
 
+  // 7b. mock-driver.mjs's own eligible() fence (approval + due) applies even
+  // under --only - it must mirror the real scheduler's approval gate rather than
+  // let a single-post CLI/test call bypass it (an approval-gate test could
+  // otherwise silently pass on an unapproved post just because it named the id).
+  // Driven DIRECTLY against the mock driver (not through the write matrix/
+  // scheduler), so this pins the driver's OWN gate, not merely the scheduler's
+  // upstream filtering.
+  const { runMockCommand } = await import('../lib/drivers/mock-driver.mjs');
+  const gatePlanPath = path.join(WS, 'data', 'plans', CAMP, 'post-plan.json');
+  const gatePlan = JSON.parse(fs.readFileSync(gatePlanPath, 'utf8'));
+  gatePlan.posts.push({
+    id: 'unapproved1', type: 'reel', platforms: ['instagram'], path: 'data/media/clip.mp4',
+    caption: 'never approved', scheduledAt: '2020-01-01T00:00:00Z', approval: 'draft',
+  });
+  fs.writeFileSync(gatePlanPath, JSON.stringify(gatePlan, null, 2));
+  const gated = await runMockCommand({ platform: 'meta', command: 'publish-due', planPath: gatePlanPath, only: 'unapproved1' });
+  ok(gated.ok === true && Array.isArray(gated.results) && gated.results.length === 0,
+    `mock publish --only on an UNAPPROVED post publishes NOTHING (eligible() enforced even with --only): ${JSON.stringify(gated)}`);
+  const stillUnapproved = JSON.parse(fs.readFileSync(gatePlanPath, 'utf8')).posts.find((p) => p.id === 'unapproved1');
+  ok(!stillUnapproved.igMediaId, 'the unapproved post minted NO platform id despite --only naming it directly');
+
   // ===== the same loop, now under an explicit NON-default client =====
   // Migrate the single workspace into clients/default (the loop above is now the
   // default client's data), then create a second client "beta" and run the full

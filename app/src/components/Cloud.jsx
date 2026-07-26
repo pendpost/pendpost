@@ -13,7 +13,7 @@
 // lowercase "pendpost"; the emerald/amber/red semantic palette is status-only.
 import { useEffect, useRef, useState } from 'react';
 import { Cloud as CloudIcon, CloudOff, Loader2, CheckCircle2, AlertCircle, ExternalLink, Monitor, LogOut, ListChecks, ShieldCheck, RefreshCw, DownloadCloud, CreditCard, Receipt, X, AtSign, ChevronLeft, ArrowRight, ChevronDown, UserCog, RefreshCcw, UserPlus } from 'lucide-react';
-import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, enableStart, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud } from '../lib/cloud.js';
+import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, enableStart, healCloud, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud } from '../lib/cloud.js';
 import { useClients } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { INNER_SURFACE, EYEBROW, PLATFORM_META } from './ui.jsx';
@@ -82,6 +82,51 @@ const ENABLE_POLL_MS = 2_500;
 // `unfinished` = the connection is configured (workspaceId present) but its api key is
 // missing, so the parent routed here to FINISH the handshake. Only the title/body copy
 // changes; the connect button and the handshake itself are identical.
+// The INVERSE half-written state: the api key is present but cloud.json lost its
+// workspaceId. Routing this to the sign-in handshake would be destructive (it mints a
+// NEW key and resets every brand flag), so this view offers the safe repair instead:
+// one click asks the cloud which workspace the key belongs to and stores it again
+// (POST /api/cloud/heal). The daemon also attempts the same heal once at boot; the
+// button covers a boot that ran offline. Never a dead end: error state carries what
+// happened and the retry is the same button.
+function ReconnectView() {
+  const t = useT();
+  const invalidate = useInvalidateCloud();
+  const [state, setState] = useState('idle'); // idle | working | error
+  const [error, setError] = useState(null);
+  const run = async () => {
+    setState('working');
+    setError(null);
+    try {
+      await healCloud();
+      invalidate(); // the refetch sees the workspaceId and routes to ConnectedView
+      setState('idle');
+    } catch (err) {
+      setState('error');
+      setError(err.message || t('cloud.reconnect.error'));
+    }
+  };
+  return (
+    <section className={`space-y-4 rounded-2xl p-4 ${INNER_SURFACE}`} aria-labelledby="cloud-heal-heading">
+      <div className="flex flex-wrap items-center gap-2.5">
+        <h3 id="cloud-heal-heading" className="font-display text-sm font-bold">{t('cloud.reconnect.title')}</h3>
+        <span className="ml-auto"><IconBadge icon={CloudOff} tone="warn" text={t('cloud.status.off')} /></span>
+      </div>
+      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.reconnect.body')}</p>
+      {state === 'error' && error ? (
+        <p className="flex items-center gap-1.5 text-[11px] font-bold text-red-600 dark:text-red-400">
+          <AlertCircle size={13} aria-hidden="true" />
+          {error}
+        </p>
+      ) : null}
+      <button type="button" className={BTN_BRAND} onClick={run} disabled={state === 'working'}>
+        {state === 'working' ? <Loader2 size={14} className="mr-1.5 inline animate-spin" aria-hidden="true" /> : null}
+        {t('cloud.reconnect.action')}
+      </button>
+    </section>
+  );
+}
+
 function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInterval = null, deepLinkTierLabel = null }) { // eslint-disable-line no-unused-vars
   const t = useT();
   const invalidate = useInvalidateCloud();
@@ -200,7 +245,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
               {state === 'starting' ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <UserPlus size={14} aria-hidden="true" />}
               {state === 'error' ? t('cloud.enable.retry') : t(unfinished ? 'cloud.enable.action' : 'cloud.signIn.action')}
             </button>
-            {!unfinished ? <p className="text-[10px] text-zinc-400 dark:text-zinc-500">{t('cloud.signIn.createHint')}</p> : null}
+            {!unfinished ? <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('cloud.signIn.createHint')}</p> : null}
           </div>
         )}
       </div>
@@ -386,9 +431,9 @@ function MenuItem({ icon: Icon, label, sublabel, onClick, busy = false, tone = '
       {busy ? <Loader2 size={15} className="shrink-0 animate-spin" aria-hidden="true" /> : <Icon size={15} className="shrink-0" aria-hidden="true" />}
       <span className="min-w-0 flex-1">
         <span className="block truncate">{label}</span>
-        {sublabel ? <span className="block line-clamp-2 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">{sublabel}</span> : null}
+        {sublabel ? <span className="block line-clamp-2 text-[10px] font-normal text-zinc-500 dark:text-zinc-400">{sublabel}</span> : null}
       </span>
-      {external ? <ExternalLink size={12} className="shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" /> : null}
+      {external ? <ExternalLink size={12} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" /> : null}
     </button>
   );
 }
@@ -422,7 +467,7 @@ function AccountMenu({ email, accountPortalUrl, canManage, onSignOut, onEject, b
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64">
         <div className="px-3 pb-2 pt-1">
-          <p className="text-[10px] font-bold tracking-tight text-zinc-400 dark:text-zinc-500">{t('cloud.account.menuTitle')}</p>
+          <p className="text-[10px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400">{t('cloud.account.menuTitle')}</p>
           <p className="mt-0.5 truncate text-xs font-bold text-zinc-700 dark:text-zinc-200">{label}</p>
         </div>
         <div className="space-y-0.5">
@@ -445,7 +490,7 @@ function AccountMenu({ email, accountPortalUrl, canManage, onSignOut, onEject, b
               >
                 <UserCog size={15} className="shrink-0" aria-hidden="true" />
                 <span className="min-w-0 flex-1 truncate">{t('cloud.account.manage')}</span>
-                <ExternalLink size={12} className="shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" />
+                <ExternalLink size={12} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
               </a>
             </PopoverClose>
           ) : null}
@@ -616,20 +661,20 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
 
       {/* Technical connection fields - read-only, collapsed under "connection details". */}
       <details className="text-[11px]">
-        <summary className="cursor-pointer list-none font-bold tracking-tight text-zinc-400 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-300">
+        <summary className="cursor-pointer list-none font-bold tracking-tight text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
           {t('cloud.details.summary')}
         </summary>
         <dl className="mt-2 space-y-1.5">
           <div className="flex flex-wrap items-center gap-x-2">
-            <dt className="text-zinc-400 dark:text-zinc-500">{t('cloud.field.baseUrl.label')}</dt>
+            <dt className="text-zinc-500 dark:text-zinc-400">{t('cloud.field.baseUrl.label')}</dt>
             <dd className="min-w-0 break-all font-mono text-zinc-700 dark:text-zinc-200">{cloud.baseUrl || t('cloud.field.unset')}</dd>
           </div>
           <div className="flex flex-wrap items-center gap-x-2">
-            <dt className="text-zinc-400 dark:text-zinc-500">{t('cloud.field.workspaceId.label')}</dt>
+            <dt className="text-zinc-500 dark:text-zinc-400">{t('cloud.field.workspaceId.label')}</dt>
             <dd className="min-w-0 break-all font-mono text-zinc-700 dark:text-zinc-200">{cloud.workspaceId || t('cloud.field.unset')}</dd>
           </div>
           <div className="flex flex-wrap items-center gap-x-2">
-            <dt className="text-zinc-400 dark:text-zinc-500">{t('cloud.field.apiKey.label')}</dt>
+            <dt className="text-zinc-500 dark:text-zinc-400">{t('cloud.field.apiKey.label')}</dt>
             <dd className="min-w-0 font-mono text-zinc-700 dark:text-zinc-200">
               {apiKeyPresent ? (tail ? t('cloud.apiKey.presentTail', { tail }) : t('cloud.apiKey.present')) : t('cloud.apiKey.missing')}
             </dd>
@@ -711,7 +756,7 @@ function PlanCards({ plan, setPlan, interval, setInterval, disabled }) {
                 <span className="text-lg font-bold tracking-tight text-zinc-900 dark:text-white">{price.big}</span>
                 <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{price.unit}</span>
               </span>
-              {price.sub ? <span className="-mt-1 text-[10px] text-zinc-400 dark:text-zinc-500">{price.sub}</span> : null}
+              {price.sub ? <span className="-mt-1 text-[10px] text-zinc-500 dark:text-zinc-400">{price.sub}</span> : null}
               <span className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
                 <span className="block">{t('cloud.plans.posts', { count: info.postsIncluded })}</span>
                 <span className="block">{t('cloud.plans.brands', { count: info.brandsIncluded })}</span>
@@ -757,7 +802,7 @@ function OrderSummary({ plan, interval, brandsBilled, busy, error, onBack, onCon
   return (
     <div className="space-y-3 rounded-2xl border border-black/10 p-3 dark:border-white/10">
       <div className="flex items-center gap-2">
-        <button type="button" onClick={onBack} disabled={busy} aria-label={t('cloud.summary.back')} className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-400 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+        <button type="button" onClick={onBack} disabled={busy} aria-label={t('cloud.summary.back')} className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
           <ChevronLeft size={16} aria-hidden="true" />
         </button>
         <h4 className="text-sm font-bold tracking-tight text-zinc-800 dark:text-zinc-100">{t('cloud.summary.title', { plan: t(`cloud.tier.${plan}`) })}</h4>
@@ -1084,7 +1129,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
       {/* Details - the full cost breakdown, rate basis, and the spend-cap control. Rarely
           needed day-to-day, so collapsed by default to keep the card calm. */}
       <details className="text-[11px]">
-        <summary className="cursor-pointer list-none font-bold tracking-tight text-zinc-400 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-300">
+        <summary className="cursor-pointer list-none font-bold tracking-tight text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
           {t('cloud.billing.details')}
         </summary>
         <div className="mt-2 space-y-2">
@@ -1107,7 +1152,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
               {renewsValid ? <dd>{renewsAt.toLocaleDateString()}</dd> : null}
             </div>
           </dl>
-          <p className="text-zinc-400 dark:text-zinc-500">{t('connection.price.cloud')}</p>
+          <p className="text-zinc-500 dark:text-zinc-400">{t('connection.price.cloud')}</p>
 
           <div className="space-y-1.5 border-t border-black/5 pt-2 dark:border-white/5">
             <div className="flex items-center justify-between gap-2">
@@ -1231,9 +1276,9 @@ function CloudClients() {
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-bold text-zinc-700 dark:text-zinc-200">
                 {c.name}
-                {c.active ? <span className="ml-1.5 text-[10px] font-normal text-zinc-400 dark:text-zinc-500">{t('cloud.clients.active')}</span> : null}
+                {c.active ? <span className="ml-1.5 text-[10px] font-normal text-zinc-500 dark:text-zinc-400">{t('cloud.clients.active')}</span> : null}
               </p>
-              <p className={`truncate text-[11px] ${c.alwaysOn ? 'text-zinc-500 dark:text-zinc-400' : 'text-zinc-400 dark:text-zinc-500'}`}>
+              <p className={`truncate text-[11px] ${c.alwaysOn ? 'text-zinc-500 dark:text-zinc-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
                 {c.alwaysOn ? t('cloud.clients.cloudCaption') : t('cloud.clients.localCaption')}
               </p>
             </div>
@@ -1341,6 +1386,12 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
           deepLinkInterval={resolvedInterval}
           onLaunchConsumed={clearLaunchStash}
         />
+      ) : cloud && !cloud.workspaceId && cloud.apiKey?.present && cloud.baseUrl ? (
+        // The half-written inverse of `unfinished`: key + baseUrl survived, workspaceId
+        // lost. The surviving baseUrl is the fingerprint that separates this from a
+        // fresh install that merely has a stray key (which still gets the sign-in
+        // handshake below). The safe repair, never the key-minting handshake.
+        <ReconnectView />
       ) : (
         <DisconnectedView
           unfinished={Boolean(cloud && cloud.workspaceId)}

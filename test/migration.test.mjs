@@ -99,18 +99,91 @@ function inChild(ws, code) {
 }
 
 // ---- Scenario D: fresh empty workspace -> clients.json written, no crash ----
+// The "default" client is auto-registered here, so it never goes through
+// createClient() and nothing else scaffolds its plan store. Boot must do it, or
+// the very FIRST campaign write dies on ENOENT mkdir'ing the manifest lock dir
+// (data/clients/default/data/plans/active-plans.json.lock.d) and /api/plans
+// reports manifestError. Bites any workspace born empty: a PENDPOST_ROOT pointed
+// at a fresh dir (docker, npx, multi-tenant).
 {
   const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-mig-fresh-'));
   fs.mkdirSync(path.join(WS, 'data'), { recursive: true });
+  // Snapshot the freshly scaffolded manifest BEFORE the campaign write, then do
+  // the write that used to fail - both facts come from the one child process.
   const r = inChild(WS, `
+    import fs from 'node:fs';
     const { initMultiClient } = await import('./lib/multi-client.mjs');
     const out = initMultiClient();
-    console.log(JSON.stringify({ migrated: out.migrated }));
+    const { activeRoot } = await import('./lib/context.mjs');
+    const manifestPath = activeRoot() + '/data/plans/active-plans.json';
+    const scaffolded = fs.existsSync(manifestPath) ? JSON.parse(fs.readFileSync(manifestPath, 'utf8')) : null;
+    const { createCampaign } = await import('./lib/writes.mjs');
+    const campaign = await createCampaign({ id: 'first-campaign', timezone: 'UTC', actor: 'owner' });
+    console.log(JSON.stringify({ migrated: out.migrated, scaffolded, campaign }));
   `);
   ok(r.migrated === false, 'fresh workspace: no migration (no legacy files)');
   const registry = readJson(path.join(WS, 'data', 'clients.json'));
   ok(registry.activeClientId === 'default', 'fresh workspace: clients.json written with default active');
   ok(!fs.existsSync(path.join(WS, 'data', 'clients', 'default', '.env')), 'fresh workspace: no phantom .env moved');
+
+  const manifest = path.join(WS, 'data', 'clients', 'default', 'data', 'plans', 'active-plans.json');
+  ok(fs.existsSync(manifest), 'fresh workspace: boot scaffolded the default client plan store (mirrors createClient)');
+  ok(r.scaffolded && Array.isArray(r.scaffolded.plans) && r.scaffolded.plans.length === 0, `fresh workspace: boot scaffolds an EMPTY plans array (got ${JSON.stringify(r.scaffolded)})`);
+  // The reported first-run failure, end to end.
+  ok(r.campaign && r.campaign.ok === true, `fresh workspace: the FIRST campaign create succeeds (got ${JSON.stringify(r.campaign)})`);
+  ok(readJson(manifest).plans.some((p) => p.id === 'first-campaign'), 'fresh workspace: the new campaign is listed in the manifest');
+  fs.rmSync(WS, { recursive: true, force: true });
+}
+
+// ---- Scenario G: registry present but the plan store never scaffolded -> heal ----
+// A workspace booted before the scaffold existed has clients.json (so the
+// re-entry guard short-circuits the migration) and NO plan store. The scaffold
+// must run outside that guard, or those workspaces stay broken forever.
+{
+  const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-mig-heal-'));
+  fs.mkdirSync(path.join(WS, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(WS, 'data', 'clients.json'), JSON.stringify({
+    activeClientId: 'default',
+    clients: [{ id: 'default', displayName: 'Default', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', createdBy: 'migration' }],
+  }, null, 2));
+  const r = inChild(WS, `
+    const { initMultiClient } = await import('./lib/multi-client.mjs');
+    const out = initMultiClient();
+    const { createCampaign } = await import('./lib/writes.mjs');
+    const campaign = await createCampaign({ id: 'healed', timezone: 'UTC', actor: 'owner' });
+    console.log(JSON.stringify({ migrated: out.migrated, campaign }));
+  `);
+  ok(r.migrated === false, 'heal: registry present -> still no migration');
+  ok(fs.existsSync(path.join(WS, 'data', 'clients', 'default', 'data', 'plans', 'active-plans.json')), 'heal: boot scaffolded the missing plan store even though clients.json already existed');
+  ok(r.campaign && r.campaign.ok === true, `heal: campaign create works after the self-heal (got ${JSON.stringify(r.campaign)})`);
+  fs.rmSync(WS, { recursive: true, force: true });
+}
+
+// ---- Scenario H: a POPULATED plan store with a lost manifest is NOT papered over ----
+// C8: a missing manifest is an incident the caller must surface, never a silent
+// "no campaigns". Writing {plans:[]} over a plans dir that still holds campaign
+// folders would DELIST real campaigns and mask the loss - so the scaffold must
+// only fire on an absent/empty plans dir, never on a populated one.
+{
+  const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-mig-populated-'));
+  fs.mkdirSync(path.join(WS, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(WS, 'data', 'clients.json'), JSON.stringify({
+    activeClientId: 'default',
+    clients: [{ id: 'default', displayName: 'Default', status: 'active', createdAt: '2026-01-01T00:00:00.000Z', createdBy: 'migration' }],
+  }, null, 2));
+  // A real campaign on disk, but its manifest went missing.
+  const plansDir = path.join(WS, 'data', 'clients', 'default', 'data', 'plans', 'real-campaign');
+  fs.mkdirSync(plansDir, { recursive: true });
+  fs.writeFileSync(path.join(plansDir, 'post-plan.json'), JSON.stringify({ campaign: 'real-campaign', posts: [] }, null, 2));
+  const r = inChild(WS, `
+    const { initMultiClient } = await import('./lib/multi-client.mjs');
+    initMultiClient();
+    const { loadManifest } = await import('./lib/plans.mjs');
+    console.log(JSON.stringify({ error: loadManifest().error }));
+  `);
+  ok(!fs.existsSync(path.join(WS, 'data', 'clients', 'default', 'data', 'plans', 'active-plans.json')), 'populated store: boot did NOT fabricate a manifest over existing campaign folders');
+  ok(typeof r.error === 'string' && r.error.length > 0, 'populated store: the lost manifest still surfaces as an error (C8 - never a silent "no campaigns")');
+  ok(fs.existsSync(path.join(plansDir, 'post-plan.json')), 'populated store: the real campaign on disk is untouched');
   fs.rmSync(WS, { recursive: true, force: true });
 }
 

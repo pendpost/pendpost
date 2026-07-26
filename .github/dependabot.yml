@@ -48,6 +48,11 @@ updates:
       # astro v6 is a major migration for the marketing site; deferred.
       - dependency-name: "astro"
         update-types: ["version-update:semver-major"]
+      # typescript 7 (the new compiler) is rejected by @astrojs/check's peer
+      # (^5 || ^6) and breaks the Vercel build (ERESOLVE). Stay on TS 6 until the
+      # astro toolchain supports 7.
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"

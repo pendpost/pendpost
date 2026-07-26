@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
 import PostDetail from '../PostDetail.jsx';
+import { PlatformBlockers } from '../ui.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
@@ -13,7 +14,11 @@ import { I18nProvider } from '../../lib/i18n.js';
 // the Platforms Section. Distinct red (problems) / amber (warnings); clean =>
 // no rows. We mock the new read-only hooks usePlatformValidate / useValidateMedia.
 const platformValidateState = { data: undefined };
+const presubmitState = { data: undefined };
 const validateMediaState = { data: undefined };
+// CI-2: spy on the raw args useValidateMedia is called with (campaign, postId,
+// enabled) so a test can assert the `enabled` gate without needing a real fetch.
+const validateMediaCalls = [];
 // Controls the cloud-aware delivery statement. resolved:false by default so the
 // unrelated tests below see NO delivery line (only the delivery-specific tests opt in).
 const cloudDeliveryState = { cloudOn: false, cloudLanes: [], resolved: false };
@@ -24,9 +29,12 @@ const lintText = vi.fn(() =>
 
 vi.mock('../../lib/api.js', () => ({
   useActiveClient: () => ({ activeClient: null, activeClientId: null }),
+  usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => platformValidateState,
-  useValidateMedia: () => validateMediaState,
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePresubmitCheck: () => presubmitState,
+  useValidateMedia: (...args) => { validateMediaCalls.push(args); return validateMediaState; },
   lintText: (...a) => lintText(...a),
   approvePost: vi.fn(),
   rejectPost: vi.fn(),
@@ -68,14 +76,14 @@ const basePost = {
   media: { file: 'reel.mp4', exists: true, bytes: 1000, url: '/media?p=reel.mp4', cover: '/media?p=reel.jpg', path: 'reel.mp4' },
 };
 
-function renderDetail(post = basePost, onNavigate = () => {}) {
+function renderDetail(post = basePost, onNavigate = () => {}, onEdit = () => {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider locale="en">
         <TooltipProvider>
           <ConfirmProvider>
-            <PostDetail post={post} onClose={() => {}} onEdit={() => {}} onNavigate={onNavigate} />
+            <PostDetail post={post} onClose={() => {}} onEdit={onEdit} onNavigate={onNavigate} />
           </ConfirmProvider>
         </TooltipProvider>
       </I18nProvider>
@@ -86,11 +94,39 @@ function renderDetail(post = basePost, onNavigate = () => {}) {
 beforeEach(() => {
   lintText.mockClear();
   platformValidateState.data = undefined;
+  presubmitState.data = undefined;
   validateMediaState.data = undefined;
   cloudDeliveryState.cloudOn = false;
   cloudDeliveryState.cloudLanes = [];
   cloudDeliveryState.resolved = false;
   updatePost.mockClear();
+  validateMediaCalls.length = 0;
+});
+
+describe('PostDetail validate-media probe gating (CI-2)', () => {
+  it('does NOT enable the validate-media probe for a media-less text post', () => {
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { x: { ready: true, problems: [], warnings: [] } } };
+    renderDetail({ ...basePost, type: 'text', platforms: ['x'], link: null, image: null });
+    expect(validateMediaCalls.at(-1)?.[2]).toBe(false);
+  });
+
+  it('does NOT enable the validate-media probe for a media-less poll post', () => {
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { telegram: { ready: true, problems: [], warnings: [] } } };
+    renderDetail({ ...basePost, type: 'poll', platforms: ['telegram'], poll: { options: ['A', 'B'], durationMinutes: 60 } });
+    expect(validateMediaCalls.at(-1)?.[2]).toBe(false);
+  });
+
+  it('does NOT enable the validate-media probe for a media-less nostr-longform post', () => {
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { nostr: { ready: true, problems: [], warnings: [] } } };
+    renderDetail({ ...basePost, type: 'nostr-longform', platforms: ['nostr'] });
+    expect(validateMediaCalls.at(-1)?.[2]).toBe(false);
+  });
+
+  it('DOES enable the validate-media probe for a media-backed reel post', () => {
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { instagram: { ready: true, problems: [], warnings: [] } } };
+    renderDetail(); // basePost is type:'reel'
+    expect(validateMediaCalls.at(-1)?.[2]).toBe(true);
+  });
 });
 
 describe('PostDetail platform-validate blocker rows', () => {
@@ -178,6 +214,36 @@ describe('PostDetail platform-validate blocker rows', () => {
     expect(screen.getByText('Draft')).toBeInTheDocument();
   });
 
+  // Flair is a CLOSED set of valid values, so the panel must offer the control rather
+  // than advise the operator to go and do it on reddit.com. The picker itself is the
+  // Composer's (spec 16) - this row opens it instead of growing a second one here.
+  it('turns the flair advisory into the action that fixes it', () => {
+    presubmitState.data = {
+      ok: true,
+      platforms: { reddit: { problems: [{ code: 'flairRequired', text: '' }], warnings: [] } },
+    };
+    const onEdit = vi.fn();
+    renderDetail({ ...basePost, platforms: ['reddit'], approval: 'pending', derivedState: 'waiting-due' }, () => {}, onEdit);
+    expect(screen.queryByText(/set one on reddit\.com/i)).not.toBeInTheDocument();
+    screen.getByRole('button', { name: /choose a flair/i }).click();
+    expect(onEdit).toHaveBeenCalled();
+  });
+
+  // No onFix (a read-only host, e.g. the approvals card) falls back to the plain sentence
+  // rather than offering a control that would go nowhere.
+  it('keeps the plain advisory when no fix handler is wired', () => {
+    render(
+      <I18nProvider locale="en">
+        <PlatformBlockers
+          presubmit={{ ok: true, platforms: { reddit: { problems: [{ code: 'flairRequired', text: '' }], warnings: [] } } }}
+          showApproval={false}
+        />
+      </I18nProvider>,
+    );
+    expect(screen.queryByRole('button', { name: /choose a flair/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/set one on reddit\.com/i)).toBeInTheDocument();
+  });
+
   it('collapses a disconnected lane to one amber "Set up <lane>" link', () => {
     platformValidateState.data = {
       ok: true,
@@ -193,7 +259,9 @@ describe('PostDetail platform-validate blocker rows', () => {
     expect(link).toBeInTheDocument();
     expect(screen.queryByText('LinkedIn ist nicht verbunden')).not.toBeInTheDocument();
     link.click();
-    expect(onNavigate).toHaveBeenCalledWith('setup');
+    // ...and it opens THAT lane's card, not the Setup index: the deep link is the point
+    // (5645c9c), and a test that only pinned the route let the platform argument rot.
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'linkedin');
   });
 
   it('renders nothing when an approved post has every lane connected and clean', () => {
@@ -286,5 +354,47 @@ describe('PostDetail platform-validate blocker rows', () => {
     };
     const { container } = renderDetail();
     expect(await axeClean(container)).toHaveNoViolations();
+  });
+});
+
+// Spec 12 review (adversarial findings on edit-after-publish, spec 12):
+// finding #5 - a published poll's question/options are immutable on every
+// edit-capable lane, so it must never be offered as an "editable" published
+// post; finding #4 - a posted post's editedSinceApproval flag is publish-inert
+// (canApprove already excludes 'posted') and CANNOT be cleared (no re-approve
+// gate on a posted post), so the amber "Re-approve" header pill is pure noise
+// there and must be suppressed - but only there, never for a non-posted post.
+describe('PostDetail spec 12 review (poll edit exclusion + posted re-approve pill)', () => {
+  it('excludes a published poll from editableLanes: no "Edit published" action offered', async () => {
+    const user = userEvent.setup();
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { telegram: { ready: true, problems: [], warnings: [] } } };
+    renderDetail({
+      ...basePost, type: 'poll', platforms: ['telegram'], derivedState: 'posted',
+      approval: 'approved', ids: { tgMessageId: '999' }, poll: { options: ['A', 'B'], durationMinutes: 60 },
+    });
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
+    expect(screen.queryByRole('button', { name: /edit published/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open in editor/i })).not.toBeInTheDocument();
+  });
+
+  it('still offers "Edit published" for a published NON-poll telegram post (the poll exclusion is type-specific)', async () => {
+    const user = userEvent.setup();
+    platformValidateState.data = { ok: true, postId: 'p1', platforms: { telegram: { ready: true, problems: [], warnings: [] } } };
+    renderDetail({
+      ...basePost, type: 'text', platforms: ['telegram'], derivedState: 'posted',
+      approval: 'approved', ids: { tgMessageId: '999' },
+    });
+    await user.click(screen.getByRole('button', { name: /more actions/i }));
+    expect(screen.getByRole('button', { name: /edit published/i })).toBeInTheDocument();
+  });
+
+  it('suppresses the amber "Re-approve" pill for a posted post (unclearable + publish-inert there)', () => {
+    renderDetail({ ...basePost, derivedState: 'posted', approval: 'approved', editedSinceApproval: true });
+    expect(screen.queryByText('Re-approve')).not.toBeInTheDocument();
+  });
+
+  it('still shows the amber "Re-approve" pill for a NON-posted approved post edited since approval', () => {
+    renderDetail({ ...basePost, derivedState: 'scheduled', approval: 'approved', editedSinceApproval: true });
+    expect(screen.getByText('Re-approve')).toBeInTheDocument();
   });
 });

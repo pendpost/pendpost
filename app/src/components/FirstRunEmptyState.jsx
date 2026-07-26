@@ -9,7 +9,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Loader2, Link2, ChevronRight } from 'lucide-react';
 import { createCampaign } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { INNER_SURFACE, EYEBROW } from './ui.jsx';
+import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import ReadinessChecklist from './ReadinessChecklist.jsx';
 
 // The server validates the campaign id against this same rule (lib/writes.mjs
@@ -76,7 +76,7 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
             type="submit"
             disabled={busy || !id.trim()}
             aria-busy={busy}
-            className="flex shrink-0 items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:bg-brand-light dark:text-zinc-900"
+            className={`flex shrink-0 items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}
           >
             {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
             {t('firstRun.createCampaign')}
@@ -100,7 +100,7 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
         >
           <Link2 size={14} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
           <span className="flex-1">{t('firstRun.connectPlatform')}</span>
-          <ChevronRight size={14} className="shrink-0 text-zinc-400 transition group-hover:translate-x-0.5" aria-hidden="true" />
+          <ChevronRight size={14} className="shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
         </button>
       </div>
 

@@ -15,7 +15,7 @@ import { buildFeedbackTarget } from '../lib/feedback.js';
 const BTN = 'rounded-xl px-3 py-1.5 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 const BTN_GHOST = `${BTN} text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60`;
 const BTN_BRAND = `${BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`;
-const BTN_DISABLED = `${BTN} cursor-not-allowed bg-zinc-200 text-zinc-400 dark:bg-zinc-700 dark:text-zinc-500`;
+const BTN_DISABLED = `${BTN} cursor-not-allowed bg-zinc-200 text-zinc-500 dark:bg-zinc-700 dark:text-zinc-400`;
 const FIELD = 'w-full rounded-xl border-0 bg-white/70 px-3 py-2 text-sm ring-1 ring-zinc-900/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:ring-white/10';
 
 function DiagRow({ label, value }) {

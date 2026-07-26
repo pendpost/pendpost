@@ -57,6 +57,14 @@ describe('isDueNow', () => {
     expect(isDueNow({ ...base, approval: 'rejected' })).toBe(false);
   });
 
+  // Stale approval: eligibleDuePosts (lib/scheduler.mjs) refuses an edited-since-
+  // approval post until it is re-approved, so run-now must not offer it either -
+  // otherwise the surface promises a fire the engine silently declines.
+  it('false when edited since approval (stale approval, mirrors the scheduler gate)', () => {
+    expect(isDueNow({ ...base, editedSinceApproval: true })).toBe(false);
+    expect(isDueNow({ ...releaseDue, editedSinceApproval: true })).toBe(false);
+  });
+
   it('false for a non-text post whose render is missing', () => {
     expect(isDueNow({ ...base, media: { exists: false } })).toBe(false);
     expect(isDueNow({ ...base, media: undefined })).toBe(false);

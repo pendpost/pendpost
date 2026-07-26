@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Square, Plus, Settings, ChevronRight, ChevronDown, Clock, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, Monitor, CornerUpLeft } from 'lucide-react';
-import { setSchedulerRunning } from '../lib/api.js';
+import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Square, Plus, Settings, ChevronRight, ChevronDown, Clock, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, Monitor, CornerUpLeft, Radar, Loader2 } from 'lucide-react';
+import { setSchedulerRunning, useSignals } from '../lib/api.js';
 import { useCloud, useCloudClients } from '../lib/cloud.js';
 import { fmtTime, fmtDayShort, fmtFull, visiblePlatforms } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
@@ -80,11 +80,13 @@ export function HealthTile({ tone, title, sub, action, onClick }) {
   );
 }
 
-export function NavItem({ icon: Icon, label, active, badge, badgeLabel, disabled, onClick }) {
+// `dot` - the quiet unread marker (like a chat app's): a small brand dot beside the badge,
+// with its meaning in an sr-only label (never colour-only for screen readers).
+export function NavItem({ icon: Icon, label, active, badge, badgeLabel, dot, dotLabel, disabled, onClick }) {
   const cls = active
     ? 'bg-brand text-white shadow-lg shadow-brand/20 font-bold dark:bg-brand-light dark:text-zinc-900'
     : disabled
-      ? 'text-zinc-400 dark:text-zinc-500'
+      ? 'text-zinc-500 dark:text-zinc-400'
       : 'text-zinc-600 transition hover:bg-zinc-200/50 dark:text-zinc-300 dark:hover:bg-zinc-800/50';
   return (
     <button
@@ -96,6 +98,11 @@ export function NavItem({ icon: Icon, label, active, badge, badgeLabel, disabled
     >
       <Icon size={16} aria-hidden="true" />
       <span className="flex-1">{label}</span>
+      {dot ? (
+        <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${active ? 'bg-white dark:bg-zinc-900' : 'bg-brand dark:bg-brand-light'}`}>
+          <span className="sr-only">{dotLabel}</span>
+        </span>
+      ) : null}
       {badge ? (
         <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${active ? 'bg-white/25 text-white dark:bg-zinc-900/20 dark:text-zinc-900' : 'bg-zinc-200/80 text-zinc-500 dark:bg-zinc-700/80 dark:text-zinc-400'}`}>
           <span aria-hidden="true">{badge}</span>
@@ -150,6 +157,22 @@ export function SchedulerToggle({ running, setupReady }) {
 export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue }) {
   const t = useT();
   const [showFeedback, setShowFeedback] = useState(false);
+  // The Radar nav row reflects the live scan (owner ask 2026-07-20): while a research job
+  // runs, the Beta chip yields to a small spinner - and because this subscription shares the
+  // panel's query, the 3s job poll stays alive when the operator navigates away mid-scan.
+  // Off-radar it costs one cached read (staleTime); disabled Radar never fetches at all.
+  const radarEnabled = posting?.radar?.enabled === true;
+  const { data: radarFeed } = useSignals(radarEnabled);
+  const radarScanning = radarEnabled && (radarFeed?.jobs || []).some((j) => j.state === 'running');
+  // The unread dot: signals found since the last Radar visit (the same localStorage clock
+  // the panel's "Neu" chips read). Suppressed while you are ON the page - the chips carry
+  // it there - and while scanning, where the spinner is the louder truth.
+  const radarUnread = radarEnabled && !radarScanning && activePage !== 'radar' && (() => {
+    try {
+      const seen = localStorage.getItem('pendpost.radar.lastSeen');
+      return Boolean(seen) && (radarFeed?.items || []).some((s) => s.foundAt && s.foundAt > seen);
+    } catch { return false; }
+  })();
   // Show only the relevant logos: the same connected+enabled+not-skipped rule the
   // dashboard uses (lib/format.js). The set holds DISPLAY ids (facebook/instagram
   // separately), so a chip renders only when its id is in `visible`.
@@ -261,7 +284,7 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
       role={open ? 'dialog' : undefined}
       aria-modal={open ? 'true' : undefined}
       aria-label={open ? t('sidebar.mainNav') : undefined}
-      className={`glass-panel fixed inset-y-4 left-4 z-50 flex w-60 shrink-0 flex-col gap-3 overflow-y-auto rounded-2xl p-4 transition-transform duration-200 motion-reduce:transition-none lg:static lg:inset-auto lg:left-auto lg:z-10 lg:translate-x-0 lg:overflow-visible lg:transition-none ${open ? 'translate-x-0' : 'invisible -translate-x-[calc(100%+1.5rem)] lg:visible'}`}
+      className={`glass-panel fixed inset-y-4 left-4 z-50 flex w-60 shrink-0 flex-col gap-3 overflow-y-auto rounded-2xl p-4 transition-transform duration-200 motion-reduce:transition-none lg:w-sidebar lg:static lg:inset-auto lg:left-auto lg:z-10 lg:translate-x-0 lg:overflow-visible lg:transition-none ${open ? 'translate-x-0' : 'invisible -translate-x-[calc(100%+1.5rem)] lg:visible'}`}
     >
       <div>
         <p className="font-display text-lg font-bold text-brand dark:text-brand-light">pendpost</p>
@@ -328,6 +351,18 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
         <NavItem icon={Send} label={t('nav.published')} active={activePage === 'published'} onClick={() => onNavigate('published')} />
         <NavItem icon={Activity} label={t('nav.activity')} active={activePage === 'activity'} onClick={() => onNavigate('activity')} />
         <NavItem icon={BarChart3} label={t('nav.insights')} active={activePage === 'insights'} onClick={() => onNavigate('insights')} />
+        {/* Radar (beta) social listening (spec 32): a Beta-badged nav row. The page
+            itself gates on posting.radar.enabled (off by default), like the cloud row. */}
+        <NavItem
+          icon={Radar}
+          label={t('nav.radar')}
+          badge={radarScanning ? <Loader2 size={11} className="animate-spin" aria-hidden="true" /> : t('radar.beta')}
+          badgeLabel={radarScanning ? t('sidebar.radarScanning') : t('radar.beta')}
+          dot={radarUnread}
+          dotLabel={t('sidebar.radarNew')}
+          active={activePage === 'radar'}
+          onClick={() => onNavigate('radar')}
+        />
         <NavItem icon={FolderOpen} label={t('nav.assets')} active={activePage === 'assets'} onClick={() => onNavigate('assets')} />
         <NavItem icon={Users} label={t('nav.clients')} active={activePage === 'clients'} onClick={() => onNavigate('clients')} />
         <div className="pt-1" aria-hidden="true" />
@@ -371,13 +406,13 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
               {nextMeta ? (
                 <nextMeta.Icon size={14} className={`shrink-0 ${nextMeta.color}`} aria-hidden="true" />
               ) : (
-                <Clock size={15} className="shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" />
+                <Clock size={15} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
               )}
               <p className="min-w-0 flex-1 truncate text-xs">
                 <span className="font-bold">{fmtDayShort(new Date(nextPost.scheduledAt))} {fmtTime(nextPost.scheduledAt)}</span>
                 <span className="text-zinc-500 dark:text-zinc-400"> · {preview}</span>
               </p>
-              <ChevronRight size={14} className="shrink-0 text-zinc-400 transition group-hover:translate-x-0.5" aria-hidden="true" />
+              <ChevronRight size={14} className="shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           );
         })() : null}
@@ -423,9 +458,9 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
                   const Glyph = l.icon.Icon;
                   return <Glyph key={l.id} size={15} className={`shrink-0 ${l.icon.color}`} aria-hidden="true" />;
                 })}
-                {accountCount > 5 ? <span className="text-[11px] font-bold tabular-nums text-zinc-400 dark:text-zinc-500">+{accountCount - 5}</span> : null}
+                {accountCount > 5 ? <span className="text-[11px] font-bold tabular-nums text-zinc-500 dark:text-zinc-400">+{accountCount - 5}</span> : null}
               </span>
-              <ChevronRight size={14} className="shrink-0 text-zinc-400 transition group-hover:translate-x-0.5" aria-hidden="true" />
+              <ChevronRight size={14} className="shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           </Tip>
         ) : null}
@@ -435,7 +470,7 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
             ConnectionStatus glyph, so the sidebar no longer restates it here. */}
         {activeOnCloud ? null : (
           <div className={`flex items-center gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-            <Monitor size={15} className={`shrink-0 ${schedulerRunning ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-400 dark:text-zinc-500'}`} aria-hidden="true" />
+            <Monitor size={15} className={`shrink-0 ${schedulerRunning ? 'text-emerald-600 dark:text-emerald-400' : 'text-zinc-500 dark:text-zinc-400'}`} aria-hidden="true" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-xs font-bold leading-tight">{t('sidebar.delivery.title')}</p>
               <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{deliveryLocalSub}</p>

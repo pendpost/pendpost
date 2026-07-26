@@ -60,8 +60,16 @@
  *   status           --plan <p>                       list GBP plan entries
  *   verify           --plan <p> [--only <id>]         read-only liveness (GET local post -> state)
  *   insights         --plan <p> [--only <id>]         per-post metrics (views + CTA clicks, best-effort)
+ *   performance      --plan <p>                        location-wide local-intent metrics (calls/directions/clicks/bookings + top search keywords)
  *   probe                                              read-only health probe (list accounts)
  *   delete           --id <resourceName>               delete a local post (cleanup)
+ *   media-add        --source-url <u> | --file <p> --category <c> [--format PHOTO|VIDEO]
+ *                                                       add a photo/video to the location gallery
+ *   media-list                                         list the location's gallery media
+ *   attributes-get                                     read the location's attributes
+ *   attributes-set   --attribute <attributes/id> --value <v> [--value-type BOOL|ENUM|TEXT|NUMBER|URL|REPEATED_ENUM]
+ *                                                       update one location attribute (valueType
+ *                                                       picks the request field: values/uriValues/repeatedEnumValue)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -72,6 +80,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath } from '../lib/util.mjs';
+import { activeRoot } from '../lib/context.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -86,6 +95,9 @@ const API = 'https://mybusiness.googleapis.com/v4';
 // (the v4 host only keeps localPosts) - both are gated on the same per-project approval.
 const ACCOUNTS_API = 'https://mybusinessaccountmanagement.googleapis.com/v1';
 const INFO_API = 'https://mybusinessbusinessinformation.googleapis.com/v1';
+// Location-wide performance metrics live on their OWN Business Profile host (NOT
+// v4 localPosts:reportInsights, which is deprecated) - the modern Performance API.
+const PERF_API = 'https://businessprofileperformance.googleapis.com/v1';
 const SCOPE = 'https://www.googleapis.com/auth/business.manage';
 const DEFAULT_REDIRECT = 'http://127.0.0.1:8088/oauth/gbp/callback';
 
@@ -94,6 +106,30 @@ const SUMMARY_LIMIT = 1500;
 // The three local-post shapes + the CTA action types the v4 surface accepts.
 const TOPICS = new Set(['standard', 'offer', 'event']);
 const CTA_TYPES = new Set(['BOOK', 'ORDER', 'SHOP', 'LEARN_MORE', 'SIGN_UP', 'CALL']);
+
+// Reviews (spec 03, engagement): the v4 star-rating enum -> a 1-5 integer, and the
+// owner-reply body cap. A review reply is upserted (PUT) or removed (DELETE) on the
+// review's own resource; a review is NOT a local post (no topic/CTA/media).
+const STAR_MAP = { ONE: 1, TWO: 2, THREE: 3, FOUR: 4, FIVE: 5 };
+const REVIEW_REPLY_LIMIT = 4096;
+// A gentle page cap so a huge history never fans out unbounded (the GBP APIs are
+// request-quota'd, gbp-social.mjs header): 50/page x 6 = up to 300 recent reviews.
+const REVIEWS_MAX_PAGES = 6;
+
+// Location media (spec 19, Pattern P3 + P4): the FROZEN category enum
+// (accounts.locations.media locationAssociation.category) + media format the v4
+// media surface accepts. Any other value is invalid_input - never silently coerced.
+const MEDIA_CATEGORIES = new Set(['COVER', 'PROFILE', 'LOGO', 'EXTERIOR', 'INTERIOR', 'PRODUCT', 'AT_WORK', 'FOOD_AND_DRINK', 'MENU', 'COMMON_AREA', 'ROOMS', 'TEAMS', 'ADDITIONAL']);
+const MEDIA_FORMATS = new Set(['PHOTO', 'VIDEO']);
+
+// Test-only host overrides (mirrors GBP_REDIRECT_URI's override precedent): when set,
+// media-add/media-list/attributes-get/attributes-set target a LOCAL stub host instead of
+// the real Google APIs, so the two-step resumable upload (startUpload -> byte upload ->
+// media.create) and the attributes PATCH are provable end-to-end with no live credentials/
+// network. Read ONLY by these four verbs - every other verb (reviews, performance, local
+// posts, discover...) keeps hitting the real, hardcoded API/INFO_API hosts unconditionally.
+const mediaApiBase = () => readEnv('GBP_TEST_API') || API;
+const infoApiBase = () => readEnv('GBP_TEST_INFO_API') || INFO_API;
 
 // Refresh when the access token expires within this window (it lasts ~1h).
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -233,6 +269,33 @@ async function api(method, urlStr, { query, body, token } = {}) {
     throw err;
   }
   return data;
+}
+
+// Resolve a client-root-relative --file path to an absolute, containment-checked
+// path (mirrors set_cover's filePath handling, lib/covers.mjs:249-265): resolve
+// against activeRoot() (this process runs with PENDPOST_ROOT set to the caller's
+// resolved client root, envPath()'s own anchor), then realpath-confine it inside
+// that root so --file can never escape the client subtree. Returns null (never
+// throws) on a missing/outside-root/non-file path so the caller degrades to
+// invalid_input instead of crashing.
+function resolveClientFile(rel) {
+  const root = activeRoot();
+  const abs = path.resolve(root, String(rel));
+  let real;
+  let realRoot;
+  try {
+    real = fs.realpathSync(abs);
+    realRoot = fs.realpathSync(root);
+  } catch {
+    return null;
+  }
+  if (real !== realRoot && !real.startsWith(realRoot + path.sep)) return null;
+  try {
+    if (!fs.statSync(real).isFile()) return null;
+  } catch {
+    return null;
+  }
+  return real;
 }
 
 // ---------- plan helpers (same shape as the sibling engines) ----------
@@ -657,6 +720,434 @@ async function cmdInsights(args) {
   }
 }
 
+// Normalize one v4 review to the P6 inbound shape (lib/comments.mjs Comment) plus
+// the review-only fields: commentId is the FULL resource name (accounts/.../reviews/
+// <id>) - the reply verb addresses the review by that name verbatim, mirroring how
+// gbpPostId stores the full local-post name. rating maps the star enum to 1-5;
+// reply/replyTs carry an existing owner reply so the inbox can render "replied".
+function normalizeReview(r = {}) {
+  return {
+    commentId: String(r.name || r.reviewId || ''),
+    kind: 'review',
+    author: (r.reviewer && r.reviewer.displayName) || 'Anonymous',
+    text: r.comment || '',
+    ts: r.updateTime || r.createTime || null,
+    rating: STAR_MAP[r.starRating] || null,
+    reply: (r.reviewReply && r.reviewReply.comment) || null,
+    replyTs: (r.reviewReply && r.reviewReply.updateTime) || null,
+    platform: 'gbp',
+    postId: null,
+    permalink: null,
+  };
+}
+
+// reviews (read, spec 03): GET the location's reviews (accounts.locations.reviews.list),
+// newest-first, following nextPageToken to a gentle cap, and normalize each to the P6
+// inbound shape. Emits ONE result row { platform:gbp, action:reviews, ok, items[],
+// averageRating, totalReviewCount }. Takes NO --plan - reviews are location-scoped, not
+// post-scoped. Degrades like the rest of the lane (P9): 403 -> needs_scope (the project
+// is not yet allowlisted for the Business Profile APIs), never a throw. Object.assign'd
+// onto RUN so the top envelope's ok reflects a needs_scope/failure (mirrors the comment
+// engines' cmdComments), while a success stays ok:true with the row.
+async function cmdReviews() {
+  Object.assign(RUN, await gatherReviews());
+}
+
+async function gatherReviews() {
+  if (!accountId() || !locationId()) {
+    return { ok: false, error: 'GBP_ACCOUNT_ID / GBP_LOCATION_ID are not set', code: 'not_configured', results: [] };
+  }
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+  try {
+    const items = [];
+    let averageRating = null;
+    let totalReviewCount = null;
+    let pageToken = null;
+    for (let page = 0; page < REVIEWS_MAX_PAGES; page += 1) {
+      const query = { orderBy: 'updateTime desc', pageSize: 50 };
+      if (pageToken) query.pageToken = pageToken;
+      // eslint-disable-next-line no-await-in-loop
+      const data = await api('GET', `${API}/${parentPath()}/reviews`, { query, token });
+      if (averageRating == null && typeof data.averageRating === 'number') averageRating = data.averageRating;
+      if (totalReviewCount == null && data.totalReviewCount != null) totalReviewCount = Number(data.totalReviewCount);
+      for (const r of data.reviews || []) items.push(normalizeReview(r));
+      pageToken = data.nextPageToken || null;
+      if (!pageToken) break;
+    }
+    return { ok: true, results: [{ platform: 'gbp', action: 'reviews', ok: true, items, averageRating, totalReviewCount }] };
+  } catch (err) {
+    if (err.status === 403) {
+      return { ok: false, error: 'needs_scope', scope: 'business.manage', detail: 'Business Profile API pending approval', results: [] };
+    }
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+}
+
+// reply-to-review (write, spec 03): upsert (PUT .../reply {comment}) or remove
+// (DELETE .../reply when --text is empty or --delete is passed) the OWNER reply on
+// one review, addressed by its full resource name (--review-id). A review reply is
+// low-risk + reversible (edit/remove), so no confirm gate. Pushes { postId:null,
+// platform:gbp, action:reply-to-review, ok, id:reviewId }. Degrades (P9), never
+// throws: 403 -> needs_scope, 404 -> review_missing, over-length -> invalid_input.
+async function cmdReplyToReview(args) {
+  Object.assign(RUN, await doReplyToReview(args));
+}
+
+async function doReplyToReview(args) {
+  const reviewId = typeof args['review-id'] === 'string' ? args['review-id'].trim() : '';
+  if (!reviewId) {
+    return { ok: false, error: 'reply-to-review requires --review-id <resource name>', code: 'invalid_input', results: [] };
+  }
+  const del = args.delete === true || args.delete === 'true';
+  const text = typeof args.text === 'string' ? args.text : '';
+  const remove = del || !text.trim();
+  if (!remove && text.length > REVIEW_REPLY_LIMIT) {
+    return { ok: false, error: `reply exceeds ${REVIEW_REPLY_LIMIT} chars`, code: 'invalid_input', results: [] };
+  }
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+  try {
+    if (remove) await api('DELETE', `${API}/${reviewId}/reply`, { token });
+    else await api('PUT', `${API}/${reviewId}/reply`, { body: { comment: text }, token });
+    return { ok: true, results: [{ postId: null, platform: 'gbp', action: 'reply-to-review', ok: true, id: reviewId }] };
+  } catch (err) {
+    if (err.status === 403) return { ok: false, error: 'needs_scope', scope: 'business.manage', detail: 'Business Profile API pending approval', results: [] };
+    if (err.status === 404) return { ok: false, error: 'review_missing', code: 'review_missing', results: [] };
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+}
+
+// Location media gallery + attributes (spec 19, account management, Pattern P3 + P9).
+// FOUR verbs, no post TYPE / publish field - the gallery + attributes live on the
+// LOCATION, not any plan post. All four degrade like the rest of the lane: 403 ->
+// needs_scope (business.manage), never a throw past the envelope.
+
+// media-add (write): public URL -> a single media.create POST; local --file -> the
+// two-step resumable upload (media:startUpload -> raw byte POST -> media.create with
+// dataRef). Category is validated against the FROZEN MEDIA_CATEGORIES set; format
+// defaults to PHOTO. Pushes { platform:'gbp', action:'media-add', ok, id:<mediaName>,
+// googleUrl }.
+async function cmdMediaAdd(args) {
+  Object.assign(RUN, await doMediaAdd(args));
+}
+
+async function doMediaAdd(args) {
+  const category = typeof args.category === 'string' ? args.category.trim().toUpperCase() : '';
+  if (!MEDIA_CATEGORIES.has(category)) {
+    return { ok: false, error: `--category must be one of ${[...MEDIA_CATEGORIES].join('|')}`, code: 'invalid_input', results: [] };
+  }
+  const format = typeof args.format === 'string' && args.format.trim() ? args.format.trim().toUpperCase() : 'PHOTO';
+  if (!MEDIA_FORMATS.has(format)) {
+    return { ok: false, error: `--format must be one of ${[...MEDIA_FORMATS].join('|')}`, code: 'invalid_input', results: [] };
+  }
+  const sourceUrl = typeof args['source-url'] === 'string' ? args['source-url'].trim() : '';
+  const file = typeof args.file === 'string' ? args.file.trim() : '';
+  if (!sourceUrl && !file) {
+    return { ok: false, error: 'media-add requires --source-url <public url> or --file <client-root-relative path>', code: 'invalid_input', results: [] };
+  }
+  if (sourceUrl && file) {
+    return { ok: false, error: 'media-add takes --source-url OR --file, not both', code: 'invalid_input', results: [] };
+  }
+  if (sourceUrl && !/^https?:\/\//i.test(sourceUrl)) {
+    return { ok: false, error: '--source-url must be an absolute http(s) URL', code: 'invalid_input', results: [] };
+  }
+  let absFile = null;
+  if (file) {
+    absFile = resolveClientFile(file);
+    if (!absFile) return { ok: false, error: `file not found: ${file}`, code: 'invalid_input', results: [] };
+  }
+  if (!accountId() || !locationId()) {
+    return { ok: false, error: 'GBP_ACCOUNT_ID / GBP_LOCATION_ID are not set', code: 'not_configured', results: [] };
+  }
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+  const base = mediaApiBase();
+  const parent = parentPath();
+  try {
+    let result;
+    if (sourceUrl) {
+      result = await api('POST', `${base}/${parent}/media`, {
+        body: { mediaFormat: format, locationAssociation: { category }, sourceUrl },
+        token,
+      });
+    } else {
+      const startRes = await api('POST', `${base}/${parent}/media:startUpload`, { body: {}, token });
+      const resourceName = startRes?.resourceName;
+      if (!resourceName) throw new Error(`media:startUpload returned no resourceName: ${JSON.stringify(startRes).slice(0, 200)}`);
+      // media.upload lives on its OWN path template (/upload/v1/media/{+name}) -
+      // NOT a '/v4' -> '/upload/v4' rewrite of the media API base (spec 19 review,
+      // BLOCKER-1: that rewrite is a no-op against the real host, so every live
+      // --file upload 404'd). Keep the HOST from `base` (so the GBP_TEST_API stub
+      // override still routes here) but hardcode the real upload/v1/media path.
+      const uploadUrl = `${new URL(base).origin}/upload/v1/media/${resourceName}?upload_type=media`;
+      const bytes = fs.readFileSync(absFile);
+      const uploadRes = await fetch(uploadUrl, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream' },
+        body: bytes,
+      });
+      if (!uploadRes.ok) {
+        const text = await uploadRes.text().catch(() => '');
+        // Attach .status like the api() helper does (:254-270) so a 403 on this
+        // raw fetch leg also degrades to needs_scope (spec 19 review, MINOR-4)
+        // instead of the generic engine_failure a plain Error would produce.
+        const uploadErr = new Error(`media byte upload failed: HTTP ${uploadRes.status} - ${text.slice(0, 200)}`);
+        uploadErr.status = uploadRes.status;
+        throw uploadErr;
+      }
+      result = await api('POST', `${base}/${parent}/media`, {
+        body: { mediaFormat: format, locationAssociation: { category }, dataRef: { resourceName } },
+        token,
+      });
+    }
+    const name = result?.name;
+    if (!name) throw new Error(`media create returned no name: ${JSON.stringify(result).slice(0, 200)}`);
+    return { ok: true, results: [{ platform: 'gbp', action: 'media-add', ok: true, id: String(name), googleUrl: result.googleUrl || null }] };
+  } catch (err) {
+    if (err.status === 403) return { ok: false, error: 'needs_scope', scope: 'business.manage', detail: 'Business Profile API pending approval', results: [] };
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+}
+
+// media-list (read): GET the location's gallery, normalized. Emits ONE result row
+// { platform:'gbp', action:'media-list', ok:true, items:[{id,format,category,
+// thumbnailUrl,googleUrl,createTime}] }. A FAILED read is ok:false at the top
+// envelope, NEVER a false-empty { ok:true, items:[] }.
+async function cmdMediaList(args) {
+  Object.assign(RUN, await doMediaList(args));
+}
+
+async function doMediaList(args) {
+  if (!accountId() || !locationId()) {
+    return { ok: false, error: 'GBP_ACCOUNT_ID / GBP_LOCATION_ID are not set', code: 'not_configured', results: [] };
+  }
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+  try {
+    const query = {};
+    if (args['page-size']) query.pageSize = args['page-size'];
+    if (args['page-token']) query.pageToken = args['page-token'];
+    const data = await api('GET', `${mediaApiBase()}/${parentPath()}/media`, { query, token });
+    const items = (data.mediaItems || []).map((m) => ({
+      id: m.name || null,
+      format: m.mediaFormat || null,
+      category: (m.locationAssociation && m.locationAssociation.category) || null,
+      thumbnailUrl: m.thumbnailUrl || null,
+      googleUrl: m.googleUrl || null,
+      createTime: m.createTime || null,
+    }));
+    return { ok: true, results: [{ platform: 'gbp', action: 'media-list', ok: true, items }] };
+  } catch (err) {
+    if (err.status === 403) return { ok: false, error: 'needs_scope', scope: 'business.manage', detail: 'Business Profile API pending approval', results: [] };
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+}
+
+// attributes-get (read): GET the location's attributes on the DISTINCT v1
+// business-information host (locations/{l}/attributes - NO account prefix, unlike
+// every v4 media/localPosts call). Emits ONE result row { platform:'gbp',
+// action:'attributes-get', ok:true, items:[{id,valueType,values}] }.
+async function cmdAttributesGet() {
+  Object.assign(RUN, await doAttributesGet());
+}
+
+async function doAttributesGet() {
+  if (!locationId()) {
+    return { ok: false, error: 'GBP_LOCATION_ID is not set', code: 'not_configured', results: [] };
+  }
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+  try {
+    const data = await api('GET', `${infoApiBase()}/locations/${locationId()}/attributes`, { token });
+    const items = (data.attributes || []).map((a) => ({ id: a.name || null, valueType: a.valueType || null, values: Array.isArray(a.values) ? a.values : [] }));
+    return { ok: true, results: [{ platform: 'gbp', action: 'attributes-get', ok: true, items }] };
+  } catch (err) {
+    if (err.status === 403) return { ok: false, error: 'needs_scope', scope: 'business.manage', detail: 'Business Profile API pending approval', results: [] };
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+}
+
+// attributes-set (write): a single-attribute PATCH with attributeMask=<attributeName>
+// on the SAME v1 business-information host (locations.updateAttributes) - idempotent
+// (PATCH is an upsert), so a repeat call is safe. Pushes { platform:'gbp',
+// action:'attributes-set', ok, id:<attributeName> }.
+// NOTE (spec 19 review, BLOCKER-2): updateAttributes takes attributeMask, NOT
+// updateMask - there is no updateMask field on this method, so the original param
+// name 400'd on every live call.
+const ATTR_VALUE_TYPES = new Set(['BOOL', 'ENUM', 'TEXT', 'NUMBER', 'URL', 'REPEATED_ENUM']);
+
+// Only the two literal boolean spellings coerce (spec 19 review, MINOR-3): a
+// legitimate attribute value that happens to look numeric (e.g. a TEXT attribute
+// "12345") must survive as the operator typed it - the old blind Number() branch
+// silently mis-typed such values.
+function coerceAttrValue(v) {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return v;
+}
+
+// Google's Attribute resource carries the value in a DIFFERENT field per
+// valueType (spec 19 review, MINOR-3): values[] for BOOL/ENUM/TEXT/NUMBER,
+// uriValues[] ({uri}) for URL, repeatedEnumValue ({setValues}) for REPEATED_ENUM.
+// valueType is optional - omitted (the common case) keeps the original values[]
+// shape; the operator (or a caller that already read the attribute's valueType
+// via attributes-get) supplies --value-type for the two attributes that need a
+// different field.
+function buildAttributeValue(valueType, rawValue) {
+  if (valueType === 'URL') return { uriValues: [{ uri: String(rawValue) }] };
+  if (valueType === 'REPEATED_ENUM') {
+    const setValues = String(rawValue).split(',').map((v) => v.trim()).filter(Boolean);
+    return { repeatedEnumValue: { setValues } };
+  }
+  return { values: [coerceAttrValue(rawValue)] };
+}
+
+async function cmdAttributesSet(args) {
+  Object.assign(RUN, await doAttributesSet(args));
+}
+
+async function doAttributesSet(args) {
+  const attribute = typeof args.attribute === 'string' ? args.attribute.trim() : '';
+  if (!attribute) {
+    return { ok: false, error: 'attributes-set requires --attribute <attributes/<id>>', code: 'invalid_input', results: [] };
+  }
+  if (args.value === undefined || args.value === null) {
+    return { ok: false, error: 'attributes-set requires --value <v>', code: 'invalid_input', results: [] };
+  }
+  const valueType = typeof args['value-type'] === 'string' ? args['value-type'].trim().toUpperCase() : '';
+  if (valueType && !ATTR_VALUE_TYPES.has(valueType)) {
+    return { ok: false, error: `--value-type must be one of ${[...ATTR_VALUE_TYPES].join('|')}`, code: 'invalid_input', results: [] };
+  }
+  if (!locationId()) {
+    return { ok: false, error: 'GBP_LOCATION_ID is not set', code: 'not_configured', results: [] };
+  }
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+  try {
+    const body = { attributes: [{ name: attribute, ...buildAttributeValue(valueType, args.value) }] };
+    await api('PATCH', `${infoApiBase()}/locations/${locationId()}/attributes`, { query: { attributeMask: attribute }, body, token });
+    return { ok: true, results: [{ platform: 'gbp', action: 'attributes-set', ok: true, id: attribute }] };
+  } catch (err) {
+    if (err.status === 403) return { ok: false, error: 'needs_scope', scope: 'business.manage', detail: 'Business Profile API pending approval', results: [] };
+    return { ok: false, error: String(err.message || err).slice(0, 200), code: 'engine_failure', results: [] };
+  }
+}
+
+// Location-wide LOCAL-INTENT performance via the Business Profile Performance API
+// (distinct host from the deprecated v4 localPosts:reportInsights). Called ONCE
+// per gbp-evidence campaign by the insights sweep (account-scoped, not per post):
+//   1. fetchMultiDailyMetricsTimeSeries - the daily action counters over the last
+//      30 days; each series is summed to a single scalar.
+//   2. searchkeywords/impressions/monthly - the top search terms that surfaced the
+//      listing, truncated to the top 10 by count.
+// Emits ONE account row { postId:null, platform:'gbp', action:'performance', ok,
+// scope:'account', performance:{...} }. 403 -> the needs_scope degrade (P9);
+// never throws past the envelope (any failure becomes an ok:false row instead).
+const PERF_DAILY_METRICS = [
+  'CALL_CLICKS', 'WEBSITE_CLICKS', 'BUSINESS_DIRECTION_REQUESTS', 'BUSINESS_BOOKINGS',
+  'BUSINESS_CONVERSATIONS', 'BUSINESS_IMPRESSIONS_DESKTOP_SEARCH', 'BUSINESS_IMPRESSIONS_MOBILE_SEARCH',
+];
+
+async function cmdPerformance() {
+  const accountRow = (extra) => ({ postId: null, platform: 'gbp', action: 'performance', scope: 'account', ...extra });
+  if (!accountId() || !locationId()) {
+    RUN.results.push(accountRow({ ok: false, errorCode: 'not_configured', errorMessage: 'GBP_ACCOUNT_ID / GBP_LOCATION_ID are not set' }));
+    return;
+  }
+  let token;
+  try {
+    token = await ensureFreshToken();
+  } catch (err) {
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 200) }));
+    return;
+  }
+  const loc = locationId();
+  const civil = (d) => ({ year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate() });
+  try {
+    // -- daily action metrics (last 30 days), each series summed to a scalar --
+    const end = new Date();
+    const start = new Date(end.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const sp = new URLSearchParams();
+    for (const m of PERF_DAILY_METRICS) sp.append('dailyMetrics', m);
+    const s = civil(start);
+    const e = civil(end);
+    sp.set('dailyRange.start_date.year', String(s.year));
+    sp.set('dailyRange.start_date.month', String(s.month));
+    sp.set('dailyRange.start_date.day', String(s.day));
+    sp.set('dailyRange.end_date.year', String(e.year));
+    sp.set('dailyRange.end_date.month', String(e.month));
+    sp.set('dailyRange.end_date.day', String(e.day));
+    const daily = await api('GET', `${PERF_API}/locations/${loc}:fetchMultiDailyMetricsTimeSeries?${sp.toString()}`, { token });
+    // Flatten multiDailyMetricTimeSeries[].dailyMetricTimeSeries[] and sum each
+    // series' datedValues (values arrive as strings; absent -> 0).
+    const series = [];
+    for (const grp of daily.multiDailyMetricTimeSeries || []) {
+      for (const dm of grp.dailyMetricTimeSeries || []) series.push(dm);
+    }
+    const sumMetric = (name) => {
+      const dm = series.find((d) => d.dailyMetric === name);
+      return (dm?.timeSeries?.datedValues || []).reduce((acc, v) => acc + Number(v.value || 0), 0);
+    };
+
+    // -- top monthly search keywords, truncated to the top 10 by count --
+    const kw = await api('GET', `${PERF_API}/locations/${loc}/searchkeywords/impressions/monthly`, { token });
+    const searchKeywords = (kw.searchKeywordsCounts || [])
+      .map((r) => ({ keyword: String(r.searchKeyword || ''), count: Number(r.insightsValue?.value ?? r.insightsValue?.threshold ?? 0) }))
+      .filter((r) => r.keyword)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    RUN.results.push(accountRow({
+      ok: true,
+      performance: {
+        calls: sumMetric('CALL_CLICKS'),
+        websiteClicks: sumMetric('WEBSITE_CLICKS'),
+        directions: sumMetric('BUSINESS_DIRECTION_REQUESTS'),
+        bookings: sumMetric('BUSINESS_BOOKINGS'),
+        conversations: sumMetric('BUSINESS_CONVERSATIONS'),
+        impressions: sumMetric('BUSINESS_IMPRESSIONS_DESKTOP_SEARCH') + sumMetric('BUSINESS_IMPRESSIONS_MOBILE_SEARCH'),
+        searchKeywords,
+      },
+    }));
+  } catch (err) {
+    if (err.status === 403) {
+      // The token minted fine - only the Business Profile API surface is gated on
+      // Google's per-project approval. Degrade to the structured needs_scope shape
+      // (P9), never a crash; the sweep filters this ok:false row out honestly.
+      RUN.results.push(accountRow({ ok: false, error: 'needs_scope', scope: 'business.manage' }));
+      console.log('[warn] performance: Business Profile API access pending Google approval - no metrics available yet.');
+      return;
+    }
+    RUN.results.push(accountRow({ ok: false, errorCode: 'engine_failure', errorMessage: String(err.message || err).slice(0, 200) }));
+    console.log(`[warn] performance failed: ${String(err.message || err).slice(0, 200)}`);
+  }
+}
+
 async function cmdDelete(args) {
   if (!args.id) { console.error('[err] delete requires --id <resourceName> (accounts/.../locations/.../localPosts/<id>)'); process.exit(2); }
   const token = await ensureFreshToken();
@@ -688,6 +1179,45 @@ async function cmdProbe() {
   }
 }
 
+// Connected-account discovery (spec 22, Pattern P3): which Business Profile account +
+// locations can this token manage? Reads creds via readEnv so a missing token degrades
+// to an ok:false row, never process.exit past the envelope. Reuses the accounts.list +
+// locations reads (already in cmdAuth); picking a location writes gbpLocationId. GBP is
+// MOCK-FIRST - the live path 403s until Google grants per-project Business Profile API
+// access, which degrades to needs_scope (business.manage). Takes no --plan.
+async function cmdDiscover() {
+  const { discoverOk, discoverNeedsScope, discoverAuthError, markCurrent } = await import('../lib/discovery.mjs');
+  if (!readEnv('GBP_ACCESS_TOKEN') && !readEnv('GBP_REFRESH_TOKEN')) {
+    RUN.results.push(discoverNeedsScope('gbp'));
+    return;
+  }
+  let token;
+  try { token = await ensureFreshToken(); } catch (err) { RUN.results.push(discoverAuthError('gbp', err.message || err)); return; }
+  try {
+    const acctData = await api('GET', `${ACCOUNTS_API}/accounts`, { token });
+    const accounts = acctData.accounts || [];
+    const acct = accounts.find((a) => (a.name || '').split('/')[1] === accountId()) || accounts[0];
+    let locations = [];
+    if (acct) {
+      const locData = await api('GET', `${INFO_API}/${acct.name}/locations`, { query: { readMask: 'name,title', pageSize: 100 }, token });
+      locations = locData.locations || [];
+    }
+    const sealed = locationId() || null;
+    const assets = markCurrent(locations.map((l) => {
+      const lid = (l.name || '').split('/').pop();
+      return { kind: 'location', id: lid, name: l.title || lid };
+    }), sealed);
+    RUN.results.push(discoverOk('gbp', {
+      identity: { id: acct ? ((acct.name || '').split('/')[1] || '') : '', handle: null, name: acct?.accountName || 'Business Profile' },
+      assets,
+      selected: { gbpLocationId: sealed },
+    }));
+  } catch (err) {
+    if (err.status === 403) { RUN.results.push(discoverNeedsScope('gbp')); return; }
+    RUN.results.push(discoverAuthError('gbp', err.message || err));
+  }
+}
+
 // ---------- main ----------
 
 function parseArgs(argv) {
@@ -713,8 +1243,16 @@ const COMMANDS = {
   status: cmdStatus,
   verify: cmdVerify,
   insights: cmdInsights,
+  performance: cmdPerformance,
+  reviews: cmdReviews,
+  'reply-to-review': cmdReplyToReview,
   delete: cmdDelete,
   probe: cmdProbe,
+  discover: cmdDiscover,
+  'media-add': cmdMediaAdd,
+  'media-list': cmdMediaList,
+  'attributes-get': cmdAttributesGet,
+  'attributes-set': cmdAttributesSet,
 };
 
 async function main() {
@@ -728,6 +1266,16 @@ async function main() {
       platform: 'gbp', command: commandName,
       planPath: typeof args.plan === 'string' ? path.resolve(String(args.plan)) : null,
       only: typeof args.only === 'string' ? args.only : null,
+      reviewId: typeof args['review-id'] === 'string' ? args['review-id'] : null,
+      text: typeof args.text === 'string' ? args.text : null,
+      remove: args.delete === true || args.delete === 'true',
+      sourceUrl: typeof args['source-url'] === 'string' ? args['source-url'] : null,
+      filePath: typeof args.file === 'string' ? args.file : null,
+      category: typeof args.category === 'string' ? args.category : null,
+      format: typeof args.format === 'string' ? args.format : null,
+      attribute: typeof args.attribute === 'string' ? args.attribute : null,
+      value: typeof args.value === 'string' ? args.value : null,
+      valueType: typeof args['value-type'] === 'string' ? args['value-type'] : null,
     });
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
     else console.error(`[mock] gbp ${commandName}: ${envelope.results.length} result(s)`);
@@ -738,7 +1286,7 @@ async function main() {
     console.error(`Usage: node scripts/gbp-social.mjs <${Object.keys(COMMANDS).join('|')}> [options]`);
     process.exit(2);
   }
-  if (['validate', 'publish-due', 'status', 'verify', 'insights'].includes(commandName) && !args.plan) {
+  if (['validate', 'publish-due', 'status', 'verify', 'insights', 'performance'].includes(commandName) && !args.plan) {
     console.error(`[err] ${commandName} requires --plan <post-plan.json>`);
     process.exit(2);
   }

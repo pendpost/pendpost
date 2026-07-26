@@ -39,6 +39,8 @@ vi.mock('../../lib/api.js', () => ({
   useConfig: () => ({ data: { posting: { hashtagPresets: [] } } }),
   usePlatformValidate: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePinterestBoardSections: () => ({ data: undefined, isLoading: false }),
   createPost: vi.fn(() => Promise.resolve({ ok: true })),
   updatePost: vi.fn(() => Promise.resolve({ ok: true })),
   lintText: vi.fn(() => Promise.resolve({ ok: true, clean: true, findings: [] })),
@@ -111,26 +113,83 @@ describe('srtToText helper', () => {
   });
 });
 
-describe('Asset "Attach to a post" CTA (B9)', () => {
-  it('renders an Attach CTA per card with an accessible name referencing the file', () => {
+// U. Building a 7-slide album meant picking each slide from a dropdown inside the
+// Composer, one at a time. The library already accepted a ten-file DROP but its attach
+// action was single-asset, so the fast way in stopped at the upload.
+//
+// Multi-select attach REPLACES the one-at-a-time attach; it does not sit beside it. The
+// per-card attach CTA is gone, which is why this block's old "renders an Attach CTA per
+// card" assertions were rewritten rather than kept: they described the flow being
+// replaced.
+//
+// The selection idiom is Freigaben's, lifted rather than reinvented, including its
+// hard-won rule that a bulk action never trusts the raw Set but intersects it with what
+// is actually visible and actionable.
+describe('Assets multi-select attach (U)', () => {
+  it('no longer renders a per-card attach CTA: the selection replaces it', () => {
     renderAssets({ onAttach: vi.fn() });
-    expect(screen.getByRole('button', { name: /attach.*crm-demo\.mp4/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /attach.*plain\.mp4/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /attach.*crm-demo\.mp4/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /attach.*plain\.mp4/i })).not.toBeInTheDocument();
   });
 
-  it('clicking the CTA calls onAttach with { mediaPath } (canonical dir/file) and a type', async () => {
+  it('shows a selection checkbox per card and no action bar until something is selected', () => {
+    renderAssets({ onAttach: vi.fn() });
+    expect(screen.getAllByRole('checkbox').length).toBeGreaterThanOrEqual(2);
+    // The bar is transient, like the existing drag overlay: at rest the page is quieter.
+    expect(screen.queryByRole('button', { name: /attach 1|attach 2|as one post|as an album/i })).not.toBeInTheDocument();
+  });
+
+  it('selecting ONE asset attaches it as a single post (the flow being replaced)', async () => {
     const user = userEvent.setup();
     const onAttach = vi.fn();
     renderAssets({ onAttach });
-    await user.click(screen.getByRole('button', { name: /attach.*crm-demo\.mp4/i }));
+    await user.click(screen.getByRole('checkbox', { name: /crm-demo\.mp4/i }));
+    await user.click(screen.getByRole('button', { name: /attach/i }));
     expect(onAttach).toHaveBeenCalledTimes(1);
     const seed = onAttach.mock.calls[0][0];
     expect(seed.mediaPath).toBe('data/media/crm-demo.mp4');
+    expect(seed.mediaItems).toBeUndefined();
     expect(seed.type).toBeTruthy();
   });
 
-  it('has no axe violations on the grid', async () => {
+  it('selecting TWO or more attaches them as ONE album, in selection order', async () => {
+    const user = userEvent.setup();
+    const onAttach = vi.fn();
+    renderAssets({ onAttach });
+    // Click plain.mp4 FIRST: the click sequence is the intent, so it must lead.
+    await user.click(screen.getByRole('checkbox', { name: /plain\.mp4/i }));
+    await user.click(screen.getByRole('checkbox', { name: /crm-demo\.mp4/i }));
+    await user.click(screen.getByRole('button', { name: /attach/i }));
+    const seed = onAttach.mock.calls[0][0];
+    expect(seed.type).toBe('carousel');
+    expect(seed.mediaItems).toEqual(['data/media/plain.mp4', 'data/media/crm-demo.mp4']);
+  });
+
+  it('shows each selected asset its position in the selection, which is also the order affordance', async () => {
+    const user = userEvent.setup();
+    renderAssets({ onAttach: vi.fn() });
+    await user.click(screen.getByRole('checkbox', { name: /plain\.mp4/i }));
+    await user.click(screen.getByRole('checkbox', { name: /crm-demo\.mp4/i }));
+    // Two non-colour signals: the checkbox and the position number. Scope to the badges
+    // rather than the whole page - "1" also appears in the selection count copy.
+    const badges = screen.getAllByText(/^[12]$/).filter((el) => el.className.includes('rounded-full'));
+    expect(badges.map((el) => el.textContent).sort()).toEqual(['1', '2']);
+  });
+
+  it('a still image seeds as an image, never as a reel or video', async () => {
+    const user = userEvent.setup();
+    const onAttach = vi.fn();
+    assetsData = { dir: MEDIA_DIR, assets: [{ ...ASSET, file: 'still.jpg', kind: 'image', url: '/media?p=still.jpg', captions: [], probe: {}, checks: { resolution: 'feed-4x5' } }] };
+    renderAssets({ onAttach });
+    await user.click(screen.getByRole('checkbox', { name: /still\.jpg/i }));
+    await user.click(screen.getByRole('button', { name: /attach/i }));
+    expect(onAttach.mock.calls[0][0].type).toBe('image');
+  });
+
+  it('has no axe violations with a selection active', async () => {
+    const user = userEvent.setup();
     const { container } = renderAssets({ onAttach: vi.fn() });
+    await user.click(screen.getByRole('checkbox', { name: /crm-demo\.mp4/i }));
     expect(await axeClean(container)).toHaveNoViolations();
   });
 });

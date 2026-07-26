@@ -1,24 +1,40 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, Sparkles, LayoutGrid, List, Info, CornerUpLeft } from 'lucide-react';
-import { approvePost, rejectPost } from '../lib/api.js';
-import { fmtFull, fmtStampShort, campaignBaseLabel, matchesFilters, collectThread } from '../lib/format.js';
-import { CoverThumb, LinkCardPreview, PlatformIcons, ApprovalPill, StatusPill, INNER_SURFACE, Skeleton } from './ui.jsx';
+import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, Sparkles, LayoutGrid, List, Info, CornerUpLeft, PlugZap, ExternalLink, Wrench, ArrowDown, ArrowUp } from 'lucide-react';
+import { approvePost, rejectPost, useAccounts, usePendpostHealth } from '../lib/api.js';
+import { fmtFull, fmtStampShort, campaignBaseLabel, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, isActionable } from '../lib/format.js';
+import { CoverThumb, LinkCardPreview, PlatformIcons, ApprovalPill, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl } from './ui.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { GateMark } from './ui/GateMark.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import BrandLintBadge from './ui/BrandLintBadge.jsx';
+import { Checkbox } from './ui/Checkbox.jsx';
 import ActionButton from './ui/ActionButton.jsx';
+import DestinationStrip from './ui/DestinationStrip.jsx';
 import { usePrompt } from './ui/confirm.jsx';
 import { useT } from '../lib/i18n.js';
 
 const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
 const keyOf = (post) => `${post.campaign}-${post.id}`;
-// Actionable = still needs an approval decision. An edited-since-approval post is
-// approval:'approved' but its content diverged from what was blessed, so it needs a
-// FRESH decision (re-approve) and belongs back in the queue, not settled.
-const isActionable = (post) => (post.approval !== 'approved' || post.editedSinceApproval) && post.derivedState !== 'posted';
+
+// Sort direction is a per-TAB preference, because the two tabs are different objects:
+// "Zu pruefen" is a work queue (act on the soonest due), "Alle Beitraege" is an archive
+// (find the most recent). A single shared key would destroy that split the first time
+// the operator changed it on one tab.
+const SORT_PREF_KEY = (mode) => `pendpost-approvals-sort:${mode}`;
+const SORT_DEFAULT = { pending: 'oldest', all: 'newest' };
+function readSortPref(mode) {
+  try {
+    const v = localStorage.getItem(SORT_PREF_KEY(mode));
+    return v === 'newest' || v === 'oldest' ? v : SORT_DEFAULT[mode];
+  } catch {
+    return SORT_DEFAULT[mode];
+  }
+}
+// isActionable (the "still needs a decision" predicate that scopes this queue) is the
+// SHARED one in lib/format.js, imported above - App's sidebar pending badge uses the same
+// function so the badge and this list can never disagree.
 // Skip the approve "clearing sweep" motion for users who asked for less of it.
 const prefersReduced = () =>
   typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -29,7 +45,19 @@ const prefersReduced = () =>
 // Approve actions sit BESIDE that button, not inside it. Status (a state)
 // reads as quiet ring-badges top-right; actions (things you do) read as a clear
 // button group bottom-right - never interleaved.
-function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed }) {
+//
+// What may sit INSIDE the open-detail button is decided by ONE question: is it
+// interactive? StatusPill/ApprovalPill are plain <span>s, so they read top-right
+// inside it. An IconBadge WITH a label is NOT: Tip wraps it in RT.Trigger asChild,
+// so it renders a real <button>. Every one of those (archived / auto-approved /
+// warmth advisory) therefore lives in the badge row at the bottom, beside
+// BrandLintBadge - which is itself a non-interactive <span> for the same reason.
+// Nesting one inside the open-detail button is invalid HTML, breaks keyboard
+// traversal and screen-reader semantics, and makes the badge's click ambiguous
+// (it would also fire open-detail). freigaben-approval-card.test.jsx pins this with
+// a reddit-advisory fixture; an instagram/pending fixture renders no badges and
+// would let the regression back in unnoticed.
+function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed, setup = null, onNavigate = null }) {
   const queryClient = useQueryClient();
   const prompt = usePrompt();
   const t = useT();
@@ -61,6 +89,14 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
 
   const actionable = isActionable(post);
 
+  // Spec 37 (reversed 2026-07-13): every approved reddit post auto-publishes. The account-warmth
+  // screening is a display-only ADVISORY (promotional / cold account / subreddit requirements),
+  // shown as a passive amber badge so the operator sees the concerns before approving. Approval
+  // always leads to auto-publish; a distinct human still approves every reddit post (the fence).
+  const readiness = useMemo(() => redditPostReadiness(post, setup, true), [post, setup]);
+  const hasAdvisory = readiness.advisories.length > 0;
+  const advisoryText = hasAdvisory ? readinessAdvisoryText(t, readiness.advisories) : '';
+
   // The approve write. Approval is always a single, dialog-free action (button,
   // keyboard and bulk paths all approve immediately - no note). Routes through the
   // EXISTING approvePost helper (no new approve path); on success it invalidates
@@ -78,6 +114,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
       title: t('approvals.rejectPrompt.title'),
       body: t('approvals.rejectPrompt.body'),
       multiline: true,
+      rememberKey: 'approvals.reject',
     });
     if (note === null) throw { canceled: true };
     await rejectPost(post.campaign, post.id, note || undefined);
@@ -149,6 +186,59 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
   // layouts. On success each routes through onActed so the parent advances focus
   // to the next item. Approve is always immediate (button, keyboard and bulk);
   // only reject opens the note dialog.
+  // The lanes pendpost cannot publish to. The card ALREADY receives `setup` (it reads warmth
+  // from it) and simply never asked this question, so the queue offered a green Freigeben on
+  // a post it could not send - on the very surface the operator works from.
+  const offlineLanes = unconnectedLanes(post, setup);
+
+  // The Freigeben (approve) button. Same label, variant, icon and position always: approval is a
+  // single distinct-human action that always leads to auto-publish. The warmth advisory badge
+  // below is informational only - it never changes the approve path.
+  //
+  // The ONE exception is connectivity, and it is not a variation on approval, it is the absence
+  // of it: with the lane unconnected, approving publishes nothing, so the card offers the action
+  // that works - open the post and take it from there. Same slot, same size, one button.
+  const approveButton = offlineLanes.length ? (
+    <>
+      <Tip label={t('approvals.card.notConnectedTip', { platforms: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}>
+        <button
+          type="button"
+          onClick={() => onOpen?.(post)}
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-sky-500/15 px-2.5 py-1.5 text-xs font-bold text-sky-700 transition hover:bg-sky-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-sky-300"
+        >
+          <PlugZap size={14} aria-hidden="true" />
+          {t('approvals.card.postYourself')}
+        </button>
+      </Tip>
+      {/* The no-dead-end escape hatch beside the hand-off: a quiet wrench (the same
+          "set up this lane" glyph PlatformBlockers uses) deep-linking to the lane's
+          Setup card, so "not connected" always carries its own fix. */}
+      {typeof onNavigate === 'function' ? (
+        <Tip label={t('approvals.card.connectTip', { platforms: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}>
+          <button
+            type="button"
+            onClick={() => onNavigate('setup', offlineLanes[0])}
+            aria-label={t('approvals.card.connectTip', { platforms: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}
+            className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
+          >
+            <Wrench size={14} aria-hidden="true" />
+          </button>
+        </Tip>
+      ) : null}
+    </>
+  ) : (
+    <ActionButton
+      variant="success"
+      icon={CheckCircle2}
+      labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
+      onError={setError}
+      onAction={async () => {
+        await doApprove();
+        playClear();
+        onActed?.(post);
+      }}
+    />
+  );
   const actions = actionable ? (
     <span className="flex shrink-0 items-center gap-1.5">
       <ActionButton
@@ -161,17 +251,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
           onActed?.(post);
         }}
       />
-      <ActionButton
-        variant="success"
-        icon={CheckCircle2}
-        labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
-        onError={setError}
-        onAction={async () => {
-          await doApprove();
-          playClear();
-          onActed?.(post);
-        }}
-      />
+      {approveButton}
     </span>
   ) : null;
 
@@ -180,12 +260,10 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
   // centred on the single-row compact card.
   const checkbox = actionable ? (
     <span className={compact ? 'flex shrink-0 items-center' : 'flex shrink-0 items-start pt-1'}>
-      <input
-        type="checkbox"
+      <Checkbox
         checked={selected}
         onChange={() => onToggleSelect(post)}
         aria-label={t('approvals.card.selectPost')}
-        className="h-4 w-4 cursor-pointer rounded border-zinc-300 text-brand accent-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-zinc-600"
       />
     </span>
   ) : null;
@@ -200,15 +278,22 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
       {post.approval === 'approved' && post.approvalBy === 'policy:auto-approve'
         ? <IconBadge icon={Sparkles} tone="ok" text={t('approvals.card.autoApproved')} label={t('approvals.card.autoApprovedLabel')} />
         : null}
+      {/* Spec 37 (reversed): a display-only account-warmth advisory on a reddit post. Approving
+          still auto-publishes; the tooltip carries the concerns (promotional / cold account /
+          subreddit requirements). */}
+      {hasAdvisory ? <IconBadge icon={Info} tone="warn" text={t('readiness.advisoryBadge')} label={advisoryText} /> : null}
     </>
   );
   // Quiet ring-badges: status (a state) reads top-right, never interleaved with
-  // the action group (things you do). Comfortable layout only.
+  // the action group (things you do). Comfortable layout only. STATE PILLS ONLY -
+  // these are plain <span>s, which is what lets them live INSIDE the open-detail
+  // button. contextBadges are deliberately NOT here: an IconBadge with a label is a
+  // real <button> (Tip -> RT.Trigger asChild), so it renders in the badge row below,
+  // beside BrandLintBadge, as a sibling of the button.
   const statusBadges = (
     <span className="flex shrink-0 items-center gap-1">
-      {contextBadges}
       <StatusPill state={post.derivedState} short />
-      <ApprovalPill approval={post.approval} editedSinceApproval={post.editedSinceApproval} />
+      <ApprovalPill approval={post.approval} editedSinceApproval={post.editedSinceApproval} handOff={offlineLanes.length > 0} />
     </span>
   );
 
@@ -254,11 +339,16 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
               <PlatformIcons platforms={post.platforms} />
+              {/* When + what, together and bold: the two facts a reviewer triages on.
+                  The type moved up here OUT of the muted campaign meta below, so it is
+                  not buried behind a truncating campaign name on a narrow row. */}
               <span className="font-bold text-zinc-600 dark:text-zinc-300">
                 {post.scheduledAt ? fmtStampShort(post.scheduledAt) : t('approvals.card.noSchedule')}
+                {' · '}
+                {t(`type.${post.type}`)}
               </span>
-              <span className="hidden min-w-0 truncate text-zinc-400 sm:inline dark:text-zinc-500">
-                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id, type: t(`type.${post.type}`) })}
+              <span className="hidden min-w-0 truncate text-zinc-500 sm:inline dark:text-zinc-400">
+                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
               </span>
             </div>
             {error ? <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
@@ -278,23 +368,69 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
                 <span className="min-w-0 flex-1 truncate text-sm font-bold">{headline}</span>
                 {statusBadges}
               </span>
+              {/* Same when-plus-what pairing as the compact row above, so the two
+                  views read identically. */}
               <span className="block text-xs font-bold text-zinc-600 dark:text-zinc-300">
                 {t('approvals.card.scheduledFor', { when: post.scheduledAt ? fmtFull(post.scheduledAt) : t('approvals.card.noSchedule') })}
+                {' · '}
+                {t(`type.${post.type}`)}
               </span>
-              <span className="block truncate text-[11px] text-zinc-400 dark:text-zinc-500">
-                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id, type: t(`type.${post.type}`) })}
+              <span className="block truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
               </span>
             </span>
           </button>
           {/* Caption body + inline preview: SIBLINGS of the open-detail button (not
               nested), so the reviewer sees the real post shape without nesting any
               content inside the interactive card affordance. */}
+          {/* The thread this reply ANSWERS, above the answer. Without it the card's headline is
+              pendpost's own reply truncated, so the queue asks the operator to approve an
+              answer with the question nowhere on the surface they work from. A sibling of the
+              open-detail button, never nested: the link is interactive. */}
+          {post.radarReplyTo ? (
+            <div className={`rounded-lg px-2 py-1.5 ${INNER_SURFACE}`}>
+              <div className="flex items-center gap-1.5 text-[11px]">
+                {PLATFORM_META[post.radarReplyTo.source] ? (
+                  (() => { const M = PLATFORM_META[post.radarReplyTo.source]; return <M.Icon size={11} className={M.color} aria-hidden="true" />; })()
+                ) : null}
+                <span className="truncate font-bold text-zinc-600 dark:text-zinc-300">
+                  {post.radarReplyTo.author || post.radarReplyTo.url.replace(/^https?:\/\/(www\.)?/, '')}
+                </span>
+                {post.radarReplyTo.community ? (
+                  <span className="shrink-0 text-zinc-500 dark:text-zinc-400">{post.radarReplyTo.community}</span>
+                ) : null}
+                <a
+                  href={post.radarReplyTo.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
+                  className="ml-auto inline-flex shrink-0 items-center gap-1 font-semibold text-brand hover:underline dark:text-brand-light"
+                >
+                  {t('approvals.card.openThread')}
+                  <ExternalLink size={10} aria-hidden="true" />
+                </a>
+              </div>
+              {post.radarReplyTo.excerpt ? (
+                <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{post.radarReplyTo.excerpt}</p>
+              ) : null}
+            </div>
+          ) : null}
           {captionBody ? (
             <p className="line-clamp-3 whitespace-pre-wrap text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{captionBody}</p>
           ) : null}
-          {isTextPost ? <LinkCardPreview image={post.image} title={post.title} link={post.link} /> : null}
+          {/* A link-card preview is what a LINK post looks like on a feed lane. A Radar reply is
+              a comment on someone else's thread and carries no link, so the preview rendered an
+              empty "no image" box captioned as a LinkedIn card on a Reddit-only reply - the
+              biggest block of space on the card spent saying nothing is there. */}
+          {isTextPost && !post.radarReplyTo ? <LinkCardPreview image={post.image} title={post.title} link={post.link} /> : null}
           <div className="mt-auto flex items-center gap-1.5 pt-1.5">
             <PlatformIcons platforms={post.platforms} />
+            {/* The interactive badges (archived / auto-approved / warmth advisory): each is an
+                IconBadge WITH a label, so each is a real <button> and belongs HERE, beside the
+                brand-lint badge, as a SIBLING of the open-detail button - never inside it.
+                Rendered here rather than in statusBadges so the compact layout, which already
+                renders contextBadges outside its own headline button, is not double-fed. */}
+            {contextBadges}
             {/* Advisory brand-lint badge: a SIBLING of the open-detail button (never
                 nested in it), mirroring the per-platform publish gate. Silent unless
                 a target platform would trip a severity:'error' rule; never gates. */}
@@ -335,7 +471,7 @@ function KeyboardHelp() {
         <button
           type="button"
           aria-label={t('approvals.keys.title')}
-          className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-400 transition hover:bg-zinc-200/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
+          className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
         >
           <Info size={15} aria-hidden="true" />
         </button>
@@ -365,39 +501,17 @@ function KeyboardHelp() {
 }
 
 // Header "Select all" / "Clear selection" checkbox. Indeterminate (some but
-// not all actionable items selected) is cosmetic, set via a ref on the native box.
-function SelectAllControl({ total, selectedCount, onToggle }) {
-  const t = useT();
-  const ref = useRef(null);
-  const allSelected = total > 0 && selectedCount === total;
-  const someSelected = selectedCount > 0 && selectedCount < total;
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = someSelected;
-  }, [someSelected]);
-  if (total === 0) return null;
-  return (
-    <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
-      <input
-        ref={ref}
-        type="checkbox"
-        checked={allSelected}
-        onChange={onToggle}
-        aria-label={allSelected ? t('approvals.selectAll.clear') : t('approvals.selectAll.all')}
-        className="h-4 w-4 cursor-pointer rounded border-zinc-300 text-brand accent-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-zinc-600"
-      />
-      {allSelected ? t('approvals.selectAll.clear') : t('approvals.selectAll.all')}
-    </label>
-  );
-}
-
+// not all actionable items selected) is cosmetic, handled by the shared Checkbox.
 // The approval surface. Default mode "To review" = everything not yet approved
 // (drafts + pending + rejected), unpublished, soonest due first. The "All"
 // toggle shows every post chronologically (the owner asked to also see the
 // full plan here, not just the queue). Approval always acts as the owner; the
 // no-self-approval rule binds agents on the MCP face.
-export default function Freigaben({ campaigns, onOpen, clientName = '', onNavigate = () => {}, platformFilter = [], typeFilter = [], statusFilter = [], isLoading = false }) {
+export default function Freigaben({ campaigns, onOpen, clientName = '', onNavigate = () => {}, platformFilter = [], typeFilter = [], statusFilter = [], isLoading = false, onModeChange }) {
   const [mode, setMode] = useState('pending'); // 'pending' | 'all'
-  const [showArchived, setShowArchived] = useState(false);
+  // Mirror the tab up so App can gate the shared Status filter to the "All posts" tab
+  // (the Status dropdown is dead on the pending tab, which forces statusFilter to []).
+  useEffect(() => { onModeChange?.(mode); }, [mode, onModeChange]);
   const [selected, setSelected] = useState(() => new Set()); // Set of `${campaign}-${id}`
   const [bulkError, setBulkError] = useState(null);
   // Card density. Persisted grid<->compact preference, mirroring the Assets
@@ -406,13 +520,39 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
   const [density, setDensity] = useState(() => {
     try { return localStorage.getItem('pendpost-approvals-density') === 'compact' ? 'compact' : 'comfortable'; } catch { return 'comfortable'; }
   });
+  // Sort direction, held and persisted PER TAB. One shared key would let a choice made
+  // on the archive silently reorder the work queue on the next visit, which would undo
+  // the whole point of the two defaults. Same lazy-read + effect-write idiom as density
+  // three lines up, so this component has one preference pattern, not two.
+  const [sortByMode, setSortByMode] = useState(() => ({
+    pending: readSortPref('pending'),
+    all: readSortPref('all'),
+  }));
+  const sortOrder = sortByMode[mode];
+  const setSortOrder = useCallback(
+    (next) => setSortByMode((prev) => ({ ...prev, [mode]: next })),
+    [mode],
+  );
   const queryClient = useQueryClient();
   const prompt = usePrompt();
   const t = useT();
+  // Spec 37: the setup signal carries reddit.warmth (per client), the input the per-card
+  // tier cue reads. One cached read shared by every card (no per-card fetch).
+  const { data: pendpostHealth } = usePendpostHealth(true);
+  const setup = pendpostHealth?.setup || null;
+  // Read ONCE at the parent, exactly like the health signal above. 114 cards each
+  // calling useAccounts would be 114 subscriptions re-rendering on every 60s refetch.
+  const { data: accounts, isLoading: accountsLoading, isError: accountsError } = useAccounts();
 
   useEffect(() => {
     try { localStorage.setItem('pendpost-approvals-density', density); } catch { /* private mode - ignore */ }
   }, [density]);
+
+  useEffect(() => {
+    try {
+      for (const m of ['pending', 'all']) localStorage.setItem(SORT_PREF_KEY(m), sortByMode[m]);
+    } catch { /* private mode - ignore */ }
+  }, [sortByMode]);
 
   // Roving-focus controller. `focusKey` (a keyOf, not an index - an index would be
   // meaningless across the items useMemo re-sorting on every refetch) owns the tab
@@ -425,22 +565,66 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
   const didInitialFocusRef = useRef(false);
   const pendingAdvanceRef = useRef(null);
 
-  // Active campaigns are the live pipeline; archived (active:false) campaigns are
-  // hidden by default so their fail-closed drafts never pollute the queue (A4).
-  // The "Show archived" toggle widens the set; any shown archived post is badged.
+  // EVERY campaign is in scope, archived (active:false) included: the active flag
+  // is organizational only and never gates publishing (lib/scheduler.mjs), so an
+  // archived campaign's draft is real decision work and its approved post still
+  // fires. Owner invariant (2026-07-21): nothing awaiting a decision can hide.
+  // Archived posts are badged on the card and sort after active ones in the queue.
   const activeIds = useMemo(() => new Set(campaigns.filter((c) => c.active).map((c) => c.id)), [campaigns]);
-  const all = useMemo(
-    () => campaigns.filter((c) => showArchived || c.active).flatMap((c) => c.posts || []),
-    [campaigns, showArchived],
+  const all = useMemo(() => campaigns.flatMap((c) => c.posts || []), [campaigns]);
+  const actionable = useMemo(() => all.filter(isActionable), [all]);
+  // Every post still awaiting a decision, filters ignored. This is the GLOBAL truth
+  // ("is there open work at all?"), so it - not the visible count - keeps the
+  // cleared-queue reward state honest.
+  const pendingTotal = useMemo(() => actionable.length, [actionable]);
+  // What the pending list ACTUALLY shows: the same actionable set through the same
+  // platform/type predicate the list applies (status is already ignored in pending
+  // mode, see items below). The tab chip counts THIS, so the badge and the list it
+  // labels cannot disagree - a platform chip used to leave "To review (3)" sitting
+  // over an empty list, which teaches the operator to distrust the badge.
+  const pendingVisible = useMemo(
+    () => actionable.filter((p) => matchesFilters(p, platformFilter, typeFilter, [])).length,
+    [actionable, platformFilter, typeFilter],
   );
-  const pendingTotal = useMemo(() => all.filter(isActionable).length, [all]);
 
   const items = useMemo(() => {
-    const base = mode === 'pending' ? all.filter(isActionable) : all;
+    const base = mode === 'pending' ? actionable : all;
+    const newestFirst = sortOrder === 'newest';
+    // "To review" IS a status bucket, so filtering it BY status contradicts the tab
+    // (and the count on it): a leftover global statusFilter - e.g. ['overdue'], which
+    // the planner's Ueberfaellig chip sets and which persists across pages/clients -
+    // would empty the queue while the tab still counts the posts. Status filters the
+    // 'all' view only; platform/type stay (they are orthogonal to the decision).
+    // Queue order: active-campaign work first, archived after (labelled, still
+    // reachable, never blocking the live pipeline); within each group by date.
+    // The 'all' view is purely chronological.
+    //
+    // The DIRECTION is the operator's, and it defaults differently per tab because the
+    // two tabs are different objects: "Zu pruefen" is a work queue, so the soonest-due
+    // item is the one to act on, while "Alle Beitraege" is an archive, where the most
+    // recent post is the one being looked for. That default is why this list opened on
+    // 11.06.26.
+    const byDate = (a, b) => comparePostDate(a, b, newestFirst ? -1 : 1);
     return base
-      .filter((p) => matchesFilters(p, platformFilter, typeFilter, statusFilter))
-      .sort((a, b) => Date.parse(a.scheduledAt || '9999') - Date.parse(b.scheduledAt || '9999'));
-  }, [all, mode, platformFilter, typeFilter, statusFilter]);
+      .filter((p) => matchesFilters(p, platformFilter, typeFilter, mode === 'pending' ? [] : statusFilter))
+      .sort(mode === 'pending'
+        ? (a, b) => (activeIds.has(b.campaign) - activeIds.has(a.campaign)) || byDate(a, b)
+        : byDate);
+  }, [all, actionable, mode, platformFilter, typeFilter, statusFilter, activeIds, sortOrder]);
+
+  // The lanes actually present in what the operator is looking at. Naming a lane the
+  // list does not contain would be noise; naming one it does is the whole point.
+  const visiblePlatforms = useMemo(() => {
+    const seen = new Set();
+    for (const p of items) for (const plat of p.platforms || []) seen.add(plat);
+    return [...seen];
+  }, [items]);
+
+  // The cleared-queue reward state must MEAN it: nothing awaits review AT ALL. A
+  // queue emptied merely by a platform/type filter is not an achievement, so it
+  // falls through to the neutral "Keine Beitraege / Passe die Filter an" state
+  // rather than claiming everything is approved while the tab still counts open work.
+  const clearedQueue = mode === 'pending' && pendingTotal === 0;
 
   // Callback ref each card registers with - auto-cleans on unmount.
   const registerCard = useCallback((key) => (el) => {
@@ -559,9 +743,14 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
   // the failed posts are retryable. (A clear-all here would unmount the bar and
   // swallow the summary; a rejected post also stays actionable, so it would
   // otherwise linger selected after a clean reject.)
-  const runBulk = async (action, label) => {
+  // A post pendpost cannot publish (its target lane is not connected). The single-row
+  // approve already swaps to "post yourself" for these; bulk approve must skip them for
+  // the same reason (approving publishes nothing), not silently approve into a void.
+  const isOffline = useCallback((post) => unconnectedLanes(post, setup).length > 0, [setup]);
+
+  const runBulk = async (action, label, list = effectiveSelection) => {
     setBulkError(null);
-    const sel = effectiveSelection;
+    const sel = list;
     let ok = 0;
     const fails = [];
     const done = [];
@@ -587,10 +776,13 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
 
   return (
     <div className="flex h-full flex-col gap-3">
-      <div className="flex items-center gap-3">
+      {/* flex-wrap, and gap-y so a wrapped row does not collide. Measured against the
+          real de-CH strings this row is already ~530px in a 375px viewport BEFORE the
+          sort toggle, so it was overflowing horizontally on mobile already. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={t('approvals.view.label')}>
           {[
-            ['pending', pendingTotal ? t('approvals.view.toReviewCount', { n: pendingTotal }) : t('approvals.view.toReview')],
+            ['pending', pendingVisible ? t('approvals.view.toReviewCount', { n: pendingVisible }) : t('approvals.view.toReview')],
             ['all', t('approvals.view.all')],
           ].map(([key, label]) => (
             <button
@@ -629,25 +821,50 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
             </Tip>
           ))}
         </div>
-        <SelectAllControl total={actionableItems.length} selectedCount={selCount} onToggle={onToggleSelectAll} />
-        <span className="text-[11px] text-zinc-400 dark:text-zinc-500">{t('approvals.postCount', { n: items.length })}</span>
+        {/* Sort direction. A two-value choice, so it is a toggle and not a Select:
+            "a Select for a two-value choice would be ceremony" (Radar's own rule), and
+            a dropdown would also add ~190px to a row that already has to wrap at 375px.
+            Rendered on BOTH tabs - the order was previously unstated on both - with the
+            default and the stored preference kept per tab. */}
+        <Tip label={t(sortOrder === 'newest' ? 'approvals.sort.newest' : 'approvals.sort.oldest')}>
+          <button
+            type="button"
+            onClick={() => setSortOrder(sortOrder === 'newest' ? 'oldest' : 'newest')}
+            aria-label={t(sortOrder === 'newest' ? 'approvals.sort.newest' : 'approvals.sort.oldest')}
+            className="flex items-center gap-1.5 rounded-xl bg-zinc-200/60 px-2.5 py-1.5 text-[11px] font-bold text-zinc-600 transition hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 dark:text-zinc-300 dark:hover:text-brand-light"
+          >
+            {sortOrder === 'newest' ? <ArrowDown size={13} aria-hidden="true" /> : <ArrowUp size={13} aria-hidden="true" />}
+            <span>{t(sortOrder === 'newest' ? 'approvals.sort.newestShort' : 'approvals.sort.oldestShort')}</span>
+          </button>
+        </Tip>
+        {/* Stays in the toolbar. Moving it into the sticky bulk bar was considered and
+            rejected: that bar renders only when something is already selected, so
+            select-all-from-zero would become unreachable. */}
+        <SelectAllControl total={actionableItems.length} selectedCount={selCount} onToggle={onToggleSelectAll} allKey="approvals.selectAll.all" clearKey="approvals.selectAll.clear" />
+        <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('approvals.postCount', { n: items.length })}</span>
         <div className="ml-auto flex items-center gap-3">
           {/* ONE global keyboard help (replaces the per-card eyebrow + the run-on
               legend text): a quiet "i" that opens a popover explaining the
               shortcuts, with the keys rendered as real kbd chips. Shown only when
               there are cards to act on. */}
           {items.length ? <KeyboardHelp /> : null}
-          <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-              className="h-4 w-4 cursor-pointer rounded border-zinc-300 text-brand accent-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-zinc-600"
-            />
-            {t('approvals.showArchived')}
-          </label>
         </div>
       </div>
+
+      {/* WHERE these posts land, stated ONCE for the whole client-scoped list. The
+          approval cards show a platform glyph, which says instagram but not WHICH
+          instagram - so on 2026-07-25 a bondigoo post was approved and published onto
+          the pendpost account with nothing on screen that could have caught it. The
+          destination belongs to the project, not the post, so it is one row here rather
+          than a chip repeated on every card. Only the lanes this list actually contains
+          are named, so the strip stays a fact about the work in front of the operator. */}
+      <DestinationStrip
+        platforms={visiblePlatforms}
+        accounts={accounts}
+        isLoading={accountsLoading}
+        isError={accountsError}
+        onNavigate={onNavigate}
+      />
 
       {/* US-APPR-07: the bulk action bar sits at the TOP of the queue so the
           primary approve/reject action is reachable without scrolling past a
@@ -684,6 +901,7 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
                 title: t('approvals.bulkRejectPrompt.title'),
                 body: t('approvals.rejectPrompt.body'),
                 multiline: true,
+                rememberKey: 'approvals.reject',
               });
               if (note === null) throw { canceled: true };
               await runBulk((p) => rejectPost(p.campaign, p.id, note || undefined), t('approvals.bulk.labelRejected'));
@@ -695,7 +913,16 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
             labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
             onError={setBulkError}
             onAction={async () => {
-              await runBulk((p) => approvePost(p.campaign, p.id), t('approvals.bulk.labelApproved'));
+              // Approve only the publishable posts; a post whose lane is offline cannot be
+              // published, so it is skipped and surfaced (parity with the single-row swap).
+              const connected = effectiveSelection.filter((p) => !isOffline(p));
+              const offlineCount = effectiveSelection.length - connected.length;
+              if (!connected.length) {
+                setBulkError(t('approvals.bulk.offlineOnly', { n: offlineCount }));
+                throw { canceled: true };
+              }
+              await runBulk((p) => approvePost(p.campaign, p.id), t('approvals.bulk.labelApproved'), connected);
+              if (offlineCount) setBulkError(t('approvals.bulk.offlineSkipped', { n: offlineCount }));
             }}
           />
         </div>
@@ -735,6 +962,8 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
               registerRef={registerCard(keyOf(post))}
               onArrowNav={onArrowNav}
               onActed={onActed}
+              setup={setup}
+              onNavigate={onNavigate}
             />
           ))}
         </ul>
@@ -744,7 +973,7 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
             {/* Cleared queue = the reward state: the gate at rest, quietly
                 satisfied (motion kit's EmptyGate). The "all" view keeps the
                 quiet Inbox glyph. Both honour reduced-motion via index.css. */}
-            {mode === 'pending' ? (
+            {clearedQueue ? (
               <div className="relative mx-auto mb-3 h-[72px] w-[72px]">
                 <div
                   aria-hidden="true"
@@ -756,11 +985,11 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
                 </div>
               </div>
             ) : (
-              <Inbox size={26} className="mx-auto text-zinc-400" aria-hidden="true" />
+              <Inbox size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
             )}
-            <p className="text-sm font-bold">{mode === 'pending' ? t('approvals.empty.pendingTitle') : t('approvals.empty.allTitle')}</p>
+            <p className="text-sm font-bold">{clearedQueue ? t('approvals.empty.pendingTitle') : t('approvals.empty.allTitle')}</p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-              {mode === 'pending'
+              {clearedQueue
                 ? clientName
                   ? t('approvals.empty.pendingBodyForClient', { client: clientName })
                   : t('approvals.empty.pendingBody')
@@ -769,7 +998,7 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
             {/* US-APPR-05: a clear empty queue offers the next step. The pending
                 empty state deep-links to Planner so the operator who just cleared
                 this client has somewhere to go. */}
-            {mode === 'pending' ? (
+            {clearedQueue ? (
               <button
                 type="button"
                 onClick={() => onNavigate('planner')}

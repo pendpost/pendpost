@@ -61,6 +61,30 @@
       "severity": "warn",
       "matcher": { "regex": "\\b(world-?class|cutting-?edge|best-?in-?class|game-?changer|game-?changing|revolutionary|unleash|unlock(?:ing)?|supercharge|elevate|next-?level|state-?of-?the-?art|transform your)\\b", "flags": "gi" },
       "hint": "Promotional puffery reads as a press release. Show the concrete thing it does instead of claiming it is amazing."
+    },
+    {
+      "id": "reddit-launch-shape",
+      "severity": "warn",
+      "matcher": "redditLaunchShape",
+      "hint": "Reddit only: this opens by announcing that it is an advertisement. Start with the problem you had, in your own words, and let the product show up once, late, in a single clause."
+    },
+    {
+      "id": "reddit-spec-dump",
+      "severity": "warn",
+      "matcher": "redditSpecDump",
+      "hint": "Reddit only: a stack list reads as a press release and is the top AI-slop tell there. Keep the one property this subreddit actually cares about and cut the rest, the repo page can carry the spec sheet."
+    },
+    {
+      "id": "reddit-bait-phrase",
+      "severity": "warn",
+      "matcher": "redditBaitPhrase",
+      "hint": "Reddit only: 'link in comments' reads as bait to the readers and to the spam filter. Leave the link out entirely and let someone ask for it."
+    },
+    {
+      "id": "de-ch-eszett",
+      "severity": "warn",
+      "matcher": { "regex": "\\u00DF", "flags": "g" },
+      "hint": "Swiss German never uses the eszett - write 'ss' (Strasse, not Straße). The humanizer auto-fixes this on de-CH copy."
     }
   ]
 }

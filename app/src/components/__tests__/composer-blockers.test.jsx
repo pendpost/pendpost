@@ -12,13 +12,18 @@ import { I18nProvider } from '../../lib/i18n.js';
 // post before publish. The hooks are mocked; create-before-save shows nothing
 // (hooks gated off) but edit mode surfaces the saved post's blockers.
 const platformValidateState = { data: undefined };
+// CI-2: spy on the raw args useValidateMedia is called with (campaign, postId,
+// enabled) so a test can assert the `enabled` gate without needing a real fetch.
+const validateMediaCalls = [];
 
 vi.mock('../../lib/api.js', () => ({
   useActiveClient: () => ({ activeClient: null, activeClientId: null }),
   useAssets: () => ({ data: { assets: [], dir: '/tmp/assets' } }),
   useConfig: () => ({ data: { posting: { hashtagPresets: [] } } }),
   usePlatformValidate: () => platformValidateState,
-  useValidateMedia: () => ({ data: undefined }),
+  useValidateMedia: (...args) => { validateMediaCalls.push(args); return { data: undefined }; },
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePinterestBoardSections: () => ({ data: undefined, isLoading: false }),
   createPost: vi.fn(() => Promise.resolve({ ok: true })),
   updatePost: vi.fn(() => Promise.resolve({ ok: true })),
   lintText: vi.fn(() => Promise.resolve({ ok: true, clean: true, findings: [] })),
@@ -60,6 +65,7 @@ function renderComposer(mode = 'edit', post = editPost) {
 
 beforeEach(() => {
   platformValidateState.data = undefined;
+  validateMediaCalls.length = 0;
 });
 
 describe('Composer edit-mode publish-readiness blockers (B2)', () => {
@@ -87,6 +93,16 @@ describe('Composer edit-mode publish-readiness blockers (B2)', () => {
     };
     renderComposer('edit');
     expect(screen.queryByText('local media file is missing')).not.toBeInTheDocument();
+  });
+
+  it('does NOT enable the validate-media probe for a media-less edit-mode text post (CI-2)', () => {
+    renderComposer('edit', { ...editPost, type: 'text', platforms: ['x'], media: null });
+    expect(validateMediaCalls.at(-1)?.[2]).toBe(false);
+  });
+
+  it('DOES enable the validate-media probe for a media-backed edit-mode reel post (CI-2)', () => {
+    renderComposer('edit'); // editPost is type:'reel'
+    expect(validateMediaCalls.at(-1)?.[2]).toBe(true);
   });
 
   it('has no axe violations in the blocker rows region (read-only, not interactive-in-interactive)', async () => {

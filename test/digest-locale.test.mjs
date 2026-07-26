@@ -19,6 +19,7 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.strin
 
 const { generateDigest } = await import('../lib/insights.mjs');
 const { makeT, matchPack } = await import('../lib/i18n.mjs');
+const { loadState, saveState } = await import('../lib/state.mjs');
 
 try {
   // ---- makeT resolution + fallback ----
@@ -45,7 +46,30 @@ try {
   fs.rmSync(path.join(WS, 'config.json'), { force: true });
   ok(generateDigest().locale === 'en', 'absent config.locale defaults to en');
 
-  console.log(`[digest-locale] OK - server makeT + fallback, de-CH digest (Swiss orthography), config.locale-driven, en unchanged (${pass} assertions).`);
+  // ---- Radar (beta) digest section (spec 35): localized, guarded off by default ----
+  // Off/absent Radar config => NO Radar section (byte-unchanged for an off project).
+  ok(!generateDigest({ locale: 'en' }).digest.includes('## Radar'), 'an OFF project\'s digest has NO Radar section (byte-unchanged tick output)');
+  // Seed an enabled project with a high-intent signal + a comparison backlog in state.
+  const st = loadState();
+  st.radar = {
+    signals: [{ source: 'reddit', externalId: 't3_a', url: 'https://reddit.com/r/x/1', text: 'what tool should I use to schedule posts?', intentScore: 82, intentTags: ['buying-question'], suggestedAction: 'reply' }],
+    geo: { comparisonBacklog: [{ title: 'Buffer alternative', buyerPhrases: ['alternative to Buffer'], examples: ['https://reddit.com/r/x/2'] }], footprint: [] },
+  };
+  saveState();
+  fs.writeFileSync(path.join(WS, 'config.json'), JSON.stringify({ radar: { enabled: true } }));
+  const enR = generateDigest({ locale: 'en' });
+  const deR = generateDigest({ locale: 'de-CH' });
+  ok(enR.digest.includes('## Radar (beta)') && enR.digest.includes('Comparison-page backlog') && enR.digest.includes('Buffer alternative'), 'EN digest renders the Radar section (top signal + comparison backlog)');
+  ok(deR.digest.includes('## Radar (Beta)') && deR.digest.includes('Vergleichsseiten-Backlog'), 'de-CH digest renders the LOCALIZED Radar section header + backlog');
+  ok(/[äöü]/.test(deR.digest) && !/ß/.test(deR.digest), 'the de-CH Radar section keeps Swiss orthography (umlauts, no eszett)');
+  // review #4: the suggestedAction is LOCALIZED - no raw English 'reply' leaks into de-CH.
+  ok(enR.digest.includes('· Reply ·'), 'the EN digest shows the suggested action "Reply"');
+  ok(deR.digest.includes('· Antworten ·') && !/· reply ·/i.test(deR.digest), 'review #4: the de-CH digest LOCALIZES the suggested action ("Antworten"), no raw English "reply" leak');
+  fs.writeFileSync(path.join(WS, 'config.json'), JSON.stringify({ radar: { enabled: false } }));
+  ok(!generateDigest({ locale: 'en' }).digest.includes('## Radar'), 'disabling Radar removes the section again (the guard holds)');
+  fs.rmSync(path.join(WS, 'config.json'), { force: true });
+
+  console.log(`[digest-locale] OK - server makeT + fallback, de-CH digest (Swiss orthography), config.locale-driven, en unchanged, Radar section localized+guarded (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

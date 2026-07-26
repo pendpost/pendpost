@@ -11,6 +11,13 @@ module.exports = {
         // so existing `brand` / `brand-light` class usages keep working unchanged.
         brand: { DEFAULT: 'var(--accent, #0f766e)', light: 'var(--accent-light, #5eead4)' },
       },
+      width: {
+        // Draggable sidebar rail: App.jsx sets --sidebar-w on documentElement from
+        // the persisted display preference, and SidebarResizer rewrites it live
+        // during a drag. Consumed as `lg:w-sidebar`, with the shipped 15rem as the
+        // fallback so the rail is correct before the boot effect runs.
+        sidebar: 'var(--sidebar-w, 15rem)',
+      },
       fontFamily: {
         // DS-2 / NFR-LIC-02: one self-hosted family (Inter) for display + body,
         // matching the exported brand assets; system-ui is the offline fallback.

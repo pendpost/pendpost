@@ -84,7 +84,7 @@ try {
     'NOSTR_RELAYS=wss://relay.damus.io,ws://insecure.example.com,wss://localhost:7777,wss://relay.snort.social',
   ]);
   installFetch();
-  const res = await cloud.handLocalTokens();
+  const res = await cloud.handLocalTokens('default');
   const handed = res.handed.map((h) => h.platform);
   ok(handed.includes('telegram') && handed.includes('discord') && handed.includes('nostr'), 'telegram, discord AND nostr are all sealed to the vault');
 
@@ -119,7 +119,7 @@ try {
   // ---- (B) a discord url without a parseable webhook id is skipped, not mis-sealed ---
   writeEnv(['DISCORD_WEBHOOK_URL=https://discord.com/not-a-webhook-path']);
   installFetch();
-  const noId = await cloud.handLocalTokens();
+  const noId = await cloud.handLocalTokens('default');
   ok(noId.skipped.some((s) => s.platform === 'discord' && s.reason === 'no_account_id_in_env'), 'discord with no webhook id in the url is skipped (no_account_id_in_env), never PUT');
   ok(!vaultPut('discord'), 'no discord vault PUT is made when the webhook id cannot be parsed');
 
@@ -130,7 +130,7 @@ try {
     'NOSTR_RELAYS=ws://relay.example.com,wss://127.0.0.1:7000,wss://node.internal',
   ]);
   installFetch();
-  const noRelay = await cloud.handLocalTokens();
+  const noRelay = await cloud.handLocalTokens('default');
   ok(noRelay.skipped.some((s) => s.platform === 'nostr' && s.reason === 'no_token_in_env'), 'nostr with no PUBLIC wss:// relay is skipped (the cloud could not fire it anyway)');
   ok(!vaultPut('nostr'), 'no nostr vault PUT is made when every relay is ws:// or private');
 

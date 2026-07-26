@@ -33,6 +33,15 @@
  * TikTok requires MEDIA: this lane publishes VIDEO posts only (a video render in
  * the local plan folder). Text-only posts are not a TikTok concept and are skipped.
  *
+ * DRAFT / INBOX HANDOFF (spec 27): post.publishAsDraft routes the upload through
+ * the INBOX init endpoint instead of the direct-post one. The video lands in the
+ * creator's TikTok inbox to finish (caption/privacy/effects) and publish in-app -
+ * no post_info is sent (the creator sets it there). The inbox init needs the
+ * (weaker) video.upload scope rather than video.publish; a token that only holds
+ * video.publish degrades to a structured {ok:false, error:'needs_scope'} row
+ * (P9), never a crash. Approval is unaffected - only an already-approved due post
+ * reaches this code path; the flag only picks which init endpoint is used.
+ *
  * AUTH - TikTok Login Kit OAuth2 (loopback authorize-code + refresh):
  *   TIKTOK_CLIENT_KEY      the app's client key   (TikTok for Developers console)
  *   TIKTOK_CLIENT_SECRET   the app's client secret
@@ -52,6 +61,7 @@
  *   insights         --plan <p> [--only <id>]   honest no-op (no per-post metrics here)
  *   delete           --id <publishId>           no-op (the API cannot delete a post)
  *   probe                                        read-only health probe (user/info)
+ *   presubmit        --plan <p> [--only <id>]   read-only creator settings check (spec 09)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -70,6 +80,10 @@ const ENV_PATH = envPath();
 const AUTH_URL = 'https://www.tiktok.com/v2/auth/authorize/';
 const TOKEN_URL = 'https://open.tiktokapis.com/v2/oauth/token/';
 const INIT_URL = 'https://open.tiktokapis.com/v2/post/publish/video/init/';
+// Spec 27: the inbox/draft-handoff init - reserves an upload for the creator's
+// TikTok inbox rather than a direct post (no post_info; the creator sets caption/
+// privacy/effects once they open it in-app).
+const INBOX_INIT_URL = 'https://open.tiktokapis.com/v2/post/publish/inbox/video/init/';
 const STATUS_URL = 'https://open.tiktokapis.com/v2/post/publish/status/fetch/';
 // user/info REQUIRES an explicit ?fields= list, or it 400s with invalid_params.
 const USERINFO_URL = 'https://open.tiktokapis.com/v2/user/info/?fields=open_id,union_id,display_name';
@@ -317,6 +331,25 @@ function privacyFor(post) {
 
 // ---------- the three-step direct-post upload ----------
 
+// Spec 25: interaction/disclosure post_info flags from post.ttInteraction. Only
+// the keys the operator actually toggled are set (an untouched flag is never
+// forced false/0, so the "nothing set" scenario stays byte-identical to today).
+// brandedContent/wider-privacy are audit-gated server-side for an unaudited app
+// (Pattern P9, mirrors privacyFor) - this just SENDS the toggle; TikTok enforces
+// or rejects it, surfaced as an honest failed publish, never a silent success.
+function ttInteractionFlags(post) {
+  const out = {};
+  const i = post.ttInteraction || {};
+  if (i.disableComment === true) out.disable_comment = true;
+  if (i.disableDuet === true) out.disable_duet = true;
+  if (i.disableStitch === true) out.disable_stitch = true;
+  if (i.aiGenerated === true) out.is_aigc = true;
+  if (i.brandedContent === true) out.brand_content_toggle = true;
+  if (i.brandOrganic === true) out.brand_organic_toggle = true;
+  if (Number.isInteger(i.coverTimestampMs) && i.coverTimestampMs >= 0) out.video_cover_timestamp_ms = i.coverTimestampMs;
+  return out;
+}
+
 // 1) INIT: reserve a publish_id + upload_url for a single-chunk FILE_UPLOAD.
 async function initUpload(post, mediaPath, token) {
   const size = fs.statSync(mediaPath).size;
@@ -324,6 +357,7 @@ async function initUpload(post, mediaPath, token) {
     post_info: {
       title: captionText(post).slice(0, CAPTION_LIMIT),
       privacy_level: privacyFor(post),
+      ...ttInteractionFlags(post),
     },
     source_info: {
       source: 'FILE_UPLOAD',
@@ -337,6 +371,30 @@ async function initUpload(post, mediaPath, token) {
   const uploadUrl = res?.data?.upload_url;
   if (!publishId || !uploadUrl) {
     throw new Error(`init returned no publish_id/upload_url: ${JSON.stringify(res?.data || res).slice(0, 200)}`);
+  }
+  return { publishId, uploadUrl, size };
+}
+
+// 1b) INIT (inbox / draft handoff, spec 27): reserve a publish_id + upload_url
+// for the SAME single-chunk FILE_UPLOAD source_info, but WITHOUT post_info - the
+// creator sets caption/privacy/effects themselves once they open the video in
+// their TikTok inbox to finish + publish in-app. Requires the (weaker)
+// video.upload scope rather than video.publish.
+async function initInboxUpload(post, mediaPath, token) {
+  const size = fs.statSync(mediaPath).size;
+  const body = {
+    source_info: {
+      source: 'FILE_UPLOAD',
+      video_size: size,
+      chunk_size: size, // single chunk
+      total_chunk_count: 1,
+    },
+  };
+  const res = await ttPost(INBOX_INIT_URL, body, token);
+  const publishId = res?.data?.publish_id;
+  const uploadUrl = res?.data?.upload_url;
+  if (!publishId || !uploadUrl) {
+    throw new Error(`inbox init returned no publish_id/upload_url: ${JSON.stringify(res?.data || res).slice(0, 200)}`);
   }
   return { publishId, uploadUrl, size };
 }
@@ -360,10 +418,18 @@ async function uploadBytes(uploadUrl, mediaPath, size) {
   }
 }
 
-// 3) POLL: status/fetch until PUBLISH_COMPLETE | FAILED, bounded with backoff.
+// 3) POLL: status/fetch until a terminal state, bounded with backoff.
 //    Returns { status, videoId } where videoId is best-effort (TikTok does not
 //    always surface a post id here).
-async function pollStatus(publishId, token) {
+//
+// Spec 27: the terminal state DIFFERS by path. A direct post completes at
+// PUBLISH_COMPLETE. An INBOX handoff (draftHandoff) never reaches
+// PUBLISH_COMPLETE from here - TikTok delivers the video to the creator's inbox
+// (SEND_TO_USER_INBOX) and PUBLISH_COMPLETE only comes AFTER the human hits
+// publish in-app. So for an inbox upload SEND_TO_USER_INBOX IS terminal success:
+// return immediately instead of burning the whole poll budget (~165s of sleeps)
+// only to record a "PENDING" for what actually succeeded.
+async function pollStatus(publishId, token, draftHandoff = false) {
   let last = null;
   for (let i = 0; i < POLL_MAX_TRIES; i++) {
     await new Promise((r) => setTimeout(r, POLL_BASE_MS * (i + 1)));
@@ -384,11 +450,17 @@ async function pollStatus(publishId, token) {
         : (d.publicly_available_post_id || d.post_id || null);
       return { status, videoId: videoId ? String(videoId) : null };
     }
+    // Inbox handoff: SEND_TO_USER_INBOX is the terminal SUCCESS state (the human
+    // finishes + publishes in-app). Terminate immediately - no further polling.
+    if (draftHandoff && status === 'SEND_TO_USER_INBOX') {
+      return { status, videoId: null };
+    }
     if (status === 'FAILED') {
       const reason = d.fail_reason || d.failure_reason || 'unknown';
       throw new Error(`TikTok processing FAILED: ${reason}`);
     }
-    // PROCESSING_UPLOAD / PROCESSING_DOWNLOAD / SEND_TO_USER_INBOX -> keep polling.
+    // PROCESSING_UPLOAD / PROCESSING_DOWNLOAD -> keep polling (and, on the
+    // direct-post path only, SEND_TO_USER_INBOX as a transient upstream state).
   }
   // Bounded out without a terminal state. The post may still complete async; we
   // return the publish_id so the operator can verify later rather than erroring.
@@ -413,12 +485,20 @@ async function cmdAuth(args) {
   const port = Number(u.port || 80);
   const callbackPath = u.pathname || '/oauth/tiktok/callback';
   const state = crypto.randomUUID();
+  // TikTok's authorize endpoint requires PKCE: without a code_challenge the
+  // consent screen fails with "correct the following and try again: code_challenge".
+  // TikTok deviates from RFC 7636 here - the challenge is the HEX digest of the
+  // SHA-256 of the verifier, not the base64url digest the spec uses.
+  const codeVerifier = crypto.randomBytes(60).toString('hex'); // 120 chars of [0-9a-f], within PKCE's 43-128 range
+  const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('hex');
   const authUrl = `${AUTH_URL}?${new URLSearchParams({
     client_key: clientKey,
     response_type: 'code',
     scope: SCOPES.join(','),
     redirect_uri: redirect,
     state,
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
   }).toString()}`;
 
   console.log(`\n[action] Make sure ${redirect} is registered as a Redirect URI for this TikTok app (TikTok for Developers -> Login Kit -> Redirect URI).`);
@@ -454,6 +534,7 @@ async function cmdAuth(args) {
           client_key: clientKey,
           client_secret: clientSecret,
           redirect_uri: redirect,
+          code_verifier: codeVerifier, // PKCE: TikTok verifies this against the code_challenge sent to /authorize
         });
         const vars = persistTokens(data);
         if (!vars.TIKTOK_ACCESS_TOKEN) throw new Error('token exchange returned no access_token.');
@@ -542,30 +623,71 @@ async function cmdPublishDue(args) {
     if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
     if (!isVideo(mediaPath)) { console.log(`[warn] ${post.id}: media ${path.basename(mediaPath)} is not a video - TikTok publishes video only; skipping.`); continue; }
 
+    // Spec 27: publishAsDraft routes through the inbox init instead of the
+    // direct-post one - the video lands in the creator's TikTok inbox to finish
+    // + publish in-app. Approval was already checked above; this only picks
+    // which init endpoint is used.
+    const draftHandoff = post.publishAsDraft === true;
+
     if (args['dry-run']) {
-      console.log(`[dry] ${post.id}: would init+upload ${path.basename(mediaPath)} and post privacy=${privacyFor(post)}.`);
+      console.log(draftHandoff
+        ? `[dry] ${post.id}: would init (inbox)+upload ${path.basename(mediaPath)} for the TikTok inbox.`
+        : `[dry] ${post.id}: would init+upload ${path.basename(mediaPath)} and post privacy=${privacyFor(post)}.`);
       continue;
     }
 
-    console.log(`[info] ${post.id}: publishing video to TikTok (privacy=${privacyFor(post)})...`);
+    console.log(draftHandoff
+      ? `[info] ${post.id}: sending video to TikTok inbox...`
+      : `[info] ${post.id}: publishing video to TikTok (privacy=${privacyFor(post)})...`);
     try {
       const token = await getAccessToken();
-      const { publishId, uploadUrl, size } = await initUpload(post, mediaPath, token);
+      let publishId; let uploadUrl; let size;
+      if (draftHandoff) {
+        try {
+          ({ publishId, uploadUrl, size } = await initInboxUpload(post, mediaPath, token));
+        } catch (initErr) {
+          // P9: the sealed token may hold video.publish but not the (weaker)
+          // video.upload scope the inbox endpoint requires - degrade to a
+          // structured needs_scope row, never a crash. Nothing was reserved yet
+          // (fail-closed / side-effect-free), so the local post stays 'planned'
+          // and will retry on the next tick.
+          //
+          // Classify ONLY a genuine scope error as needs_scope. TikTok reports a
+          // missing scope as `scope_not_authorized` (with a 403 on the endpoint);
+          // an expired/invalid token (401 `access_token_invalid`) is NOT a missing
+          // scope, so it must fall through to the generic engine_failure path -
+          // the operator needs to RECONNECT, not grant a scope they may already
+          // hold (matching how the direct-post path classifies a 401).
+          const msg = String(initErr.message || initErr);
+          const isScopeError = /scope_not_authorized/i.test(msg)
+            || (/\b403\b/.test(msg) && !/access_token|token[_ ]?invalid|invalid[_ ]?token/i.test(msg));
+          if (isScopeError) {
+            appendAttempt(post, { ts: new Date().toISOString(), platform: 'tiktok', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: msg.slice(0, 300), actor: ACTOR });
+            await savePlan(abs, plan, [post.id]);
+            RUN.results.push({ postId: post.id, platform: 'tiktok', action: 'publish', ok: false, error: 'needs_scope', scope: 'video.upload', errorCode: 'needs_scope', errorMessage: msg.slice(0, 300) });
+            console.log(`[warn] ${post.id}: TikTok inbox init needs the video.upload scope - ${msg}`);
+            continue;
+          }
+          throw initErr;
+        }
+      } else {
+        ({ publishId, uploadUrl, size } = await initUpload(post, mediaPath, token));
+      }
       // Store the publish_id immediately - if upload/poll fails we still know the
       // reservation that was made (recovery + dedupe), per the assignment.
       post.tiktokVideoId = String(publishId);
       await savePlan(abs, plan, [post.id]);
 
       await uploadBytes(uploadUrl, mediaPath, size);
-      const { status, videoId } = await pollStatus(publishId, token);
+      const { status, videoId } = await pollStatus(publishId, token, draftHandoff);
 
       if (videoId) post.tiktokVideoId = String(videoId);
       post.status = 'posted';
       post.postedAt = new Date(now).toISOString();
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'tiktok', action: 'publish', ok: true, errorCode: null, errorMessage: null, actor: ACTOR });
       await savePlan(abs, plan, [post.id]);
-      RUN.results.push({ postId: post.id, platform: 'tiktok', action: 'publish', ok: true, id: String(videoId || publishId), detail: status });
-      console.log(`[ok] ${post.id}: published on TikTok (publish_id ${publishId}${videoId ? `, video ${videoId}` : ''}) - ${status}.`);
+      RUN.results.push({ postId: post.id, platform: 'tiktok', action: 'publish', ok: true, id: String(videoId || publishId), detail: status, ...(draftHandoff ? { draft: true } : {}) });
+      console.log(`[ok] ${post.id}: ${draftHandoff ? 'sent to TikTok inbox' : 'published on TikTok'} (publish_id ${publishId}${videoId ? `, video ${videoId}` : ''}) - ${status}.`);
       published += 1;
     } catch (err) {
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'tiktok', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), actor: ACTOR });
@@ -639,6 +761,72 @@ async function cmdProbe() {
   }
 }
 
+// Pre-submit validation reads (spec 09, Pattern P3, read-only). Checks the
+// creator's posting settings (privacy options, caption cap) via the SAME
+// creator_info/query endpoint the direct-post flow depends on, so
+// PlatformBlockers can warn the operator ahead of a silent processing FAILED
+// (:459 above). Never writes; a creator_info failure is a per-post
+// ok:false/engine_failure row (never a crash; presubmitCheck omits it from the
+// merged panel). A missing/invalid token degrades to a needs_scope warning
+// (P9) instead of throwing - `ready:null` reads as "couldn't check", not
+// "blocked".
+const CREATOR_INFO_URL = 'https://open.tiktokapis.com/v2/post/publish/creator_info/query/';
+
+function presubmitNeedsScope(postId, message) {
+  return {
+    postId, platform: 'tiktok', action: 'presubmit', ok: true, ready: null,
+    problems: [], warnings: [{ code: 'needsScope', text: String(message || '').slice(0, 200) }], meta: {},
+  };
+}
+
+async function cmdPresubmit(args) {
+  const { plan } = loadPlan(args.plan);
+  const targets = (plan.posts || []).filter((p) => isTikTok(p) && (!args.only || p.id === args.only));
+  if (!targets.length) return;
+  if (!readEnv('TIKTOK_ACCESS_TOKEN') && !readEnv('TIKTOK_REFRESH_TOKEN')) {
+    for (const post of targets) RUN.results.push(presubmitNeedsScope(post.id, 'TikTok is not connected - run auth first.'));
+    return;
+  }
+  let creator;
+  try {
+    const token = await getAccessToken();
+    creator = await ttPost(CREATOR_INFO_URL, {}, token);
+  } catch (err) {
+    const msg = String(err.message || err);
+    // Mirror the inbox-init scope classification (:652-653 above): a genuine
+    // missing-scope/invalid-token response degrades to needs_scope; anything
+    // else (rate limit, outage) is a real engine failure, never masqueraded.
+    if (/scope_not_authorized|access_token_invalid|token[_ ]?invalid/i.test(msg)) {
+      for (const post of targets) RUN.results.push(presubmitNeedsScope(post.id, msg));
+      return;
+    }
+    for (const post of targets) {
+      RUN.results.push({ postId: post.id, platform: 'tiktok', action: 'presubmit', ok: false, errorCode: 'engine_failure', errorMessage: msg.slice(0, 200) });
+    }
+    return;
+  }
+
+  const d = creator?.data || {};
+  const privacyOptions = Array.isArray(d.privacy_level_options) ? d.privacy_level_options : [];
+  const maxDurationSec = Number.isFinite(d.max_video_post_duration_sec) ? d.max_video_post_duration_sec : null;
+
+  for (const post of targets) {
+    const problems = [];
+    const warnings = [];
+    const caption = captionText(post);
+    if (caption.length > CAPTION_LIMIT) problems.push({ code: 'captionLength', text: `${caption.length}/${CAPTION_LIMIT}` });
+    const wanted = privacyFor(post);
+    if (privacyOptions.length && !privacyOptions.includes(wanted)) {
+      problems.push({ code: 'privacy', text: wanted });
+    }
+    RUN.results.push({
+      postId: post.id, platform: 'tiktok', action: 'presubmit', ok: true,
+      ready: problems.length === 0, problems, warnings,
+      meta: { creatorUsername: d.creator_username || null, maxVideoDurationSec: maxDurationSec },
+    });
+  }
+}
+
 // ---------- main ----------
 
 function parseArgs(argv) {
@@ -655,9 +843,25 @@ function parseArgs(argv) {
   return args;
 }
 
+// The inbound-engagement seam (spec 02, Pattern P6): read + reply to inbound
+// comments on this lane's own posts. Thin wrappers over the shared, source-agnostic
+// REST in lib/comments.mjs (dynamic import so the publish hot path's module graph is
+// untouched). The result is merged onto RUN so main() emits the normalized
+// { items } / { id } envelope; a needs_scope degrade sets ok:false (P9).
+async function cmdComments(args) {
+  const { runLaneComments } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneComments('tiktok', args));
+}
+async function cmdReply(args) {
+  const { runLaneReply } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneReply('tiktok', args));
+}
+
 const COMMANDS = {
   auth: cmdAuth,
   connect: cmdAuth,
+  comments: cmdComments,
+  reply: cmdReply,
   refresh: cmdRefresh,
   validate: cmdValidate,
   'publish-due': cmdPublishDue,
@@ -666,6 +870,7 @@ const COMMANDS = {
   insights: cmdInsights,
   delete: cmdDelete,
   probe: cmdProbe,
+  presubmit: cmdPresubmit,
 };
 
 async function main() {
@@ -689,7 +894,7 @@ async function main() {
     console.error(`Usage: node scripts/tiktok-social.mjs <${Object.keys(COMMANDS).join('|')}> [options]`);
     process.exit(2);
   }
-  if (['validate', 'publish-due', 'status', 'verify', 'insights'].includes(commandName) && !args.plan) {
+  if (['validate', 'publish-due', 'status', 'verify', 'insights', 'presubmit'].includes(commandName) && !args.plan) {
     console.error(`[err] ${commandName} requires --plan <post-plan.json>`);
     process.exit(2);
   }
@@ -697,8 +902,22 @@ async function main() {
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
-main().catch(async (err) => {
-  console.error('[err]', err.message || err);
-  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
-  process.exit(1);
-});
+// CLI entry - only when executed directly, never when imported (unit tests reach
+// pollStatus this way). Mirrors scripts/dashboard-build.mjs / gen-agents.mjs.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(async (err) => {
+    console.error('[err]', err.message || err);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    process.exit(1);
+  });
+}
+
+// Test-only export: pollStatus is pure over its (publishId, token, draftHandoff)
+// inputs + globalThis.fetch, so a unit test can drive the inbox-vs-direct
+// terminal-state logic (spec 27) without spawning the CLI or the real API.
+// initUpload is exported the same way (spec 25): it is pure over (post, mediaPath,
+// token) + globalThis.fetch (via ttPost), so a stubbed-fetch test can prove the
+// ttInteraction flags land in the real INIT post_info body - TikTok's API host is
+// a hardcoded literal (not env-overridable), so a live-local-server proof (like
+// the WordPress/Mastodon lanes) is not feasible here.
+export { pollStatus, initUpload };

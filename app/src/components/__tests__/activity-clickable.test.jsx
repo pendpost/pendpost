@@ -44,7 +44,9 @@ describe('Activity rows are clickable (US-ACT-10)', () => {
   });
 
   it('leaves a post-less row (scheduler start) as a plain, non-clickable row', () => {
-    renderActivity({ onOpenPost: vi.fn() });
+    // scheduler-start is a system event, hidden by default since UX round 4 -
+    // select the System group so the row renders at all.
+    renderActivity({ onOpenPost: vi.fn(), actionGroups: ['system'] });
     const row = screen.getByText('Scheduler started');
     expect(row.closest('button')).toBeNull();
   });

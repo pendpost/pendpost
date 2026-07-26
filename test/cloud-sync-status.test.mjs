@@ -114,10 +114,21 @@ try {
   ok(r3.state === 'amber' && r3.reason === 'sync_stopped', 'syncStopped subscription -> amber (covered locally, attention not failure)');
   { const s = loadState(); s.cloudSubView = { alwaysOn: true, syncStopped: false, stopReason: null, at: new Date().toISOString() }; saveState(); }
 
-  // --- amber: stale contact = cloud unreachable (nothing missed yet -> covered) ---------
+  // --- Neon-economy policy: a stale contact is an ALARM only when something is pending it
+  //     endangers. We stopped idle-polling (an idle daemon makes zero Neon calls to let the compute
+  //     suspend), so a stale okAt no longer means "unreachable" - with nothing pending it means
+  //     "not polled, nothing to sync" -> GREEN. A PENDING post + the same stale contact is a real
+  //     degradation -> amber (the alarm is preserved). This is the data-honesty rule: no attention
+  //     colour when nothing is at risk.
   { const s = loadState(); s.cloudContact = { okAt: '2020-01-01T00:00:00.000Z' }; saveState(); }
-  const r4 = cloud.cloudSyncStatus();
-  ok(r4.state === 'amber' && r4.reason === 'cloud_unreachable', 'stale cloud contact -> amber (cloud_unreachable, backstop covers)');
+  const r4idle = cloud.cloudSyncStatus();
+  ok(r4idle.state === 'green' && r4idle.reason === 'all_confirmed', 'idle (nothing pending) + stale contact -> green (no idle poll needed; nothing at risk)');
+  // Momentarily unack p1 so it is PENDING; the same stale contact must still read amber.
+  const savedAcks = loadState().cloudAccepted;
+  { const s = loadState(); s.cloudAccepted = {}; saveState(); }
+  const r4pending = cloud.cloudSyncStatus();
+  ok(r4pending.state === 'amber' && r4pending.reason === 'cloud_unreachable', 'a pending post + stale contact -> amber cloud_unreachable (the real alarm is preserved)');
+  { const s = loadState(); s.cloudAccepted = savedAcks; saveState(); }
 
   // --- red OUTRANKS amber: an overdue post while ALSO unreachable is still red ----------
   // The whole point of the split - a genuine miss must never hide behind "unreachable".

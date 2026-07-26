@@ -5,12 +5,12 @@ import { useClients, useClientsOverview, createClient, updateClient, archiveClie
 import { useCloud, useCloudClients, setClientAlwaysOn } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
 import { validateAccent, DEFAULT_ACCENT, clientAccent } from '../lib/theme.js';
-import { INNER_SURFACE, EYEBROW, Skeleton } from './ui.jsx';
+import { INNER_SURFACE, FIELD_SURFACE, EYEBROW, Skeleton } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 
-const FIELD = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+const FIELD = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 const FIELD_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} ring-1 ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
 const BTN = 'rounded-xl px-3 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 const BTN_BRAND = `${BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`;
@@ -123,7 +123,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
     <form onSubmit={submit} className={`space-y-3 rounded-2xl p-4 ${INNER_SURFACE}`} aria-label={editing ? t('clientForm.ariaEdit') : t('clientForm.ariaNew')}>
       <div className="flex items-center justify-between">
         <h3 className="font-display text-sm font-bold">{editing ? t('clientForm.titleEdit', { name: initial.displayName }) : t('clientForm.titleNew')}</h3>
-        <button type="button" onClick={onCancel} aria-label={t('clientForm.cancel')} className="rounded-full p-1 text-zinc-500 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+        <button type="button" onClick={onCancel} aria-label={t('clientForm.cancel')} className="rounded-full p-1.5 text-zinc-500 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
           <X size={16} aria-hidden="true" />
         </button>
       </div>
@@ -214,7 +214,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
               aria-describedby="logo-hint"
               className="block w-full text-xs text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-white dark:text-zinc-300 dark:file:bg-brand-light dark:file:text-zinc-900"
             />
-            {logoUploading ? <Loader2 size={15} className="shrink-0 animate-spin text-zinc-400" aria-hidden="true" /> : null}
+            {logoUploading ? <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500" aria-hidden="true" /> : null}
             {form.logo ? (
               <button
                 type="button"
@@ -360,6 +360,7 @@ export default function Clients() {
         : t('clients.confirm.restoreBody', { name: c.displayName }),
       confirmLabel: archiving ? t('clients.confirm.archive') : t('clients.confirm.restore'),
       danger: archiving,
+      rememberKey: archiving ? 'clients.archive' : 'clients.restore',
     });
     if (!ok) return;
     setBusyId(c.id);
@@ -436,7 +437,7 @@ export default function Clients() {
           <table className="w-full text-left text-sm">
             <caption className="sr-only">{t('clients.tableCaption')}</caption>
             <thead>
-              <tr className="border-b border-zinc-200/70 text-[11px] tracking-tight text-zinc-400 dark:border-zinc-700/70 dark:text-zinc-500">
+              <tr className="border-b border-zinc-200/70 text-[11px] tracking-tight text-zinc-500 dark:border-zinc-700/70 dark:text-zinc-400">
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.client')}</th>
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.status')}</th>
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.health')}</th>
@@ -467,7 +468,7 @@ export default function Clients() {
                               </span>
                             ) : null}
                           </span>
-                          <span className="block font-mono text-[10px] text-zinc-400 dark:text-zinc-500">{c.id}</span>
+                          <span className="block font-mono text-[10px] text-zinc-500 dark:text-zinc-400">{c.id}</span>
                         </span>
                       </span>
                     </td>
@@ -483,7 +484,7 @@ export default function Clients() {
                             </Tip>
                           ) : (
                             <Tip label={t('clients.delivery.local')}>
-                              <span className="inline-flex text-zinc-400 dark:text-zinc-500" role="img" aria-label={t('clients.delivery.local')}>
+                              <span className="inline-flex text-zinc-500 dark:text-zinc-400" role="img" aria-label={t('clients.delivery.local')}>
                                 <Monitor size={14} aria-hidden="true" />
                               </span>
                             </Tip>

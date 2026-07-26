@@ -53,6 +53,7 @@ data/clients/*
 !data/clients/default/
 # Live cloud workspace pairing (workspace UUID + brand map) — local runtime state, never public.
 data/cloud.json
+data/cloud.json.bak
 
 # Local opt-in: presence makes launcher/serve.sh rebuild app/dist on every agent
 # start (a dev convenience). Stays LOCAL so shipped installs never rebuild on boot.

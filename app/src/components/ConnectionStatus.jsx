@@ -93,7 +93,7 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
           <button
             type="button"
             aria-label={t('connection.aria')}
-            className="relative flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+            className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
             <Icon size={14} aria-hidden="true" />
             {dot ? (

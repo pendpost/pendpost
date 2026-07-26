@@ -20,8 +20,11 @@ const accountsState = { data: { meta: { paused: false } } };
 
 vi.mock('../../lib/api.js', () => ({
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme Retail', accent: '#22566d' }, activeClientId: 'acme' }),
+  usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
   useAccounts: () => accountsState,
   usePlatformValidate: () => ({ data: undefined }),
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePresubmitCheck: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
   approvePost: vi.fn(),
   rejectPost: vi.fn(),
@@ -122,12 +125,15 @@ describe('PostDetail i18n migration (en)', () => {
 
   it('shows the campaign meta line with the schedule (placeholder interpolation)', () => {
     renderDetail();
-    // scheduledFor {when} + campaignMeta {campaign}{id}{type} are interpolated,
-    // not shown as raw braces. The reused approvals.card.campaignMeta key renders
-    // "Campaign: Spring · p1 · Reel".
+    // scheduledFor {when} + campaignMeta {campaign}{id} are interpolated, not shown
+    // as raw braces. The reused approvals.card.campaignMeta key renders
+    // "Campaign: Spring · p1" - the TYPE is deliberately absent here, because the
+    // Format select below is the editable, authoritative one and repeating it in the
+    // header was duplication. The approval rows DO show the type (no select there).
     expect(screen.queryByText(/\{when\}/)).not.toBeInTheDocument();
     expect(screen.queryByText(/\{campaign\}/)).not.toBeInTheDocument();
-    expect(screen.getByText(/Campaign: Spring · p1 · Reel/)).toBeInTheDocument();
+    expect(screen.getByText(/Campaign: Spring · p1/)).toBeInTheDocument();
+    expect(screen.queryByText(/Campaign: Spring · p1 · Reel/)).not.toBeInTheDocument();
   });
 
   it('leaks no raw key id anywhere in the rendered SlideOver', () => {

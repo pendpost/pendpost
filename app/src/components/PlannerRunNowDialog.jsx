@@ -17,7 +17,7 @@
 // button leads with an icon + text. Built on the shared Modal chrome — a
 // centered popup portaled to <body> (role=dialog, focus trap, Escape, backdrop)
 // so it inherits the a11y contract and can't be clipped by the glass header.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Rocket, Inbox } from 'lucide-react';
 import { runPublishDue } from '../lib/api.js';
@@ -25,6 +25,7 @@ import { fmtFull, campaignBaseLabel, isDueNow, isYouTubeReleaseDue } from '../li
 import { useT } from '../lib/i18n.js';
 import { useConfirm } from './ui/confirm.jsx';
 import { Modal, CloseButton, CoverThumb, StatusPill, PlatformIcons, INNER_SURFACE } from './ui.jsx';
+import { Checkbox } from './ui/Checkbox.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 
 const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
@@ -35,22 +36,16 @@ const keyOf = (post) => `${post.campaign}-${post.id}`;
 // SelectAllControl - that one is not exported, so this is the local twin).
 function SelectAllControl({ total, selectedCount, onToggle }) {
   const t = useT();
-  const ref = useRef(null);
   const allSelected = total > 0 && selectedCount === total;
   const someSelected = selectedCount > 0 && selectedCount < total;
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = someSelected;
-  }, [someSelected]);
   if (total === 0) return null;
   return (
     <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
-      <input
-        ref={ref}
-        type="checkbox"
+      <Checkbox
         checked={allSelected}
+        indeterminate={someSelected}
         onChange={onToggle}
         aria-label={allSelected ? t('planner.runDialog.clearAll') : t('planner.runDialog.selectAll')}
-        className="h-4 w-4 cursor-pointer rounded border-zinc-300 text-brand accent-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-zinc-600"
       />
       {allSelected ? t('planner.runDialog.clearAll') : t('planner.runDialog.selectAll')}
     </label>
@@ -69,12 +64,10 @@ function DueRow({ post, selected, onToggle }) {
   return (
     <li className={`flex gap-3 rounded-xl p-3 ${INNER_SURFACE}`}>
       <span className="flex shrink-0 items-start pt-1">
-        <input
-          type="checkbox"
+        <Checkbox
           checked={selected}
           onChange={() => onToggle(post)}
           aria-label={t('planner.runDialog.selectPost', { headline })}
-          className="h-4 w-4 cursor-pointer rounded border-zinc-300 text-brand accent-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-zinc-600"
         />
       </span>
       <CoverThumb media={post.media} image={post.image} className="h-16 w-12 shrink-0 rounded-lg" />
@@ -95,7 +88,7 @@ function DueRow({ post, selected, onToggle }) {
         </span>
         <div className="flex items-center gap-1.5">
           <PlatformIcons platforms={post.platforms} />
-          <span className="truncate text-[11px] text-zinc-400 dark:text-zinc-500">{campaignBaseLabel(post.campaign)}</span>
+          <span className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{campaignBaseLabel(post.campaign)}</span>
         </div>
       </div>
     </li>
@@ -242,7 +235,7 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
       ) : (
         <div className="grid flex-1 place-items-center py-16">
           <div className="max-w-xs space-y-2 text-center">
-            <Inbox size={26} className="mx-auto text-zinc-400" aria-hidden="true" />
+            <Inbox size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
             <p className="text-sm font-bold">{t('planner.runDialog.empty.title')}</p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('planner.runDialog.empty.body')}</p>
           </div>

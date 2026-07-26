@@ -30,11 +30,14 @@ describe('fieldRelevance', () => {
     expect(r.firstComment).toBe(true); // YouTube pins a first comment on the video
   });
 
-  it('firstComment is Instagram-feed OR YouTube, never a story', () => {
+  it('firstComment is Instagram-feed OR YouTube OR LinkedIn, never an IG story', () => {
     expect(fieldRelevance(['instagram'], 'reel').firstComment).toBe(true);
     expect(fieldRelevance(['instagram'], 'story').firstComment).toBe(false);
     expect(fieldRelevance(['youtube'], 'youtube-longform').firstComment).toBe(true);
-    expect(fieldRelevance(['linkedin'], 'video').firstComment).toBe(false);
+    // Spec 11: LinkedIn extends the existing IG/YT first-comment field - any
+    // share type carries a comment surface (unlike an IG story).
+    expect(fieldRelevance(['linkedin'], 'video').firstComment).toBe(true);
+    expect(fieldRelevance(['linkedin'], 'text').firstComment).toBe(true);
   });
 
   it('an X post exposes xCaption + xReplyTo (caption stays as the fallback base)', () => {
@@ -69,6 +72,19 @@ describe('fieldRelevance', () => {
     expect(r.canonicalUrl).toBe(true);
     expect(r.ghostEmail).toBe(true);
     expect(r.body).toBe(true);
+  });
+
+  // Spec 01: the three newsletter refinements ride the SAME ghost gate as
+  // ghostEmail/canonicalUrl - never relevant for a non-ghost lane.
+  it('spec 01: newsletter/emailSegment/emailOnly are ghost-only, like ghostEmail', () => {
+    const ghost = fieldRelevance(['ghost'], 'text');
+    expect(ghost.newsletter).toBe(true);
+    expect(ghost.emailSegment).toBe(true);
+    expect(ghost.emailOnly).toBe(true);
+    const wp = fieldRelevance(['wordpress'], 'text');
+    expect(wp.newsletter).toBe(false);
+    expect(wp.emailSegment).toBe(false);
+    expect(wp.emailOnly).toBe(false);
   });
 
   it('a LinkedIn text/article post carries title, liDescription, link + image', () => {
@@ -121,6 +137,71 @@ describe('fieldRelevance', () => {
     const r = fieldRelevance([], 'reel');
     expect(Object.values(r).every((v) => v === false)).toBe(true);
   });
+
+  // Specs 21+39: cross-lane image alt-text. Spec 39 closed the Instagram coverage
+  // gate (the feed IMAGE container takes alt_text), so instagram joined the set.
+  it('altText is relevant for x / wordpress / pinterest / instagram, not a linkedin-only post', () => {
+    expect(fieldRelevance(['x'], 'video').altText).toBe(true);
+    expect(fieldRelevance(['wordpress'], 'text').altText).toBe(true);
+    expect(fieldRelevance(['pinterest'], 'video').altText).toBe(true);
+    expect(fieldRelevance(['instagram'], 'image').altText).toBe(true);
+    expect(fieldRelevance(['linkedin'], 'video').altText).toBe(false);
+  });
+
+  // Spec 13: rich long-form metadata - metaTitle/metaDescription/featureImageAlt
+  // apply to EITHER blog lane; wpCategories is WordPress-only (Ghost has no
+  // categories concept - tags + native meta cover it).
+  it('spec 13: metaTitle/metaDescription/featureImageAlt are relevant for wordpress and ghost', () => {
+    for (const key of ['metaTitle', 'metaDescription', 'featureImageAlt']) {
+      expect(fieldRelevance(['wordpress'], 'text')[key]).toBe(true);
+      expect(fieldRelevance(['ghost'], 'text')[key]).toBe(true);
+      expect(fieldRelevance(['linkedin'], 'text')[key]).toBe(false);
+      expect(fieldRelevance(['instagram'], 'reel')[key]).toBe(false);
+    }
+  });
+
+  it('spec 13: wpCategories is WordPress-only, false for Ghost and every other lane', () => {
+    expect(fieldRelevance(['wordpress'], 'text').wpCategories).toBe(true);
+    expect(fieldRelevance(['ghost'], 'text').wpCategories).toBe(false);
+    expect(fieldRelevance(['linkedin'], 'text').wpCategories).toBe(false);
+  });
+
+  // Specs 27+43: draft/pending-review publish status - wordpress, ghost and
+  // tiktok (the three lanes with a native draft/inbox handoff; spec 43 added
+  // ghost when its engine started honoring the flag).
+  it('specs 27+43: publishAsDraft is relevant for wordpress, ghost and tiktok, false elsewhere', () => {
+    expect(fieldRelevance(['wordpress'], 'text').publishAsDraft).toBe(true);
+    expect(fieldRelevance(['ghost'], 'text').publishAsDraft).toBe(true);
+    expect(fieldRelevance(['tiktok'], 'video').publishAsDraft).toBe(true);
+    expect(fieldRelevance(['linkedin'], 'text').publishAsDraft).toBe(false);
+    expect(fieldRelevance(['instagram'], 'reel').publishAsDraft).toBe(false);
+  });
+
+  // Spec 14: rich link/CTA - tgCta (Telegram) and dcEmbed (Discord) are each
+  // lane-exclusive and not type-gated (any post type on that lane can carry one).
+  it('spec 14: tgCta is Telegram-only, dcEmbed is Discord-only, neither is type-gated', () => {
+    expect(fieldRelevance(['telegram'], 'text').tgCta).toBe(true);
+    expect(fieldRelevance(['telegram'], 'video').tgCta).toBe(true);
+    expect(fieldRelevance(['discord'], 'text').tgCta).toBe(false);
+    expect(fieldRelevance(['discord'], 'text').dcEmbed).toBe(true);
+    expect(fieldRelevance(['discord'], 'video').dcEmbed).toBe(true);
+    expect(fieldRelevance(['telegram'], 'text').dcEmbed).toBe(false);
+  });
+
+  // Spec 25: disclosure & interaction settings - ttInteraction (TikTok),
+  // spoilerText (Mastodon), xReplySettings (X) are each lane-exclusive and not
+  // type-gated (any post type on that lane can carry one).
+  it('spec 25: ttInteraction is TikTok-only, spoilerText is Mastodon-only, xReplySettings is X-only', () => {
+    expect(fieldRelevance(['tiktok'], 'video').ttInteraction).toBe(true);
+    expect(fieldRelevance(['tiktok'], 'text').ttInteraction).toBe(true);
+    expect(fieldRelevance(['mastodon'], 'video').ttInteraction).toBe(false);
+    expect(fieldRelevance(['mastodon'], 'video').spoilerText).toBe(true);
+    expect(fieldRelevance(['mastodon'], 'text').spoilerText).toBe(true);
+    expect(fieldRelevance(['x'], 'video').spoilerText).toBe(false);
+    expect(fieldRelevance(['x'], 'video').xReplySettings).toBe(true);
+    expect(fieldRelevance(['x'], 'text').xReplySettings).toBe(true);
+    expect(fieldRelevance(['mastodon'], 'video').xReplySettings).toBe(false);
+  });
 });
 
 describe('fieldsForPost', () => {
@@ -141,17 +222,17 @@ describe('fieldsForPost', () => {
     expect(fields.map((f) => f.key)).toContain('firstComment');
   });
 
-  it('an X-only post with NO saved override collapses to ONE text field (+ reply-to)', () => {
+  it('an X-only post with NO saved override collapses to ONE text field (+ reply-to, + alt-text)', () => {
     const { fields } = fieldsForPost(post(['x'], 'video'));
     const keys = fields.map((f) => f.key);
     // Single-lane collapse: the caption IS the tweet, so no separate xCaption.
-    expect(keys).toEqual(['caption', 'xReplyTo']);
+    expect(keys).toEqual(['caption', 'xReplyTo', 'altText']);
   });
 
   it('an X-only post with a LEGACY override keeps caption + xCaption, scoped to X', () => {
     const { fields } = fieldsForPost(post(['x'], 'video', { xCaption: 'tweet' }));
     const keys = fields.map((f) => f.key);
-    expect(keys).toEqual(['caption', 'xCaption', 'xReplyTo']);
+    expect(keys).toEqual(['caption', 'xCaption', 'xReplyTo', 'altText']);
     const x = fields.find((f) => f.key === 'xCaption');
     expect(x.platforms).toEqual(['x']);
   });
@@ -179,12 +260,31 @@ describe('fieldsForPost', () => {
     expect(eKeys).toContain('image');
     expect(eKeys).toContain('canonicalUrl');
     expect(eKeys).toContain('ghostEmail');
+    // Spec 01: the three newsletter refinements ride the same ghost gate.
+    expect(eKeys).toContain('newsletter');
+    expect(eKeys).toContain('emailSegment');
+    expect(eKeys).toContain('emailOnly');
   });
 
-  it('a pure text post targeting only chat lanes shows just the caption', () => {
+  // Specs 27+43: draft/pending-review publish status is a read-only review extra
+  // (like ghostEmail) - shown for wordpress/ghost/tiktok, never for a lane that
+  // doesn't support a native draft/inbox handoff.
+  it('surfaces publishAsDraft as a read-only extra for wordpress, ghost and tiktok', () => {
+    expect(fieldsForPost(post(['wordpress'], 'text')).extras.map((e) => e.key)).toContain('publishAsDraft');
+    expect(fieldsForPost(post(['ghost'], 'text')).extras.map((e) => e.key)).toContain('publishAsDraft');
+    expect(fieldsForPost(post(['tiktok'], 'video')).extras.map((e) => e.key)).toContain('publishAsDraft');
+    expect(fieldsForPost(post(['linkedin'], 'text')).extras.map((e) => e.key)).not.toContain('publishAsDraft');
+  });
+
+  it('a pure text post targeting only chat lanes shows the caption + Discord thread fields (+ the empty tgCta/dcEmbed review extras)', () => {
     const { fields, extras } = fieldsForPost(post(['telegram', 'discord'], 'text'));
-    expect(fields.map((f) => f.key)).toEqual(['caption']);
-    expect(extras).toEqual([]);
+    // Spec 26: dcThreadName/dcThreadId are plain EDITABLE fields (like xReplyTo),
+    // not review-only extras - they list here whenever discord is targeted.
+    expect(fields.map((f) => f.key)).toEqual(['caption', 'dcThreadName', 'dcThreadId']);
+    // Spec 14: tgCta/dcEmbed are RELEVANT the moment their lane is targeted (like
+    // gbp), so they list as review extras here - PostExtras itself only renders a
+    // row once the operator has actually authored one (content-gated, §6).
+    expect(extras.map((e) => e.key)).toEqual(['tgCta', 'dcEmbed']);
   });
 
   it('never lists a field no targeted platform uses', () => {
@@ -193,5 +293,22 @@ describe('fieldsForPost', () => {
     expect(all).not.toContain('title');
     expect(all).not.toContain('description');
     expect(all).not.toContain('body');
+  });
+
+  // Spec 25: spoilerText is an EDITABLE (inline) field like mastodonCaption;
+  // ttInteraction (structured) and xReplySettings (a select value) are read-only
+  // review extras, like gbp/tgCta/dcEmbed.
+  it('spec 25: spoilerText is editable inline for mastodon; ttInteraction/xReplySettings are review extras', () => {
+    const masto = fieldsForPost(post(['mastodon'], 'video'));
+    expect(masto.fields.map((f) => f.key)).toContain('spoilerText');
+    expect(masto.extras.map((e) => e.key)).not.toContain('spoilerText');
+
+    const tiktok = fieldsForPost(post(['tiktok'], 'video'));
+    expect(tiktok.extras.map((e) => e.key)).toContain('ttInteraction');
+    expect(tiktok.fields.map((f) => f.key)).not.toContain('ttInteraction');
+
+    const x = fieldsForPost(post(['x'], 'video'));
+    expect(x.extras.map((e) => e.key)).toContain('xReplySettings');
+    expect(x.fields.map((f) => f.key)).not.toContain('xReplySettings');
   });
 });

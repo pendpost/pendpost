@@ -129,4 +129,24 @@ describe('locale completeness', () => {
     expect(values).toMatch(/[äöü]/);
     expect(values).not.toMatch(/ß/);
   });
+
+  // NO EM DASHES. A standing, absolute house rule: the repo writes " - ", or recasts the sentence.
+  //
+  // This is a check rather than a note because prose failed. The rule was stated, restated, and ten
+  // shipped strings carried an em dash anyway - including one the design canon's own Tier 1 lists
+  // first. It sits beside the eszett guard because it is the same kind of rule: a character that must
+  // never reach a screen, which no human will reliably catch by reading.
+  //
+  // NOTE when this fires: do not swap the character for a hyphen and move on. Every one of the ten
+  // was using the dash to carry real structure, and each wanted a full stop, a colon, or a clause
+  // rewritten. A blind swap trades a typography defect for a grammar one.
+  it('neither pack ships an em or en dash (house rule: " - ", or recast the sentence)', () => {
+    const offenders = [];
+    for (const [pack, strings] of [['en', en.strings], ['de-CH', deCH.strings]]) {
+      for (const [k, v] of Object.entries(strings)) {
+        if (/[—–]/.test(v)) offenders.push(`${pack}: ${k} = ${v}`);
+      }
+    }
+    expect(offenders, `em/en dash in shipped copy:\n${offenders.join('\n')}`).toEqual([]);
+  });
 });

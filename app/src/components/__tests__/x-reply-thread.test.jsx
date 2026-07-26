@@ -22,9 +22,13 @@ import { createPost, updatePost } from '../../lib/api.js';
 
 vi.mock('../../lib/api.js', () => ({
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme Retail', accent: '#22566d' }, activeClientId: 'acme' }),
+  usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => ({ data: undefined }),
+  usePresubmitCheck: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
+  useRedditFlairs: () => ({ data: undefined, isLoading: false }),
+  usePinterestBoardSections: () => ({ data: undefined, isLoading: false }),
   useAssets: () => ({ data: { assets: [], dir: '/tmp/assets' } }),
   useConfig: () => ({ data: { posting: { hashtagPresets: [] } } }),
   lintText: vi.fn(() => Promise.resolve({ ok: true, clean: true, findings: [] })),
@@ -227,6 +231,9 @@ describe('Composer xReplyTo edit affordance', () => {
     renderComposer(null);
     await user.click(screen.getByRole('button', { name: 'X' }));
     await user.type(screen.getByLabelText(/replies to/i), 'x-launch-thread');
+    // A Termin is now mandatory to save - pick today from the schedule picker.
+    await user.click(screen.getByRole('button', { name: 'Pick a date' }));
+    await user.click(document.querySelector('button[aria-current="date"]'));
     await user.click(screen.getByRole('button', { name: /create draft/i }));
     await waitFor(() => expect(createPost).toHaveBeenCalled());
     expect(createPost.mock.calls[0][1]).toMatchObject({ xReplyTo: 'x-launch-thread' });

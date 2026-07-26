@@ -28,6 +28,11 @@ vi.mock('../../lib/api.js', () => ({
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
   lintText: (...a) => lintText(...a),
+  // Spec 37: Freigaben reads the setup signal (reddit warmth) for the per-card tier cue.
+  // These posts are non-reddit, so the tier is always approved-auto (no manual cue).
+  usePendpostHealth: () => ({ data: null }),
+  // Freigaben reads the connected accounts once at the parent for the destination strip.
+  useAccounts: () => ({ data: null, isLoading: false, isError: false }),
 }));
 
 const pendingPost = {
@@ -225,5 +230,123 @@ describe('Freigaben pending empty state (US-APPR-05)', () => {
   it('has no axe violations in the named-client empty state', async () => {
     const { container } = renderFreigaben([approvedPost], { clientName: 'Acme Retail' });
     expect(await axeClean(container)).toHaveNoViolations();
+  });
+});
+
+// Owner invariant (2026-07-21): nothing awaiting a decision can hide. The active
+// flag is organizational only and never gates publishing, so a draft in an
+// archived campaign is real decision work: it must appear in the queue (badged
+// "Archived", after active-campaign work), with no toggle gating it.
+describe('Freigaben archived-campaign coverage', () => {
+  const archivedDraft = {
+    ...pendingPost,
+    id: 'p9',
+    campaign: 'winter',
+    title: 'Archived draft',
+    caption: 'Archived draft headline\nStill needs a decision.',
+    approval: 'draft',
+    scheduledAt: '2026-06-01T10:00:00Z',
+  };
+
+  function renderTwoCampaigns() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const campaigns = [
+      { id: 'winter', active: false, posts: [archivedDraft] },
+      { id: 'spring', active: true, posts: [pendingPost] },
+    ];
+    return render(
+      <QueryClientProvider client={qc}>
+        <I18nProvider locale="en">
+          <TooltipProvider>
+            <ConfirmProvider>
+              <Freigaben campaigns={campaigns} onOpen={() => {}} />
+            </ConfirmProvider>
+          </TooltipProvider>
+        </I18nProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  it('lists the archived-campaign draft in the pending queue with the Archived badge', () => {
+    renderTwoCampaigns();
+    const card = cardFor('Archived draft');
+    expect(within(card).getByText(t('approvals.card.archived'))).toBeInTheDocument();
+  });
+
+  it('sorts archived-campaign work after active-campaign work even when due earlier', () => {
+    renderTwoCampaigns();
+    const items = screen.getAllByRole('listitem');
+    const idx = (headline) => items.findIndex((li) => (li.textContent || '').includes(headline));
+    expect(idx('Spring promo')).toBeLessThan(idx('Archived draft'));
+  });
+
+  it('offers no archived toggle - coverage is unconditional', () => {
+    renderTwoCampaigns();
+    expect(screen.queryByText(/show archived/i)).not.toBeInTheDocument();
+  });
+});
+
+// A decision settles a post either way: approve and reject BOTH clear the card from
+// "To review", so the queue holds only undecided work. A rejected post reappears only
+// under "All posts" (badged Rejected), and carries no approve/reject actions there. The
+// reject->rework->re-review loop is closed by the engine (editing a rejected post
+// reverts it to draft), so the UI never has to keep a settled rejection in the queue.
+describe('Freigaben settles rejected posts out of the queue', () => {
+  const rejectedPost = {
+    id: 'p3',
+    campaign: 'spring',
+    title: 'Declined draft',
+    caption: 'This one was declined and belongs under All posts, not the queue.',
+    platforms: ['x'],
+    approval: 'rejected',
+    derivedState: 'draft',
+    scheduledAt: '2026-07-03T10:00:00Z',
+    type: 'text',
+    image: null,
+    media: { file: null, exists: false, bytes: null, url: null, cover: null, path: null },
+  };
+
+  it('hides a rejected post from the default "To review" queue', () => {
+    renderFreigaben([pendingPost, rejectedPost]);
+    expect(screen.getByText('Spring promo')).toBeInTheDocument();
+    expect(screen.queryByText('Declined draft')).not.toBeInTheDocument();
+  });
+
+  it('counts only undecided work in the To-review tab', () => {
+    renderFreigaben([pendingPost, rejectedPost]);
+    // One actionable post (the pending draft); the rejected one is settled.
+    expect(screen.getByText(t('approvals.view.toReviewCount', { n: 1 }))).toBeInTheDocument();
+  });
+
+  it('shows the rejected post under "All posts", badged Rejected and with no approve/reject actions', async () => {
+    const user = userEvent.setup();
+    renderFreigaben([pendingPost, rejectedPost]);
+    await user.click(screen.getByText(t('approvals.view.all')));
+    const card = cardFor('Declined draft');
+    expect(within(card).getByText(t('approval.rejected'))).toBeInTheDocument();
+    expect(within(card).queryByText(t('approvals.action.reject'))).not.toBeInTheDocument();
+    expect(within(card).queryByText(t('approvals.action.approve'))).not.toBeInTheDocument();
+  });
+
+  it('keeps an edited-since-approval post IN the queue with a fresh decision to make', () => {
+    const editedApproved = { ...approvedPost, id: 'p4', title: 'Edited after approval', editedSinceApproval: true };
+    renderFreigaben([editedApproved]);
+    const card = cardFor('Edited after approval');
+    // Still actionable: the reject action is offered, so it is in the review queue.
+    expect(within(card).getByText(t('approvals.action.reject'))).toBeInTheDocument();
+  });
+});
+
+// App mirrors Freigaben's tab up (onModeChange) so the shared filter bar can gate the
+// Status dropdown to the "All posts" tab, where it actually works. This pins the contract.
+describe('Freigaben reports its tab via onModeChange', () => {
+  it('emits the initial mode and the new mode when the tab changes', async () => {
+    const user = userEvent.setup();
+    const onModeChange = vi.fn();
+    renderFreigaben([pendingPost], { onModeChange });
+    // Initial effect reports the default 'pending' tab.
+    await waitFor(() => expect(onModeChange).toHaveBeenCalledWith('pending'));
+    await user.click(screen.getByText(t('approvals.view.all')));
+    await waitFor(() => expect(onModeChange).toHaveBeenCalledWith('all'));
   });
 });

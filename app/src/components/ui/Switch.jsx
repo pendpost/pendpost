@@ -6,8 +6,9 @@
 // onChange fires with the requested next value, it does not pre-toggle). An optional
 // tipLabel wraps the focusable control in the app's <Tip> so the single trigger stays
 // keyboard-reachable. Mirrors the app's tokens (rounded-full, brand, ring-brand).
-import { Loader2 } from 'lucide-react';
+import { Loader2, HelpCircle } from 'lucide-react';
 import { Tip } from './Tooltip.jsx';
+import { useT } from '../../lib/i18n.js';
 
 export function Switch({
   checked,
@@ -47,7 +48,7 @@ export function Switch({
         <OffIcon
           size={13}
           aria-hidden="true"
-          className={checked ? 'text-zinc-400 dark:text-zinc-500' : 'text-zinc-600 dark:text-zinc-300'}
+          className={checked ? 'text-zinc-500 dark:text-zinc-400' : 'text-zinc-600 dark:text-zinc-300'}
         />
       ) : null}
       {tipLabel ? <Tip label={tipLabel}>{button}</Tip> : button}
@@ -55,9 +56,32 @@ export function Switch({
         <OnIcon
           size={13}
           aria-hidden="true"
-          className={checked ? 'text-brand dark:text-brand-light' : 'text-zinc-400 dark:text-zinc-500'}
+          className={checked ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}
         />
       ) : null}
     </span>
+  );
+}
+
+// One single-feature on/off row: the label (+ an optional help tooltip) on the left, a switch
+// on the right. THE one shape for every settings-style toggle (publishing auto-approve, Radar
+// auto-reply, daily research, ...), shared here (WP8) so Settings and the Radar card render
+// the identical control. The switch carries the label as its accessible name.
+export function ToggleRow({ label, tip, checked, onChange, disabled = false }) {
+  const t = useT();
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="flex items-center gap-1.5 text-sm">
+        {label}
+        {tip ? (
+          <Tip label={tip}>
+            <button type="button" aria-label={t('settings.fieldHelp', { field: label })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
+              <HelpCircle size={12} aria-hidden="true" />
+            </button>
+          </Tip>
+        ) : null}
+      </span>
+      <Switch checked={checked} onChange={onChange} disabled={disabled} ariaLabel={label} />
+    </div>
   );
 }

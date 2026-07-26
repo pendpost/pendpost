@@ -115,7 +115,7 @@ export function DateTimePicker({ value, onChange, placeholder, renderTrigger, tr
             className={cn(
               'flex w-full items-center gap-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand',
               triggerClassName || 'rounded-xl border-0 bg-white/60 px-3 py-2 ring-1 ring-zinc-900/5 transition hover:bg-white/80 dark:bg-zinc-800/40 dark:ring-white/10 dark:hover:bg-zinc-800/60',
-              !valid && 'text-zinc-400 dark:text-zinc-500',
+              !valid && 'text-zinc-500 dark:text-zinc-400',
             )}
           >
             <CalendarIcon size={15} aria-hidden="true" />
@@ -136,7 +136,7 @@ export function DateTimePicker({ value, onChange, placeholder, renderTrigger, tr
           </div>
           <div className="grid grid-cols-7 gap-0.5">
             {WEEKDAYS.map((d) => (
-              <div key={d} className="grid h-7 w-8 place-items-center text-[10px] font-bold text-zinc-400 dark:text-zinc-500">{t(`planner.weekday.${d}`)}</div>
+              <div key={d} className="grid h-7 w-8 place-items-center text-[10px] font-bold text-zinc-500 dark:text-zinc-400">{t(`planner.weekday.${d}`)}</div>
             ))}
             {cells.map((day) => {
               const key = localDayKey(day);
@@ -172,7 +172,7 @@ export function DateTimePicker({ value, onChange, placeholder, renderTrigger, tr
           </div>
         </div>
         <div className="flex gap-1 border-l border-zinc-200/70 pl-2 dark:border-zinc-700/70">
-          <Clock size={13} className="mt-1 shrink-0 text-zinc-400 dark:text-zinc-500" aria-hidden="true" />
+          <Clock size={13} className="mt-1 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
           <ScrollColumn items={hours} sel={selH} onPick={(h) => setPart('h', h)} selRef={hourRef} label={t('ui.datePicker.hours')} />
           <ScrollColumn items={minutes} sel={selM} onPick={(m) => setPart('m', m)} selRef={minRef} label={t('ui.datePicker.minutes')} />
         </div>

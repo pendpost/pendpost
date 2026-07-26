@@ -31,7 +31,7 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.strin
 fs.writeFileSync(path.join(WS, 'data', 'media', 'clip.mp4'), Buffer.from([0, 0, 0, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]));
 
 const { autoApproveDecision, inAutoApproveScope, AUTO_APPROVE_ACTOR } = await import('../lib/auto-approve.mjs');
-const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
+const { createCampaign, createPost, approvePost, queueRadarReply } = await import('../lib/writes.mjs');
 const { runDueExclusive } = await import('../lib/scheduler.mjs');
 const { getConfig, setConfig } = await import('../lib/config.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
@@ -63,6 +63,52 @@ try {
   ok(autoApproveDecision({ ...reel, caption: DIRTY }, { enabled: true, requireLintClean: true }, 'acme').approve === false, 'requireLintClean blocks an error-severity caption');
   ok(autoApproveDecision({ ...reel, caption: DIRTY }, { enabled: true, requireLintClean: false }, 'acme').approve === true, 'requireLintClean off lets a lint-failing caption auto-approve');
   ok(inAutoApproveScope(reel, { enabled: true }, 'acme').match === true, 'inAutoApproveScope is the pure scope half');
+
+  // ============ layer 1b: a Radar reply NEVER auto-approves (spec 34 SAFETY invariant) ============
+  // The one hard guarantee: a post carrying radarReplyTo can never be auto-approved under
+  // ANY policy shape - it is a FIELD exclusion, so no enabled/scope/lint combination matches.
+  const radarReply = { type: 'text', platforms: ['reddit'], caption: CLEAN, radarReplyTo: { url: 'https://reddit.com/r/x/comments/abc', source: 'reddit', externalId: 't3_abc' } };
+  const POLICY_SHAPES = [
+    ['enabled + empty scope (matches all)', { enabled: true }],
+    ['enabled + matching platform', { enabled: true, platforms: ['reddit'] }],
+    ['enabled + matching campaign', { enabled: true, campaigns: ['acme'] }],
+    ['enabled + matching type text', { enabled: true, types: ['text'] }],
+    ['enabled + lint off', { enabled: true, requireLintClean: false }],
+    ['enabled + EVERY axis matching', { enabled: true, platforms: ['reddit'], campaigns: ['acme'], types: ['text'], requireLintClean: false }],
+    ['disabled', { enabled: false }],
+    ['null policy', null],
+  ];
+  for (const [label, policy] of POLICY_SHAPES) {
+    ok(autoApproveDecision(radarReply, policy, 'acme').approve === false, `Radar reply is NEVER auto-approved (${label})`);
+    const scope = inAutoApproveScope(radarReply, policy, 'acme');
+    ok(scope.match === false && scope.reason === 'radar_reply_human_only', `inAutoApproveScope refuses a Radar reply with radar_reply_human_only, before any policy check (${label})`);
+  }
+  // Control: an x text post WITHOUT radarReplyTo DOES auto-approve under a matching policy -
+  // proving the radarReplyTo FIELD (not the type) is the discriminator. (x is a NON-manual
+  // lane; reddit is now excluded by MANUAL_LANES below, so the control moved off reddit.)
+  const plainX = { type: 'text', platforms: ['x'], caption: CLEAN };
+  ok(autoApproveDecision(plainX, { enabled: true, platforms: ['x'] }, 'acme').approve === true, 'an x text post WITHOUT radarReplyTo auto-approves (radarReplyTo is the discriminator)');
+  ok(autoApproveDecision({ ...plainX, radarReplyTo: { url: 'https://x.com/x', source: 'x', externalId: '1' } }, { enabled: true, platforms: ['x'] }, 'acme').approve === false, 'the SAME x post WITH radarReplyTo does not auto-approve');
+  // Also on bluesky/mastodon (the other reply-capable sources).
+  ok(autoApproveDecision({ ...radarReply, platforms: ['bluesky'], radarReplyTo: { url: 'https://bsky.app/x', source: 'bluesky', externalId: 'at://x' } }, { enabled: true }, 'acme').approve === false, 'a bluesky Radar reply is never auto-approved');
+  ok(autoApproveDecision({ ...radarReply, platforms: ['mastodon'], radarReplyTo: { url: 'https://m.example/x', source: 'mastodon', externalId: '123' } }, { enabled: true }, 'acme').approve === false, 'a mastodon Radar reply is never auto-approved');
+
+  // ============ layer 1c: a MANUAL-LANE post NEVER auto-approves (spec 37 SAFETY invariant) ============
+  // Reddit is a MANUAL lane (spec 36/37): every reddit post needs a distinct human approval
+  // (the warmth tier only decides what happens AFTER approval). This is a LANE exclusion on
+  // post.platforms - additive, precedes every policy check, and holds even WITHOUT
+  // radarReplyTo (unlike the radar exclusion above). It STRENGTHENS the fence, never weakens.
+  const redditPlain = { type: 'text', platforms: ['reddit'], caption: CLEAN, isPromo: false };
+  for (const [label, policy] of POLICY_SHAPES) {
+    ok(autoApproveDecision(redditPlain, policy, 'acme').approve === false, `a reddit post is NEVER auto-approved (${label})`);
+    const scope = inAutoApproveScope(redditPlain, policy, 'acme');
+    ok(scope.match === false && scope.reason === 'manual_lane_human_only', `inAutoApproveScope refuses a reddit post with manual_lane_human_only, before any policy check (${label})`);
+  }
+  // Even a warm, organic, requirements-met reddit post (a Tier-1 auto-EXECUTE post) still
+  // requires a human APPROVAL - the tier never bypasses the approval fence.
+  ok(autoApproveDecision({ ...redditPlain, isPromo: false }, { enabled: true, platforms: ['reddit'], requireLintClean: false }, 'acme').approve === false, 'a warm/organic reddit post STILL needs a human approval (auto-approve forbidden)');
+  // A MULTI-lane post touching reddit is also excluded (subset/any-target rule).
+  ok(autoApproveDecision({ type: 'text', platforms: ['x', 'reddit'], caption: CLEAN }, { enabled: true }, 'acme').approve === false, 'a multi-lane post that includes reddit is never auto-approved');
 
   // ============ layer 2: config gate + autonomous loop ============
   await createCampaign({ id: CAMP, note: 'auto-approve loop', timezone: 'UTC', actor: 'owner' });
@@ -106,7 +152,30 @@ try {
   const self = await approvePost({ campaign: CAMP, postId: 'reel-off', actor: 'agent:claude' });
   ok(self.code === 'invalid_input', 'the drafting agent still cannot approve its own post (no-self-approval intact)');
 
-  console.log(`[auto-approve] OK - pure decision + owner-gate + autonomous loop in mock mode (${pass} assertions).`);
+  // ============ layer 3: a queued Radar reply through the REAL create path (spec 34) ============
+  // Re-enable a BROAD auto-approve policy (empty scope = matches all, lint off) - the most
+  // permissive shape - to PROVE that even so a queued Radar reply is NEVER auto-approved.
+  setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { autoApprove: { enabled: true, requireLintClean: false } } } });
+  const q = await queueRadarReply({ campaign: CAMP, signalUrl: 'https://reddit.com/r/x/comments/abc', source: 'reddit', externalId: 't3_abc', text: 'happy to help - here is how we handle that', actor: 'agent:radar', confirm: true });
+  ok(q.ok && q.approval === 'pending', 'queueRadarReply seeds a PENDING reply-post (not posted, not approved)');
+  const rr = getPost(q.postId);
+  ok(rr && rr.approval === 'pending', 'the queued reply is PENDING even under the most permissive enabled auto-approve policy (never auto-approved)');
+  ok(rr.approvalBy == null || rr.approvalBy !== AUTO_APPROVE_ACTOR, 'the queued reply was NOT blessed by the auto-approve policy actor');
+  ok(rr.createdBy === 'agent:radar' && rr.radarReplyTo && rr.radarReplyTo.externalId === 't3_abc', 'the queued reply carries createdBy=agent:radar + the radarReplyTo target');
+  // confirm gate: no confirm -> needs_confirm (never queues).
+  const noConfirm = await queueRadarReply({ campaign: CAMP, signalUrl: 'https://reddit.com/x', source: 'reddit', externalId: 't3_y', text: 'hi', actor: 'agent:radar' });
+  ok(noConfirm.code === 'needs_confirm', 'queueRadarReply without confirm:true returns needs_confirm (never queues)');
+  // HN is surface-only: it can never be a reply source.
+  const hn = await queueRadarReply({ campaign: CAMP, signalUrl: 'https://news.ycombinator.com/item?id=1', source: 'hackernews', externalId: '1', text: 'hi', actor: 'agent:radar', confirm: true });
+  ok(hn.code === 'invalid_input', 'queueRadarReply rejects hacker-news (surface-only, no reply write-API)');
+  // no self-approval: the CREATOR (agent:radar) cannot approve its own queued reply.
+  const selfRadar = await approvePost({ campaign: CAMP, postId: q.postId, actor: 'agent:radar' });
+  ok(selfRadar.code === 'invalid_input', 'agent:radar cannot approve its OWN queued reply (no-self-approval holds for Radar replies)');
+  // a DISTINCT actor (owner) CAN approve it - and only then is it approved.
+  const dist = await approvePost({ campaign: CAMP, postId: q.postId, actor: 'owner' });
+  ok(dist.ok && getPost(q.postId).approval === 'approved', 'a DISTINCT actor (owner) approves the queued reply - the only path to approval');
+
+  console.log(`[auto-approve] OK - pure decision + owner-gate + autonomous loop + Radar-reply never-auto-approve/no-self-approve in mock mode (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

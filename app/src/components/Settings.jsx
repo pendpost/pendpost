@@ -1,14 +1,43 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, HelpCircle } from 'lucide-react';
+import { RefreshCw, HelpCircle, RotateCcw } from 'lucide-react';
 import { useConfig, saveConfig } from '../lib/api.js';
 import { useT, LOCALES } from '../lib/i18n.js';
-import { getTimeFormat, setTimeFormat, getCardAccent, setCardAccent } from '../lib/format.js';
-import { INNER_SURFACE } from './ui.jsx';
+import { getTimeFormat, setTimeFormat, getCardAccent, setCardAccent, MANUAL_LANES } from '../lib/format.js';
+import { FIELD_SURFACE, SectionHeading } from './ui.jsx';
+import { resetDialogSkips, dialogSkipCount } from './ui/confirm.jsx';
 import { Tip } from './ui/Tooltip.jsx';
+import { Select } from './ui/Select.jsx';
+import { ToggleRow } from './ui/Switch.jsx';
+import { Checkbox } from './ui/Checkbox.jsx';
+import RadarSearches, { RadarGeo } from './RadarSearches.jsx';
 
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-const FIELD_CLS_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} ring-1 ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
+const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+const FIELD_CLS_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
+
+// The operator's own zone, detected once. Backs the pinned "use this device's zone"
+// option, and is the effective selection when the config has no explicit zone yet.
+const DEVICE_TZ = (() => {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; }
+})();
+// Every IANA zone, built ONCE at module load and grouped by region for a scannable
+// <select>. This replaces the old free-text field: a select cannot emit a non-IANA
+// value, so a typo can no longer be saved (the inline validation below is now a net,
+// not the first line of defence). A short segment label reads under its region optgroup
+// (e.g. "Zurich" under Europe); bare ids (UTC) fall into an "Other" group.
+const TZ_GROUPS = (() => {
+  let zones = [];
+  try { zones = Intl.supportedValuesOf('timeZone'); } catch { zones = []; }
+  if (!zones.length) zones = [...new Set([DEVICE_TZ, 'UTC'])]; // engine without supportedValuesOf
+  const byRegion = new Map();
+  for (const z of zones) {
+    const region = z.includes('/') ? z.split('/')[0] : 'Other';
+    if (!byRegion.has(region)) byRegion.set(region, []);
+    byRegion.get(region).push(z);
+  }
+  return [...byRegion.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+})();
+const tzOptionLabel = (z) => (z.includes('/') ? z.split('/').slice(1).join(' / ').replace(/_/g, ' ') : z);
 
 // The opt-in auto-approve policy (config.posting.autoApprove). enabled defaults
 // false (fail-closed). The owner edits it here; an agent can never enable it
@@ -41,7 +70,7 @@ function LabelWithTip({ htmlFor, label, tip }) {
     <div className="flex items-center gap-1.5">
       <label htmlFor={htmlFor} className="text-[11px] text-zinc-500 dark:text-zinc-400">{label}</label>
       <Tip label={tip}>
-        <button type="button" aria-label={t('settings.fieldHelp', { field: label })} className="rounded text-zinc-400 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-300">
+        <button type="button" aria-label={t('settings.fieldHelp', { field: label })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
           <HelpCircle size={12} aria-hidden="true" />
         </button>
       </Tip>
@@ -49,10 +78,31 @@ function LabelWithTip({ htmlFor, label, tip }) {
   );
 }
 
+
+// A top-level Settings group header ("Preferences", "Radar"), one notch above SectionHeading, so
+// the page reads as two clearly separated areas rather than one long undifferentiated list.
+function GroupHeading({ id, title, tip }) {
+  const t = useT();
+  return (
+    // A full-width bottom rule, so the group boundary spans BOTH columns of the grid below it - a
+    // left-aligned label alone left the right column's Preferences/Radar break invisible.
+    <div className="flex items-center gap-2 border-b border-zinc-200/70 pb-2 dark:border-zinc-700/60">
+      <h2 id={id} className="font-display text-base font-bold">{title}</h2>
+      {tip ? (
+        <Tip label={tip}>
+          <button type="button" aria-label={t('settings.fieldHelp', { field: title })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
+            <HelpCircle size={13} aria-hidden="true" />
+          </button>
+        </Tip>
+      ) : null}
+    </div>
+  );
+}
+
 // Settings hosts ONLY operator preferences - how the app displays times and planner
 // cards, and the time zone used for scheduling. Everything connection-related (platform
 // identifiers, public profile handles, credentials, the Meta lane) lives in Setup.
-export default function Settings() {
+export default function Settings({ focus = null, onNavigate }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data, isLoading } = useConfig(true);
@@ -66,16 +116,25 @@ export default function Settings() {
   const [cardAccent, setCardAccentState] = useState(getCardAccent());
   const [error, setError] = useState(null); // generic banner (non-field errors)
   const [tzError, setTzError] = useState(null); // inline error under the time-zone field
+  // Spec 39 §4.0: the public media mirror base (posting.publicMediaBaseUrl). Free
+  // text (a URL cannot be a constrained select), saved on blur with the same
+  // optimistic + revert-on-reject + inline-validation shape as the time zone.
+  const [mediaBase, setMediaBase] = useState('');
+  const [mediaBaseError, setMediaBaseError] = useState(null);
   const [staleWrite, setStaleWrite] = useState(false);
   const [auto, setAuto] = useState(AUTO_DEFAULT); // posting.autoApprove (owner-only policy)
-  const [platforms, setPlatforms] = useState({}); // posting.platforms on/off map
+  // How many dialogs the owner has silenced via "don't show again". Re-read on mount so
+  // the reset control's count is live; reset clears them so every dialog asks again.
+  const [dialogSkips, setDialogSkips] = useState(() => dialogSkipCount());
+  // posting.radar.autoReply + .agent moved into the Radar searches card (WP8: RadarAutomation
+  // in RadarSearches.jsx) - one Radar box for searches, sources and autonomy.
 
   useEffect(() => {
     if (!data) return;
     setLanguage(data.posting.locale || 'en');
     setTimezone(data.posting.defaultTimezone || '');
+    setMediaBase(data.posting.publicMediaBaseUrl || '');
     setAuto({ ...AUTO_DEFAULT, ...(data.posting.autoApprove || {}) });
-    setPlatforms(data.posting.platforms && typeof data.posting.platforms === 'object' ? data.posting.platforms : {});
   }, [data?.rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Optimistic language switch: flip the select immediately, then persist. On a write
@@ -107,28 +166,15 @@ export default function Settings() {
     saveAuto({ ...auto, platforms: has ? auto.platforms.filter((p) => p !== id) : [...auto.platforms, id] });
   };
 
-  // Per-platform publishing policy (config.posting.platforms). A platform NOT in the
-  // map defaults to its effective default: every platform on EXCEPT facebook (mirrors
-  // the engine's platformEnabled deny-by-default for facebook). Optimistic save +
-  // revert, like the language switch; the owner-only config_set gate accepts it.
-  const platformOn = (id) => (id in platforms ? platforms[id] === true : id !== 'facebook');
-  const savePlatforms = (next) => {
+  // The time zone saves on change, like the language + time-format selects (no manual
+  // Save round-trip). Optimistic + revert-on-reject mirrors onLanguage; a no-op change
+  // is skipped; validation lands inline (now near-unreachable from a constrained select).
+  const saveTimezone = async (nextTz) => {
     if (!data) return;
-    const prior = platforms;
-    setPlatforms(next);
-    setError(null);
-    saveConfig(data.rev, { posting: { platforms: next } })
-      .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
-      .catch((err) => { setPlatforms(prior); setError(err.message); });
-  };
-  const togglePlatform = (id) => savePlatforms({ ...platforms, [id]: !platformOn(id) });
-
-  // The time zone auto-saves on blur, like every other preference on this page (no
-  // manual Save round-trip). A no-op change is skipped; validation lands inline.
-  const saveTimezone = async () => {
-    if (!data) return;
-    const next = timezone ?? '';
-    if (next === (data.posting.defaultTimezone ?? '')) return;
+    const next = nextTz ?? '';
+    const prior = timezone;
+    if (next === (data.posting.defaultTimezone ?? '')) { setTimezone(next); return; }
+    setTimezone(next);
     setError(null);
     setTzError(null);
     setStaleWrite(false);
@@ -137,6 +183,7 @@ export default function Settings() {
       queryClient.invalidateQueries({ queryKey: ['config'] });
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
     } catch (err) {
+      setTimezone(prior); // never leave the select showing a value the server refused
       if (err.code === 'stale_write') {
         // 409: the config changed under us (e.g. a CLI write). Pull the fresh rev so a
         // retry can succeed, and show a reload affordance.
@@ -151,156 +198,228 @@ export default function Settings() {
     }
   };
 
-  return (
-    <div className="mx-auto max-w-2xl space-y-6">
-      <header>
-        <h2 className="font-display text-lg font-bold">{t('settings.title')}</h2>
-        <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.subtitle')}</p>
-      </header>
+  // Saves on blur (free text; per-keystroke writes would spam the config rev).
+  const saveMediaBase = async () => {
+    if (!data) return;
+    const next = mediaBase.trim();
+    const prior = data.posting.publicMediaBaseUrl || '';
+    if (next === prior) { setMediaBase(next); return; }
+    setError(null);
+    setMediaBaseError(null);
+    setStaleWrite(false);
+    try {
+      await saveConfig(data.rev, { posting: { publicMediaBaseUrl: next } });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+    } catch (err) {
+      setMediaBase(prior); // never leave the field showing a value the server refused
+      if (err.code === 'stale_write') {
+        setStaleWrite(true);
+        queryClient.invalidateQueries({ queryKey: ['config'] });
+        return;
+      }
+      if ((err.message || '').startsWith('publicMediaBaseUrl ')) setMediaBaseError(err.message);
+      else setError(err.message);
+    }
+  };
 
+  return (
+    // The page title ("Einstellungen") is the app chrome's own <h1> (App.jsx pageTitle); the page
+    // does not repeat it. Two clearly separated groups lead instead: PREFERENCES (how the app
+    // behaves for you + where it may publish, including publishing auto-approve) and RADAR (what
+    // Radar watches + the autonomy you authorize for it). Each group packs into its own balanced
+    // two-column grid on wide screens, so neither ends in a lonely empty track.
+    <div className="mx-auto max-w-6xl space-y-8">
       {isLoading || !data ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">{t('settings.loading')}</p>
       ) : (
         <>
-          <section className="space-y-4">
-            <div className="block space-y-1">
-              <LabelWithTip htmlFor="set-language" label={t('settings.language.label')} tip={t('settings.language.tip')} />
-              <select
-                id="set-language"
-                value={language}
-                onChange={(e) => onLanguage(e.target.value)}
-                className={FIELD_CLS}
-              >
-                {LOCALES.map((l) => (
-                  <option key={l.tag} value={l.tag}>{l.label}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="block space-y-1">
-              <LabelWithTip htmlFor="set-tz" label={t('settings.tz.label')} tip={t('settings.tz.tip')} />
-              <input
-                id="set-tz"
-                value={timezone}
-                onChange={(e) => setTimezone(e.target.value)}
-                onBlur={saveTimezone}
-                placeholder={t('settings.tz.placeholder')}
-                className={tzError ? FIELD_CLS_ERR : FIELD_CLS}
-                aria-invalid={tzError ? 'true' : undefined}
-              />
-              {tzError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{tzError}</p> : null}
-            </div>
-
-            <div className="block space-y-1">
-              <LabelWithTip htmlFor="set-timefmt" label={t('settings.time.label')} tip={t('settings.time.tip')} />
-              <select
-                id="set-timefmt"
-                value={timeFmt}
-                onChange={(e) => { setTimeFormat(e.target.value); setTimeFmt(getTimeFormat()); }}
-                className={FIELD_CLS}
-              >
-                <option value="auto">{t('settings.time.auto')}</option>
-                <option value="24h">{t('settings.time.24h')}</option>
-                <option value="12h">{t('settings.time.12h')}</option>
-              </select>
-            </div>
-
-            <div className="block space-y-1">
-              <LabelWithTip htmlFor="set-accent" label={t('settings.cardAccent.label')} tip={t('settings.cardAccent.tip')} />
-              <select
-                id="set-accent"
-                value={cardAccent}
-                onChange={(e) => { setCardAccent(e.target.value); setCardAccentState(getCardAccent()); }}
-                className={FIELD_CLS}
-              >
-                <option value="bar">{t('settings.cardAccent.bar')}</option>
-                <option value="strip">{t('settings.cardAccent.strip')}</option>
-              </select>
-            </div>
-          </section>
-
-          <section className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
-            <div>
-              <h3 className="text-sm font-bold">{t('settings.automation.title')}</h3>
-              <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.subtitle')}</p>
-            </div>
-            <label className="flex cursor-pointer items-center justify-between gap-3">
-              <span className="flex items-center gap-1.5 text-sm">
-                {t('settings.automation.toggle.label')}
-                <Tip label={t('settings.automation.toggle.tip')}>
-                  <button type="button" aria-label={t('settings.fieldHelp', { field: t('settings.automation.toggle.label') })} className="rounded text-zinc-400 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-300">
-                    <HelpCircle size={12} aria-hidden="true" />
-                  </button>
-                </Tip>
-              </span>
-              <input
-                type="checkbox"
-                checked={auto.enabled}
-                onChange={() => saveAuto({ ...auto, enabled: !auto.enabled })}
-                className="h-4 w-4 shrink-0 rounded accent-brand"
-              />
-            </label>
-            {auto.enabled ? (
-              <div className="space-y-3 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
-                <fieldset className="space-y-1.5">
-                  <legend className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.label')}</legend>
-                  <p className="text-[11px] text-zinc-400 dark:text-zinc-500">{t('settings.automation.platforms.hint')}</p>
-                  <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                    {AUTO_PLATFORMS.map((p) => (
-                      <label key={p.id} className="flex cursor-pointer items-center gap-1.5 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={auto.platforms.includes(p.id)}
-                          onChange={() => toggleAutoPlatform(p.id)}
-                          className="h-4 w-4 rounded accent-brand"
-                        />
-                        {p.label}
-                      </label>
+          {/* ── GROUP: Preferences (the regular, non-Radar settings) ── */}
+          <section className="space-y-4" aria-labelledby="settings-grp-preferences">
+            <GroupHeading id="settings-grp-preferences" title={t('settings.group.preferences.title')} tip={t('settings.group.preferences.tip')} />
+            <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+              {/* Display preferences: each select keeps its column width so long option labels
+                  (time zone, "Automatic (follow language)") never truncate. */}
+              <section className="space-y-4">
+                <div className="space-y-1">
+                  <LabelWithTip htmlFor="set-language" label={t('settings.language.label')} tip={t('settings.language.tip')} />
+                  <Select
+                    id="set-language"
+                    value={language}
+                    onChange={(e) => onLanguage(e.target.value)}
+                    className={FIELD_CLS}
+                  >
+                    {LOCALES.map((l) => (
+                      <option key={l.tag} value={l.tag}>{l.label}</option>
                     ))}
-                  </div>
-                </fieldset>
-                <label className="flex cursor-pointer items-center justify-between gap-3">
-                  <span className="flex items-center gap-1.5 text-sm">
-                    {t('settings.automation.lintClean.label')}
-                    <Tip label={t('settings.automation.lintClean.tip')}>
-                      <button type="button" aria-label={t('settings.fieldHelp', { field: t('settings.automation.lintClean.label') })} className="rounded text-zinc-400 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-300">
-                        <HelpCircle size={12} aria-hidden="true" />
-                      </button>
-                    </Tip>
-                  </span>
+                  </Select>
+                </div>
+
+                <div className="space-y-1">
+                  <LabelWithTip htmlFor="set-tz" label={t('settings.tz.label')} tip={t('settings.tz.tip')} />
+                  {/* A constrained region-grouped picker, not free text: the device's own
+                      zone is pinned on top, and every other value is a real IANA id, so an
+                      invalid zone can no longer be typed and saved. */}
+                  <Select
+                    id="set-tz"
+                    value={timezone || DEVICE_TZ}
+                    onChange={(e) => saveTimezone(e.target.value)}
+                    className={tzError ? FIELD_CLS_ERR : FIELD_CLS}
+                    aria-invalid={tzError ? 'true' : undefined}
+                  >
+                    <option value={DEVICE_TZ}>{t('settings.tz.device', { zone: DEVICE_TZ })}</option>
+                    {TZ_GROUPS.map(([region, zones]) => (
+                      <optgroup key={region} label={region}>
+                        {zones.map((z) => (
+                          <option key={z} value={z}>{tzOptionLabel(z)}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </Select>
+                  {tzError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{tzError}</p> : null}
+                </div>
+
+                {/* Spec 39 §4.0: the public media mirror. One row: the base URL of the
+                    operator's own static mirror of data/media; the URL-only lanes
+                    (Instagram feed image, Pinterest pins) derive base + render path
+                    when a post carries no manual Image URL (manual always wins). */}
+                <div className="space-y-1">
+                  <LabelWithTip htmlFor="set-media-base" label={t('settings.mediaBase.label')} tip={t('settings.mediaBase.tip')} />
                   <input
-                    type="checkbox"
-                    checked={auto.requireLintClean}
-                    onChange={() => saveAuto({ ...auto, requireLintClean: !auto.requireLintClean })}
-                    className="h-4 w-4 shrink-0 rounded accent-brand"
+                    id="set-media-base"
+                    value={mediaBase}
+                    onChange={(e) => setMediaBase(e.target.value)}
+                    onBlur={saveMediaBase}
+                    placeholder="https://media.example.com"
+                    className={mediaBaseError ? FIELD_CLS_ERR : FIELD_CLS}
+                    aria-invalid={mediaBaseError ? 'true' : undefined}
                   />
-                </label>
+                  {mediaBaseError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{mediaBaseError}</p> : null}
+                </div>
+
+              </section>
+
+              {/* The right column: the other two display prefs + the publishing auto-approve
+                  policy. The per-platform on/off grid that used to fill this column moved onto
+                  each Setup platform card (WP6: one "active in pendpost" switch per lane), so the
+                  four selects split 2/2 across the columns to keep the group's two tracks level
+                  (canon: no lonely card beside an empty grid track). */}
+              <div className="space-y-6">
+                <section className="space-y-4">
+                  <div className="space-y-1">
+                    <LabelWithTip htmlFor="set-timefmt" label={t('settings.time.label')} tip={t('settings.time.tip')} />
+                    <Select
+                      id="set-timefmt"
+                      value={timeFmt}
+                      onChange={(e) => { setTimeFormat(e.target.value); setTimeFmt(getTimeFormat()); }}
+                      className={FIELD_CLS}
+                    >
+                      <option value="auto">{t('settings.time.auto')}</option>
+                      <option value="24h">{t('settings.time.24h')}</option>
+                      <option value="12h">{t('settings.time.12h')}</option>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-1">
+                    <LabelWithTip htmlFor="set-accent" label={t('settings.cardAccent.label')} tip={t('settings.cardAccent.tip')} />
+                    <Select
+                      id="set-accent"
+                      value={cardAccent}
+                      onChange={(e) => { setCardAccent(e.target.value); setCardAccentState(getCardAccent()); }}
+                      className={FIELD_CLS}
+                    >
+                      <option value="bar">{t('settings.cardAccent.bar')}</option>
+                      <option value="strip">{t('settings.cardAccent.strip')}</option>
+                    </Select>
+                  </div>
+                </section>
+
+                {/* Publishing automation: auto-approve is about auto-publishing YOUR planner
+                    drafts, so it belongs with publishing, not with Radar. */}
+                <section className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
+                  <SectionHeading title={t('settings.pubAutomation.title')} tip={`${t('settings.automation.subtitle')} ${t('settings.automation.note')}`} />
+                  <ToggleRow
+                    label={t('settings.automation.toggle.label')}
+                    tip={t('settings.automation.toggle.tip')}
+                    checked={auto.enabled}
+                    onChange={() => saveAuto({ ...auto, enabled: !auto.enabled })}
+                  />
+                  {auto.enabled ? (
+                    <div className="space-y-3 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
+                      {/* The fence-legibility hint (Reddit is always manual) only renders inside the
+                          already-expanded block, so it is contextual help for a control you just
+                          revealed, not clutter on the calm default surface. */}
+                      <fieldset className="space-y-1.5">
+                        <legend className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.label')}</legend>
+                        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.hint')}</p>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                          {/* A MANUAL_LANE (Reddit) can NEVER be auto-approved - lib/auto-approve.mjs
+                              refuses it before any policy check. Offering it here would be a dead,
+                              misleading control, so the fence's carve-out is made legible by omission. */}
+                          {AUTO_PLATFORMS.filter((p) => !MANUAL_LANES.has(p.id)).map((p) => (
+                            <label key={p.id} className="flex cursor-pointer items-center gap-1.5 text-sm">
+                              <Checkbox
+                                checked={auto.platforms.includes(p.id)}
+                                onChange={() => toggleAutoPlatform(p.id)}
+                                aria-label={p.label}
+                              />
+                              {p.label}
+                            </label>
+                          ))}
+                        </div>
+                      </fieldset>
+                      <ToggleRow
+                        label={t('settings.automation.lintClean.label')}
+                        tip={t('settings.automation.lintClean.tip')}
+                        checked={auto.requireLintClean}
+                        onChange={() => saveAuto({ ...auto, requireLintClean: !auto.requireLintClean })}
+                      />
+                    </div>
+                  ) : null}
+                </section>
+
+                {/* Dialog warnings: the owner can tick "don't show this message again" on
+                    any confirm/prompt to stop it re-asking. This is the one place to bring
+                    them all back, so a silenced destructive confirm is never a dead end. */}
+                <section className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
+                  <SectionHeading title={t('settings.dialogs.title')} tip={t('settings.dialogs.tip')} />
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {dialogSkips
+                        ? t('settings.dialogs.count', { n: dialogSkips })
+                        : t('settings.dialogs.none')}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={!dialogSkips}
+                      onClick={() => { resetDialogSkips(); setDialogSkips(0); }}
+                      className="inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold text-brand transition hover:bg-brand/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:text-zinc-400 disabled:hover:bg-transparent dark:text-brand-light dark:disabled:text-zinc-600"
+                    >
+                      <RotateCcw size={13} aria-hidden="true" />
+                      {t('settings.dialogs.reset')}
+                    </button>
+                  </div>
+                </section>
               </div>
-            ) : null}
-            <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.automation.note')}</p>
+            </div>
           </section>
 
-          <section className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
-            <div>
-              <h3 className="text-sm font-bold">{t('settings.platforms.title')}</h3>
-              <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.platforms.subtitle')}</p>
+          {/* ── GROUP: Radar (searches, GEO questions, and the autonomy you authorize for Radar) ── */}
+          <section className="space-y-4" aria-labelledby="settings-grp-radar">
+            <GroupHeading id="settings-grp-radar" title={t('settings.group.radar.title')} tip={t('settings.group.radar.tip')} />
+            <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+              {/* Radar searches: the per-project "what Radar looks for" editor, moved off the Radar
+                  page (feed-first redesign) to live next to the Radar autonomy policy. */}
+              <div className="space-y-6">
+                <RadarSearches focus={focus === 'radar'} onNavigate={onNavigate} />
+              </div>
+
+              <div className="space-y-6">
+                {/* GEO: the buying-questions Radar runs against AI answers to check whether the models
+                    name you. The Radar page shows only the footprint RESULT; the questions live here. */}
+                <RadarGeo />
+
+              </div>
             </div>
-            <fieldset className="space-y-2">
-              <legend className="sr-only">{t('settings.platforms.title')}</legend>
-              {AUTO_PLATFORMS.map((p) => (
-                <label key={p.id} className="flex cursor-pointer items-center justify-between gap-3 text-sm">
-                  <span>{p.label}</span>
-                  <input
-                    type="checkbox"
-                    checked={platformOn(p.id)}
-                    onChange={() => togglePlatform(p.id)}
-                    aria-label={t('settings.platforms.toggle', { platform: p.label })}
-                    className="h-4 w-4 shrink-0 rounded accent-brand"
-                  />
-                </label>
-              ))}
-            </fieldset>
-            <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.platforms.note')}</p>
           </section>
 
           {staleWrite ? (
