@@ -195,6 +195,44 @@ describe('Cloud', () => {
     await waitFor(() => expect(setClientAlwaysOn).toHaveBeenCalledWith('globex', true));
   });
 
+  // 2026-07-29: the owner switched every project off to stop cloud spend, and the page still
+  // showed a green "On" pill. It was hardcoded for any connected workspace, so it reported
+  // that an account was LINKED while claiming the cloud was RUNNING. The pill now reads the
+  // cloud's own alwaysOn (at least one brand always-on), and the meter says plainly that the
+  // plan keeps billing, with the Stripe portal one click away instead of buried in a menu.
+  it('CONNECTED but every project off: the pill reads paused, NOT on', () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: false, status: 'active', tier: 'starter', postsIncluded: 400, postsUsed: 0, overageCents: 10, extraBrandCents: 900, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'live', action: 'fire' } };
+    withClients([
+      { clientId: 'bondigoo', name: 'bondigoo', active: false, alwaysOn: false },
+      { clientId: 'pendpost', name: 'pendpost', active: true, alwaysOn: false },
+    ]);
+    renderCloud();
+    expect(screen.getByText('Paused')).toBeInTheDocument();
+    expect(screen.queryByText('On')).not.toBeInTheDocument();
+  });
+
+  it('CONNECTED but every project off: the meter says the plan still bills and offers the portal', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: false, status: 'active', tier: 'starter', postsIncluded: 400, postsUsed: 0, overageCents: 10, extraBrandCents: 900, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'live', action: 'fire' } };
+    withClients([{ clientId: 'pendpost', name: 'pendpost', active: true, alwaysOn: false }]);
+    const user = userEvent.setup();
+    renderCloud();
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveTextContent(/monthly base fee still runs/i);
+    await user.click(screen.getByRole('button', { name: /manage subscription/i }));
+    await waitFor(() => expect(startBillingPortal).toHaveBeenCalled());
+  });
+
+  it('CONNECTED with a project on: the pill reads on and the billing notice is absent', () => {
+    cloudState = connected();
+    subState = { data: { ok: true, alwaysOn: true, status: 'active', tier: 'starter', postsIncluded: 400, postsUsed: 0, overageCents: 10, extraBrandCents: 900, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'live', action: 'fire' } };
+    withClients([{ clientId: 'pendpost', name: 'pendpost', active: true, alwaysOn: true }]);
+    renderCloud();
+    expect(screen.getByText('On')).toBeInTheDocument();
+    expect(screen.queryByText(/monthly base fee still runs/i)).not.toBeInTheDocument();
+  });
+
   it('CONNECTED (no plan): enabling a brand is GATED - it prompts to start a plan and never silently enables', async () => {
     cloudState = connected();
     // Trialing / no paid tier: the toggle must NOT bill a brand silently.

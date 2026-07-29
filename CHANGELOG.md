@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-07-29
+
+Switching cloud always-on off now actually goes quiet. It always stopped the cloud from publishing, but the local daemon kept talking to it on every tick, and the app kept showing a green "on" pill while nothing was firing.
+
+### Fixed
+- A brand switched off no longer keeps the cloud awake. Stale in-flight markers (a push ack for a post the local backstop had already published) held the poll gate open forever, and the gate's second leg was not due-gated, so any approved future post kept it open too. Relic markers are pruned each tick, the gate reads the due time, and the off-flag re-assert is rate-limited instead of running every minute. Measured on a live install: roughly 2,880 cloud writes a day, down to none while nothing changes.
+- The cloud result feed is a history, not a delta, so replayed old failures were written back on every poll and re-created the very relics that had just been pruned. A failure is now only recorded while its post is still approved and unposted.
+- The 24/7 state pill said "on" whenever an account was linked, even with every project switched off. It now reflects whether the cloud is publishing anything, and the plan meter says plainly that the base fee keeps running, with the subscription portal one click away instead of buried in the account menu.
+
+### Changed
+- Turning a project off withdraws the jobs it had already pushed to the cloud, instead of leaving them queued to be refused one by one at their due time.
+- A billing alert only claims a recovery after a real past-due period, and never claims publishing has resumed while no project is switched on.
+
 ## [2.0.0] - 2026-07-26
 
 The largest release since 1.0: a full Radar listening-and-reply engine, native carousel/album publishing across every capable lane, and per-brand token sealing that hardens always-on delivery. Roughly forty capability specs landed since 1.4.0. Major version because Radar and multi-slide albums reshape the product surface, not because of a breaking API change.

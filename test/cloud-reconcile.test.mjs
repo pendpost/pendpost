@@ -32,7 +32,7 @@ fs.writeFileSync(path.join(WS, '.env'), `PENDPOST_CLOUD_API_KEY=${API_KEY}\n`);
 
 const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
-const { loadState } = await import('../lib/state.mjs');
+const { loadState, saveState } = await import('../lib/state.mjs');
 const { activeClientId } = await import('../lib/multi-client.mjs');
 const { setBrandAlwaysOn } = await import('../lib/cloud-config.mjs');
 const cloud = await import('../lib/cloud-client.mjs');
@@ -208,7 +208,59 @@ try {
   ok(!r7b.radarTerminal.some((x) => x.postId === 'xr'), 'an already-stamped terminal radar reply is not re-stamped');
   ok(fs.readFileSync(planAbs, 'utf8') === beforeSecond, 'the plan file is byte-identical after the idempotent terminal re-run (no churn)');
 
-  console.log(`[cloud-reconcile] OK - done patches + clears overdue, idempotent, refused is a no-op, brand loop reconciles, cloud-fired telegram flips to posted, a failed fire stays due but surfaces its reason, a gone radar reply goes terminal (${pass} assertions).`);
+  // --- (8) a TERMINAL refusal clears the push-ack --------------------------------------
+  //         Turning a brand off leaves the jobs pushed while it was on in the cloud queue;
+  //         the worker refuses each at the brand fence. That ends the round-trip, so the ack
+  //         is no longer in-flight work and must be cleared - otherwise the marker holds the
+  //         paused-brand poll gate open forever (the 2026-07-29 cost incident) even though
+  //         the cloud will never publish that job. The post itself stays open and due, so the
+  //         LOCAL scheduler publishes it: a refusal never touches the plan.
+  await createPost({ campaign: CAMP, post: { id: 'bp', type: 'text', platforms: ['x'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'still ours to publish' }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: 'bp', actor: 'owner' });
+  const ackState = loadState();
+  ackState.cloudAccepted = { ...(ackState.cloudAccepted || {}), [`${CAMP}:bp:x`]: { at: '2026-07-28T08:00:00.000Z' } };
+  saveState();
+  resultsPayload = [{
+    jobId: `${CLIENT}:${CAMP}:bp:x`, clientId: CLIENT, campaign: CAMP, postId: 'bp', lane: 'x', state: 'refused',
+    firedAt: null, refusedCode: 'brand_paused', results: [], failureMessage: null,
+  }];
+  const r8 = await cloud.reconcileCloudResults();
+  ok(!(loadState().cloudAccepted || {})[`${CAMP}:bp:x`], 'a brand_paused refusal CLEARS the push-ack (the cloud will never fire it, so it is not in flight)');
+  ok(!(loadState().cloudFailures || {})[`${CAMP}:bp`], 'a brand_paused refusal is NOT a cloudFailure (it is normal operation, not a stuck post)');
+  ok(readPost('bp').status !== 'posted', 'the refused post stays unposted and due, so the LOCAL scheduler publishes it');
+  ok(r8.refused.some((x) => x.postId === 'bp' && x.refusedCode === 'brand_paused'), 'the refusal still surfaces in the reconcile summary');
+
+  // A CREDENTIAL refusal is the opposite: reconnecting the lane and retriggering IS the
+  // recovery path, so its ack must survive.
+  const credState = loadState();
+  credState.cloudAccepted = { ...(credState.cloudAccepted || {}), [`${CAMP}:bp:x`]: { at: '2026-07-28T08:00:00.000Z' } };
+  saveState();
+  resultsPayload = [{
+    jobId: `${CLIENT}:${CAMP}:bp:x`, clientId: CLIENT, campaign: CAMP, postId: 'bp', lane: 'x', state: 'refused',
+    firedAt: null, refusedCode: 'account_unresolved', results: [], failureMessage: null,
+  }];
+  await cloud.reconcileCloudResults();
+  ok(Boolean((loadState().cloudAccepted || {})[`${CAMP}:bp:x`]), 'a credential refusal KEEPS the ack (the retrigger path still owns the job)');
+  ok(Boolean((loadState().cloudFailures || {})[`${CAMP}:bp`]), 'a credential refusal IS surfaced as a stuck post the operator must clear');
+
+  // --- (9) the results HISTORY never re-creates a relic failure --------------------------
+  //         /v1/sync/results replays every terminal result the workspace ever recorded, so a
+  //         failure whose post the local backstop published weeks ago comes back on EVERY
+  //         poll. Writing it back re-created the relics the prune had just deleted, one state
+  //         write per tick, and kept the in-flight gate (and the cloud polling) open forever.
+  //         A failure only counts while its post is still open.
+  const relicKey = `${CAMP}:good`; // 'good' was patched to posted by arm (1)
+  const relicState = loadState();
+  delete (relicState.cloudFailures || {})[relicKey];
+  saveState();
+  resultsPayload = [{
+    jobId: `${CLIENT}:${CAMP}:good:meta`, clientId: CLIENT, campaign: CAMP, postId: 'good', lane: 'meta', state: 'failed',
+    firedAt: FIRED_AT, refusedCode: null, results: [], failureMessage: 'meta: media get failed: 404',
+  }];
+  await cloud.reconcileCloudResults();
+  ok(!(loadState().cloudFailures || {})[relicKey], 'a replayed failure for an already-posted post is NOT written back (no relic re-creation)');
+
+  console.log(`[cloud-reconcile] OK - done patches + clears overdue, idempotent, refused is a no-op, brand loop reconciles, cloud-fired telegram flips to posted, a failed fire stays due but surfaces its reason, a gone radar reply goes terminal, a terminal refusal clears its ack (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

@@ -612,7 +612,14 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
           manage-billing / manage-account / sign-out / eject actions). The identity is no
           longer a dead read-only line: it is the trigger for everything account-level. */}
       <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-        <IconBadge icon={CloudIcon} tone="ok" text={t('cloud.status.on')} />
+        {/* The state pill answers "is the cloud publishing?", NOT "is an account linked?".
+            It used to be hardcoded ok/"On" for any connected workspace, so an install with
+            every project switched off still read green-On while the cloud published nothing
+            and the local daemon did all the work. alwaysOn is the cloud's own answer (at
+            least one brand always-on), so the pill can never drift from what fires. */}
+        {sub && sub.alwaysOn === false
+          ? <IconBadge icon={CloudOff} tone="neutral" text={t('cloud.status.paused')} label={t('cloud.status.pausedTip')} />
+          : <IconBadge icon={CloudIcon} tone="ok" text={t('cloud.status.on')} />}
         <AccountMenu
           email={accountEmail}
           accountPortalUrl={accountPortalUrl}
@@ -1084,6 +1091,24 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
       ) : null}
 
       <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t(statusKey)}</p>
+
+      {/* Money truth when nothing is switched on: the plan keeps billing its base whether or
+          not a single project uses the cloud, and the only way to stop that is the Stripe
+          portal - which used to be buried in the account menu, so turning the last project
+          off read as free. Same call, same label, said where the cost actually surfaces. */}
+      {canManage && sub.alwaysOn === false ? (
+        <div role="alert" className="space-y-1.5 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+          <p>{t('cloud.meter.noBrandsOn')}</p>
+          <button
+            type="button"
+            onClick={() => run('portal', startBillingPortal)}
+            disabled={busy === 'portal'}
+            className="font-bold underline underline-offset-2 disabled:opacity-50"
+          >
+            {t('cloud.billingPortal.action')}
+          </button>
+        </div>
+      ) : null}
 
       {/* Spend-cap alerts stay visible even though the control is in Details - a money path
           must never be hidden. */}

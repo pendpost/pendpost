@@ -93,7 +93,29 @@ try {
   ok(readPost(POST).igMediaId === 'IG_CLOUD_MINTED', 'the post carries the CLOUD-minted id - it was NOT re-fired locally (no double-post)');
   ok(brandPuts.some((p) => p.id === CLIENT && p.always_on === false), 'the tick RE-ASSERTS the paused brand OFF flag to the cloud (self-heals a best-effort pause)');
 
-  console.log(`[cloud-paused-no-double] OK - paused+connected tick reconciles the cloud fire, stands down locally, and re-asserts OFF (${pass} assertions).`);
+  // ---- the re-assert is SELF-RATE-LIMITED (the 2026-07-29 cost incident) ---------------
+  // Re-asserting a flag the cloud already confirmed, on every 60s tick, cost ~2,880 PUTs a
+  // day - each one a cloud write, an audit row and a live Stripe subscriptions.list - and
+  // kept Neon's compute from ever suspending. A confirmed flag is re-asserted at most once
+  // per interval; only a FAILED PUT (no record written) retries on the next tick.
+  brandPuts.length = 0;
+  await runDueExclusive('scheduler');
+  ok(brandPuts.length === 0, 'a second tick does NOT re-PUT the flag the cloud just confirmed (no per-tick cloud write)');
+
+  // A post that is NOT yet due cannot have been fired by the cloud and will not be fired by
+  // the local walk either, so it must not hold the read-back open either.
+  const FUTURE = 's13';
+  await createPost({ campaign: CAMP, post: { id: FUTURE, type: 'story', platforms: ['instagram'], scheduledAt: '2099-01-01T00:00:00Z', path: 'data/media/clip.mp4', caption: 'later' }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: FUTURE, actor: 'owner' });
+  resultsPayload = [];
+  let resultsCalls = 0;
+  const inner = global.fetch;
+  global.fetch = async (input, init) => { if (String(input).includes('/v1/sync/results')) resultsCalls += 1; return inner(input, init); };
+  await runDueExclusive('scheduler');
+  ok(resultsCalls === 0, 'an approved but NOT-yet-due cloud-lane post makes zero cloud calls (the poll gate is due-gated)');
+  global.fetch = inner;
+
+  console.log(`[cloud-paused-no-double] OK - paused+connected tick reconciles the cloud fire, stands down locally, re-asserts OFF once, then goes quiet (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });
