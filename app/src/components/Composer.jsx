@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check } from 'lucide-react';
 import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, useRedditFlairs, usePinterestBoardSections, createPost, updatePost, lintText } from '../lib/api.js';
 import { useT, useLocale } from '../lib/i18n.js';
+import { splitTweetThread } from '../lib/thread.js';
 import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
@@ -86,7 +87,15 @@ export function useLint(text, platform) {
 export function LintPanel({ lint }) {
   const t = useT();
   if (!lint) return null;
-  if (lint.clean && !lint.warnings) {
+  // R6b net-simplify: drop the em-dash warn from the DISPLAY. The always-on
+  // humanizer gate GUARANTEES every en/em dash is rewritten at save - its dash
+  // fix (lib/humanize.mjs) matches on the exact same [–—] set as the
+  // em-dash lint rule (rules.json) and replaces globally, so the fix is certain
+  // and the operator can't act on the warning. Showing it is duplicate signal
+  // for the one finding the receipt already covers. The server rule stays as the
+  // backstop; only this panel hides it.
+  const findings = (lint.findings || []).filter((f) => f.rule !== 'em-dash');
+  if (!findings.length) {
     return (
       <p className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-300">
         <CheckCircle2 size={12} aria-hidden="true" /> {t('composer.lint.clean')}
@@ -95,7 +104,7 @@ export function LintPanel({ lint }) {
   }
   return (
     <ul className="space-y-1">
-      {lint.findings.slice(0, 8).map((f, i) => (
+      {findings.slice(0, 8).map((f, i) => (
         <li
           key={`${f.rule}-${f.index}-${i}`}
           className={`flex items-start gap-1.5 text-[11px] ${
@@ -108,8 +117,8 @@ export function LintPanel({ lint }) {
           </span>
         </li>
       ))}
-      {lint.findings.length > 8 ? (
-        <li className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.lint.more', { count: lint.findings.length - 8 })}</li>
+      {findings.length > 8 ? (
+        <li className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.lint.more', { count: findings.length - 8 })}</li>
       ) : null}
       {lint.truncated ? (
         <li className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.lint.truncated')}</li>
@@ -1034,7 +1043,7 @@ function carouselSeedRefs(isEdit, post) {
 
 // Create + edit composer as a full page. Edit mode never touches approval/cover/
 // publish fields - those have their own controls in PostDetail.
-export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting, onStartThread }) {
+export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting, onStartThread, onDirtyChange }) {
   const t = useT();
   const locale = useLocale();
   const queryClient = useQueryClient();
@@ -1115,6 +1124,11 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // Empty saves as null - the escape hatch for a dangling reference (parent
   // deleted -> the fail-closed X lane holds the child forever).
   const [xReplyTo, setXReplyTo] = useState(isEdit ? post.xReplyTo || '' : '');
+  // Thread split (X hard cap): pending continuation texts, materialized as
+  // sibling posts (xReplyTo chain) AFTER the main post saves. Each becomes its
+  // own approvable draft - the split never publishes anything by itself.
+  const [threadParts, setThreadParts] = useState([]);
+  const threadOriginalRef = useRef(null);
   const [tags, setTags] = useState(isEdit ? post.tags || '' : '');
   const [blogSlug, setBlogSlug] = useState(isEdit ? post.blogSlug || '' : '');
   // Wave-2 article fields (wordpress/ghost): markdown body (falls back to the
@@ -1145,6 +1159,16 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // to the shared caption.
   const [mastodonCaption, setMastodonCaption] = useState(isEdit ? post.mastodonCaption || '' : '');
   const [nostrCaption, setNostrCaption] = useState(isEdit ? post.nostrCaption || '' : '');
+  // B1 (ux-audit dim-6 P1): the remaining per-lane prose overrides the engines
+  // publish - MCP-writable, so the approver must be able to see and author them
+  // here too. Same additive xCaption pattern; empty falls back to the caption
+  // (pinTitle falls back to the title - the engine's pinTitle || title).
+  const [tgCaption, setTgCaption] = useState(isEdit ? post.tgCaption || '' : '');
+  const [dcCaption, setDcCaption] = useState(isEdit ? post.dcCaption || '' : '');
+  const [ttCaption, setTtCaption] = useState(isEdit ? post.ttCaption || '' : '');
+  const [redditText, setRedditText] = useState(isEdit ? post.redditText || '' : '');
+  const [pinTitle, setPinTitle] = useState(isEdit ? post.pinTitle || '' : '');
+  const [pinDescription, setPinDescription] = useState(isEdit ? post.pinDescription || '' : '');
   // Spec 16: the Reddit link submission URL + the picked link-flair template (id + the
   // editable-template text). The flair select drives both id and text together.
   const [redditUrl, setRedditUrl] = useState(isEdit ? post.redditUrl || '' : '');
@@ -1240,6 +1264,12 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     emailOnly: isEdit ? post.emailOnly === true : false,
     mastodonCaption: isEdit ? post.mastodonCaption || '' : '',
     nostrCaption: isEdit ? post.nostrCaption || '' : '',
+    tgCaption: isEdit ? post.tgCaption || '' : '',
+    dcCaption: isEdit ? post.dcCaption || '' : '',
+    ttCaption: isEdit ? post.ttCaption || '' : '',
+    redditText: isEdit ? post.redditText || '' : '',
+    pinTitle: isEdit ? post.pinTitle || '' : '',
+    pinDescription: isEdit ? post.pinDescription || '' : '',
     redditUrl: isEdit ? post.redditUrl || '' : '',
     redditFlairId: isEdit ? post.redditFlairId || '' : '',
     redditFlairText: isEdit ? post.redditFlairText || '' : '',
@@ -1318,15 +1348,21 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const { data: pinterestSectionsData, isLoading: pinterestSectionsLoading, isError: pinterestSectionsError } = usePinterestBoardSections(pinterestBoardId, rel.pinBoardSection);
   const pinterestSections = useMemo(() => (pinterestSectionsData?.ok ? pinterestSectionsData.items || [] : []), [pinterestSectionsData]);
   const pinterestSectionsUnavailable = Boolean(pinterestSectionsError) || (Boolean(pinterestSectionsData) && pinterestSectionsData.ok === false);
-  // Single-lane override collapse (shared rule, lib/format.js): an X-only /
-  // Mastodon-only / Nostr-only post authors ONE text — the caption — so its
-  // override field is hidden unless it already carries content (saved on the
-  // post, or typed in this session before the platform set changed).
+  // Single-lane override collapse (shared rule, lib/format.js): a post targeting
+  // ONE override lane authors ONE text — the caption — so its override field is
+  // hidden unless it already carries content (saved on the post, or typed in
+  // this session before the platform set changed). Covers every OVERRIDE_FIELD
+  // lane (x/mastodon/nostr + the B1 lanes telegram/discord/tiktok/reddit/pinterest).
   const hiddenOverride = useMemo(() => collapsedOverrideKey(platforms, {
     xCaption: (isEdit && post.xCaption) || xCaption,
     mastodonCaption: (isEdit && post.mastodonCaption) || mastodonCaption,
     nostrCaption: (isEdit && post.nostrCaption) || nostrCaption,
-  }), [platforms, isEdit, post, xCaption, mastodonCaption, nostrCaption]);
+    tgCaption: (isEdit && post.tgCaption) || tgCaption,
+    dcCaption: (isEdit && post.dcCaption) || dcCaption,
+    ttCaption: (isEdit && post.ttCaption) || ttCaption,
+    redditText: (isEdit && post.redditText) || redditText,
+    pinDescription: (isEdit && post.pinDescription) || pinDescription,
+  }), [platforms, isEdit, post, xCaption, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinDescription]);
   const isLinkedinArticle = platforms.includes('linkedin') && type === 'text';
   // Article authoring (wave 2): the long-form fields apply whenever a blog lane
   // is targeted - WordPress and Ghost publish title + markdown body (falling
@@ -1367,15 +1403,30 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // Unsaved-changes guard (finding #12): diff the live editable fields against the
   // mount snapshot; the close handler confirms before discarding a dirty draft.
   const isDirty = useMemo(
+    // Key order MUST mirror the initialSnapshot literal exactly: JSON.stringify
+    // preserves insertion order, so a mis-ordered key (altText once trailed here
+    // while the snapshot lists it after firstComment) makes the strings differ
+    // forever and the composer reads dirty from mount.
+    // The id is compared only once the OWNER edited it: the auto-suggest effect
+    // (suggestPostId) rewrites it right after mount, and a machine suggestion
+    // must never make an untouched composer read dirty.
     () => JSON.stringify({
-      campaign, id, type, platforms, scheduledIso, caption, firstComment, title,
+      campaign, id: idEdited ? id : '', type, platforms, scheduledIso, caption, firstComment, altText, title,
       link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug,
-      body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent,
+      body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent,
       ttInteraction, spoilerText, xReplySettings, poll,
-      stickers, hashtagsMode, hashtags, altText,
+      stickers, hashtagsMode, hashtags,
     }) !== initialSnapshot,
-    [campaign, id, type, platforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
+    [campaign, id, idEdited, type, platforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
   );
+
+  // Report dirtiness upward so App's client-switch guard (lib/clientSwitchGuard.js)
+  // can refuse a silent re-scope while this draft is unsaved. Cleared on unmount.
+  useEffect(() => {
+    if (!onDirtyChange) return undefined;
+    onDirtyChange(isDirty);
+    return () => onDirtyChange(false);
+  }, [isDirty, onDirtyChange]);
 
   const requestClose = async () => {
     if (isDirty) {
@@ -1679,8 +1730,13 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     }
     setBusy(true);
     try {
+      // R6b receipt: the create/update response carries the humanizer gate's own
+      // change report ({fixes, findings}) when it rewrote prose at save (present-
+      // when-telly, absent-when-clean; lib/writes.mjs). Thread it to onSaved so the
+      // App shell can show ONE quiet dismissable line naming what was auto-fixed.
+      let saveRes;
       if (isEdit) {
-        await updatePost(post.campaign, post.id, post.rev, {
+        saveRes = await updatePost(post.campaign, post.id, post.rev, {
           type,
           platforms,
           scheduledAt: scheduledIso,
@@ -1711,6 +1767,12 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           emailOnly: emailOnly === true ? true : null,
           mastodonCaption: mastodonCaption || null,
           nostrCaption: nostrCaption || null,
+          tgCaption: tgCaption || null,
+          dcCaption: dcCaption || null,
+          ttCaption: ttCaption || null,
+          redditText: redditText || null,
+          pinTitle: pinTitle || null,
+          pinDescription: pinDescription || null,
           redditUrl: redditUrl || null,
           redditFlairId: redditFlairId || null,
           redditFlairText: redditFlairText || null,
@@ -1735,7 +1797,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           altText: altText || null,
         });
       } else {
-        await createPost(campaign, {
+        saveRes = await createPost(campaign, {
           id,
           type,
           platforms,
@@ -1767,6 +1829,12 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           emailOnly: emailOnly === true ? true : undefined,
           mastodonCaption: mastodonCaption || undefined,
           nostrCaption: nostrCaption || undefined,
+          tgCaption: tgCaption || undefined,
+          dcCaption: dcCaption || undefined,
+          ttCaption: ttCaption || undefined,
+          redditText: redditText || undefined,
+          pinTitle: pinTitle || undefined,
+          pinDescription: pinDescription || undefined,
           redditUrl: redditUrl || undefined,
           redditFlairId: redditFlairId || undefined,
           redditFlairText: redditFlairText || undefined,
@@ -1790,8 +1858,30 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           altText: altText || undefined,
         });
       }
+      // Materialize pending thread parts as sibling posts chained via xReplyTo.
+      // Runs AFTER the main save so the chain's parent exists; each part is a
+      // plain approvable draft (text, X-only, same slot) the owner reviews in
+      // Freigaben - the split itself publishes nothing.
+      if (threadParts.length) {
+        const threadCampaign = isEdit ? post.campaign : campaign;
+        let parentId = isEdit ? post.id : id;
+        for (let i = 0; i < threadParts.length; i += 1) {
+          const partId = `${isEdit ? post.id : id}-t${i + 2}`;
+          await createPost(threadCampaign, {
+            id: partId,
+            type: 'text',
+            platforms: ['x'],
+            scheduledAt: scheduledIso,
+            caption: threadParts[i],
+            xReplyTo: parentId,
+          });
+          parentId = partId;
+        }
+        setThreadParts([]);
+        threadOriginalRef.current = null;
+      }
       queryClient.invalidateQueries({ queryKey: ['plans'] });
-      onSaved?.(campaign, isEdit ? post.id : id);
+      onSaved?.(campaign, isEdit ? post.id : id, saveRes?.humanizer);
       onClose();
     } catch (err) {
       setError(
@@ -1973,6 +2063,55 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
               <CharCounter id="composer-x-counter" len={xLen} max={CAPTION_CAPS.x} over={xOver} />
               {/* r2-3: announce ONLY the over/under transition, not every keystroke. */}
               <p role="status" aria-live="polite" className="sr-only">{xOverAnnounce}</p>
+              {/* X hard cap: over 280 the post cannot publish (non-Premium API
+                  refusal). Offer the one honest way to ship the WHOLE text: a
+                  visible split into thread replies, each its own approvable post. */}
+              {xOver && !threadParts.length ? (
+                <div className={`space-y-2 rounded-xl p-3 ${INNER_SURFACE}`}>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-300">{t('composer.thread.hint')}</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const effective = xCaption || caption;
+                      const parts = splitTweetThread(effective, CAPTION_CAPS.x);
+                      if (parts.length < 2) return;
+                      threadOriginalRef.current = { xCaption, hadOverride: Boolean(xCaption) };
+                      setXCaption(parts[0]);
+                      setThreadParts(parts.slice(1));
+                    }}
+                    className="rounded-xl bg-brand px-3 py-1.5 text-xs font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  >
+                    {t('composer.thread.split')}
+                  </button>
+                </div>
+              ) : null}
+              {threadParts.length ? (
+                <div className={`space-y-2 rounded-xl p-3 ${INNER_SURFACE}`}>
+                  <p className="text-xs font-bold">{t('composer.thread.partsTitle', { count: threadParts.length + 1 })}</p>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-300">{t('composer.thread.partsHint')}</p>
+                  <ol className="space-y-1.5">
+                    {threadParts.map((part, i) => (
+                      <li key={i} className={`rounded-lg p-2 text-xs leading-relaxed ${FIELD_SURFACE}`}>
+                        <span className="mr-1 font-bold tabular-nums text-zinc-500 dark:text-zinc-400">{i + 2}.</span>
+                        {part}
+                        <span className="ml-1 whitespace-nowrap text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400">({part.length}/{CAPTION_CAPS.x})</span>
+                      </li>
+                    ))}
+                  </ol>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const orig = threadOriginalRef.current;
+                      setXCaption(orig && orig.hadOverride ? orig.xCaption : '');
+                      setThreadParts([]);
+                      threadOriginalRef.current = null;
+                    }}
+                    className="text-xs font-bold text-zinc-600 underline-offset-2 hover:underline dark:text-zinc-300"
+                  >
+                    {t('composer.thread.remove')}
+                  </button>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -2055,6 +2194,99 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setNostrCaption(e.target.value)}
                 rows={growRows(nostrCaption, 3, 12)}
                 placeholder={t('composer.field.nostrCaptionPlaceholder')}
+                className={`${FIELD_CLS} resize-y leading-relaxed`}
+              />
+            </div>
+          ) : null}
+
+          {/* B1 (ux-audit dim-6 P1): the remaining per-lane prose overrides the
+              engines publish (tgCaption/dcCaption/ttCaption/redditText/
+              pinTitle/pinDescription) - MCP-writable, so they must be authorable
+              and reviewable here too. Same additive nostrCaption pattern:
+              rendered only when the lane is targeted, single-lane-collapsed
+              while empty, empty falls back to the shared caption (pinTitle: to
+              the title). */}
+          {rel.tgCaption && hiddenOverride !== 'tgCaption' ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-tg-caption">{t('composer.field.tgCaption')}</label>
+              <textarea
+                id="composer-tg-caption"
+                value={tgCaption}
+                onChange={(e) => setTgCaption(e.target.value)}
+                rows={growRows(tgCaption, 3, 12)}
+                placeholder={t('composer.field.tgCaptionPlaceholder')}
+                className={`${FIELD_CLS} resize-y leading-relaxed`}
+              />
+            </div>
+          ) : null}
+
+          {rel.dcCaption && hiddenOverride !== 'dcCaption' ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-dc-caption">{t('composer.field.dcCaption')}</label>
+              <textarea
+                id="composer-dc-caption"
+                value={dcCaption}
+                onChange={(e) => setDcCaption(e.target.value)}
+                rows={growRows(dcCaption, 3, 12)}
+                placeholder={t('composer.field.dcCaptionPlaceholder')}
+                className={`${FIELD_CLS} resize-y leading-relaxed`}
+              />
+            </div>
+          ) : null}
+
+          {rel.ttCaption && hiddenOverride !== 'ttCaption' ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-tt-caption">{t('composer.field.ttCaption')}</label>
+              <textarea
+                id="composer-tt-caption"
+                value={ttCaption}
+                onChange={(e) => setTtCaption(e.target.value)}
+                rows={growRows(ttCaption, 3, 12)}
+                placeholder={t('composer.field.ttCaptionPlaceholder')}
+                className={`${FIELD_CLS} resize-y leading-relaxed`}
+              />
+            </div>
+          ) : null}
+
+          {rel.redditText && hiddenOverride !== 'redditText' ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-reddit-text">{t('composer.field.redditText')}</label>
+              <textarea
+                id="composer-reddit-text"
+                value={redditText}
+                onChange={(e) => setRedditText(e.target.value)}
+                rows={growRows(redditText, 3, 12)}
+                placeholder={t('composer.field.redditTextPlaceholder')}
+                className={`${FIELD_CLS} resize-y leading-relaxed`}
+              />
+            </div>
+          ) : null}
+
+          {/* pinTitle is never collapse-hidden: it shadows the TITLE (the
+              engine's pinTitle || title), and a pinterest post has no title
+              field of its own to fall back to visibly. */}
+          {rel.pinTitle ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-pin-title">{t('composer.field.pinTitle')}</label>
+              <input
+                id="composer-pin-title"
+                value={pinTitle}
+                onChange={(e) => setPinTitle(e.target.value)}
+                placeholder={t('composer.field.pinTitlePlaceholder')}
+                className={FIELD_CLS}
+              />
+            </div>
+          ) : null}
+
+          {rel.pinDescription && hiddenOverride !== 'pinDescription' ? (
+            <div className="space-y-1.5">
+              <label className={EYEBROW} htmlFor="composer-pin-description">{t('composer.field.pinDescription')}</label>
+              <textarea
+                id="composer-pin-description"
+                value={pinDescription}
+                onChange={(e) => setPinDescription(e.target.value)}
+                rows={growRows(pinDescription, 3, 12)}
+                placeholder={t('composer.field.pinDescriptionPlaceholder')}
                 className={`${FIELD_CLS} resize-y leading-relaxed`}
               />
             </div>

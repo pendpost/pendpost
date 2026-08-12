@@ -6,6 +6,9 @@ contact_links:
   - name: Ask a question or share an idea
     url: https://github.com/pendpost/pendpost/discussions
     about: Use Discussions for questions and ideas.
+  - name: Send feedback without a GitHub account
+    url: https://pendpost.com
+    about: A short feedback form on the site forwards into GitHub for you.
   - name: Read the documentation
     url: https://docs.pendpost.com
     about: The docs may already answer it.

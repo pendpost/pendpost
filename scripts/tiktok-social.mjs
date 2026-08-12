@@ -70,8 +70,11 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath } from '../lib/util.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -255,7 +258,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'tiktokVideoId', 'status', 'postedAt', 'attempts'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'tiktokVideoId', 'status', 'postedAt', 'attempts', 'publishHold'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -294,8 +297,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 }
 
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 const RUN = { results: [] };
@@ -608,6 +612,13 @@ async function cmdPublishDue(args) {
     if (!isTikTok(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
       continue;
@@ -622,6 +633,14 @@ async function cmdPublishDue(args) {
     const mediaPath = resolveMediaPath(plan, post);
     if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
     if (!isVideo(mediaPath)) { console.log(`[warn] ${post.id}: media ${path.basename(mediaPath)} is not a video - TikTok publishes video only; skipping.`); continue; }
+    // Fresh-bytes A/V-sync backstop: probe the actual video bytes about to upload (not
+    // the manifest's stale author-time avSyncOk) - a measured desync is a malformed mux.
+    const avBlock = await avSyncBlocker(mediaPath);
+    if (avBlock) {
+      console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+      RUN.results.push(avSyncBlockRow(post, 'tiktok', avBlock));
+      continue;
+    }
 
     // Spec 27: publishAsDraft routes through the inbox init instead of the
     // direct-post one - the video lands in the creator's TikTok inbox to finish
@@ -875,6 +894,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'tiktok', scriptUrl: import.meta.url });
   JSON_MODE = Boolean(args.json);
   ACTOR = typeof args.actor === 'string' ? args.actor : 'cli';
   if (JSON_MODE) console.log = (...a) => console.error(...a);

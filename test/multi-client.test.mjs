@@ -33,8 +33,8 @@ const { createClient } = await import('../lib/clients.mjs');
 const { createCampaign, createPost } = await import('../lib/writes.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
 const { recordMetaBlock } = await import('../lib/accounts.mjs');
-const { loadState, isMetaBlocked } = await import('../lib/state.mjs');
-const { getActivity, setScheduler } = await import('../lib/scheduler.mjs');
+const { loadState, saveState, isMetaBlocked } = await import('../lib/state.mjs');
+const { getActivity } = await import('../lib/scheduler.mjs');
 const { clientList } = await import('../lib/mcp.mjs');
 const { listClients, updateClient } = await import('../lib/clients.mjs');
 const { writeEnvVars, readEnv } = await import('../lib/util.mjs');
@@ -130,35 +130,63 @@ try {
     ok(threw, `clientRoot rejects invalid slug ${JSON.stringify(bad)} with code invalid_input`);
   }
 
-  // ---- B5: per-client health roll-up on clientList()/listClients() ----
+  // ---- B5 + US-MC-10: per-client health roll-up on clientList()/listClients() ----
   // acme already has a recorded 368 (above); default is clear. The roll-up must
-  // surface booleans only - actionBlocked per-client, schedulerRunning global -
-  // and NEVER leak blockedUntil/reason/fbTraceId/any secret.
+  // surface booleans only - actionBlocked AND schedulerRunning are BOTH per-client
+  // (US-MC-10: schedulerRunning is each client's own state.scheduler.enabled flag,
+  // default-ON == enabled !== false, NOT the single process-global timer stamped
+  // identically on every row) - and NEVER leak blockedUntil/reason/fbTraceId/secret.
   const SECRET_KEYS = ['blockedUntil', 'reason', 'fbTraceId', 'recordedAt', 'subcode', 'meta', 'token', 'accessToken'];
   const findEntry = (res, id) => res.clients.find((c) => c.id === id);
+  // Set a client's per-client scheduler flag directly (round-trip through the
+  // per-root state cache so it is not masked by an already-cached state object).
+  // We drive the FLAG, never setScheduler, so the process-global timer stays out
+  // of it - the display predicate is the pure flag, decoupled from the timer.
+  const setSchedulerEnabled = (id, enabled) => withClient(clientRoot(id), () => {
+    const st = loadState();
+    st.scheduler = { ...(st.scheduler || {}), enabled };
+    saveState();
+  });
 
-  setScheduler(false);
+  // Diverge the two clients: acme STOPPED, default ENABLED. The roll-up must carry
+  // DIFFERENT schedulerRunning per row - the old code stamped one global value on
+  // every entry, which was the load-bearing lie US-MC-10 fixes.
+  setSchedulerEnabled('acme', false);
+  setSchedulerEnabled('default', true);
   const rollup = clientList();
   const acme = findEntry(rollup, 'acme');
   const def = findEntry(rollup, 'default');
   ok(acme && acme.actionBlocked === true, 'clientList: acme.actionBlocked === true (its 368 is recorded)');
   ok(def && def.actionBlocked === false, 'clientList: default.actionBlocked === false (no 368 - did not cross clients)');
   ok(rollup.clients.every((c) => typeof c.schedulerRunning === 'boolean'), 'clientList: every entry carries a boolean schedulerRunning');
-  ok(rollup.clients.every((c) => c.schedulerRunning === false), 'clientList: schedulerRunning is false when the scheduler is stopped');
+  ok(acme.schedulerRunning === false, 'clientList: acme.schedulerRunning === false (explicitly stopped) - per-client, not global');
+  ok(def.schedulerRunning === true, 'clientList: default.schedulerRunning === true (enabled) - DIFFERENT per row, no longer one global flag');
   ok(rollup.clients.every((c) => SECRET_KEYS.every((k) => !(k in c))), 'clientList: no entry leaks blockedUntil/reason/fbTraceId/secret keys - booleans only');
 
-  // schedulerRunning is the process-global timer (same for all clients): flip it.
-  setScheduler(true);
+  // A never-toggled (undefined-flag) client reads default-ON (enabled !== false):
+  // flip acme back ON and clear default's flag entirely to prove the truthful default.
+  setSchedulerEnabled('acme', true);
+  withClient(clientRoot('default'), () => { const st = loadState(); if (st.scheduler) delete st.scheduler.enabled; saveState(); });
   const running = clientList();
-  ok(running.clients.every((c) => c.schedulerRunning === true), 'clientList: schedulerRunning flips to true for EVERY entry when the scheduler runs (global, not per-client)');
-  setScheduler(false);
+  ok(findEntry(running, 'acme').schedulerRunning === true, 'clientList: acme.schedulerRunning === true when enabled');
+  ok(findEntry(running, 'default').schedulerRunning === true, 'clientList: a never-toggled default reads schedulerRunning === true (default-ON, enabled !== false)');
+
+  // Stopping ONE client leaves an enabled sibling TRUE (no cross-talk between rows).
+  setSchedulerEnabled('default', false);
+  const afterStop = clientList();
+  ok(findEntry(afterStop, 'acme').schedulerRunning === true, 'clientList: a still-enabled sibling (acme) stays TRUE after another client (default) is stopped');
+  ok(findEntry(afterStop, 'default').schedulerRunning === false, 'clientList: the stopped client (default) reads false');
+
+  // Stop both so the twin below can assert a clean, uniform per-client state.
+  setSchedulerEnabled('acme', false);
+  setSchedulerEnabled('default', false);
 
   // Twin parity: listClients() (REST) returns the SAME roll-up fields as clientList() (MCP).
   const twin = listClients();
   const twinAcme = findEntry(twin, 'acme');
   const twinDef = findEntry(twin, 'default');
   ok(twinAcme && twinAcme.actionBlocked === true && twinDef && twinDef.actionBlocked === false, 'listClients twin: same per-client actionBlocked roll-up as clientList');
-  ok(twin.clients.every((c) => typeof c.schedulerRunning === 'boolean' && c.schedulerRunning === false), 'listClients twin: same schedulerRunning roll-up (global, currently stopped)');
+  ok(twin.clients.every((c) => typeof c.schedulerRunning === 'boolean' && c.schedulerRunning === false), 'listClients twin: same per-client schedulerRunning roll-up (both clients stopped now)');
   ok(twin.clients.every((c) => SECRET_KEYS.every((k) => !(k in c))), 'listClients twin: no secret keys leaked - booleans only');
 
   // Per-client isolation: the active client stayed 'acme' (the first-real promotion)

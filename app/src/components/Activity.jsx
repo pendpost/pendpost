@@ -73,6 +73,9 @@ const ACTION_LABEL = {
   'comment-received': 'activity.action.commentReceived',
   'comment-moderate': 'activity.action.commentModerate',
   'comment-react': 'activity.action.commentReact',
+  // Own-post comment monitor: the sweep found new comments on your own posts (logged once
+  // per batch that found some). Inbound engagement, files into the SAME inbox group.
+  'comments-new': 'activity.action.commentsNew',
   // GBP reviews (spec 03): a review received (logged on read) + an owner reply the
   // operator sent. Both file into the SAME inbox group as the comment actions.
   'review-received': 'activity.action.reviewReceived',
@@ -101,6 +104,42 @@ const ACTION_LABEL = {
   probe: 'activity.action.probe',
   'publish-due': 'activity.action.publishDue',
   'cadence-defer': 'activity.action.cadenceDefer',
+  // G6: a due approved post held ONLY because its media/render is missing on disk
+  // (the scheduler's media gate). A defer like cadence-defer - the post stays due
+  // and fires the moment the file is back.
+  'media-missing-defer': 'activity.action.mediaMissingDefer',
+  // G5 (B8): the two unattended Radar actions (lib/radar-sweep.mjs). The daily
+  // agent research run spends the operator's money overnight; the author-reply
+  // reconcile is the "someone answered you" morning glance. Both used to render
+  // as raw machine ids. NO ACTION_NOTE for either: unlike the static defer notes,
+  // their errorMessage is dynamic and load-bearing (the failed job's tail / the
+  // "N threads answered (sources)" count) and a static note would override it.
+  'radar-agent-scan': 'activity.action.radarAgentScan',
+  'radar-author-replied': 'activity.action.radarAuthorReplied',
+  // R6a gate refinements (ux-audit 2026-08-04, dim-1 proposals 3+5, both opt-in /
+  // default OFF): the approval-expiry sweep aged an approval back to draft, and the
+  // slot-slip sweep moved an unapproved post's slot forward. Both are fail-closed:
+  // they only ask the human to re-decide or move the time, never publish. Their
+  // errorMessage is dynamic and load-bearing (the window / the new slot time), so
+  // like the radar rows they carry NO ACTION_NOTE - the raw message renders.
+  'approval-expired': 'activity.action.approvalExpired',
+  'slot-slip': 'activity.action.slotSlip',
+  // R2 digest v2 autonomy report (ux-audit 2026-08-04, dim-5 AU3): the auto-approve
+  // policy declined to auto-approve a post at a gate seam (brand-lint / foreign-link),
+  // so it stays for manual review instead. A fail-closed row - autonomy stepped back,
+  // it never published. errorMessage carries the dynamic reason class, so NO ACTION_NOTE.
+  'auto-approve-refused': 'activity.action.autoApproveRefused',
+  // R7 revocation-that-unwinds (ux-audit 2026-08-04, dim-5 AU4): the owner disabled a
+  // policy and returned a not-yet-published auto-approval to review. A de-escalation
+  // row - autonomy was withdrawn, nothing published - filed with the approval decisions.
+  'auto-approve-revoke': 'activity.action.autoApproveRevoke',
+  // Enforced pre-flight fence (scheduler.mjs): a due, approved post reached the
+  // scheduler with a content-integrity blocker (A/V-desync, over-cap caption,
+  // malformed poll/carousel). The lane is dropped, nothing published - the
+  // operator must fix and re-approve. Like the radar/defer rows its errorMessage
+  // is dynamic and load-bearing (the platform + the specific problem), so NO
+  // ACTION_NOTE - the raw message renders.
+  'preflight-blocked': 'activity.action.preflightBlocked',
 };
 
 // Maps an action id to the i18n key for its NOTE body (data, not UI text), so a
@@ -110,6 +149,7 @@ const ACTION_LABEL = {
 const ACTION_NOTE = {
   'cloud-backstop': 'activity.note.cloudBackstop',
   'cadence-defer': 'activity.note.cadenceDefer',
+  'media-missing-defer': 'activity.note.mediaMissingDefer',
 };
 
 // C7: a SMALL fixed set of action GROUPS (curated, like STATUS_FILTERS) that
@@ -119,9 +159,20 @@ const ACTION_NOTE = {
 // claimed by a named group falls into 'other'. Module-scope so the grouping
 // stays data next to ACTION_LABEL rather than UI in App.jsx.
 export const ACTION_GROUPS = [
-  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
-  { key: 'schedule', label: 'activity.action.group.schedule', actions: ['schedule-native', 'reschedule', 'unschedule'] },
-  { key: 'approval', label: 'activity.action.group.approval', actions: ['approve', 'reject'] },
+  // 'media-missing-defer' files under publish (not meta-block): it is about THIS
+  // post's publish lifecycle on any lane, and it must ride the default feed - the
+  // whole point of G6 is that the operator SEES why the due post did not fire.
+  // 'preflight-blocked' files under publish (like media-missing-defer): it is
+  // about THIS post's publish lifecycle on a lane and must ride the default feed -
+  // the operator has to SEE why the due post did not fire.
+  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'media-missing-defer', 'preflight-blocked', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
+  // 'slot-slip' (R6a) is a machine-initiated reschedule of an unapproved post, so
+  // it files with the schedule moves and rides the default feed - the operator must
+  // see that the slot moved (and can approve earlier to publish earlier).
+  { key: 'schedule', label: 'activity.action.group.schedule', actions: ['schedule-native', 'reschedule', 'unschedule', 'slot-slip'] },
+  // 'approval-expired' (R6a) sends an aged approval back to review, so it files with
+  // the approval decisions - the same bucket as approve/reject.
+  { key: 'approval', label: 'activity.action.group.approval', actions: ['approve', 'reject', 'approval-expired', 'auto-approve-revoke'] },
   // The SYSTEM group: bookkeeping the machine does for itself (scheduler ticks,
   // liveness probes, token refreshes, metrics sweeps, cloud reconciliation). These
   // are audit, not content events - the default feed HIDES their successes (a
@@ -135,8 +186,13 @@ export const ACTION_GROUPS = [
   // The inbound-engagement (inbox) bucket (spec 02, Pattern P6): the cross-post reply
   // feed. Specs 06 (moderation) + 24 (reactions) file their actions into THIS group;
   // spec 03 (GBP reviews) adds review-received/review-reply to the SAME one chip.
-  { key: 'inbox', label: 'activity.action.group.inbox', actions: ['comment-reply', 'comment-received', 'comment-moderate', 'comment-react', 'review-received', 'review-reply'] },
-  { key: 'other', label: 'activity.action.group.other', actions: [] },
+  // 'radar-author-replied' is inbound engagement (an author answered your Radar
+  // reply), so it files with the reply feed - and stays in the default feed.
+  { key: 'inbox', label: 'activity.action.group.inbox', actions: ['comment-reply', 'comment-received', 'comment-moderate', 'comment-react', 'comments-new', 'review-received', 'review-reply', 'radar-author-replied'] },
+  // 'radar-agent-scan' is DELIBERATELY claimed by 'other', not 'system': the
+  // default feed hides system successes, and the paid overnight research run is
+  // exactly the row the operator opens Activity to see (spend legibility, G5).
+  { key: 'other', label: 'activity.action.group.other', actions: ['radar-agent-scan'] },
 ];
 
 // action id -> group key (everything unclaimed by a named group => 'other').
@@ -196,10 +252,11 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
   // dead ends). The error rides as plain text with a native title for the full
   // string, so there is no nested-interactive control inside the row button.
   const openable = Boolean(entry.campaign && entry.postId && onOpenPost) && !remediation;
-  // A cadence-defer is a deferral, not a success or failure - render it with the
-  // design system's amber "waiting/held" token (Clock), and tone its message
-  // amber rather than red (it is informational, the post stays due).
-  const isDefer = entry.action === 'cadence-defer';
+  // A defer (cadence throttle, missing media/render) is a deferral, not a success
+  // or failure - render it with the design system's amber "waiting/held" token
+  // (Clock), and tone its message amber rather than red (it is informational, the
+  // post stays due).
+  const isDefer = entry.action === 'cadence-defer' || entry.action === 'media-missing-defer';
   // Consecutive identical entries are folded into one row carrying a count + a
   // time range (set in the grouping step); show "×N" and "from–to" when n>1.
   const count = entry.count || 1;

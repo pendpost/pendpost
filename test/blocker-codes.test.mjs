@@ -22,6 +22,7 @@ fs.mkdirSync(path.join(WS, 'data'), { recursive: true });
 const { initMultiClient, clientRoot } = await import('../lib/multi-client.mjs');
 const { withClient, activeRoot } = await import('../lib/context.mjs');
 const { createCampaign, createPost, approvePost, pendpostHealth } = await import('../lib/writes.mjs');
+const { loadState, saveState } = await import('../lib/state.mjs');
 
 const PAST = new Date(Date.now() - 3_600_000).toISOString();
 const FUTURE = new Date(Date.now() + 3_600_000).toISOString();
@@ -34,6 +35,13 @@ try {
     const plans = path.join(activeRoot(), 'data', 'plans');
     fs.mkdirSync(plans, { recursive: true });
     fs.writeFileSync(path.join(plans, 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
+    // US-MC-10: schedulerRunning is now the per-client flag, default-ON (enabled
+    // !== false). To exercise the blocker.schedulerOff path this test must EXPLICITLY
+    // stop the scheduler - a never-toggled client now correctly reads ON (the old
+    // `=== true` predicate misreported an untouched default-on client as off).
+    const st = loadState();
+    st.scheduler = { ...(st.scheduler || {}), enabled: false };
+    saveState();
   });
 
   // No .env written -> every platform is un-connected (unproven), no probe rows,

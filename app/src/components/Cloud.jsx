@@ -1238,7 +1238,10 @@ function CloudClients() {
   const { data: clientsData } = useClients();
   const { data: sub } = useCloudSubscription(true);
   const invalidate = useInvalidateCloud();
-  const [busyId, setBusyId] = useState(null);
+  // Per-brand busy SET, not a single id: switching one brand on must not lock
+  // the other rows - the owner can flip several brands and let them finish
+  // loading in parallel. Only the row actually in flight is blocked.
+  const [busyIds, setBusyIds] = useState(() => new Set());
   const [error, setError] = useState(null);
   // Archived brands drop out of the cloud overview (item 3); the cloud view does not carry
   // archive status, so join the local registry by id.
@@ -1274,7 +1277,7 @@ function CloudClients() {
       confirmLabel: next ? t('cloud.clients.confirm.onConfirm') : t('cloud.clients.confirm.offConfirm'),
     });
     if (!ok) return;
-    setBusyId(c.clientId);
+    setBusyIds((prev) => new Set(prev).add(c.clientId));
     setError(null);
     try {
       await setClientAlwaysOn(c.clientId, next);
@@ -1282,7 +1285,11 @@ function CloudClients() {
     } catch (err) {
       setError(err.message || t('cloud.clients.error'));
     } finally {
-      setBusyId(null);
+      setBusyIds((prev) => {
+        const nextSet = new Set(prev);
+        nextSet.delete(c.clientId);
+        return nextSet;
+      });
     }
   };
 
@@ -1310,8 +1317,8 @@ function CloudClients() {
             <Switch
               checked={c.alwaysOn}
               onChange={(next) => toggle(c, next)}
-              disabled={busyId != null}
-              busy={busyId === c.clientId}
+              disabled={busyIds.has(c.clientId)}
+              busy={busyIds.has(c.clientId)}
               offIcon={Monitor}
               onIcon={CloudIcon}
               ariaLabel={t('cloud.clients.switchAria', { name: c.name })}

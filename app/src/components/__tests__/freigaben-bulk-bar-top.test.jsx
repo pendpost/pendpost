@@ -15,6 +15,7 @@ vi.mock('../../lib/api.js', () => ({
   rejectPost: vi.fn(() => Promise.resolve({ ok: true })),
   lintText: vi.fn(() => Promise.resolve({ ok: true, clean: true, errors: 0, warnings: 0, findings: [] })),
   usePendpostHealth: () => ({ data: null }),
+  useConfig: () => ({ data: null }),
   // Freigaben reads the connected accounts once at the parent for the destination strip.
   useAccounts: () => ({ data: null, isLoading: false, isError: false }),
 }));

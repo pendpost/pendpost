@@ -151,7 +151,7 @@ Captions run through a brand-lint pass before they can publish. The rule set liv
 
 ## Architecture
 
-pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 102 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are 14 publish engines in `scripts/` - one per platform (`meta-social.mjs` handles Facebook and Instagram) - each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
+pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 117 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are 14 publish engines in `scripts/` - one per platform (`meta-social.mjs` handles Facebook and Instagram) - each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
 
 ## Platforms
 
@@ -160,6 +160,16 @@ Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr, W
 ## Security + privacy
 
 pendpost binds `127.0.0.1` (loopback) by default, never phones home, and keeps secrets only in your own `.env` (which is gitignored). See [SECURITY.md](SECURITY.md) for the full posture and how to report a vulnerability.
+
+## Shaping pendpost
+
+pendpost is built in the open and we want your feedback. There are three ways in, and none of them make the app phone home:
+
+- **Quick feedback or an idea:** use the **Share feedback** link in the dashboard (it opens a prefilled GitHub page in your browser and never sends your `.env` or any secret), post in [Discussions](https://github.com/pendpost/pendpost/discussions), or use the feedback issue form.
+- **A bug or a feature request:** open an issue and pick the matching form.
+- **A deeper proposal** (a new integration seam, a change to how the core works): open an RFC. See [`docs/rfcs/README.md`](docs/rfcs/README.md).
+
+No account? A short feedback form on [pendpost.com](https://pendpost.com) forwards into GitHub for you. See [SUPPORT.md](SUPPORT.md) for where to get help, and [`docs/specs/feedback-pipeline.md`](docs/specs/feedback-pipeline.md) for how the whole feedback pipeline works.
 
 ## Status
 

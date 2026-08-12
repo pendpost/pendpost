@@ -21,7 +21,7 @@ import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Rocket, Inbox } from 'lucide-react';
 import { runPublishDue } from '../lib/api.js';
-import { fmtFull, campaignBaseLabel, isDueNow, isYouTubeReleaseDue } from '../lib/format.js';
+import { fmtFull, campaignBaseLabel, isDueNow, isYouTubeReleaseDue, publishRunOutcome } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
 import { useConfirm } from './ui/confirm.jsx';
 import { Modal, CloseButton, CoverThumb, StatusPill, PlatformIcons, INNER_SURFACE } from './ui.jsx';
@@ -136,8 +136,9 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
   // and retry. Declining throws the user-cancel sentinel.
   const runOne = async (p) => {
     const scope = { campaign: p.campaign, postId: p.id };
+    let res;
     try {
-      await runPublishDue(scope);
+      res = await runPublishDue(scope);
     } catch (err) {
       if (err?.code === 'needs_confirm') {
         const ok = await confirm({
@@ -147,11 +148,18 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
           danger: true,
         });
         if (!ok) throw { canceled: true };
-        await runPublishDue(scope);
+        res = await runPublishDue(scope);
       } else {
         throw err;
       }
     }
+    // An HTTP 200 is NOT a publish: read the per-lane truth from `ran`. A post
+    // whose lanes all refused (or are cloud-held) stays selected and reports
+    // WHY, instead of flashing success and falling back to overdue.
+    const { fired, held, reason, rows } = publishRunOutcome(res, p.id);
+    if (fired) return;
+    if (held) throw new Error(t('planner.runDialog.cloudHeld'));
+    throw new Error(reason || (rows.length ? t('planner.runDialog.laneRefused') : t('planner.runDialog.noneFired')));
   };
 
   // Refresh the live plan/activity and drop the succeeded keys from the selection.
@@ -199,7 +207,7 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
     refresh(done);
     if (inFlightHit) throw new Error(t('planner.runNow.inFlight'));
     if (fails.length) {
-      throw new Error(t('planner.runDialog.summary', { ok, failed: fails.length, ids: fails.map((f) => f.id).join(', ') }));
+      throw new Error(t('planner.runDialog.summary', { ok, failed: fails.length, ids: fails.map((f) => (f.msg ? `${f.id} (${f.msg})` : f.id)).join(', ') }));
     }
     onDone?.();
   };

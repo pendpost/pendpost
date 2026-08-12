@@ -2610,7 +2610,9 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
               {id === 'nostr' ? (
                 <>
                   <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.nostr.longform')}</p>
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.nostr.mediaServer')}</p>
+                  {/* Spec 18 (P9): honest media state. When a NIP-96 media server is
+                      configured, say images publish; otherwise show the "set it" hint. */}
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t(platform.mediaServer ? 'setup.nostr.mediaServerReady' : 'setup.nostr.mediaServer')}</p>
                   {/* Spec 20: the optional NWC wallet enables sending zaps (value-for-value). */}
                   <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.nostr.nwc')}</p>
                 </>

@@ -154,7 +154,7 @@ export function SchedulerToggle({ running, setupReady }) {
   );
 }
 
-export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue }) {
+export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue, onCreateProject, onBeforeSwitchClient }) {
   const t = useT();
   const [showFeedback, setShowFeedback] = useState(false);
   // The Radar nav row reflects the live scan (owner ask 2026-07-20): while a research job
@@ -293,7 +293,7 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
 
       {/* Multi-client switcher: the first thing the eye lands on, so the active
           client is unmistakable (anti-goal: acting on the wrong client). */}
-      <ClientSwitcher onManage={() => onNavigate('clients')} />
+      <ClientSwitcher onManage={() => onNavigate('clients')} onCreate={onCreateProject} onBeforeSwitch={onBeforeSwitchClient} />
 
       {/* Primary action: always one click away. The tooltip surfaces the
           otherwise-undiscoverable ⌘K palette (no inline kbd chip - it cost the

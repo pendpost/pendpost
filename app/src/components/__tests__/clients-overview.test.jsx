@@ -22,6 +22,12 @@ vi.mock('../../lib/api.js', () => ({
   setActiveClient: vi.fn(() => Promise.resolve({ ok: true })),
   useSetActiveClient: () => vi.fn(() => Promise.resolve({ ok: true })),
   uploadAssetFile: vi.fn(() => Promise.resolve({ ok: true, file: 'logo.png' })),
+  // Spec 48 R10: the active-client ReviewSection Clients renders. Inert stubs.
+  useReviewers: () => ({ data: { reviewers: [] }, isLoading: false }),
+  useConfig: () => ({ data: { rev: 'r1', posting: { review: { required: false, hosted: false, contact: null } } } }),
+  saveConfig: vi.fn(() => Promise.resolve({ ok: true })),
+  createReviewer: vi.fn(() => Promise.resolve({ ok: true, token: 't', reviewer: {} })),
+  revokeReviewer: vi.fn(() => Promise.resolve({ ok: true })),
 }));
 
 function renderClients() {

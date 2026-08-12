@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Check, Pencil, Archive, ArchiveRestore, Loader2, X, Ban, CircleCheck, Clock, AlertTriangle, PauseCircle, Cloud as CloudIcon, Monitor } from 'lucide-react';
 import { useClients, useClientsOverview, createClient, updateClient, archiveClient, useSetActiveClient, uploadAssetFile } from '../lib/api.js';
@@ -9,6 +9,8 @@ import { INNER_SURFACE, FIELD_SURFACE, EYEBROW, Skeleton } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
+import Input from './ui/Input.jsx';
+import { ReviewSection } from './ReviewLink.jsx';
 
 const FIELD = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 const FIELD_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} ring-1 ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
@@ -36,6 +38,10 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState(initial || EMPTY);
   const [slugTouched, setSlugTouched] = useState(mode === 'edit');
+  // The slug is auto-derived from the name and shown as a one-line fact, not a
+  // second input: creating a project is ONE decision (its name). The rare
+  // override lives behind "Ändern"; a slug validation error force-opens it.
+  const [slugEditing, setSlugEditing] = useState(false);
   const [errors, setErrors] = useState({});
   const [banner, setBanner] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -91,6 +97,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
       try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); } catch { e.timezone = t('clientForm.error.timezoneInvalid'); }
     }
     setErrors(e);
+    if (e.id) setSlugEditing(true); // a slug problem needs its field visible to be fixable
     return Object.keys(e).length === 0;
   };
 
@@ -129,75 +136,78 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="block space-y-1">
-          <span className={EYEBROW}>{t('clientForm.field.displayName')}</span>
-          <input
+        <div className="sm:col-span-2">
+          <Input
+            label={t('clientForm.field.displayName')}
             value={form.displayName}
             onChange={(e) => onName(e.target.value)}
-            placeholder={t('clientForm.field.displayNamePlaceholder')}
-            className={errors.displayName ? FIELD_ERR : FIELD}
-            aria-invalid={errors.displayName ? 'true' : undefined}
+            error={errors.displayName || null}
           />
-          {errors.displayName ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{errors.displayName}</p> : null}
-        </label>
-
-        <label className="block space-y-1">
-          <span className={EYEBROW}>{editing ? t('clientForm.field.idSlugImmutable') : t('clientForm.field.idSlug')}</span>
-          <input
-            value={form.id}
-            onChange={(e) => { setSlugTouched(true); setField('id', e.target.value); }}
-            placeholder={t('clientForm.field.idSlugPlaceholder')}
-            disabled={editing}
-            className={`${errors.id ? FIELD_ERR : FIELD} ${editing ? 'cursor-not-allowed opacity-60' : ''}`}
-            aria-invalid={errors.id ? 'true' : undefined}
-            aria-describedby="slug-hint"
-          />
-          {errors.id ? (
-            <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{errors.id}</p>
-          ) : (
-            <p id="slug-hint" className="text-[11px] text-zinc-500 dark:text-zinc-400">
-              {editing ? t('clientForm.hint.slugEdit') : t('clientForm.hint.slugNew')}
+          {/* The slug as a stated fact under the name: what it is, why it exists,
+              and that it is permanent - instead of a second input to fill. */}
+          {!editing && !slugEditing ? (
+            <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              {form.id
+                ? t('clientForm.hint.slugDerived', { slug: form.id })
+                : t('clientForm.hint.slugPending')}
+              <button
+                type="button"
+                onClick={() => { setSlugEditing(true); setSlugTouched(true); }}
+                className="rounded font-bold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+              >
+                {t('clientForm.slugChange')}
+              </button>
             </p>
-          )}
-        </label>
+          ) : null}
+          {editing ? (
+            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+              {t('clientForm.hint.slugEditShort', { slug: form.id })}
+            </p>
+          ) : null}
+        </div>
 
-        <label className="block space-y-1">
-          <span className={EYEBROW}>{t('clientForm.field.accent')}</span>
+        {!editing && slugEditing ? (
+          <div className="sm:col-span-2">
+            <Input
+              label={t('clientForm.field.idSlug')}
+              value={form.id}
+              onChange={(e) => { setSlugTouched(true); setField('id', e.target.value); }}
+              error={errors.id || null}
+              hint={t('clientForm.hint.slugNew')}
+            />
+          </div>
+        ) : null}
+
+        <div className={`space-y-1 ${editing ? '' : 'sm:col-span-2'}`}>
           <span className="flex items-center gap-2">
             <input
               type="color"
               value={validateAccent(form.accent).ok || /^#[0-9a-fA-F]{6}$/.test(form.accent) ? form.accent : DEFAULT_ACCENT}
               onChange={(e) => setField('accent', e.target.value)}
               aria-label={t('clientForm.field.accentPicker')}
-              className="h-9 w-12 shrink-0 cursor-pointer rounded-lg border-0 bg-transparent p-0.5"
+              className="h-11 w-12 shrink-0 cursor-pointer rounded-lg border-0 bg-transparent p-0.5"
             />
-            <input
-              value={form.accent}
-              onChange={(e) => setField('accent', e.target.value)}
-              placeholder={t('clientForm.field.accentPlaceholder')}
-              aria-label={t('clientForm.field.accentHex')}
-              className={errors.accent ? FIELD_ERR : FIELD}
-              aria-invalid={errors.accent ? 'true' : undefined}
-            />
+            <span className="min-w-0 flex-1">
+              <Input
+                label={t('clientForm.field.accent')}
+                value={form.accent}
+                onChange={(e) => setField('accent', e.target.value)}
+                error={errors.accent || null}
+              />
+            </span>
           </span>
-          {errors.accent ? (
-            <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{errors.accent}</p>
-          ) : accentCheck.ok ? (
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('clientForm.hint.contrast', { ratio: accentCheck.ratio.toFixed(2) })}</p>
-          ) : null}
-        </label>
+        </div>
 
-        <label className="block space-y-1">
-          <span className={EYEBROW}>{t('clientForm.field.timezone')}</span>
-          <input
+        {/* Zeitzone only on edit: nothing in scheduling reads the per-project
+            timezone (campaigns carry their own), so it is not a create decision. */}
+        {editing ? (
+          <Input
+            label={t('clientForm.field.timezone')}
             value={form.timezone}
             onChange={(e) => setField('timezone', e.target.value)}
-            placeholder={t('clientForm.field.timezonePlaceholder')}
-            className={errors.timezone ? FIELD_ERR : FIELD}
-            aria-invalid={errors.timezone ? 'true' : undefined}
+            error={errors.timezone || null}
           />
-          {errors.timezone ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{errors.timezone}</p> : null}
-        </label>
+        ) : null}
 
         <div className="block space-y-1 sm:col-span-2">
           <label htmlFor="logo-file" className={EYEBROW}>{t('clientForm.field.logo')}</label>
@@ -302,13 +312,19 @@ function ClientHealthCell({ row, blocked, t }) {
 
 // LOCAL client / workspace administration: create, edit, archive, make-active.
 // Not tenant/account management - there is no auth, no billing.
-export default function Clients() {
+export default function Clients({ createIntent = false, onCreateIntentConsumed }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useClients();
   const setActive = useSetActiveClient();
   const confirm = useConfirm();
   const [form, setForm] = useState(null); // null | {mode:'create'} | {mode:'edit', client}
+  // One-shot create intent from the client switcher: land with the form open.
+  useEffect(() => {
+    if (!createIntent) return;
+    setForm({ mode: 'create' });
+    onCreateIntentConsumed?.();
+  }, [createIntent, onCreateIntentConsumed]);
   const [busyId, setBusyId] = useState(null);
   const [announce, setAnnounce] = useState(''); // SR-only confirmation of the active-client switch
   const [actionError, setActionError] = useState(null);
@@ -320,6 +336,7 @@ export default function Clients() {
   const sortedClients = [...clients].sort((a, b) => (a.status === 'archived' ? 1 : 0) - (b.status === 'archived' ? 1 : 0));
   const firstArchivedId = sortedClients.find((c) => c.status === 'archived')?.id;
   const activeId = data?.activeClientId || null;
+  const activeClient = clients.find((c) => c.id === activeId) || null;
   // Per-brand cloud delivery, joined from the cloud view (read only when connected so an
   // unconfigured install makes no cloud call). Drives the per-row delivery icon and the
   // "turn cloud off before archiving" safeguard.
@@ -353,14 +370,26 @@ export default function Clients() {
 
   const toggleArchive = async (c) => {
     const archiving = (c.status || 'active') === 'active';
+    // A4 archive safety: the overview row carries the client's in-flight counts
+    // (approved posts still waiting to fire, split locally-fired vs scheduled on
+    // the platform itself). The confirm shows them honestly, and confirming runs
+    // the server's unschedule sweep - platform-scheduled objects would otherwise
+    // keep publishing after the archive, and locally-fired ones would sit as an
+    // invisible overdue backlog behind the hidden health cell.
+    const flight = archiving ? (overviewById[c.id]?.inFlight || null) : null;
+    const inFlight = (flight?.total || 0) > 0;
     const ok = await confirm({
       title: archiving ? t('clients.confirm.archiveTitle', { name: c.displayName }) : t('clients.confirm.restoreTitle', { name: c.displayName }),
-      body: archiving
-        ? t('clients.confirm.archiveBody', { name: c.displayName })
-        : t('clients.confirm.restoreBody', { name: c.displayName }),
-      confirmLabel: archiving ? t('clients.confirm.archive') : t('clients.confirm.restore'),
+      body: !archiving ? t('clients.confirm.restoreBody', { name: c.displayName })
+        : !inFlight ? t('clients.confirm.archiveBody', { name: c.displayName })
+          : flight.native > 0
+            ? t('clients.confirm.archiveBodyNative', { name: c.displayName, total: flight.total, native: flight.native })
+            : t('clients.confirm.archiveBodyLocal', { name: c.displayName, count: flight.total }),
+      confirmLabel: archiving ? (inFlight ? t('clients.confirm.archiveUnschedule') : t('clients.confirm.archive')) : t('clients.confirm.restore'),
       danger: archiving,
-      rememberKey: archiving ? 'clients.archive' : 'clients.restore',
+      // In-flight work must be SEEN: the "don't show again" suppression only ever
+      // covers the idle-client archive dialog.
+      rememberKey: archiving ? (inFlight ? undefined : 'clients.archive') : 'clients.restore',
     });
     if (!ok) return;
     setBusyId(c.id);
@@ -372,10 +401,34 @@ export default function Clients() {
       if (archiving && cloudConnected && alwaysOnById[c.id]) {
         await setClientAlwaysOn(c.id, false);
       }
-      await archiveClient(c.id);
+      await archiveClient(c.id, archiving && inFlight ? { unscheduleInFlight: true } : {});
       queryClient.invalidateQueries({ queryKey: ['clients'] });
       queryClient.invalidateQueries({ queryKey: ['cloud'] });
     } catch (err) {
+      // The overview counts can be stale: the server fails closed (needs_confirm
+      // + fresh counts) when it finds native-scheduled work the dialog did not
+      // show. Re-ask with the server's numbers, then archive with the sweep.
+      if (archiving && err.code === 'needs_confirm' && err.inFlight) {
+        setBusyId(null);
+        const again = await confirm({
+          title: t('clients.confirm.archiveTitle', { name: c.displayName }),
+          body: t('clients.confirm.archiveBodyNative', { name: c.displayName, total: err.inFlight.total, native: err.inFlight.native }),
+          confirmLabel: t('clients.confirm.archiveUnschedule'),
+          danger: true,
+        });
+        if (!again) return;
+        setBusyId(c.id);
+        try {
+          await archiveClient(c.id, { unscheduleInFlight: true });
+          queryClient.invalidateQueries({ queryKey: ['clients'] });
+          queryClient.invalidateQueries({ queryKey: ['cloud'] });
+        } catch (err2) {
+          setActionError(err2.message || t('clients.action.error'));
+        } finally {
+          setBusyId(null);
+        }
+        return;
+      }
       setActionError(err.message || t('clients.action.error'));
     } finally {
       setBusyId(null);
@@ -523,6 +576,14 @@ export default function Clients() {
           </div>
         </div>
       )}
+
+      {/* Client review link (spec 48 R10, V4): reviewer administration + the two
+          review toggles + the optional contact, for the ACTIVE project. It rides
+          config (config_get/config_set is active-client-scoped), so it reflects the
+          active brand the operator is already managing rather than a per-row panel. */}
+      {activeClient && activeClient.status !== 'archived' ? (
+        <ReviewSection clientId={activeClient.id} clientName={activeClient.displayName} />
+      ) : null}
     </div>
   );
 }

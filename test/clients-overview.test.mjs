@@ -209,11 +209,32 @@ try {
   // 102 = 101 + radar_followup_check (spec 44 author-reply; +1 POST twin => 124 routes).
   // 125 routes = 124 + POST /api/agent/adopt (credential adopt), which has NO tool by design
   // (a human dashboard ceremony, declared in API-CONTRACT.md's routes exemption).
+  // 127 routes / 103 tools = 126 / 102 + radar_mark_copy_posted and its POST twin
+  // (/api/radar/mark-copy-posted, R5 piece 2): record a copy-draft posted by hand.
   // 126 routes = 125 + POST /api/cloud/heal (re-link a half-written cloud connection),
   // operator-only with the other /api/cloud/* ceremonies (routes exemption).
-  ok(/126 routes, 102 tools/.test(parityOut), `parity is 126 routes / 102 tools: ${parityOut.trim()}`);
+  // 127 routes / 104 tools = +read_insights on the EXISTING GET /api/insights route
+  // (R8 / dim-3 M2: stored-metrics read, no new route), so tools go 103 -> 104.
+  // 129 routes / 105 tools = +the autonomy ledger (ux-audit R7): GET /api/autonomy
+  // (the AU5 dry-run + AU4 revocable read, UI-facing, no tool) and POST /api/autonomy/revoke
+  // with its autonomy_revoke tool (AU4 revoke-that-unwinds), so tools go 104 -> 105.
+  // 132 routes / 108 tools = +the client review link reviewer twins (ux-audit R10, spec 48):
+  // reviewer_list/reviewer_create/reviewer_revoke over GET+POST /api/clients/<id>/reviewers[...],
+  // so tools go 105 -> 108.
+  // 138 routes / 113 tools = +the relationship-memory verbs (spec 49 R12): list_engagers (gated
+  // read) + forget/unforget/link/unlink over GET+POST /api/engagers[...], PLUS the GUI-only
+  // POST /api/engagers/dismiss-link (no MCP twin), so tools go 108 -> 113 and routes +6.
+  // 138 routes / 114 tools = +radar_geo_reset (owner-only GEO footprint reset, 3b2aa55): an
+  // MCP-only maintenance verb with NO REST twin by design (a documented parity exemption listed
+  // alongside connect_discover in API-CONTRACT.md's exemptions.tools), so tools go 113 -> 114
+  // while routes stay 138.
+  // 141 routes / 117 tools = +the own-post comment-watch inbox faces (radar-post-comments): the
+  // three REST+MCP twins comment_inbox (GET /api/comments/inbox), comment_inbox_refresh
+  // (POST /api/comments/inbox/refresh) and comment_resolve (POST /api/comments/inbox/resolve),
+  // so both routes and tools go +3 (138 -> 141 routes, 114 -> 117 tools).
+  ok(/141 routes, 117 tools/.test(parityOut), `parity is 141 routes / 117 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 126/102 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 141/117 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

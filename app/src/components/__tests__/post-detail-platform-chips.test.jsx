@@ -17,8 +17,10 @@ const healthState = { data: { setup: { platforms: [{ platform: 'reddit', status:
 const accountsState = { data: { meta: { paused: false } } };
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: null, activeClientId: null }),
   usePendpostHealth: () => healthState,
+  useConfig: () => ({ data: null }),
   useAccounts: () => accountsState,
   usePlatformValidate: () => ({ data: undefined }),
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),

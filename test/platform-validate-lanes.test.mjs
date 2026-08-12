@@ -73,6 +73,11 @@ fs.writeFileSync(path.join(campDir, 'post-plan.json'), JSON.stringify({
     post('tt-text', ['tiktok']),
     post('tt-notvideo', ['tiktok'], { type: 'reel', path: 'data/media/pic.jpg' }),
     post('tt-long', ['tiktok'], { type: 'reel', path: 'data/media/clip.mp4', caption: 'a'.repeat(2300) }),
+    // image-TYPE lane gate (IMAGE_LANES): telegram is a byte-lane that publishes a still
+    // image (in the list) -> ready; tiktok is video-only (not in the list) -> blocked with
+    // the derived "does not publish an image post" problem.
+    post('tg-image', ['telegram'], { type: 'image', path: 'data/media/pic.jpg' }),
+    post('tt-image', ['tiktok'], { type: 'image', path: 'data/media/pic.jpg' }),
   ],
 }, null, 2));
 
@@ -166,6 +171,14 @@ try {
   ok(ttNotVideo.problems.some((p) => /not a video/i.test(p)), 'tiktok: a non-video render (pic.jpg) blocks');
   const ttLong = (await validate('tt-long')).tiktok;
   ok(ttLong.problems.some((p) => /2200/.test(p)), 'tiktok: a 2300-char caption names the 2200 cap');
+
+  // ===== (9) image TYPE lane gate (driven by lib/capabilities.mjs IMAGE_LANES) =====
+  const tgImage = (await validate('tg-image')).telegram;
+  ok(tgImage.ready === true && !tgImage.problems.some((p) => /does not publish an image post/i.test(p)),
+    'telegram: a type:image post is ready (telegram is image-capable) - no "does not publish an image post" block');
+  const ttImage = (await validate('tt-image')).tiktok;
+  ok(ttImage.ready === false && ttImage.problems.some((p) => /does not publish an image post/i.test(p)),
+    'tiktok: a type:image post blocks with the derived "does not publish an image post" problem (not image-capable)');
 
   console.log(`[platform-validate-lanes] OK - telegram/discord/reddit/pinterest/tiktok readiness: connectivity + identifier half-setups block with needsSetup, engine-skip content shapes block, well-shaped connected posts are ready (${pass} assertions).`);
 } finally {

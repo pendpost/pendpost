@@ -38,8 +38,12 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath } from '../lib/util.mjs';
+import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -220,7 +224,7 @@ function loadPlan(planPath) {
 // ytPlaylistItems (spec 15): the optional [{playlistId,itemId}] membership echo a
 // successful playlist-add writes onto the post, so PostDetail can show "In: Series A"
 // with no re-fetch - engine-owned like every other minted id above.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'ytCaptionId', 'ytCommentId', 'ytPlaylistItems', 'status', 'postedAt', 'attempts', 'radarReplyState'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'ytCaptionId', 'ytCommentId', 'ytPlaylistItems', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -276,8 +280,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 
 // Per-attempt audit trail on the post itself (engine-owned field).
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 // Machine-readable run envelope for --json mode (consumed by the pendpost scheduler).
@@ -612,6 +617,13 @@ async function cmdSchedule(args) {
     if (!isYouTube(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     // Fail-closed approval (SS-01): missing field = draft = never publish.
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
@@ -626,6 +638,25 @@ async function cmdSchedule(args) {
     const mediaPath = resolveMediaPath(plan, post);
     if (!mediaPath) { console.log(`[warn] ${post.id}: media not found (${post.path || post.file}) - skipping.`); continue; }
     if (!/\.(mp4|mov)$/i.test(mediaPath)) { console.log(`[warn] ${post.id}: not a video file - skipping.`); continue; }
+    // Fresh-bytes caption backstop: YouTube caps a description at 5000 chars
+    // (lib/caption.mjs). Checks post.description - the field buildMeta actually sends
+    // (NOT post.caption) - so the backstop guards the real upload. Refuse an over-cap
+    // description before the API rejects it.
+    const capBlock = captionBlocker(post.description, 'youtube');
+    if (capBlock) {
+      console.log(`[warn] ${post.id}: ${capBlock} - skipping.`);
+      RUN.results.push(captionBlockRow(post, 'youtube', capBlock));
+      continue;
+    }
+    // Fresh-bytes A/V-sync backstop: probe the actual video bytes about to upload (not
+    // the manifest's stale author-time avSyncOk) - a measured desync is a malformed mux
+    // YouTube's processing rejects.
+    const avBlock = await avSyncBlocker(mediaPath);
+    if (avBlock) {
+      console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+      RUN.results.push(avSyncBlockRow(post, 'youtube', avBlock));
+      continue;
+    }
 
     const meta = buildMeta(post, { withPublishAt: true });
     if (args['dry-run']) {
@@ -1055,6 +1086,13 @@ async function cmdPublishRadar(args) {
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status === 'posted' || post.ytCommentId) continue; // idempotent - a fired reply never re-posts
     if (post.radarReplyState === 'target_gone') continue; // terminal - never re-attempt a dead video
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') { console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`); continue; }
     const dueMs = Date.parse(post.scheduledAt);
     if (Number.isNaN(dueMs) || dueMs > now) continue;
@@ -1671,6 +1709,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'youtube', scriptUrl: import.meta.url });
   // --json: human logs move to stderr; stdout carries exactly one JSON line
   // (the run envelope) for the pendpost scheduler. --actor tags attempts[].
   JSON_MODE = Boolean(args.json);

@@ -22,6 +22,13 @@ const moderateMock = vi.fn(() => Promise.resolve({ ok: true, id: 'm-1', platform
 const reactMock = vi.fn(() => Promise.resolve({ ok: true, id: 'react-1', platform: 'mastodon', reaction: 'favourite', removed: false }));
 
 vi.mock('../../lib/api.js', () => ({
+  // R12: CommentRow now renders a HistoryChip, which reads useEngager. No record -> no chip.
+  useEngager: () => ({ data: undefined }),
+  unforgetEngager: vi.fn(() => Promise.resolve({ ok: true })),
+  forgetEngager: vi.fn(() => Promise.resolve({ ok: true })),
+  linkEngagers: vi.fn(() => Promise.resolve({ ok: true })),
+  unlinkEngagers: vi.fn(() => Promise.resolve({ ok: true })),
+  dismissLinkGuess: vi.fn(() => Promise.resolve({ ok: true })),
   useComments: () => ({ data: commentsData, isLoading: false, isError: false, refetch: refetchMock }),
   replyToComment: (...a) => replyMock(...a),
   moderateComment: (...a) => moderateMock(...a),

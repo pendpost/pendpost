@@ -1,0 +1,169 @@
+/* review.css - the client review page (spec 48 V1/V2/V3). A SEPARATE, dependency-free
+   bundle: it does NOT load the SPA's Tailwind, so every rule here is plain CSS. The
+   client brand accent is CHROME ONLY (header band + Approve fill) and always arrives
+   already clamped to AA by contrast-clamp.js; body text uses the neutral tokens below,
+   which match the app body backgrounds (#f8fafc light / #09090b dark, contrast.test.js).
+   Mobile-first: the reviewer opens the link out-of-band, usually on a phone. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --border: rgba(24, 24, 27, 0.10);
+  --text: #18181b;      /* zinc-900 */
+  --muted: #71717a;     /* zinc-500 - clears AA on #f8fafc */
+  --skeleton: #e4e4e7;
+  --accent: #0f766e;    /* replaced at runtime from the bundle (chrome only) */
+  --accent-text: #ffffff;
+  --accent-ink: #0f766e;/* accent clamped for readable foreground text on --bg */
+  --danger: #b91c1c;    /* red-700, clears AA on white/light */
+  --radius: 14px;
+  --tap: 44px;          /* Tier 2 gate: >=44px tap targets */
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #09090b;
+    --surface: #18181b;
+    --border: rgba(255, 255, 255, 0.10);
+    --text: #f4f4f5;    /* zinc-100 */
+    --muted: #a1a1aa;   /* zinc-400 - clears AA on #09090b */
+    --skeleton: #27272a;
+    --danger: #f87171;  /* red-400, readable on the dark surface */
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  -webkit-text-size-adjust: 100%;
+}
+.rv-wrap { max-width: 40rem; margin: 0 auto; padding: 0 16px 64px; }
+
+/* ---- header band (chrome; accent fill + clamped text) ---------------------- */
+.rv-band {
+  background: var(--accent);
+  color: var(--accent-text);
+  padding: 20px 16px;
+  margin: 0 -16px 4px;
+  display: flex; align-items: center; gap: 12px;
+}
+.rv-band img { height: 32px; width: auto; border-radius: 6px; background: rgba(255,255,255,.15); }
+.rv-band h1 { font-size: 1.1rem; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+.rv-purpose { color: var(--muted); font-size: .95rem; margin: 12px 2px 20px; }
+
+/* ---- sticky progress header (at-scale) ------------------------------------- */
+.rv-progress {
+  position: sticky; top: 0; z-index: 5;
+  background: var(--bg);
+  padding: 10px 2px; margin: 0 0 8px;
+  border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; gap: 10px;
+  font-size: .9rem; color: var(--muted);
+}
+.rv-bar { flex: 1; height: 6px; border-radius: 999px; background: var(--skeleton); overflow: hidden; }
+.rv-bar > span { display: block; height: 100%; background: var(--accent); width: 0; transition: width .25s ease; }
+
+/* ---- sections + cards ------------------------------------------------------ */
+.rv-group-label { font-size: .8rem; font-weight: 650; color: var(--accent-ink); text-transform: none; margin: 22px 2px 8px; }
+.rv-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  margin: 0 0 12px;
+}
+.rv-cover { width: 100%; border-radius: 10px; display: block; margin: 0 0 12px; background: var(--skeleton); max-height: 60vh; object-fit: cover; }
+.rv-caption { margin: 0 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv-meta { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 0 0 14px; font-size: .82rem; color: var(--muted); }
+.rv-chip { border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; color: var(--text); }
+.rv-when { margin-left: auto; }
+
+/* ---- actions --------------------------------------------------------------- */
+.rv-actions { display: flex; gap: 10px; }
+.rv-btn {
+  min-height: var(--tap); min-width: var(--tap);
+  padding: 0 18px; border-radius: 10px; border: 1px solid transparent;
+  font: inherit; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+}
+.rv-btn:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
+.rv-approve { background: var(--accent); color: var(--accent-text); flex: 1; }
+.rv-decline { background: transparent; color: var(--text); border-color: var(--border); flex: 1; }
+.rv-btn[disabled] { opacity: 1; cursor: default; }
+.rv-btn-quiet { background: transparent; color: var(--muted); border-color: var(--border); padding: 0 14px; min-height: 40px; }
+
+/* ---- decided state --------------------------------------------------------- */
+.rv-decided { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rv-verdict { font-weight: 600; }
+.rv-verdict.approved { color: var(--accent-ink); }
+.rv-verdict.declined { color: var(--danger); }
+.rv-decided-note { flex-basis: 100%; color: var(--muted); font-size: .9rem; margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rv-decided-when { color: var(--muted); font-size: .85rem; }
+
+/* an inline error on a card; the typed verdict/note survive it */
+.rv-card-error { color: var(--danger); font-size: .9rem; margin: 0 0 10px; }
+
+/* ---- Done group (collapsible; tap-reachable, never hover-only) ------------- */
+.rv-done-toggle {
+  width: 100%; text-align: left; background: transparent; border: 0; cursor: pointer;
+  font: inherit; font-weight: 650; color: var(--text);
+  padding: 10px 2px; margin: 22px 0 6px; min-height: var(--tap);
+  display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border);
+}
+.rv-done-toggle:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 2px; }
+.rv-caret { transition: transform .2s ease; }
+.rv-done-toggle[aria-expanded="false"] .rv-caret { transform: rotate(-90deg); }
+.rv-done-region[hidden] { display: none; }
+
+/* ---- empty state + receipt ------------------------------------------------- */
+.rv-empty { text-align: center; padding: 40px 12px 24px; }
+.rv-empty h2 { margin: 0 0 6px; font-size: 1.15rem; }
+.rv-empty p { color: var(--muted); margin: 0 0 24px; }
+.rv-receipt-row { display: flex; gap: 10px; align-items: baseline; padding: 10px 0; border-top: 1px solid var(--border); font-size: .92rem; text-align: left; }
+
+/* ---- decline sheet (V2) ---------------------------------------------------- */
+.rv-sheet-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: flex-end; justify-content: center; z-index: 20; }
+@media (min-width: 640px) { .rv-sheet-backdrop { align-items: center; } }
+.rv-sheet {
+  background: var(--surface); color: var(--text);
+  width: 100%; max-width: 34rem; border-radius: 16px 16px 0 0;
+  padding: 18px 16px calc(18px + env(safe-area-inset-bottom));
+}
+@media (min-width: 640px) { .rv-sheet { border-radius: 16px; } }
+.rv-sheet h2 { margin: 0 0 4px; font-size: 1.05rem; }
+.rv-sheet-excerpt { color: var(--muted); font-size: .9rem; margin: 0 0 14px; max-height: 3.5em; overflow: hidden; }
+.rv-sheet label { display: block; font-size: .9rem; margin: 0 0 6px; }
+.rv-sheet textarea {
+  width: 100%; min-height: 96px; resize: vertical; font: inherit;
+  padding: 10px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--bg); color: var(--text);
+}
+.rv-sheet textarea:focus-visible { outline: 3px solid var(--accent-ink); outline-offset: 1px; }
+.rv-counter { text-align: right; font-size: .8rem; color: var(--muted); min-height: 1.1em; margin: 4px 0 0; }
+.rv-sheet-actions { display: flex; gap: 10px; margin-top: 14px; }
+.rv-sheet-actions .rv-btn { flex: 1; }
+.rv-sheet-submit { background: var(--danger); color: #fff; }
+
+/* ---- inactive page (V3, client-side) --------------------------------------- */
+.rv-inactive { text-align: center; padding: 22vh 20px; }
+.rv-inactive p { color: var(--muted); }
+.rv-inactive .rv-mail { display: inline-flex; min-height: var(--tap); align-items: center; padding: 0 18px; margin-top: 14px; border: 1px solid var(--border); border-radius: 10px; color: var(--text); text-decoration: none; }
+.rv-inactive .rv-mail:focus-visible { outline: 3px solid var(--muted); outline-offset: 2px; }
+.rv-wordmark { color: var(--muted); font-size: .8rem; letter-spacing: .02em; margin-top: 28px; }
+
+/* ---- skeleton (loading is a skeleton, never a spinner) --------------------- */
+.rv-skel { border-radius: 6px; background: var(--skeleton); animation: rv-pulse 1.5s ease-in-out infinite; }
+.rv-skel-cover { height: 180px; border-radius: 10px; margin: 0 0 12px; }
+.rv-skel-line { height: 12px; margin: 0 0 8px; }
+.rv-skel-line.short { width: 55%; }
+.rv-skel-chip { height: 22px; width: 80px; border-radius: 999px; display: inline-block; margin: 6px 6px 0 0; }
+@keyframes rv-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-skel, .rv-caret, .rv-bar > span, .rv-done-region { animation: none !important; transition: none !important; }
+}
+.rv-sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }

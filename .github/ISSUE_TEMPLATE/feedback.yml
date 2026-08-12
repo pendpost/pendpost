@@ -1,0 +1,50 @@
+name: Feedback
+description: Share a suggestion or general feedback about pendpost.
+title: "[feedback] "
+labels: [feedback, needs-triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing feedback. Keep it as short or as long as you like. Do
+        not paste tokens, secrets, or private account details. pendpost runs
+        locally, so most of what you see is safe to share, but credentials are not.
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+      description: What is working, what is not, or what you would like to see.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: What is this about
+      options:
+        - composing
+        - approval queue
+        - scheduling
+        - setup
+        - mcp
+        - docs
+        - other
+    validations:
+      required: false
+  - type: dropdown
+    id: ran-how
+    attributes:
+      label: How you run pendpost
+      options:
+        - npx
+        - git (npm start)
+        - docker
+        - not running it
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed any tokens, secrets, or private account details
+          required: true

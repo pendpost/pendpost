@@ -70,6 +70,7 @@ const redditOnlyOurs = [
   eq(r.text, 'Thanks, that helped a lot!', 'reddit: reply text');
   eq(r.permalink, 'https://www.reddit.com/r/tools/comments/article/_/t1_reply/', 'reddit: absolute permalink');
   eq(r.ts, AFTER_ISO, 'reddit: reply ts (ISO)');
+  eq(r.commentId, 't1_reply', 'reddit: commentId is the t1_ fullname (round-2 target)');
   ok(parseRedditFollowup(redditAbsent, { author: 'buyer_jane', ourId: 't1_ours', sinceTs: OUR_TS }) === null, 'reddit: no replies -> null');
   ok(parseRedditFollowup(redditOnlyOurs, { author: 'buyer_jane', ourId: 't1_ours', sinceTs: OUR_TS }) === null, 'reddit: only our own / stale -> null');
 }
@@ -89,6 +90,7 @@ const mastoOnlyOurs = { ancestors: [], descendants: [
   ok(r && r.replied === true, 'mastodon: direct author reply -> replied');
   eq(r.text, 'Appreciate it!', 'mastodon: HTML stripped to text');
   eq(r.permalink, 'https://masto.host/@jane/111', 'mastodon: status url');
+  eq(r.commentId, '111', 'mastodon: commentId is the status id (round-2 target)');
   ok(parseMastodonFollowup(mastoAbsent, { author: 'jane', ourId: 'ourstatus', sinceTs: OUR_TS }) === null, 'mastodon: empty descendants -> null');
   // only our own reply is present; the buyer (jane) is absent -> null (our own reply never counts)
   ok(parseMastodonFollowup(mastoOnlyOurs, { author: 'jane', ourId: 'ourstatus', sinceTs: OUR_TS }) === null, 'mastodon: only our own reply, buyer absent -> null');
@@ -108,6 +110,7 @@ const bskyOnlyOurs = { thread: { post: { uri: 'at://did/app.bsky.feed.post/ours'
   ok(r && r.replied === true, 'bluesky: author reply in thread.replies -> replied');
   eq(r.text, 'that solved it', 'bluesky: record text');
   eq(r.permalink, 'https://bsky.app/profile/jane.bsky.social/post/abc', 'bluesky: web permalink from uri');
+  eq(r.commentId, 'at://did:plc:jane/app.bsky.feed.post/abc', 'bluesky: commentId is the at:// uri (round-2 target)');
   ok(parseBlueskyFollowup(bskyAbsent, { author: 'jane.bsky.social', sinceTs: OUR_TS }) === null, 'bluesky: no replies -> null');
   ok(parseBlueskyFollowup(bskyOnlyOurs, { author: 'jane.bsky.social', sinceTs: OUR_TS }) === null, 'bluesky: only our own reply -> null');
 }

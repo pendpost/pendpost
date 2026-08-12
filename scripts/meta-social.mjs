@@ -40,9 +40,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand, platformEnabled } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
-import { effectivePublicUrl, effectiveSlideUrl } from '../lib/public-media.mjs';
+import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
+import { effectivePublicUrl, effectiveSlideUrl, classifyMediaProbe } from '../lib/public-media.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -113,6 +117,16 @@ function requireEnv(name) {
 
 // ---------- graph helpers ----------
 
+// Meta's retriability hint: rupload / graph errors carry debug_info.retriable=false on a
+// PERMANENT rejection (a malformed reel/media - ProcessingFailedError). Returns a boolean
+// only when Meta actually said so, else undefined (absent => treat as retriable). Threaded
+// onto the thrown error so the failed result row can surface it and the cloud watchdog can
+// park a doomed post instead of re-firing it.
+function metaRetriable(payload) {
+  const di = payload?.debug_info ?? payload?.error?.debug_info;
+  return typeof di?.retriable === 'boolean' ? di.retriable : undefined;
+}
+
 async function graph(method, pathname, params = {}, { base = GRAPH, form = null } = {}) {
   const url = new URL(`${base}${pathname}`);
   let body;
@@ -139,6 +153,7 @@ async function graph(method, pathname, params = {}, { base = GRAPH, form = null 
     err.fbUserMsg = e.error_user_msg || null;
     err.fbTraceId = e.fbtrace_id || null;
     err.httpStatus = res.status;
+    err.retriable = metaRetriable(data);
     throw err;
   }
   return data;
@@ -159,7 +174,9 @@ async function igResumableUpload(containerId, filePath, token) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.error || data.success === false) {
-    throw new Error(`rupload ${containerId}: HTTP ${res.status} ${JSON.stringify(data)}`);
+    const err = new Error(`rupload ${containerId}: HTTP ${res.status} ${JSON.stringify(data)}`);
+    err.retriable = metaRetriable(data);
+    throw err;
   }
   return data;
 }
@@ -193,7 +210,9 @@ async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, vide
   });
   const upData = await upRes.json().catch(() => ({}));
   if (!upRes.ok || upData.error || upData.success === false) {
-    throw new Error(`FB reel rupload ${videoId}: HTTP ${upRes.status} ${JSON.stringify(upData)}`);
+    const err = new Error(`FB reel rupload ${videoId}: HTTP ${upRes.status} ${JSON.stringify(upData)}`);
+    err.retriable = metaRetriable(upData);
+    throw err;
   }
 
   // Phase 3: finish - set the publish state
@@ -255,7 +274,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -309,10 +328,28 @@ async function savePlan(abs, plan, touchedIds = null) {
   });
 }
 
-// Per-attempt audit trail on the post itself (engine-owned field).
+// Per-attempt audit trail on the post itself (engine-owned field). Delegates to the
+// shared recorder, which also trims the tail and maintains the publishHold failure
+// cap (lib/publish-hold.mjs - the local mirror of the cloud re-fire cap).
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  recordAttempt(post, entry);
+}
+
+// After a Meta 9004 ("Only photo or video can be accepted as media type") the real
+// cause is almost always that the PUBLIC image_url did not serve an image (a stale
+// mirror answering with its HTML 404 page). One HEAD probe AFTER the failure turns
+// the next mirror drift into a one-line fix instead of an investigation. Post-failure
+// only: a pre-publish probe would make every happy-path publish depend on THIS
+// machine reaching the mirror, which Meta's fetch does not. A thrown probe returns
+// null - Graph's own message stands as the only evidence.
+async function mediaFetchDiagnosis(url) {
+  if (!url) return null;
+  try {
+    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
+    return classifyMediaProbe({ status: res.status, contentType: res.headers.get('content-type') }, url);
+  } catch {
+    return null;
+  }
 }
 
 // Machine-readable run envelope for --json mode (consumed by the pendpost scheduler).
@@ -666,7 +703,7 @@ async function cmdSchedule(args) {
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action: 'schedule-native', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin: 0, actor: ACTOR });
         dirty = true;
         touched.add(post.id);
-        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'schedule-native', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
+        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'schedule-native', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable });
         console.error(`[err] ${post.id}: FB scheduling failed - ${err.message}`);
         if (err.fbCode === 368) {
           RUN.blocked368 = true;
@@ -731,6 +768,13 @@ async function cmdPublishDue(args) {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
       continue;
     }
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI/cloud-dispatched runs; the scheduler's lanesOwed
+    // already drops a held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     const platforms = post.platforms || [];
     // FB only publishes full-bleed reels here (video_reels); IG publishes reels + stories.
     // FB is gated by the per-client platform policy (deny-by-default); a disabled
@@ -742,6 +786,19 @@ async function cmdPublishDue(args) {
     if (!wantsFb && !wantsIg) continue;
     const dueMs = Date.parse(post.scheduledAt);
     if (Number.isNaN(dueMs) || dueMs > now) continue;
+
+    // Fresh-bytes caption backstop: platformValidate caps the caption at author time,
+    // but a stale-queued cloud job (singletonKey dedupe) can carry a clean verdict past
+    // a later edit. Refuse an over-cap caption per targeted lane BEFORE any Graph call so
+    // the platform never rejects it for us (IG 2200, FB 63206 - lib/caption.mjs). Skip
+    // only the over-cap lane; the other half may still be within its own cap.
+    const igCapBlock = wantsIg ? captionBlocker(post.caption, 'instagram') : null;
+    const fbCapBlock = wantsFb ? captionBlocker(post.caption, 'facebook') : null;
+    if (igCapBlock || fbCapBlock) {
+      if (igCapBlock) { console.log(`[warn] ${post.id}: ${igCapBlock} - skipping IG.`); RUN.results.push(captionBlockRow(post, 'instagram', igCapBlock)); }
+      if (fbCapBlock) { console.log(`[warn] ${post.id}: ${fbCapBlock} - skipping FB.`); RUN.results.push(captionBlockRow(post, 'facebook', fbCapBlock)); }
+      if ((!wantsIg || igCapBlock) && (!wantsFb || fbCapBlock)) continue; // every wanted lane blocked
+    }
 
     const lateMin = Math.round((now - dueMs) / 60000);
     if (lateMin > 15) console.log(`[warn] ${post.id}: publishing ${lateMin} min late (catch-up).`);
@@ -804,9 +861,17 @@ async function cmdPublishDue(args) {
         console.log(`[ok] ${post.id}: IG carousel published (media id ${media.id}).`);
         published += 1;
       } catch (err) {
+        if (err.fbCode === 9004) {
+          let diag = null;
+          for (const s of slides) {
+            if (s.url) diag = await mediaFetchDiagnosis(s.url);
+            if (diag) break;
+          }
+          if (diag) err.message = `${err.message} | ${diag}`;
+        }
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-carousel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
-        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable });
         console.error(`[err] ${post.id}: IG carousel failed - ${err.message}`);
         if (err.fbCode === 368) { RUN.blocked368 = true; await reportMetaBlock(err); break; }
       }
@@ -824,6 +889,18 @@ async function cmdPublishDue(args) {
     // needs a video file.
     if (!/\.(mp4|mov)$/i.test(mediaPath) && post.type !== 'image') {
       console.log(`[warn] ${post.id}: ${post.type} needs a video render (.mp4/.mov) - skipping.`);
+      continue;
+    }
+    // Fresh-bytes A/V-sync backstop: probe the ACTUAL video bytes about to upload (not the
+    // manifest's author-time avSyncOk, which is stale after a same-path re-render). A
+    // measured desync over the drift ceiling is a non-retriable IG rupload rejection, so
+    // refuse it here per targeted lane. Self-gates on non-video (the image branch below
+    // uses a public URL, so its jpg render never probes).
+    const avBlock = await avSyncBlocker(mediaPath);
+    if (avBlock) {
+      console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+      if (wantsIg) RUN.results.push(avSyncBlockRow(post, 'instagram', avBlock));
+      if (wantsFb) RUN.results.push(avSyncBlockRow(post, 'facebook', avBlock));
       continue;
     }
 
@@ -862,7 +939,7 @@ async function cmdPublishDue(args) {
       } catch (err) {
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action: 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
-        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
+        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable });
         console.error(`[err] ${post.id}: FB Reel failed - ${err.message}`);
         if (err.fbCode === 368) {
           RUN.blocked368 = true;
@@ -908,9 +985,13 @@ async function cmdPublishDue(args) {
           }
         }
       } catch (err) {
+        if (err.fbCode === 9004) {
+          const diag = await mediaFetchDiagnosis(publicUrl);
+          if (diag) err.message = `${err.message} | ${diag}`;
+        }
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-image', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
-        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish-image', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish-image', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable });
         console.error(`[err] ${post.id}: IG feed image failed - ${err.message}`);
         if (err.fbCode === 368) {
           RUN.blocked368 = true;
@@ -967,7 +1048,7 @@ async function cmdPublishDue(args) {
       } catch (err) {
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: isStory ? 'publish-story' : 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
-        RUN.results.push({ postId: post.id, platform: 'instagram', action: isStory ? 'publish-story' : 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300) });
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: isStory ? 'publish-story' : 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable });
         console.error(`[err] ${post.id}: IG publish failed - ${err.message}`);
         if (err.fbCode === 368) {
           RUN.blocked368 = true;
@@ -1389,6 +1470,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'meta', scriptUrl: import.meta.url });
   // --json: human logs move to stderr; stdout carries exactly one JSON line
   // (the run envelope) for the pendpost scheduler. --actor tags attempts[].
   JSON_MODE = Boolean(args.json);

@@ -126,7 +126,7 @@ function TweetRow({
 // Compose a whole X thread (opener + ordered replies) as one artifact, then save it
 // as N draft posts chained by xReplyTo. Single-column, X-only; a thread is NOT a new
 // entity - just existing posts linked by the existing xReplyTo field.
-export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved }) {
+export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved, onDirtyChange }) {
   const t = useT();
   const queryClient = useQueryClient();
   const confirm = useConfirm();
@@ -167,6 +167,16 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved 
   const addTweet = () => setTweets((prev) => [...prev, newTweet('')]);
 
   const isDirty = tweets.length > 1 || tweets.some((tw) => tw.text.trim() || tw.mediaPath) || Boolean(openerAt);
+
+  // Report dirtiness upward so App's client-switch guard (lib/clientSwitchGuard.js)
+  // can refuse a silent re-scope while this thread is unsaved. Mirrors
+  // requestClose's own condition: a frozen run (runState) is already saved, so it
+  // no longer counts as dirty. Cleared on unmount.
+  useEffect(() => {
+    if (!onDirtyChange) return undefined;
+    onDirtyChange(isDirty && !runState);
+    return () => onDirtyChange(false);
+  }, [isDirty, runState, onDirtyChange]);
 
   const requestClose = async () => {
     if (busy) return;

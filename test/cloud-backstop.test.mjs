@@ -61,6 +61,7 @@ function installFetch() {
     if (url.includes('/v1/sync/results')) return json({ results: resultsPayload });
     if (url.includes('/v1/vault/') && method === 'PUT') return json({ ok: true });
     if (url.endsWith('/v1/sync/retrigger') && method === 'POST') return json({ requeued: [], skipped: [] });
+    if (url.endsWith('/v1/publish-claim') && method === 'POST') return json({ granted: true });
     return { ok: false, status: 404, text: async () => JSON.stringify({ error: 'not found' }) };
   };
 }
@@ -111,7 +112,13 @@ try {
   ok(pushedJobIds.includes(`${CLIENT}:${CAMP}:p-fresh:meta`), 'the overdue post was pushed to the cloud this tick');
   const ack = loadState().cloudAccepted && loadState().cloudAccepted[`${CAMP}:p-fresh:meta`];
   ok(Boolean(ack && ack.at), 'the push-ack is persisted (state.cloudAccepted, first-ack-wins)');
-  ok(readPost('p-fresh').status !== 'posted' && !t3.ran.some((r) => r.postId === 'p-fresh'), 'inside the ack grace the cloud lane is NOT fired locally (the cloud owns the window)');
+  // Since c69be0d ("publish-now tells the truth") a held lane REPORTS itself in ran[]
+  // as an informational cloud_held row instead of vanishing - so "not fired" is
+  // "every p-fresh row is cloud_held and nothing was minted", not "no row at all".
+  const freshRows = t3.ran.filter((r) => r.postId === 'p-fresh');
+  ok(readPost('p-fresh').status !== 'posted' && !readPost('p-fresh').igMediaId
+    && freshRows.length >= 1 && freshRows.every((r) => r.errorCode === 'cloud_held'),
+  'inside the ack grace the cloud lane is NOT fired locally - ran[] carries only the informational cloud_held row');
 
   // --- (4) a LOCAL-ONLY lane fires on the normal schedule under cloud management ------
   await createPost({ campaign: CAMP, post: { id: 'p-rd', type: 'text', platforms: ['reddit'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'a quiet reddit note' }, actor: 'agent:a' });
@@ -120,7 +127,30 @@ try {
   ok(t4.code === 'cloud_managed', 'the tick is cloud-managed');
   ok(t4.ran.some((r) => r.postId === 'p-rd' && r.lane === 'reddit'), 'the reddit (local-only) lane fired locally IMMEDIATELY - no grace, not stranded');
 
-  console.log(`[cloud-backstop] OK - backstop fires on dead cloud, never double-fires, respects the ack grace, local-only lanes unstranded (${pass} assertions).`);
+  // --- (5) a cloud MEDIA-FAULT bypasses the grace: local fires NOW, not after 20m ------
+  // A recorded "media get failed" cloud failure is a definitive "the cloud cannot
+  // deliver this": its object-store fetch 404s and re-firing the same job cannot
+  // self-heal it. So the claim-gated backstop publishes from the local render
+  // immediately instead of holding the full grace. Contrast with (3): SAME fresh
+  // ack, but the media-fault fires where the plain grace holds. Only the byte-lanes
+  // (x/telegram/discord/nostr) emit "media get failed" - the URL lanes never do, so
+  // the error string self-scopes the bypass to lanes local disk can always serve.
+  resultsPayload = [];
+  await createPost({ campaign: CAMP, post: { id: 'p-mediafault', type: 'reel', platforms: ['x'], scheduledAt: '2020-01-01T00:00:00Z', path: 'data/media/clip.mp4', caption: 'a clip the cloud cannot fetch' }, actor: 'agent:a' });
+  await approvePost({ campaign: CAMP, postId: 'p-mediafault', actor: 'owner' });
+  // Tick A: push it so it earns a FRESH ack (anchor ~ now) - the plain grace holds it.
+  await runDueExclusive('scheduler');
+  ok(readPost('p-mediafault').status !== 'posted' && Boolean((loadState().cloudAccepted || {})[`${CAMP}:p-mediafault:x`]), 'the x post earned a fresh push-ack and is held in the cloud grace this tick (no local fire yet)');
+  // Tick B: the cloud reports a media-fetch failure -> the backstop bypasses the grace.
+  resultsPayload = [{
+    jobId: `${CLIENT}:${CAMP}:p-mediafault:x`, clientId: CLIENT, campaign: CAMP, postId: 'p-mediafault', lane: 'x', state: 'failed',
+    firedAt: '2026-07-01T10:00:00.000Z', refusedCode: null, results: [], failureMessage: 'x: media get failed: 404',
+  }];
+  await runDueExclusive('scheduler');
+  ok(readPost('p-mediafault').status === 'posted', 'the media-faulted x post was fired LOCALLY this tick despite the fresh ack (grace bypassed)');
+  ok(getActivity(50).some((e) => e.postId === 'p-mediafault' && e.action === 'cloud-backstop' && /media fetch failure/i.test(e.errorMessage || '')), 'the backstop entry names the media-fetch failure as the reason (not the 20m timeout)');
+
+  console.log(`[cloud-backstop] OK - backstop fires on dead cloud, never double-fires, respects the ack grace, a cloud media-fault fires immediately, local-only lanes unstranded (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

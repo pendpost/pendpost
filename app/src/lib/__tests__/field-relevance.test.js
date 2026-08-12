@@ -123,13 +123,40 @@ describe('fieldRelevance', () => {
     expect(r.caption).toBe(true); // x still reads the base caption
   });
 
-  it('telegram / discord / tiktok / reddit / pinterest all ride the shared caption only', () => {
+  it('telegram / discord / tiktok / reddit / pinterest ride the shared caption plus their own override', () => {
     for (const p of ['telegram', 'discord', 'tiktok', 'reddit', 'pinterest']) {
       const r = fieldRelevance([p], 'video');
       expect(r.caption, p).toBe(true);
       expect(r.title, p).toBe(false);
       expect(r.description, p).toBe(false);
       expect(r.xCaption, p).toBe(false);
+    }
+  });
+
+  // B1 (ux-audit dim-6 P1): the six MCP-writable per-lane prose overrides the
+  // engines publish (lib/writes.mjs POST_FIELDS -> telegram/discord/tiktok/
+  // reddit/pinterest engines) must be registered in the app's relevance model,
+  // or an agent can ship text the approver never saw. Each is lane-exclusive,
+  // mirroring xCaption/mastodonCaption/nostrCaption.
+  it('B1: tgCaption / dcCaption / ttCaption / redditText are each lane-exclusive caption overrides', () => {
+    const laneField = { telegram: 'tgCaption', discord: 'dcCaption', tiktok: 'ttCaption', reddit: 'redditText' };
+    for (const [lane, field] of Object.entries(laneField)) {
+      expect(fieldRelevance([lane], 'video')[field], `${lane} owns ${field}`).toBe(true);
+      for (const other of Object.keys(laneField).filter((l) => l !== lane)) {
+        expect(fieldRelevance([other], 'video')[field], `${other} must not carry ${field}`).toBe(false);
+      }
+      expect(fieldRelevance(['instagram'], 'reel')[field], `instagram must not carry ${field}`).toBe(false);
+    }
+  });
+
+  it('B1: pinTitle + pinDescription are pinterest-only', () => {
+    const pin = fieldRelevance(['pinterest'], 'video');
+    expect(pin.pinTitle).toBe(true);
+    expect(pin.pinDescription).toBe(true);
+    for (const p of ['telegram', 'discord', 'tiktok', 'reddit', 'instagram', 'x']) {
+      const r = fieldRelevance([p], 'video');
+      expect(r.pinTitle, p).toBe(false);
+      expect(r.pinDescription, p).toBe(false);
     }
   });
 
@@ -276,15 +303,49 @@ describe('fieldsForPost', () => {
     expect(fieldsForPost(post(['linkedin'], 'text')).extras.map((e) => e.key)).not.toContain('publishAsDraft');
   });
 
-  it('a pure text post targeting only chat lanes shows the caption + Discord thread fields (+ the empty tgCta/dcEmbed review extras)', () => {
+  it('a pure text post targeting only chat lanes shows the caption + per-lane overrides + Discord thread fields (+ the empty tgCta/dcEmbed review extras)', () => {
     const { fields, extras } = fieldsForPost(post(['telegram', 'discord'], 'text'));
     // Spec 26: dcThreadName/dcThreadId are plain EDITABLE fields (like xReplyTo),
     // not review-only extras - they list here whenever discord is targeted.
-    expect(fields.map((f) => f.key)).toEqual(['caption', 'dcThreadName', 'dcThreadId']);
+    // B1: tgCaption/dcCaption follow the multi-lane xCaption rule - the override
+    // stays visible on a multi-platform post (base + per-lane text can differ).
+    expect(fields.map((f) => f.key)).toEqual(['caption', 'tgCaption', 'dcCaption', 'dcThreadName', 'dcThreadId']);
     // Spec 14: tgCta/dcEmbed are RELEVANT the moment their lane is targeted (like
     // gbp), so they list as review extras here - PostExtras itself only renders a
     // row once the operator has actually authored one (content-gated, §6).
     expect(extras.map((e) => e.key)).toEqual(['tgCta', 'dcEmbed']);
+  });
+
+  // B1: the new overrides collapse exactly like xCaption - a single-lane post
+  // authors ONE text (the caption), so its still-empty override is hidden; a
+  // saved override (the MCP-agent case this fix exists for) always renders.
+  it('B1: a telegram-only post with NO saved override collapses to the one caption field', () => {
+    const { fields } = fieldsForPost(post(['telegram'], 'text'));
+    expect(fields.map((f) => f.key)).toEqual(['caption']);
+  });
+
+  it('B1: a telegram-only post with a saved tgCaption keeps caption + tgCaption, scoped to telegram', () => {
+    const { fields } = fieldsForPost(post(['telegram'], 'text', { tgCaption: 'vip text' }));
+    expect(fields.map((f) => f.key)).toEqual(['caption', 'tgCaption']);
+    expect(fields.find((f) => f.key === 'tgCaption').platforms).toEqual(['telegram']);
+  });
+
+  it('B1: a reddit-only post with a saved redditText keeps caption + redditText', () => {
+    const { fields } = fieldsForPost(post(['reddit'], 'text', { redditText: 'self-post body' }));
+    const keys = fields.map((f) => f.key);
+    expect(keys).toContain('caption');
+    expect(keys).toContain('redditText');
+  });
+
+  it('B1: a pinterest post shows pinTitle always, pinDescription per the override collapse', () => {
+    // Empty override on a single-lane post: pinDescription collapses (the caption
+    // IS the pin description), but pinTitle stays - it shadows post.title, which
+    // has no pinterest surface of its own.
+    const bare = fieldsForPost(post(['pinterest'], 'video'));
+    expect(bare.fields.map((f) => f.key)).toEqual(['caption', 'pinTitle', 'altText']);
+    // A saved pinDescription (the MCP-agent case) always renders.
+    const withDesc = fieldsForPost(post(['pinterest'], 'video', { pinDescription: 'pin copy' }));
+    expect(withDesc.fields.map((f) => f.key)).toEqual(['caption', 'pinTitle', 'pinDescription', 'altText']);
   });
 
   it('never lists a field no targeted platform uses', () => {

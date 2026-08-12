@@ -129,6 +129,59 @@ describe('ClientSwitcher', () => {
     expect(screen.getByRole('button', { name: /switch active project/i })).toHaveAccessibleName(/acme retail/i);
   });
 
+  it('an archived row navigates to the Projects page instead of attempting the doomed switch', async () => {
+    const user = userEvent.setup();
+    const onManage = vi.fn();
+    renderSwitcher({ onManage });
+    await user.click(screen.getByRole('button', { name: /switch active project/i }));
+    await user.click(screen.getByRole('button', { name: /show archived/i }));
+    const archivedRow = await screen.findByRole('button', { name: /initech/i });
+    // The row names its real action (restore lives on the Projects page).
+    expect(archivedRow).toHaveAccessibleName(/restore/i);
+    await user.click(archivedRow);
+    // Never the doomed switch call - the server always refuses archived targets.
+    expect(setActive).not.toHaveBeenCalled();
+    expect(onManage).toHaveBeenCalledTimes(1);
+  });
+
+  it('a dormant default under the reveal stays a real switch target (Mandate H)', async () => {
+    const user = userEvent.setup();
+    clientsState = {
+      activeClientId: 'acme',
+      clients: [
+        { id: 'acme', displayName: 'Acme Retail', status: 'active', isDormantDefault: false },
+        { id: 'default', displayName: 'Default', status: 'active', isDormantDefault: true },
+      ],
+    };
+    renderSwitcher();
+    await user.click(screen.getByRole('button', { name: /switch active project/i }));
+    await user.click(screen.getByRole('button', { name: /show/i }));
+    await user.click(await screen.findByRole('button', { name: /^default/i }));
+    await waitFor(() => expect(setActive).toHaveBeenCalledWith('default'));
+  });
+
+  it('surfaces the server error detail on a failed switch, not only the generic string', async () => {
+    setActive.mockRejectedValueOnce(new Error('registry locked by another process'));
+    const user = userEvent.setup();
+    renderSwitcher();
+    await user.click(screen.getByRole('button', { name: /switch active project/i }));
+    await user.click(await screen.findByRole('button', { name: /globex inc/i }));
+    const alert = await screen.findByRole('alert');
+    // The server's actionable detail is visible, alongside the generic anchor.
+    expect(alert.textContent).toMatch(/registry locked by another process/);
+    expect(alert.textContent).toMatch(/still on the previous project/i);
+  });
+
+  it('falls back to the generic failure string when the server sends no detail', async () => {
+    setActive.mockRejectedValueOnce(new Error(''));
+    const user = userEvent.setup();
+    renderSwitcher();
+    await user.click(screen.getByRole('button', { name: /switch active project/i }));
+    await user.click(await screen.findByRole('button', { name: /globex inc/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/still on the previous project/i);
+  });
+
   it('routes "Manage clients" through the onManage callback', async () => {
     const user = userEvent.setup();
     const onManage = vi.fn();

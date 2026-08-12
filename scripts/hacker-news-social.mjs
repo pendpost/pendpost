@@ -20,6 +20,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 
 export const RUN = { results: [] };
@@ -73,6 +74,7 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'hacker-news', scriptUrl: import.meta.url });
   JSON_MODE = Boolean(args.json);
   if (JSON_MODE) console.log = (...a) => console.error(...a);
   const commandName = args._[0];

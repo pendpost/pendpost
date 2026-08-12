@@ -63,9 +63,12 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { oauth1Header } from '../lib/x-oauth1.mjs';
 import { envPath } from '../lib/util.mjs';
 
@@ -433,7 +436,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, xCaption, schedule, approval,
 // cover) belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'status', 'postedAt', 'attempts', 'radarReplyState'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -488,8 +491,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 }
 
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 // Machine-readable run envelope for --json mode (consumed by the scheduler).
@@ -658,6 +662,13 @@ async function cmdPublishDue(args) {
     if (!isX(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     // Fail-closed approval (SS-01): missing field = draft = never publish.
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
@@ -707,8 +718,18 @@ async function cmdPublishDue(args) {
     }
 
     const text = tweetText(post);
-    if (!text) { console.log(`[warn] ${post.id}: due but no tweet text (xCaption/caption) - skipping.`); continue; }
-    if (text.length > TWEET_LIMIT) { console.log(`[warn] ${post.id}: text is ${text.length} chars (> ${TWEET_LIMIT}) - set a shorter xCaption; skipping.`); continue; }
+    // A skip without a RUN.results row is invisible to the scheduler (an ok
+    // envelope with zero rows reads as success), so both refusals are structured.
+    if (!text) {
+      console.log(`[warn] ${post.id}: due but no tweet text (xCaption/caption) - skipping.`);
+      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'no tweet text (set xCaption or caption)' });
+      continue;
+    }
+    if (text.length > TWEET_LIMIT) {
+      console.log(`[warn] ${post.id}: text is ${text.length} chars (> ${TWEET_LIMIT}) - set a shorter xCaption; skipping.`);
+      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `tweet is ${text.length} chars - X caps non-Premium posts at ${TWEET_LIMIT}. Shorten the caption or split it into a thread.` });
+      continue;
+    }
 
     const lateMin = Math.round((now - dueMs) / 60000);
     if (lateMin > 15) console.log(`[warn] ${post.id}: publishing ${lateMin} min late (catch-up).`);
@@ -742,6 +763,15 @@ async function cmdPublishDue(args) {
     if (!textPost && !pollPost && !carouselPost) {
       mediaPath = resolveMediaPath(plan, post);
       if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
+      // Fresh-bytes A/V-sync backstop: probe the actual video bytes about to upload (not
+      // the manifest's stale author-time avSyncOk) - a measured desync is a malformed mux
+      // the platform rejects. Self-gates on image tweets (a jpg never probes).
+      const avBlock = await avSyncBlocker(mediaPath);
+      if (avBlock) {
+        console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+        RUN.results.push(avSyncBlockRow(post, 'x', avBlock));
+        continue;
+      }
     }
 
     // Reply-chain (xReplyTo): this post replies to a sibling post in the SAME
@@ -1142,6 +1172,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'x', scriptUrl: import.meta.url });
   // --json: human logs move to stderr; stdout carries exactly one JSON line
   // (the run envelope) for the scheduler. --actor tags attempts[].
   JSON_MODE = Boolean(args.json);

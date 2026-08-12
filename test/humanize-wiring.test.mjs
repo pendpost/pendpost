@@ -54,11 +54,36 @@ try {
   ok(!DASHES.test(p.firstComment), 'created firstComment is humanized');
   ok(!DASHES.test(p.xCaption), 'created per-platform xCaption is humanized');
 
+  // ---- R6b receipt: the create RESPONSE carries what the gate changed ----
+  // The caption had 1 em dash + 1 curly apostrophe, firstComment 1 dash, xCaption 1 dash.
+  ok(cp.humanizer && Array.isArray(cp.humanizer.fixes), 'create response carries humanizer.fixes when text had tells');
+  {
+    const em = cp.humanizer.fixes.find((f) => f.kind === 'em-dash');
+    const cq = cp.humanizer.fixes.find((f) => f.kind === 'curly-quote');
+    ok(em && em.count === 3, 'create receipt counts dash occurrences across all prose fields');
+    ok(cq && cq.count === 1, 'create receipt counts the curly apostrophe');
+    ok(Array.isArray(cp.humanizer.findings), 'create receipt carries the advisory findings alongside');
+  }
+
   // ---- update: the edited prose is humanized on the way in ----
   const up = await updatePost({ campaign: 'h', postId: 'p1', ifRev: p.rev, fields: { caption: 'now — even faster' }, actor: 'owner' });
   assert.ok(up.ok, `updatePost: ${JSON.stringify(up)}`);
   const p2 = getPost('h', 'p1');
   ok(!DASHES.test(p2.caption) && p2.caption === 'now, even faster', 'updated caption is humanized on edit');
+
+  // ---- R6b receipt: update response carries fixes when the edit had tells ----
+  ok(up.humanizer && up.humanizer.fixes.some((f) => f.kind === 'em-dash' && f.count === 1), 'update response carries the em-dash fix');
+
+  // ---- R6b receipt: a CLEAN save carries NO humanizer field at all ----
+  const up2 = await updatePost({ campaign: 'h', postId: 'p1', ifRev: p2.rev, fields: { caption: 'clean copy, nothing to fix' }, actor: 'owner' });
+  assert.ok(up2.ok, `updatePost clean: ${JSON.stringify(up2)}`);
+  ok(up2.humanizer === undefined, 'clean save: no humanizer field in the response');
+
+  // ---- R6b receipt: a non-prose-only edit (scheduling) carries no humanizer field ----
+  const p3 = getPost('h', 'p1');
+  const up3 = await updatePost({ campaign: 'h', postId: 'p1', ifRev: p3.rev, fields: { scheduledAt: '2020-01-02T00:00:00Z' }, actor: 'owner' });
+  assert.ok(up3.ok, `updatePost scheduling: ${JSON.stringify(up3)}`);
+  ok(up3.humanizer === undefined, 'scheduling-only edit: no humanizer field in the response');
 } catch (err) {
   failures += 1;
   console.error(`  FAIL - threw: ${err && err.stack || err}`);

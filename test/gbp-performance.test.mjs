@@ -48,7 +48,14 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.strin
   plans: [
     { id: 'local', path: 'data/plans/local.json', active: true },
     { id: 'x-only', path: 'data/plans/x-only.json', active: true },
+    // Inactive so the default sweeps above never touch it - the token-class
+    // partial-failure section (7) sweeps it explicitly via { campaign: 'li-only' }.
+    { id: 'li-only', path: 'data/plans/li-only.json', active: false },
   ],
+}, null, 2));
+fs.writeFileSync(path.join(WS, 'data', 'plans', 'li-only.json'), JSON.stringify({
+  campaign: 'li-only',
+  posts: [{ id: 'l1', platforms: ['linkedin'], status: 'posted', liPostId: 'urn:li:share:1234567890', scheduledAt: '2020-01-01T00:00:00Z', caption: 'A LinkedIn note' }],
 }, null, 2));
 fs.writeFileSync(path.join(WS, 'data', 'plans', 'local.json'), JSON.stringify({
   campaign: 'local',
@@ -96,11 +103,29 @@ try {
   ok(swU.ok, 'sweep (ungranted) returns ok');
   ok(!getInsights().account?.gbp, 'ungranted: no gbp account payload is stored (section omits, no false alarm)');
   ok(Boolean(loadState().insights?.data?.['local/g1/gbp']), 'ungranted degrade is ISOLATED: the per-post gbp insights row still stored');
+  // Gap 4 (dim-3 audit 2026-08-04): a PARTIAL failure (per-post gbp ok, account
+  // pass needs_scope) must NOT ride a green activity row - ok:false, and the
+  // summary names the failed lane + reason class.
+  const actU = (loadState().activity || []).find((e) => e.action === 'insights-fetch');
+  ok(actU && actU.ok === false, 'ungranted: the insights-fetch activity row is ok:false on a PARTIAL failure (never a green fold)');
+  ok(/gbp needs_scope/.test(actU?.errorMessage || ''), `ungranted: the activity summary names the lane + reason class (got: ${actU?.errorMessage})`);
+  // Spec 04 SS2: the digest NAMES the lane as unavailable, never a silent omission.
+  ok(loadState().insights?.unavailable?.gbp?.reason === 'needs_scope', 'ungranted: state records gbp metrics as unavailable (needs_scope)');
+  const digU = generateDigest({ locale: 'en' });
+  ok(/Metrics unavailable: .*Google Business \(missing scope\)/.test(digU.digest), 'ungranted: the en digest names Google Business as unavailable (missing scope)');
+  const digUde = generateDigest({ locale: 'de-CH' });
+  ok(/Kennzahlen nicht verfügbar: .*Google Business \(fehlende Berechtigung\)/.test(digUde.digest), 'ungranted: the de-CH digest names the lane, localized');
+  ok(!/ß/.test(digUde.digest), 'ungranted: de-CH digest stays eszett-free');
   delete process.env.PENDPOST_MOCK_UNGRANTED;
 
   // ---- 3. the GENERIC account pass stores the payload + exposes it ------------
   const sw = await fetchInsights();
   ok(sw.ok, 'sweep (granted) returns ok');
+  // Honesty symmetry: a fully-successful sweep stays a green (folded) row and
+  // CLEARS the lane's unavailable record.
+  const actG = (loadState().activity || []).find((e) => e.action === 'insights-fetch');
+  ok(actG && actG.ok === true && !actG.errorMessage, 'granted: a fully-successful sweep stays a green activity row (still folded)');
+  ok(!loadState().insights?.unavailable?.gbp, 'granted: the gbp unavailable record clears once the lane fetches again');
   const env = getInsights();
   ok(env.account && typeof env.account === 'object', 'getInsights() carries an additive account map');
   const stored = env.account.gbp?.performance;
@@ -125,10 +150,34 @@ try {
   ok(merged.demographics && merged.demographics.audienceAgeRanges['25-34'] === 61, 'merge: a pre-existing sibling payload (07 demographics) is PRESERVED across a sweep, not clobbered');
   ok(merged.performance && typeof merged.performance.calls === 'number', 'merge: the account pass ADDS performance to the same lane alongside demographics');
 
+  // ---- 7. token-class partial failure (dim-3 gap 4): an expired-token lane is
+  // NAMED on a red activity row (with the "not authenticated" phrasing the
+  // Activity wrench routes to Setup on) and in the digest, then recovers on the
+  // next healthy sweep.
+  const stub = path.join(WS, 'li-stub.mjs');
+  fs.writeFileSync(stub, "console.log(JSON.stringify({ ok: false, error: 'token expired: not authenticated', results: [] }));\n");
+  process.env.PENDPOST_LINKEDIN_ENGINE = stub;
+  const swT = await fetchInsights({ campaign: 'li-only' });
+  ok(swT.ok === true && swT.failed > 0, 'token: the sweep envelope still returns ok:true and reports the failed count');
+  const actT = (loadState().activity || []).find((e) => e.action === 'insights-fetch');
+  ok(actT && actT.ok === false, 'token: the insights-fetch activity row is ok:false');
+  ok(/linkedin not authenticated \(token\)/.test(actT?.errorMessage || ''), `token: the summary names linkedin + the token class (got: ${actT?.errorMessage})`);
+  ok(loadState().insights?.unavailable?.linkedin?.reason === 'token', 'token: state records linkedin metrics as unavailable (token)');
+  const digT = generateDigest({ locale: 'en' });
+  ok(/Metrics unavailable: .*LinkedIn \(fetch failed\)/.test(digT.digest), 'token: the en digest names LinkedIn as unavailable (fetch failed)');
+  const digTde = generateDigest({ locale: 'de-CH' });
+  ok(/Kennzahlen nicht verfügbar: .*LinkedIn \(Abruf fehlgeschlagen\)/.test(digTde.digest), 'token: the de-CH digest line is localized');
+  delete process.env.PENDPOST_LINKEDIN_ENGINE;
+  const swR = await fetchInsights({ campaign: 'li-only' });
+  ok(swR.ok === true && swR.failed === 0, 'recovery: with the engine healthy again the sweep has zero failures');
+  ok(!loadState().insights?.unavailable?.linkedin, 'recovery: the linkedin unavailable record clears');
+  ok((loadState().activity || []).find((e) => e.action === 'insights-fetch')?.ok === true, 'recovery: the newest insights-fetch activity row is green again');
+
   // ---- digest surfaces the Local performance section -------------------------
   const digest = generateDigest({ locale: 'en' });
   ok(digest.ok && digest.account && digest.account.gbp, 'generateDigest() carries the additive account field');
   ok(/## Local performance/.test(digest.digest) && /Calls:/.test(digest.digest), 'the digest renders the Local performance section with the metric rows');
+  ok(!/Metrics unavailable/.test(digest.digest), 'with every swept lane healthy the digest carries NO unavailable line');
   const de = generateDigest({ locale: 'de-CH' });
   ok(/## Lokale Aktionen/.test(de.digest) && /Anrufe:/.test(de.digest), 'de-CH digest renders the localized Local performance section');
   ok(!/ß/.test(de.digest), 'de-CH digest stays eszett-free');

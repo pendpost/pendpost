@@ -37,7 +37,10 @@ Exercise everything here before connecting a real platform.
 - Auto-approve (the progressive-autonomy policy) is OWNER-ONLY: only `actor:"owner"`
   can enable it via `config_set` `set.posting.autoApprove` - an agent can never turn
   it on for itself. When enabled it approves under a distinct policy actor, never the
-  post's creator, so the no-self-approval rule still holds.
+  post's creator, so the no-self-approval rule still holds. Its platforms scope is
+  fail-closed: an empty `platforms` list approves NOTHING (the owner must trust at
+  least one platform), while empty `campaigns`/`types` lists mean no constraint on
+  that axis.
 - `publish_due_run` does REAL publishes and needs `confirm:true` - never call it
   unless the owner asks.
 

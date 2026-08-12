@@ -3,14 +3,13 @@ import { useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, HelpCircle, RotateCcw } from 'lucide-react';
 import { useConfig, saveConfig } from '../lib/api.js';
 import { useT, LOCALES } from '../lib/i18n.js';
-import { getTimeFormat, setTimeFormat, getCardAccent, setCardAccent, MANUAL_LANES } from '../lib/format.js';
+import { getTimeFormat, setTimeFormat, getCardAccent, setCardAccent } from '../lib/format.js';
 import { FIELD_SURFACE, SectionHeading } from './ui.jsx';
 import { resetDialogSkips, dialogSkipCount } from './ui/confirm.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { Select } from './ui/Select.jsx';
-import { ToggleRow } from './ui/Switch.jsx';
-import { Checkbox } from './ui/Checkbox.jsx';
-import RadarSearches, { RadarGeo } from './RadarSearches.jsx';
+import RadarSearches, { RadarGeo, RadarBrand } from './RadarSearches.jsx';
+import AutonomyLedger from './AutonomyLedger.jsx';
 
 const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 const FIELD_CLS_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
@@ -38,28 +37,6 @@ const TZ_GROUPS = (() => {
   return [...byRegion.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 })();
 const tzOptionLabel = (z) => (z.includes('/') ? z.split('/').slice(1).join(' / ').replace(/_/g, ' ') : z);
-
-// The opt-in auto-approve policy (config.posting.autoApprove). enabled defaults
-// false (fail-closed). The owner edits it here; an agent can never enable it
-// because the server's config_set gate is owner-only.
-const AUTO_DEFAULT = { enabled: false, platforms: [], campaigns: [], types: [], requireLintClean: true };
-const AUTO_PLATFORMS = [
-  { id: 'instagram', label: 'Instagram' },
-  { id: 'facebook', label: 'Facebook' },
-  { id: 'linkedin', label: 'LinkedIn' },
-  { id: 'youtube', label: 'YouTube' },
-  { id: 'x', label: 'X' },
-  { id: 'telegram', label: 'Telegram' },
-  { id: 'discord', label: 'Discord' },
-  { id: 'reddit', label: 'Reddit' },
-  { id: 'pinterest', label: 'Pinterest' },
-  { id: 'tiktok', label: 'TikTok' },
-  { id: 'mastodon', label: 'Mastodon' },
-  { id: 'wordpress', label: 'WordPress' },
-  { id: 'ghost', label: 'Ghost' },
-  { id: 'nostr', label: 'Nostr' },
-  { id: 'gbp', label: 'Google Business Profile' },
-];
 
 // A label with a beside-it help tooltip (keyboard/SR reachable; the control keeps its
 // own accessible name via htmlFor). Every preference carries one so each setting is
@@ -122,19 +99,17 @@ export default function Settings({ focus = null, onNavigate }) {
   const [mediaBase, setMediaBase] = useState('');
   const [mediaBaseError, setMediaBaseError] = useState(null);
   const [staleWrite, setStaleWrite] = useState(false);
-  const [auto, setAuto] = useState(AUTO_DEFAULT); // posting.autoApprove (owner-only policy)
   // How many dialogs the owner has silenced via "don't show again". Re-read on mount so
   // the reset control's count is live; reset clears them so every dialog asks again.
   const [dialogSkips, setDialogSkips] = useState(() => dialogSkipCount());
-  // posting.radar.autoReply + .agent moved into the Radar searches card (WP8: RadarAutomation
-  // in RadarSearches.jsx) - one Radar box for searches, sources and autonomy.
+  // Publishing auto-approve, the R6a gate knobs, and Radar auto-reply all moved into the
+  // AutonomyLedger card (ux-audit R7): one surface for "what may pendpost do without me".
 
   useEffect(() => {
     if (!data) return;
     setLanguage(data.posting.locale || 'en');
     setTimezone(data.posting.defaultTimezone || '');
     setMediaBase(data.posting.publicMediaBaseUrl || '');
-    setAuto({ ...AUTO_DEFAULT, ...(data.posting.autoApprove || {}) });
   }, [data?.rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Optimistic language switch: flip the select immediately, then persist. On a write
@@ -147,23 +122,6 @@ export default function Settings({ focus = null, onNavigate }) {
     saveConfig(data.rev, { posting: { locale: tag } })
       .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
       .catch((err) => { setLanguage(prior); setError(err.message); });
-  };
-
-  // Auto-approve edits apply immediately (like the language switch): optimistic,
-  // reverted on a write rejection. The dashboard always writes as the owner, so
-  // the server's owner-only autoApprove gate accepts it.
-  const saveAuto = (next) => {
-    if (!data) return;
-    const prior = auto;
-    setAuto(next);
-    setError(null);
-    saveConfig(data.rev, { posting: { autoApprove: next } })
-      .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
-      .catch((err) => { setAuto(prior); setError(err.message); });
-  };
-  const toggleAutoPlatform = (id) => {
-    const has = auto.platforms.includes(id);
-    saveAuto({ ...auto, platforms: has ? auto.platforms.filter((p) => p !== id) : [...auto.platforms, id] });
   };
 
   // The time zone saves on change, like the language + time-format selects (no manual
@@ -224,15 +182,21 @@ export default function Settings({ focus = null, onNavigate }) {
 
   return (
     // The page title ("Einstellungen") is the app chrome's own <h1> (App.jsx pageTitle); the page
-    // does not repeat it. Two clearly separated groups lead instead: PREFERENCES (how the app
-    // behaves for you + where it may publish, including publishing auto-approve) and RADAR (what
-    // Radar watches + the autonomy you authorize for it). Each group packs into its own balanced
-    // two-column grid on wide screens, so neither ends in a lonely empty track.
+    // does not repeat it. Three clearly separated groups lead instead: AUTONOMY (what pendpost may
+    // do without you, per lane - the differentiator, made visible), PREFERENCES (how the app
+    // behaves for you + where it may publish) and RADAR (what Radar watches). Each group packs into
+    // its own balanced grid on wide screens, so none ends in a lonely empty track.
     <div className="mx-auto max-w-6xl space-y-8">
       {isLoading || !data ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">{t('settings.loading')}</p>
       ) : (
         <>
+          {/* ── GROUP: Autonomy (the ledger - what pendpost may do without you, ux-audit R7) ── */}
+          <section className="space-y-4" aria-labelledby="settings-grp-autonomy">
+            <GroupHeading id="settings-grp-autonomy" title={t('settings.group.autonomy.title')} tip={t('settings.group.autonomy.tip')} />
+            <AutonomyLedger onNavigate={onNavigate} />
+          </section>
+
           {/* ── GROUP: Preferences (the regular, non-Radar settings) ── */}
           <section className="space-y-4" aria-labelledby="settings-grp-preferences">
             <GroupHeading id="settings-grp-preferences" title={t('settings.group.preferences.title')} tip={t('settings.group.preferences.tip')} />
@@ -298,11 +262,9 @@ export default function Settings({ focus = null, onNavigate }) {
 
               </section>
 
-              {/* The right column: the other two display prefs + the publishing auto-approve
-                  policy. The per-platform on/off grid that used to fill this column moved onto
-                  each Setup platform card (WP6: one "active in pendpost" switch per lane), so the
-                  four selects split 2/2 across the columns to keep the group's two tracks level
-                  (canon: no lonely card beside an empty grid track). */}
+              {/* The right column: the other two display prefs + the dialog-warnings reset. The
+                  publishing auto-approve policy moved into the Autonomy ledger group above (R7),
+                  so this column now carries the two remaining selects and the reset row. */}
               <div className="space-y-6">
                 <section className="space-y-4">
                   <div className="space-y-1">
@@ -331,50 +293,6 @@ export default function Settings({ focus = null, onNavigate }) {
                       <option value="strip">{t('settings.cardAccent.strip')}</option>
                     </Select>
                   </div>
-                </section>
-
-                {/* Publishing automation: auto-approve is about auto-publishing YOUR planner
-                    drafts, so it belongs with publishing, not with Radar. */}
-                <section className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
-                  <SectionHeading title={t('settings.pubAutomation.title')} tip={`${t('settings.automation.subtitle')} ${t('settings.automation.note')}`} />
-                  <ToggleRow
-                    label={t('settings.automation.toggle.label')}
-                    tip={t('settings.automation.toggle.tip')}
-                    checked={auto.enabled}
-                    onChange={() => saveAuto({ ...auto, enabled: !auto.enabled })}
-                  />
-                  {auto.enabled ? (
-                    <div className="space-y-3 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
-                      {/* The fence-legibility hint (Reddit is always manual) only renders inside the
-                          already-expanded block, so it is contextual help for a control you just
-                          revealed, not clutter on the calm default surface. */}
-                      <fieldset className="space-y-1.5">
-                        <legend className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.label')}</legend>
-                        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.hint')}</p>
-                        <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                          {/* A MANUAL_LANE (Reddit) can NEVER be auto-approved - lib/auto-approve.mjs
-                              refuses it before any policy check. Offering it here would be a dead,
-                              misleading control, so the fence's carve-out is made legible by omission. */}
-                          {AUTO_PLATFORMS.filter((p) => !MANUAL_LANES.has(p.id)).map((p) => (
-                            <label key={p.id} className="flex cursor-pointer items-center gap-1.5 text-sm">
-                              <Checkbox
-                                checked={auto.platforms.includes(p.id)}
-                                onChange={() => toggleAutoPlatform(p.id)}
-                                aria-label={p.label}
-                              />
-                              {p.label}
-                            </label>
-                          ))}
-                        </div>
-                      </fieldset>
-                      <ToggleRow
-                        label={t('settings.automation.lintClean.label')}
-                        tip={t('settings.automation.lintClean.tip')}
-                        checked={auto.requireLintClean}
-                        onChange={() => saveAuto({ ...auto, requireLintClean: !auto.requireLintClean })}
-                      />
-                    </div>
-                  ) : null}
                 </section>
 
                 {/* Dialog warnings: the owner can tick "don't show this message again" on
@@ -411,6 +329,10 @@ export default function Settings({ focus = null, onNavigate }) {
                   page (feed-first redesign) to live next to the Radar autonomy policy. */}
               <div className="space-y-6">
                 <RadarSearches focus={focus === 'radar'} onNavigate={onNavigate} />
+                {/* Brand fact sheet: the product identity the Radar agent judges every thread
+                    against (scan + draft). Sits with the searches - both answer "who are we and
+                    what are we looking for". Empty => the agent falls back to pendpost's default. */}
+                <RadarBrand />
               </div>
 
               <div className="space-y-6">

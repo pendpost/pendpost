@@ -537,6 +537,44 @@ export function warmthStanding(warmth) {
 // A warm-up (karma) query: the one flag that turns an ordinary Radar query into a karma builder.
 export function isWarmupQuery(q) { return Boolean(q && q.warmup === true); }
 
+// A brand-mention (reputation) query: the R9 flag that turns an ordinary Radar query into a watch
+// for people talking ABOUT the brand, not buying intent.
+export function isMentionQuery(q) { return Boolean(q && q.mention === true); }
+
+// CLIENT MIRROR of lib/radar-prompt.mjs `brandBlock`: the exact "THE BRAND / THE PRODUCT" block the
+// Radar agent will see, so the Setup card can show a faithful live preview. The server function is
+// the source of truth; this mirrors it (the same pattern as signalIsMention/signalIsKarma mirroring
+// server logic) because a Node lib cannot be imported into the browser bundle. Keep the two in step:
+// if brandBlock changes, change this too. Returns '' when facts is empty (the pendpost-default case).
+export function radarBrandPreview(brand) {
+  const facts = brand && typeof brand.facts === 'string' ? brand.facts.trim() : '';
+  if (!facts) return '';
+  const audience = brand && typeof brand.audience === 'string' ? brand.audience.trim() : '';
+  const notFor = brand && typeof brand.notForClaims === 'string' ? brand.notForClaims.trim() : '';
+  const lines = [
+    'THE BRAND / THE PRODUCT (the only facts you may state about it - nothing beyond this, and never',
+    'invent a limitation either; if you do not know whether it does something, leave it out):',
+    facts,
+  ];
+  if (audience) lines.push(`Who it serves: ${audience}`);
+  if (brand.isSupplyOnly === true) {
+    const who = audience ? ` (its audience is ${audience})` : '';
+    lines.push(`A genuine signal is someone who could BECOME part of, or SUPPLY to, this product${who}. Someone merely LOOKING FOR what that audience offers is the wrong side of the market: treat it as out of scope - watch or ignore it, never draft a reply to it.`);
+  }
+  if (notFor) lines.push(`Never claim: ${notFor}`);
+  return lines.join('\n');
+}
+
+// Is this signal a brand-mention item? True iff the saved search it matched is a mention query.
+// Signals carry only the query ID (matchedQuery), so the query list is the source of truth -
+// mirrors signalIsKarma exactly.
+export function signalIsMention(signal, radar) {
+  const qid = signal && signal.matchedQuery;
+  if (!qid) return false;
+  const qs = Array.isArray(radar?.queries) ? radar.queries : [];
+  return qs.some((q) => isMentionQuery(q) && q.id === qid);
+}
+
 // Is this signal a karma-building item? True iff the saved search it matched is a warm-up query.
 // Signals carry only the query ID (matchedQuery), so the query list is the source of truth.
 export function signalIsKarma(signal, radar) {
@@ -603,8 +641,49 @@ function withinBudget(url) {
   return url.length <= HANDOFF_URL_BUDGET;
 }
 
+// The text a lane would ACTUALLY publish - the same override precedence the engines
+// resolve at publish time. The hand-off used to copy post.caption alone, but reddit
+// publishes (redditText || caption), X publishes (xCaption || caption), and so on -
+// so the clipboard could differ from what the approval gate approved, leaking the
+// "post exactly this" promise (ux-audit dim-1, gap G5).
+//
+// ONE table, and every row is COPIED from the engine's own resolver line, never
+// invented here: x-social.mjs tweetText, telegram-social.mjs / discord-social.mjs
+// messageText, tiktok-social.mjs captionText, mastodon-social.mjs statusText,
+// nostr-social.mjs noteText, reddit-social.mjs bodyText, pinterest-social.mjs
+// pinDescription, wordpress-social.mjs bodyMarkdown, ghost-social.mjs postHtml
+// (markdown source, pre-render). youtube is the one lane with NO caption fallback
+// (yt-social.mjs buildMeta: snippet.description = post.description || '') - handing
+// over the caption there would hand over text the engine never publishes. Every
+// other lane (meta/linkedin/bluesky/gbp, and any future id) publishes the shared
+// caption, which the default row expresses.
+const LANE_TEXT_PRECEDENCE = {
+  x: ['xCaption', 'caption'],
+  telegram: ['tgCaption', 'caption'],
+  discord: ['dcCaption', 'caption'],
+  tiktok: ['ttCaption', 'caption'],
+  mastodon: ['mastodonCaption', 'caption'],
+  nostr: ['nostrCaption', 'caption'],
+  reddit: ['redditText', 'caption'],
+  pinterest: ['pinDescription', 'caption'],
+  wordpress: ['body', 'caption'],
+  ghost: ['body', 'caption'],
+  youtube: ['description'],
+};
+
+export function effectiveLaneText(post, platform) {
+  const fields = LANE_TEXT_PRECEDENCE[platform] || ['caption'];
+  for (const field of fields) {
+    const value = String(post?.[field] || '').trim();
+    if (value) return value;
+  }
+  return '';
+}
+
 export function handOffTarget(post, platform, accounts) {
-  const caption = String(post?.caption || '').trim();
+  // Prefill with the lane's EFFECTIVE text, so the submit page shows the same text
+  // the engine would have published (and the same text the hand-off clipboard holds).
+  const caption = effectiveLaneText(post, platform);
   if (platform === 'reddit') {
     const sub = String(post?.redditSubreddit || accounts?.reddit?.subreddit || '')
       .replace(/^\/?r\//, '')
@@ -884,15 +963,20 @@ const PLATFORM_FORMATS = {
   youtube: ['youtube-short', 'youtube-longform', 'video'],
   facebook: TEXT_LANE_FORMATS,
   linkedin: POLL_CAROUSEL_FORMATS,
-  x: POLL_CAROUSEL_FORMATS,
-  telegram: POLL_CAROUSEL_FORMATS,
-  discord: POLL_CAROUSEL_FORMATS,
+  // Byte lanes: media-kind-driven engines that upload a still image directly, so each ADDS
+  // 'image' via its OWN array (the OPT_IN anti-leak rule), twin-guarded against IMAGE_LANES in
+  // capabilities.mjs. linkedin stays image-free above: its still images exist only as carousel
+  // slides / an article hero, never a single-image share.
+  x: [...POLL_CAROUSEL_FORMATS, 'image'],
+  telegram: [...POLL_CAROUSEL_FORMATS, 'image'],
+  discord: [...POLL_CAROUSEL_FORMATS, 'image'],
   reddit: REDDIT_FORMATS,
   pinterest: ['video', 'carousel', 'image'],
   // E2: mastodon assembles a native album of up to 4 attachments, so it gets its OWN
   // array with 'carousel' rather than mutating the shared POLL_LANE_FORMATS const, which
-  // would leak the format to fb/tiktok/nostr, none of which assemble one.
-  mastodon: [...POLL_LANE_FORMATS, 'carousel'],
+  // would leak the format to fb/tiktok/nostr, none of which assemble one. It also uploads a
+  // single still image by kind, so it ADDS 'image' the same way (twin-guarded by IMAGE_LANES).
+  mastodon: [...POLL_LANE_FORMATS, 'carousel', 'image'],
   wordpress: TEXT_LANE_FORMATS,
   ghost: TEXT_LANE_FORMATS,
   // Spec 18: nostr ADDS the NIP-23 long-form article to its own array (never via the
@@ -988,6 +1072,19 @@ const FIELD_PLATFORMS = {
   xReplyTo: ['x'],
   mastodonCaption: ['mastodon'],
   nostrCaption: ['nostr'],
+  // B1 (ux-audit dim-6 P1): the remaining per-lane prose overrides the engines
+  // publish (LANE_TEXT_PRECEDENCE above mirrors the engine resolvers). They were
+  // MCP-writable but invisible in the app - an agent could ship text the
+  // approver never saw. Each is lane-exclusive, like xCaption.
+  tgCaption: ['telegram'],
+  dcCaption: ['discord'],
+  ttCaption: ['tiktok'],
+  redditText: ['reddit'],
+  // Pinterest carries TWO overrides: pinDescription shadows the caption (the
+  // engine's pinDescription || caption), pinTitle shadows post.title (which has
+  // no pinterest surface of its own in this map).
+  pinTitle: ['pinterest'],
+  pinDescription: ['pinterest'],
   // The pinned first comment: Instagram posts it under a feed post, YouTube pins
   // it on the video (scripts/yt-social.mjs postComment); LinkedIn posts it as a
   // comment on the org's own share right after publish (spec 11, scripts/
@@ -1110,6 +1207,14 @@ export function fieldRelevance(platforms = [], type = 'reel') {
     xReplyTo: has('x'),
     mastodonCaption: has('mastodon'),
     nostrCaption: has('nostr') && !nostrLong,
+    // B1: the chat/feed-lane prose overrides, each gated on its own lane only
+    // (not type-gated - every post type on that lane publishes the text).
+    tgCaption: has('telegram'),
+    dcCaption: has('discord'),
+    ttCaption: has('tiktok'),
+    redditText: has('reddit'),
+    pinTitle: has('pinterest'),
+    pinDescription: has('pinterest'),
     // Instagram: feed only (a story has no comment). YouTube: any video (pinned
     // first comment). LinkedIn: any share type (spec 11 - unlike an IG story, a
     // LinkedIn share always has a comment surface). scripts/yt-social.mjs +
@@ -1199,15 +1304,25 @@ const EDITABLE_FIELDS = [
   { key: 'caption', kind: 'textarea' },
   { key: 'xCaption', kind: 'textarea' },
   { key: 'xReplyTo', kind: 'input' },
+  // B1: the Telegram/Discord message overrides sit with their lane's other
+  // fields (dcCaption directly above the Discord thread-targeting pair).
+  { key: 'tgCaption', kind: 'textarea' },
+  { key: 'dcCaption', kind: 'textarea' },
   // Spec 26: Discord forum/thread targeting - the thread to post into (a NEW
   // forum thread by name, or an EXISTING thread by id; mutually exclusive).
   { key: 'dcThreadName', kind: 'input' },
   { key: 'dcThreadId', kind: 'input' },
+  { key: 'ttCaption', kind: 'textarea' },
   { key: 'mastodonCaption', kind: 'textarea' },
   { key: 'nostrCaption', kind: 'textarea' },
   // Spec 25: Mastodon content-warning text - the sibling short-note override
   // fields carry it, so it sits with them here.
   { key: 'spoilerText', kind: 'input' },
+  // B1: the Reddit self-post body override + the two Pinterest pin overrides
+  // (pinTitle shadows post.title, pinDescription shadows the caption).
+  { key: 'redditText', kind: 'textarea' },
+  { key: 'pinTitle', kind: 'input' },
+  { key: 'pinDescription', kind: 'textarea' },
   { key: 'title', kind: 'input' },
   { key: 'description', kind: 'textarea' },
   { key: 'body', kind: 'textarea', mono: true },
@@ -1247,8 +1362,7 @@ function platformsForField(field, targeted) {
 }
 
 // Override collapse: which ONE caption field to HIDE so a post never shows two
-// fields for one message. Two mirror-image cases (the override lanes are the only
-// ones that shadow the base caption: x/mastodon/nostr):
+// fields for one message. Two mirror-image cases:
 //   - Single override lane: the base caption IS the post, so hide the still-empty
 //     per-platform override. It stays visible once it carries its own content
 //     (legacy posts keep both fields with the override hint).
@@ -1259,7 +1373,19 @@ function platformsForField(field, targeted) {
 //     it, so the field is kept in the data model, just not rendered here).
 // `values` holds the current field values (a post object, or the Composer's live
 // draft merged with the saved post).
-const OVERRIDE_FIELD = { x: 'xCaption', mastodon: 'mastodonCaption', nostr: 'nostrCaption' };
+//
+// The platform -> override-field map is DERIVED from LANE_TEXT_PRECEDENCE (B1:
+// one source of precedence knowledge, never a second hand-written copy): a lane
+// qualifies when its precedence is [override, caption] AND the override field is
+// exclusive to that lane (FIELD_PLATFORMS). The exclusivity check is what keeps
+// wordpress/ghost out - their [body, caption] head is the SHARED blog body, a
+// primary field that must never be collapse-hidden. Exported for PostDetail's
+// override-hint rendering (same set, same source).
+export const OVERRIDE_FIELD = Object.fromEntries(
+  Object.entries(LANE_TEXT_PRECEDENCE)
+    .filter(([, fields]) => fields.length === 2 && fields[1] === 'caption' && (FIELD_PLATFORMS[fields[0]] || []).length === 1)
+    .map(([platform, fields]) => [platform, fields[0]]),
+);
 export function collapsedOverrideKey(platforms, values = {}) {
   const list = platforms || [];
   if (list.length === 1) {
@@ -1628,4 +1754,17 @@ export function collectThread(post, posts = []) {
     }
   }
   return out;
+}
+
+// Outcome of a publish_due_run for ONE post, from the server's `ran` rows (the
+// per-lane truth: ok only when a result row actually succeeded). Callers
+// localize: `held` = the cloud owns the lane inside its handoff grace, `reason`
+// = the first real failure's message. rows.length === 0 means nothing was
+// dispatched at all (not due / not approved / already posted).
+export function publishRunOutcome(res, postId) {
+  const rows = (res?.ran || []).filter((r) => r.postId === postId);
+  const fired = rows.some((r) => r.ok);
+  const held = !fired && rows.some((r) => r.errorCode === 'cloud_held');
+  const fail = rows.find((r) => !r.ok && r.errorCode !== 'cloud_held');
+  return { rows, fired, held, reason: fail ? (fail.errorMessage || fail.errorCode) : null };
 }

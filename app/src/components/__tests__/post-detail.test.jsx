@@ -19,8 +19,10 @@ import { I18nProvider } from '../../lib/i18n.js';
 const accountsState = { data: { meta: { paused: false } } };
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme Retail', accent: '#22566d' }, activeClientId: 'acme' }),
   usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
+  useConfig: () => ({ data: null }),
   useAccounts: () => accountsState,
   usePlatformValidate: () => ({ data: undefined }),
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),

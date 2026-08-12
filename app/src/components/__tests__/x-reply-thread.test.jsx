@@ -21,6 +21,7 @@ import { createPost, updatePost } from '../../lib/api.js';
 //      hatch for a dangling reference), X-targeted posts only.
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme Retail', accent: '#22566d' }, activeClientId: 'acme' }),
   usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),

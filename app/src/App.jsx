@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff, Menu } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, recheckHealth, setCampaignInternal } from './lib/api.js';
+import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, useInsights, recheckHealth, setCampaignInternal } from './lib/api.js';
 import { useT, useLocale, useSetLocale } from './lib/i18n.js';
 import { applyAccent, clientAccent } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
@@ -9,11 +9,14 @@ import { useCloud, useCloudClients, useInvalidateCloud } from './lib/cloud.js';
 import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, isLate, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
+import { useConfirm } from './components/ui/confirm.jsx';
+import { makeClientSwitchGuard } from './lib/clientSwitchGuard.js';
 import { Popover, PopoverTrigger, PopoverContent } from './components/ui/Popover.jsx';
 import { MultiSelectDropdown } from './components/ui/MultiSelectDropdown.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import SidebarResizer from './components/SidebarResizer.jsx';
 import UpdateToast from './components/UpdateToast.jsx';
+import HumanizerReceipt from './components/HumanizerReceipt.jsx';
 import DevReadonlyBadge from './components/DevReadonlyBadge.jsx';
 import { WeekView, MonthView, ListView } from './components/Planner.jsx';
 import PostDetail from './components/PostDetail.jsx';
@@ -93,6 +96,9 @@ export default function App() {
   // (no extra fetch).
   const { data: configData } = useConfig(true);
   const posting = configData?.posting;
+  // Evergreen recycling (dim-3 M1): the stored-insights read carries the shortlist
+  // of aged winners worth re-sharing. Enabled only on Published so the archive
+  // knows which rows to flag; React Query dedupes with the Insights page's own read.
   const reschedule = useReschedule();
   const invalidateCloud = useInvalidateCloud();
   // Delivery signalling: is the ACTIVE client published round-the-clock by the
@@ -107,6 +113,10 @@ export default function App() {
     const h = window.location.hash.replace('#', '');
     return PAGES.includes(h) ? h : 'planner';
   });
+  // Evergreen recycling (dim-3 M1): the stored-insights read carries the shortlist
+  // of aged winners worth re-sharing, enabled only on Published so the archive
+  // knows which rows to flag. React Query dedupes with the Insights page's read.
+  const { data: insightsData } = useInsights(page === 'published');
   // Cloud purchase deep-link + Stripe return (the Shared-contract query params, owned by the
   // Cloud page — see Cloud.jsx PLAN_PARAM/INTERVAL_PARAM and ?cloud=checkout). Read ONCE from
   // the launch url: the website links a paid plan to /download?plan=<tier>[&interval=<cadence>]
@@ -189,6 +199,10 @@ export default function App() {
   // without closing. Keys, not objects, so a plans refetch re-derives fresh posts.
   const [triageKeys, setTriageKeys] = useState(null);
   const [composer, setComposer] = useState(null); // null | {mode:'create'} | {mode:'edit', post}
+  // R6b humanizer receipt: the save response's {fixes, findings} when the gate
+  // rewrote prose, shown as ONE quiet dismissable line (present-when-telly). Null
+  // = nothing to show. No per-post store - it lives only until dismissed/replaced.
+  const [humanizerReceipt, setHumanizerReceipt] = useState(null);
   const [dark, toggleDark] = useDarkMode();
   // Narrow-viewport shell: below lg the fixed sidebar rail becomes an off-canvas
   // drawer, hidden by default and opened by the header hamburger. Meaningless on
@@ -438,6 +452,17 @@ export default function App() {
     setComposerReturn(PAGES.includes(page) ? page : 'planner');
     setPage('composer');
   };
+  // Evergreen recycle (dim-3 M1): seed a FRESH create-mode draft from a proven
+  // old post's caption + type + media, through the SAME gated openComposer/
+  // createPost path any new post uses. It never re-publishes or edits the live
+  // post - the owner reviews and approves the new draft in Freigaben as usual.
+  const recyclePost = (post) => {
+    openComposer({
+      caption: post.caption || '',
+      type: post.type,
+      ...(typeof post.media?.path === 'string' ? { mediaPath: post.media.path } : {}),
+    });
+  };
   const editComposer = (target) => {
     setComposer({ mode: 'edit', post: target });
     setComposerReturn(PAGES.includes(page) ? page : 'planner');
@@ -448,6 +473,31 @@ export default function App() {
     setComposer(null);
     setPage(composerReturn);
   };
+  // Dirty flag mirrored up from Composer/ThreadComposer (onDirtyChange). A ref,
+  // not state: the guard only samples it at the moment a switch is attempted,
+  // and keystrokes in the composer must never re-render this tree.
+  const composerDirtyRef = useRef(false);
+  const setComposerDirty = useCallback((d) => { composerDirtyRef.current = d; }, []);
+  const confirm = useConfirm();
+  // The ONE dirty-composer guard both client-switch paths run (sidebar
+  // ClientSwitcher via onBeforeSwitch, Cmd-K palette via onSwitchClient below):
+  // a dirty draft must be explicitly discarded before the app re-scopes, so a
+  // Save can never land it in another client's identically-named campaign
+  // (docs/specs/multi-client.md anti-goal; ux-audit dim 4 gap 1). Confirm
+  // discards the composer FIRST, then the caller switches; cancel stays put.
+  const guardClientSwitch = makeClientSwitchGuard({
+    isComposerDirty: () => page === 'composer' && composerDirtyRef.current,
+    confirmDiscard: () => confirm({
+      title: t('app.switchGuard.title'),
+      body: t('app.switchGuard.body', { client: activeClient?.displayName || t('clientSwitcher.noClient') }),
+      confirmLabel: t('app.switchGuard.confirm'),
+      danger: true,
+    }),
+    discardComposer: () => { setComposerDirty(false); closeComposer(); },
+  });
+  // One-shot intent from the client switcher's "Neues Projekt": the Projekte
+  // page opens with the create form already showing, then consumes the flag.
+  const [clientsCreateIntent, setClientsCreateIntent] = useState(false);
   // The sidebar "Overdue" button jumps to the chronological list, filtered
   // to overdue, so the owner lands on exactly what needs attention.
   const showOverdue = () => {
@@ -512,6 +562,9 @@ export default function App() {
         {/* In-app updater: a branded "preparing"/"reload" nudge when a background
             rebuild swaps in a new bundle. Fixed overlay, so placement is cosmetic. */}
         <UpdateToast />
+        {/* R6b: the quiet post-save humanizer receipt. Renders nothing when the
+            last save was clean. Reuses UpdateToast's bottom-right glass pattern. */}
+        <HumanizerReceipt fixes={humanizerReceipt?.fixes} onDismiss={() => setHumanizerReceipt(null)} />
         {/* dev:live read/compose-only marker (renders only when PENDPOST_DEV_READONLY=1). */}
         <DevReadonlyBadge />
         <div className="relative z-10 mx-auto flex h-dvh max-w-none gap-4 overflow-hidden p-4">
@@ -541,6 +594,8 @@ export default function App() {
             onNewThread={(seed) => { closeSidebar(); openThreadComposer(seed); }}
             onOpenPost={(post, list) => { closeSidebar(); openPost(post, list); }}
             onShowOverdue={() => { closeSidebar(); showOverdue(); }}
+            onCreateProject={() => { closeSidebar(); setClientsCreateIntent(true); navigateTo('clients'); }}
+            onBeforeSwitchClient={guardClientSwitch}
           />
 
           {/* Drag handle for the rail width. Sits inside the gap-4 above, so it
@@ -689,6 +744,23 @@ export default function App() {
                     SchedulerChip): a persistent symbol next to the language/theme
                     toggles whose popover folds the keep-open status and the managed
                     cloud upsell. Present on every page. */}
+                {/* Overdue beacon: present ONLY while something is past due - a red
+                    count in the persistent icon row (the sidebar chip is out of
+                    view on small screens / collapsed sidebars). Click = the same
+                    overdue jump the sidebar chip performs. */}
+                {overdueCount > 0 ? (
+                  <Tip label={t('header.overdue.tip', { count: overdueCount })}>
+                    <button
+                      type="button"
+                      onClick={showOverdue}
+                      aria-label={t('header.overdue.tip', { count: overdueCount })}
+                      className="flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-red-500/10 px-2.5 text-red-600 ring-1 ring-red-500/40 transition hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-red-400"
+                    >
+                      <TriangleAlert size={14} aria-hidden="true" />
+                      <span className="text-xs font-bold tabular-nums">{overdueCount}</span>
+                    </button>
+                  </Tip>
+                ) : null}
                 <ConnectionStatus running={accounts?.scheduler?.running} onNavigate={setPage} onShowAtRisk={showOverdue} />
                 <Tip label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}>
                   <button
@@ -858,11 +930,11 @@ export default function App() {
               ) : page === 'activity' ? (
                 <ActivityView active={page === 'activity'} platformFilter={platformFilter} failuresOnly={failuresOnly} actionGroups={actionGroups} campaigns={campaigns} onOpenPost={openPost} onNavigate={navigateTo} onShowSystem={() => setActionGroups(['system'])} onClearFilters={clearFilters} />
               ) : page === 'published' ? (
-                <Published campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} isLoading={isLoading} />
+                <Published campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} isLoading={isLoading} evergreen={insightsData?.evergreen || []} onRecycle={recyclePost} />
               ) : page === 'freigaben' ? (
                 <Freigaben campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={navigateTo} onModeChange={setFreigabenMode} />
               ) : page === 'insights' ? (
-                <Insights active={page === 'insights'} platformFilter={platformFilter} campaignFilter={campaignFilter} />
+                <Insights active={page === 'insights'} platformFilter={platformFilter} campaignFilter={campaignFilter} onOpenPost={openPost} />
               ) : page === 'assets' ? (
                 <Assets onAttach={openComposer} />
               ) : page === 'setup' ? (
@@ -870,7 +942,7 @@ export default function App() {
               ) : page === 'settings' ? (
                 <Settings focus={settingsFocus} onNavigate={navigateTo} />
               ) : page === 'clients' ? (
-                <Clients />
+                <Clients createIntent={clientsCreateIntent} onCreateIntentConsumed={() => setClientsCreateIntent(false)} />
               ) : page === 'cloud' ? (
                 <Cloud
                   checkoutReturn={cloudReturn}
@@ -885,6 +957,7 @@ export default function App() {
                   seed={composer.seed}
                   campaigns={campaigns}
                   onClose={closeComposer}
+                  onDirtyChange={setComposerDirty}
                   onSaved={(campaign, id) => setSelectedKey({ campaign, id })}
                 />
               ) : page === 'composer' && composer ? (
@@ -896,9 +969,15 @@ export default function App() {
                   accounts={accounts}
                   posting={posting}
                   onClose={closeComposer}
-                  onSaved={(campaign, id) => setSelectedKey({ campaign, id })}
+                  onSaved={(campaign, id, humanizer) => {
+                    setSelectedKey({ campaign, id });
+                    // Present-when-telly: only raise the receipt when the gate
+                    // actually rewrote something (fixes present).
+                    setHumanizerReceipt(humanizer?.fixes?.length ? humanizer : null);
+                  }}
                   onNavigate={(p) => { setComposer(null); setPage(p); }}
                   onStartThread={(text) => openThreadComposer({ text })}
+                  onDirtyChange={setComposerDirty}
                 />
               ) : campaigns.length === 0 && !isLoading ? (
                 // First-run / genuinely empty workspace (US-ONB-03): welcome +
@@ -909,7 +988,7 @@ export default function App() {
               ) : view === 'month' ? (
                 <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} loading={isLoading} lane={lane} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
               ) : (
-                <ListView posts={posts} onSelect={openPost} loading={isLoading} lane={lane} />
+                <ListView posts={posts} onSelect={openPost} loading={isLoading} lane={lane} showAllDays={statusFilter.length > 0} />
               )}
             </div>
           </main>
@@ -943,7 +1022,11 @@ export default function App() {
           dark={dark}
           clients={clientsData?.clients || []}
           activeClientId={activeClientId}
-          onSwitchClient={(id) => { setActiveClient(id).catch(() => {}); }}
+          onSwitchClient={async (id) => {
+            // Same guard as the sidebar switcher: never re-scope over a dirty draft.
+            if (!(await guardClientSwitch())) return;
+            setActiveClient(id).catch(() => {});
+          }}
         />
       </div>
     </TooltipProvider>

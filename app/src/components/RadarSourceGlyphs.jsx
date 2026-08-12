@@ -1,4 +1,4 @@
-import { Globe, Radio } from 'lucide-react';
+import { Globe, Radio, Check, Plus, Copy } from 'lucide-react';
 import { radarSourceState } from '../lib/format.js';
 import { PLATFORM_META } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
@@ -47,11 +47,15 @@ function glyphState(id, { capabilities, accounts, sourceStatus }) {
   return 'scan';
 }
 
-const DOT_CLS = {
-  ready: 'bg-emerald-500',
-  connect: 'bg-amber-500',
-  copy: 'bg-amber-500',
-  scan: 'bg-zinc-400 dark:bg-zinc-500',
+// The state badge is never colour-only (WCAG 1.4.1; canon "status is never colour-only"),
+// mirroring Setup.jsx StatusChip: a distinct GLYPH per state carries the meaning and the
+// colour only reinforces it. `scan` is the neutral baseline (nothing to connect, nothing to
+// act on) so it stays a plain muted dot rather than a glyph that would read as a signal.
+const STATE_ICON = { ready: Check, connect: Plus, copy: Copy };
+const STATE_FG = {
+  ready: 'text-emerald-600 dark:text-emerald-400',
+  connect: 'text-amber-600 dark:text-amber-500',
+  copy: 'text-amber-600 dark:text-amber-500',
 };
 
 export default function RadarSourceGlyphs({ sources = [], capabilities, accounts, sourceStatus, onNavigate, size = 15, className = '' }) {
@@ -66,11 +70,16 @@ export default function RadarSourceGlyphs({ sources = [], capabilities, accounts
         const label = state
           ? t(`radar.source.state.${state}`, { platform: t(`radar.source.${id}`) })
           : t(`radar.source.${id}`);
+        const StateIcon = STATE_ICON[state];
         const glyph = (
           <span className="relative inline-flex">
             <Icon size={size} className={color} aria-hidden="true" />
-            {state ? (
-              <span className={`absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full ring-2 ring-white dark:ring-zinc-900 ${DOT_CLS[state]}`} aria-hidden="true" />
+            {StateIcon ? (
+              <span className="absolute -right-1.5 -top-1.5 inline-flex items-center justify-center rounded-full bg-white p-px ring-1 ring-zinc-200 dark:bg-zinc-900 dark:ring-zinc-700" aria-hidden="true">
+                <StateIcon size={9} strokeWidth={3.5} className={STATE_FG[state]} />
+              </span>
+            ) : state === 'scan' ? (
+              <span className="absolute -right-1 -top-1 h-1.5 w-1.5 rounded-full bg-zinc-400 ring-2 ring-white dark:bg-zinc-500 dark:ring-zinc-900" aria-hidden="true" />
             ) : null}
           </span>
         );

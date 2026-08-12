@@ -39,9 +39,13 @@ import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
+import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -417,7 +421,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'liCommentId', 'ytVideoId', 'status', 'postedAt', 'attempts'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'liCommentId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -473,8 +477,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 
 // Per-attempt audit trail on the post itself (engine-owned field).
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 // Machine-readable run envelope for --json mode (consumed by the pendpost scheduler).
@@ -663,6 +668,13 @@ async function cmdPublishDue(args) {
     if (!isLinkedIn(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     // Fail-closed approval (SS-01): missing field = draft = never publish.
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
@@ -673,6 +685,18 @@ async function cmdPublishDue(args) {
 
     const lateMin = Math.round((now - dueMs) / 60000);
     if (lateMin > 15) console.log(`[warn] ${post.id}: publishing ${lateMin} min late (catch-up).`);
+
+    // Fresh-bytes caption backstop: LinkedIn caps share commentary at 3000 chars
+    // (lib/caption.mjs). platformValidate enforces it at author time, but a stale-queued
+    // cloud job (singletonKey dedupe) can carry a clean verdict past a later edit - so
+    // refuse an over-cap commentary here BEFORE the API rejects it. Commentary is the
+    // shared caption on every LinkedIn shape (a poll's question is its caption too).
+    const capBlock = captionBlocker(post.caption, 'linkedin');
+    if (capBlock) {
+      console.log(`[warn] ${post.id}: ${capBlock} - skipping.`);
+      RUN.results.push(captionBlockRow(post, 'linkedin', capBlock));
+      continue;
+    }
 
     const textPost = isTextPost(post);
     // Spec 10: a native poll org post - the question is the caption; carries no media.
@@ -703,6 +727,14 @@ async function cmdPublishDue(args) {
       mediaPath = resolveMediaPath(plan, post);
       if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
       if (!/\.(mp4|mov)$/i.test(mediaPath)) { console.log(`[warn] ${post.id}: not a video file - skipping (this script posts org videos).`); continue; }
+      // Fresh-bytes A/V-sync backstop: probe the actual bytes about to upload (not the
+      // manifest's stale author-time avSyncOk) - a measured desync is a malformed mux.
+      const avBlock = await avSyncBlocker(mediaPath);
+      if (avBlock) {
+        console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+        RUN.results.push(avSyncBlockRow(post, 'linkedin', avBlock));
+        continue;
+      }
     }
 
     if (args['dry-run']) {
@@ -1102,6 +1134,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'linkedin', scriptUrl: import.meta.url });
   // --json: human logs move to stderr; stdout carries exactly one JSON line
   // (the run envelope) for the pendpost scheduler. --actor tags attempts[].
   JSON_MODE = Boolean(args.json);

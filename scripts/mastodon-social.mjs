@@ -69,9 +69,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -167,7 +170,7 @@ function loadPlan(planPath) {
 // engine-owned field (post.ids.mastodonPinned in the client DTO, lib/plans.mjs) -
 // the optional echo cmdPin/cmdUnpin write so PostDetail's "Pin to profile"/"Unpin"
 // toggle renders the current state without a re-fetch.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'mastodonScheduledId', 'mastodonPinned', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'radarReplyState', 'radarFollowup'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'mastodonScheduledId', 'mastodonPinned', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState', 'radarFollowup'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -206,8 +209,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 }
 
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 const RUN = { results: [] };
@@ -380,6 +384,13 @@ async function cmdPublishDue(args) {
     if (!isMastodon(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
       continue;
@@ -421,6 +432,15 @@ async function cmdPublishDue(args) {
     if (!textPost && !pollPost && !carouselPost) {
       mediaPath = resolveMediaPath(plan, post);
       if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
+      // Fresh-bytes A/V-sync backstop: probe the actual video bytes about to upload (not
+      // the manifest's stale author-time avSyncOk) - a measured desync is a malformed mux.
+      // Self-gates on image attachments (a jpg never probes).
+      const avBlock = await avSyncBlocker(mediaPath);
+      if (avBlock) {
+        console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+        RUN.results.push(avSyncBlockRow(post, 'mastodon', avBlock));
+        continue;
+      }
     }
 
     if (args['dry-run']) {
@@ -467,6 +487,13 @@ async function cmdSchedule(args) {
     if (!isMastodon(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
       continue;
@@ -493,10 +520,13 @@ async function cmdSchedule(args) {
       const body = statusText(post);
       if (!body) { RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'radar reply needs a caption' }); continue; }
       const { radarHttp } = await import('../lib/radar.mjs');
+      // R11/N2: thread UNDER the author's follow-up status when one was captured
+      // (parentExternalId), else reply to the thread root - an honest fallback, never a broken target.
+      const target = String(rr.parentExternalId || rr.externalId);
       const { ok, status, json } = await radarHttp(`${instanceUrl()}/api/v1/statuses`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${accessToken()}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: body, in_reply_to_id: String(rr.externalId) }),
+        body: JSON.stringify({ status: body, in_reply_to_id: target }),
       });
       if (!ok || !json?.id) {
         const gone = status === 404;
@@ -510,7 +540,7 @@ async function cmdSchedule(args) {
       post.status = 'posted';
       post.postedAt = new Date().toISOString();
       await savePlan(abs, plan, [post.id]);
-      RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'publish', ok: true, id: post.mastodonStatusId, radarReply: rr.externalId });
+      RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'publish', ok: true, id: post.mastodonStatusId, radarReply: target });
       published += 1;
       continue;
     }
@@ -1217,6 +1247,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'mastodon', scriptUrl: import.meta.url });
   JSON_MODE = Boolean(args.json);
   ACTOR = typeof args.actor === 'string' ? args.actor : 'cli';
   if (JSON_MODE) console.log = (...a) => console.error(...a);

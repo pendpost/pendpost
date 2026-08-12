@@ -1,0 +1,37 @@
+name: Welcome
+
+# Greet a contributor's first issue or pull request with a friendly pointer to
+# how the project works. Runs once per author, on their first interaction only.
+# See docs/specs/feedback-pipeline.md (section 9).
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  greet:
+    # OSS community automation: runs on the public repo only.
+    if: github.repository == 'pendpost/pendpost'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: >-
+            Thanks for opening your first issue on pendpost. A maintainer will
+            triage it as soon as they can; we are a small part-time team, so
+            please allow some time. If you have not already, SUPPORT.md shows
+            where to get help and CONTRIBUTING.md explains how feedback, bugs,
+            and deeper proposals are handled.
+          pr-message: >-
+            Thanks for your first pull request to pendpost. Please make sure it
+            targets the develop branch and that npm run check passes locally.
+            CONTRIBUTING.md covers the parity rule and the house style, and the
+            one hard line: nothing may bypass the human approval gate.

@@ -1,0 +1,32 @@
+name: RFC label
+
+# Keep the rfc label in sync with the RFC track: any pull request that adds or
+# changes a file under docs/rfcs/ is an RFC, so label it. This is the low-risk
+# half of the RFC status sync in docs/specs/feedback-pipeline.md (section 9); the
+# status front-matter itself is maintained by the author in the RFC file.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - "docs/rfcs/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    # OSS community automation: runs on the public repo only.
+    if: github.repository == 'pendpost/pendpost'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              labels: ["rfc"],
+            });

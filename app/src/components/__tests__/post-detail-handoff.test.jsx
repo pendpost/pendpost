@@ -25,8 +25,10 @@ const markPosted = vi.fn(() => Promise.resolve({ ok: true }));
 const approvePost = vi.fn(() => Promise.resolve({ ok: true }));
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: null, activeClientId: null }),
   usePendpostHealth: () => healthState,
+  useConfig: () => ({ data: null }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => platformValidateState,
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),
@@ -163,7 +165,9 @@ describe('an unconnected lane hands the post back instead of faking an approval'
     // provenance instead of a bare "trust me, it went out".
     await user.type(screen.getByPlaceholderText(/https/i), 'https://reddit.com/r/askswitzerland/comments/abc/x/reply');
     await user.click(screen.getByRole('button', { name: /^confirm$/i }));
-    expect(markPosted).toHaveBeenCalledWith('radar-replies-2026-07', 'radar-reddit-mrkw3vy3ud', 'https://reddit.com/r/askswitzerland/comments/abc/x/reply');
+    // A single-lane post takes the whole-post mark path, so the lane-scoped 4th
+    // arg (platform, R5) is undefined here.
+    expect(markPosted).toHaveBeenCalledWith('radar-replies-2026-07', 'radar-reddit-mrkw3vy3ud', 'https://reddit.com/r/askswitzerland/comments/abc/x/reply', undefined);
   });
 
   it('does not hand off a post whose lane is merely SKIPPED (that is a decision, not a fault)', () => {

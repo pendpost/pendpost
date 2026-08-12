@@ -161,6 +161,29 @@ try {
   ok(angry.tail.includes('[redacted]'), 'the token is replaced, not silently dropped - the operator still sees the shape of the error');
   ok(!JSON.stringify(angry).includes(FAKE_TOKEN), 'the WHOLE failed-job payload is credential-free');
   ok(scrubCredential(`token ${FAKE_TOKEN} bad`, 'claude-code') === 'token [redacted] bad', 'scrubCredential redacts the live value');
+  ok(angry.error === 'exit', 'a generic crash stays reason `exit` - the limit reclassifier never touches it');
+
+  // ===== (6a) a usage-limit refusal is a LIMIT, not an "unexpected exit" =====
+  // Byte-faithful to the live failure that sat on the job row for 9 days as "your agent
+  // exited unexpectedly" over raw English: the CLI refuses on stderr and exits non-zero.
+  // The operator's recovery (wait for the reset / retry) is nothing like a crash's, so the
+  // reason must say so; anything the pattern misses stays `exit` (no-regression fallback).
+  const limitBin = path.join(WS, 'limit-claude');
+  fs.writeFileSync(limitBin, `#!/usr/bin/env node
+process.stderr.write("You've hit your weekly limit \\u00b7 resets 5am (Europe/Zurich)\\n");
+process.exit(1);
+`);
+  fs.chmodSync(limitBin, 0o755);
+  process.env[BIN_VAR] = limitBin;
+  const limited = await runAgentJob({ providerId: 'claude-code', prompt: 'x', allowedTools: [] });
+  ok(limited.ok === false && limited.error === 'limit', 'a weekly-limit refusal classifies as reason `limit`, not `exit`');
+  ok(limited.tail.includes('resets 5am'), 'the CLI\'s own reset words survive verbatim in the tail - quoted, never parsed');
+  // The regex is the fence: quota wordings match, prose mentioning "limit" in other shapes does not.
+  ok(runner.AGENT_LIMIT_RE.test('You have hit your usage limit'), 'usage limit matches');
+  ok(runner.AGENT_LIMIT_RE.test('5-hour limit reached · resets 3pm'), '5-hour limit matches');
+  ok(runner.AGENT_LIMIT_RE.test('API rate limit exceeded'), 'rate limit matches');
+  ok(!runner.AGENT_LIMIT_RE.test('no limit on results'), 'prose "no limit on results" does NOT match');
+  ok(!runner.AGENT_LIMIT_RE.test('raised the maxPerRun limit to 20'), 'a config knob named limit does NOT match');
 
   // ===== (6b) the auth failure that EXITS 0 - the shape an exit-code check would pass =====
   process.env[BIN_VAR] = authFailBin;
@@ -178,6 +201,18 @@ try {
   ok(timed.ok === false && timed.timedOut === true && timed.error === 'timeout', 'a hanging child TIMES OUT as a failed job with reason timeout');
   ok(Date.now() - t0 < 10_000, 'the timeout actually fires - it is not a job stuck running forever');
   ok(isJobRunning() === false, 'the registry is clean after a timeout - no orphan');
+  // A timeout stays a timeout even when the child mentioned a limit before hanging: only
+  // exit/agent_error runs are ever reclassified (stopped is the operator's own act, timeout a
+  // wall-clock fact - both already name their true cause).
+  const limitHangBin = path.join(WS, 'limit-hang-claude');
+  fs.writeFileSync(limitHangBin, `#!/usr/bin/env node
+process.stderr.write('approaching your weekly limit\\n');
+setInterval(() => {}, 1000);
+`);
+  fs.chmodSync(limitHangBin, 0o755);
+  process.env[BIN_VAR] = limitHangBin;
+  const limitHang = await runAgentJob({ providerId: 'claude-code', prompt: 'x', allowedTools: [], timeoutMs: 700 });
+  ok(limitHang.error === 'timeout', 'limit words in a timed-out child do NOT reclassify - timeout keeps its true cause');
 
   // ===== (8) one job per client + stop =====
   const inflight = runAgentJob({ providerId: 'claude-code', prompt: 'x', allowedTools: [], timeoutMs: 5000 });

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronsUpDown, Check, Settings2, Archive, Ban, Loader2, AlertTriangle } from 'lucide-react';
+import { ChevronsUpDown, Check, Settings2, Archive, Ban, Loader2, AlertTriangle, Plus } from 'lucide-react';
 import { useActiveClient, useSetActiveClient } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { clientAccent, monogram, DEFAULT_ACCENT } from '../lib/theme.js';
@@ -44,7 +44,7 @@ function ClientHealthDot({ client, t }) {
 // the operator never acts on the wrong client. Three redundant non-color signals
 // (name + logo, "active client" sublabel, browser title set in App.jsx) plus a
 // supplementary 4px accent rail.
-export default function ClientSwitcher({ onManage }) {
+export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
   const t = useT();
   const { activeClient, data, isLoading, isError, error } = useActiveClient();
   const setActive = useSetActiveClient();
@@ -94,6 +94,10 @@ export default function ClientSwitcher({ onManage }) {
       setOpen(false);
       return;
     }
+    // Shared dirty-composer guard (App's makeClientSwitchGuard): an unsaved
+    // draft must be explicitly discarded before the app re-scopes. A refusal
+    // means the operator cancelled - stay put, popover open, nothing switched.
+    if (onBeforeSwitch && !(await onBeforeSwitch())) return;
     const target = clients.find((c) => c.id === id);
     setSwitching(id);
     setStatus(null);
@@ -101,11 +105,15 @@ export default function ClientSwitcher({ onManage }) {
       await setActive(id);
       setStatus({ tone: 'ok', msg: t('clientSwitcher.switched', { name: target?.displayName || t('clientSwitcher.noClient') }) });
       setOpen(false);
-    } catch {
+    } catch (err) {
       // The switch failed: the operator is still on the prior client. Keep the
       // popover open and surface the failure (role=alert) so they never believe
       // they re-scoped when they did not - the most safety-critical control.
-      setStatus({ tone: 'error', msg: t('clientSwitcher.switchFailed', { name: target?.displayName || t('clientSwitcher.noClient') }) });
+      // The server's actionable detail rides along; the generic line is the anchor
+      // (and the whole message when the error carries no detail).
+      const generic = t('clientSwitcher.switchFailed', { name: target?.displayName || t('clientSwitcher.noClient') });
+      const detail = typeof err?.message === 'string' ? err.message.trim() : '';
+      setStatus({ tone: 'error', msg: detail ? `${generic} ${detail}` : generic });
     } finally {
       setSwitching(null);
     }
@@ -190,15 +198,19 @@ export default function ClientSwitcher({ onManage }) {
               <ul id="client-switcher-archived" className="space-y-0.5" role="list">
                 {tucked.map((c) => {
                   const dormant = c.status !== 'archived';
-                  const isBusy = c.id === switching;
+                  const isBusy = dormant && c.id === switching;
+                  // An archived client can NEVER be switched to (the server always
+                  // refuses); its row is a quiet navigation affordance to the
+                  // Projects page, where Restore lives - no click-trap dead end.
+                  // Dormant defaults stay real switch targets (Mandate H).
                   return (
                     <li key={c.id}>
                       <button
                         type="button"
-                        onClick={() => pick(c.id)}
-                        disabled={Boolean(switching)}
+                        onClick={dormant ? () => pick(c.id) : goManage}
+                        disabled={dormant ? Boolean(switching) : undefined}
                         aria-busy={isBusy || undefined}
-                        title={dormant ? t('clientSwitcher.defaultTip') : undefined}
+                        title={dormant ? t('clientSwitcher.defaultTip') : t('clientSwitcher.archivedTip')}
                         className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:hover:bg-zinc-700/60"
                       >
                         <ClientAvatar client={c} size={22} />
@@ -211,6 +223,7 @@ export default function ClientSwitcher({ onManage }) {
                             {dormant ? t('clientSwitcher.defaultHint') : t('clientSwitcher.archived')}
                           </span>
                         )}
+                        {!dormant ? <span className="sr-only">{t('clientSwitcher.archivedTip')}</span> : null}
                       </button>
                     </li>
                   );
@@ -221,6 +234,18 @@ export default function ClientSwitcher({ onManage }) {
         ) : null}
 
         <div className="my-1 h-px bg-zinc-200/70 dark:bg-zinc-700/70" aria-hidden="true" />
+        {/* Creating a project is reachable where projects are switched - not
+            only via the Projekte page (the switcher is where the need arises). */}
+        {onCreate ? (
+          <button
+            type="button"
+            onClick={() => { setOpen(false); onCreate(); }}
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm font-bold text-zinc-600 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:bg-zinc-700/60"
+          >
+            <Plus size={15} aria-hidden="true" />
+            {t('clientSwitcher.create')}
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={goManage}

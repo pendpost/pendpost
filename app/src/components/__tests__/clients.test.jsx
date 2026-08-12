@@ -12,8 +12,12 @@ import { ConfirmProvider } from '../ui/confirm.jsx';
 // image file flows through uploadAssetFile and is stored as {path,url}, never the
 // broken {file} shape; an upload failure surfaces an inline banner).
 let clientsState;
+// The joined health/in-flight roll-up; per-test rows drive the A4 archive-safety
+// confirm (row.inFlight) as well as the B5 health cell.
+let overviewState;
 const updateClient = vi.fn(() => Promise.resolve({ ok: true, rev: 'new000000000' }));
 const uploadAssetFile = vi.fn(() => Promise.resolve({ ok: true, file: 'logo.png' }));
+const archiveClient = vi.fn(() => Promise.resolve({ ok: true }));
 // make-active routes through the shared useSetActiveClient() hook (single
 // CLIENT_SCOPED_KEYS source of truth), so the mock exposes that hook, not the
 // raw setActiveClient. setActive is the function the hook returns.
@@ -21,14 +25,20 @@ const setActive = vi.fn(() => Promise.resolve({ ok: true }));
 
 vi.mock('../../lib/api.js', () => ({
   useClients: () => ({ data: clientsState, isLoading: false, isError: false, error: null }),
-  // C4 read-only Overview panel (rendered inside Clients): stub it empty so this
-  // file's assertions stay focused on the admin table / form behavior.
-  useClientsOverview: () => ({ data: { clients: [] }, isLoading: false, isError: false, error: null }),
+  useClientsOverview: () => ({ data: overviewState, isLoading: false, isError: false, error: null }),
   createClient: vi.fn(() => Promise.resolve({ ok: true })),
   updateClient: (...args) => updateClient(...args),
-  archiveClient: vi.fn(() => Promise.resolve({ ok: true })),
+  archiveClient: (...args) => archiveClient(...args),
   useSetActiveClient: () => setActive,
   uploadAssetFile: (...args) => uploadAssetFile(...args),
+  // Client review link (spec 48 R10): the ReviewSection Clients now renders for the
+  // active project pulls these. Stubbed inert so this file stays focused on the
+  // admin table / form; the review UI has its own dedicated tests.
+  useReviewers: () => ({ data: { reviewers: [] }, isLoading: false }),
+  useConfig: () => ({ data: { rev: 'r1', posting: { review: { required: false, hosted: false, contact: null } } } }),
+  saveConfig: vi.fn(() => Promise.resolve({ ok: true })),
+  createReviewer: vi.fn(() => Promise.resolve({ ok: true, token: 't', reviewer: {} })),
+  revokeReviewer: vi.fn(() => Promise.resolve({ ok: true })),
 }));
 
 function renderClients() {
@@ -47,7 +57,12 @@ function renderClients() {
 beforeEach(() => {
   updateClient.mockClear();
   uploadAssetFile.mockClear();
+  archiveClient.mockClear();
+  archiveClient.mockImplementation(() => Promise.resolve({ ok: true }));
   setActive.mockClear();
+  // C4 read-only overview: stub empty by default so unrelated assertions stay
+  // focused on the admin table / form behavior.
+  overviewState = { clients: [] };
   clientsState = {
     activeClientId: 'acme',
     clients: [
@@ -183,6 +198,96 @@ describe('Clients make-active (R2: shared invalidation + SR announcement)', () =
     // returns the raw key, so assert the region becomes non-empty after a switch
     // rather than binding to the (not-yet-merged) translated copy.
     await waitFor(() => expect(status.textContent.length).toBeGreaterThan(0));
+  });
+});
+
+// A4 archive safety: the confirm must be HONEST about a client's in-flight work
+// and, when the platform itself already holds scheduled objects, must archive
+// THROUGH the server's unschedule sweep rather than hiding a still-publishing
+// brand. The overview roll-up (overviewState) carries the per-row inFlight
+// counts; the engine half already returns them and gates on needs_confirm.
+describe('Clients A4 archive-safety confirm', () => {
+  it('idle client: plain archive dialog (suppressible), no unschedule sweep', async () => {
+    // Default overviewState = { clients: [] } -> globex carries no in-flight row.
+    const user = userEvent.setup();
+    renderClients();
+    const globexRow = screen.getByRole('row', { name: /globex inc/i });
+    await user.click(within(globexRow).getByRole('button', { name: /archive globex/i }));
+    const dialog = await screen.findByRole('dialog');
+    // The idle-archive dialog keeps its "don't show again" suppression checkbox.
+    expect(within(dialog).getByRole('checkbox')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: /^archive$/i }));
+    await waitFor(() => expect(archiveClient).toHaveBeenCalledTimes(1));
+    // No sweep: idle archive is unchanged (empty opts, no unscheduleInFlight).
+    expect(archiveClient).toHaveBeenCalledWith('globex', {});
+  });
+
+  it('locally-fired in-flight: shows the count, drops the suppression, and parks via the sweep', async () => {
+    overviewState = { clients: [{ id: 'globex', inFlight: { total: 3, local: 3, native: 0 } }] };
+    const user = userEvent.setup();
+    renderClients();
+    const globexRow = screen.getByRole('row', { name: /globex inc/i });
+    await user.click(within(globexRow).getByRole('button', { name: /archive globex/i }));
+    const dialog = await screen.findByRole('dialog');
+    // The count is SHOWN, not hidden behind a generic "archive?" copy.
+    expect(within(dialog).getByText(/3 approved post/i)).toBeInTheDocument();
+    // In-flight work must be SEEN: the suppression checkbox is gone.
+    expect(within(dialog).queryByRole('checkbox')).not.toBeInTheDocument();
+    // Confirming runs the sweep so nothing sits as invisible overdue backlog.
+    await user.click(within(dialog).getByRole('button', { name: /unschedule and archive/i }));
+    await waitFor(() => expect(archiveClient).toHaveBeenCalledTimes(1));
+    expect(archiveClient).toHaveBeenCalledWith('globex', { unscheduleInFlight: true });
+  });
+
+  it('natively-scheduled in-flight: surfaces total + native counts and archives through the unschedule sweep', async () => {
+    overviewState = { clients: [{ id: 'globex', inFlight: { total: 4, local: 2, native: 2 } }] };
+    const user = userEvent.setup();
+    renderClients();
+    const globexRow = screen.getByRole('row', { name: /globex inc/i });
+    await user.click(within(globexRow).getByRole('button', { name: /archive globex/i }));
+    const dialog = await screen.findByRole('dialog');
+    // Both the total on the way and the platform-scheduled subset are named.
+    expect(within(dialog).getByText(/4 post\(s\) on the way/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/2 of them scheduled on the platform/i)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: /unschedule and archive/i }));
+    await waitFor(() => expect(archiveClient).toHaveBeenCalledTimes(1));
+    expect(archiveClient).toHaveBeenCalledWith('globex', { unscheduleInFlight: true });
+  });
+
+  it('cancelling the in-flight archive never calls the server', async () => {
+    overviewState = { clients: [{ id: 'globex', inFlight: { total: 2, local: 0, native: 2 } }] };
+    const user = userEvent.setup();
+    renderClients();
+    const globexRow = screen.getByRole('row', { name: /globex inc/i });
+    await user.click(within(globexRow).getByRole('button', { name: /archive globex/i }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /cancel/i }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(archiveClient).not.toHaveBeenCalled();
+  });
+
+  it('server fails closed: a stale idle dialog re-asks with the server counts, then archives with the sweep', async () => {
+    // Overview shows globex idle, so the first dialog is the plain archive; the
+    // server then refuses (needs_confirm) with fresh native-scheduled counts.
+    archiveClient.mockRejectedValueOnce(
+      Object.assign(new Error('client globex still has in-flight work'), {
+        code: 'needs_confirm',
+        inFlight: { total: 2, local: 0, native: 2 },
+      }),
+    );
+    const user = userEvent.setup();
+    renderClients();
+    const globexRow = screen.getByRole('row', { name: /globex inc/i });
+    await user.click(within(globexRow).getByRole('button', { name: /archive globex/i }));
+    const first = await screen.findByRole('dialog');
+    await user.click(within(first).getByRole('button', { name: /^archive$/i }));
+    // First (blind) attempt carried no sweep and was refused.
+    await waitFor(() => expect(archiveClient).toHaveBeenNthCalledWith(1, 'globex', {}));
+    // The re-ask shows the SERVER'S numbers and offers the sweep.
+    const second = await screen.findByText(/2 of them scheduled on the platform/i);
+    const reask = second.closest('[role="dialog"]');
+    await user.click(within(reask).getByRole('button', { name: /unschedule and archive/i }));
+    await waitFor(() => expect(archiveClient).toHaveBeenNthCalledWith(2, 'globex', { unscheduleInFlight: true }));
   });
 });
 

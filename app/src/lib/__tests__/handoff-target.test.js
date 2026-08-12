@@ -61,6 +61,26 @@ describe('the other lanes that can resolve while disconnected', () => {
   });
 });
 
+describe('prefill fidelity (gap G5): the intent carries the lane\'s EFFECTIVE text', () => {
+  // The engines publish (override || caption); the prefill must match, or the submit
+  // page shows text the approval gate never approved.
+  it('reddit prefills redditText over the caption, like reddit-social.mjs bodyText', () => {
+    const t = handOffTarget(post({ redditText: 'The reddit body.', title: 'T' }), 'reddit', accounts);
+    expect(t.url).toContain('text=The+reddit+body.');
+    expect(t.url).not.toContain('self-hosted+option.');
+  });
+
+  it('X prefills xCaption over the caption, like x-social.mjs tweetText', () => {
+    expect(handOffTarget(post({ xCaption: 'The x version.' }), 'x', accounts).url)
+      .toBe('https://x.com/intent/post?text=The%20x%20version.');
+  });
+
+  it('mastodon prefills mastodonCaption over the caption, like mastodon-social.mjs statusText', () => {
+    expect(handOffTarget(post({ mastodonCaption: 'The mastodon version.' }), 'mastodon', accounts).url)
+      .toBe('https://mastodon.social/share?text=The%20mastodon%20version.');
+  });
+});
+
 describe('lanes with nothing to build from', () => {
   it.each(['instagram', 'facebook', 'linkedin', 'youtube', 'pinterest', 'tiktok', 'telegram', 'discord', 'nostr', 'gbp'])(
     'names %s without a URL rather than fabricating one',

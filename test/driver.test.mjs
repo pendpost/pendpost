@@ -171,10 +171,29 @@ try {
   // 124 / 102 = +radar_followup_check (spec 44 author-reply): the on-demand author-reply check.
   // 125 routes = +POST /api/agent/adopt (tool-less by design, a human dashboard ceremony).
   // 126 routes = +POST /api/cloud/heal (operator-only with the other /api/cloud/* ceremonies).
-  ok(/126 routes, 102 tools.*0 documented UI-only/.test(parityOut),
+  // 127 routes / 103 tools = +radar_mark_copy_posted + its POST twin (R5 piece 2, copy-draft
+  // posted-by-hand recording).
+  // 127 routes / 104 tools = +read_insights on the EXISTING GET /api/insights route (R8 /
+  // dim-3 M2, stored-metrics read; no new route), so tools go 103 -> 104.
+  // 129 routes / 105 tools = +the autonomy ledger (ux-audit R7): GET /api/autonomy (UI read,
+  // no tool) + POST /api/autonomy/revoke with its autonomy_revoke tool, so tools go 104 -> 105.
+  // 132 routes / 108 tools = +the client review link reviewer twins (ux-audit R10, spec 48):
+  // reviewer_list/reviewer_create/reviewer_revoke over GET+POST /api/clients/<id>/reviewers[...],
+  // so tools go 105 -> 108. (The reviewer's own POST /review/<token>/decision rides the separate
+  // 8091 listener, not /api or /mcp, and is fourth-face-exempt, so it adds no route or tool here.)
+  // 138 routes / 113 tools = +the relationship-memory verbs (spec 49 R12): list_engagers (gated
+  // read) + forget/unforget/link/unlink over GET+POST /api/engagers[...], so tools go 108 -> 113,
+  // PLUS the GUI-only POST /api/engagers/dismiss-link (no MCP twin) - so UI-only goes 0 -> 1.
+  // 138 routes / 114 tools = +radar_geo_reset (owner-only GEO footprint reset, 3b2aa55): an MCP-only
+  // maintenance verb with NO REST twin by design (parity exemption alongside connect_discover), so
+  // tools go 113 -> 114 while routes and the 1 UI-only capability are unchanged.
+  // 141 routes / 117 tools = +the own-post comment-watch inbox faces (radar-post-comments): the three
+  // REST+MCP twins comment_inbox (GET /api/comments/inbox), comment_inbox_refresh (POST .../refresh)
+  // and comment_resolve (POST .../resolve), so both routes and tools go +3 (138 -> 141, 114 -> 117).
+  ok(/141 routes, 117 tools.*1 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 126/102 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 138/114 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

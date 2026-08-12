@@ -40,9 +40,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -96,7 +99,7 @@ function loadPlan(planPath) {
 // Spec 26: dcEventId is the guild-scheduled-event id the `schedule-event` verb
 // mints - engine-owned like dcMessageId, so it survives the field-merge save
 // (savePlan below) under a concurrent edit.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'dcEventId', 'status', 'postedAt', 'attempts'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'dcEventId', 'status', 'postedAt', 'attempts', 'publishHold'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -135,8 +138,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 }
 
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 // Exported (mirrors scripts/reddit-social.mjs's RUN) so a test can drive cmdEdit
@@ -242,6 +246,13 @@ async function cmdPublishDue(args) {
     if (!isDiscord(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
       continue;
@@ -284,6 +295,15 @@ async function cmdPublishDue(args) {
     if (!textPost && !pollPost && !carouselPost) {
       mediaPath = resolveMediaPath(plan, post);
       if (!mediaPath) { console.log(`[warn] ${post.id}: due but local media not found (${post.path || post.file}) - skipping.`); continue; }
+      // Fresh-bytes A/V-sync backstop: probe the actual video bytes about to upload (not
+      // the manifest's stale author-time avSyncOk) - a measured desync is a malformed mux.
+      // Self-gates on image attachments (a jpg never probes).
+      const avBlock = await avSyncBlocker(mediaPath);
+      if (avBlock) {
+        console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+        RUN.results.push(avSyncBlockRow(post, 'discord', avBlock));
+        continue;
+      }
     }
 
     if (args['dry-run']) {
@@ -689,6 +709,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'discord', scriptUrl: import.meta.url });
   JSON_MODE = Boolean(args.json);
   ACTOR = typeof args.actor === 'string' ? args.actor : 'cli';
   if (JSON_MODE) console.log = (...a) => console.error(...a);

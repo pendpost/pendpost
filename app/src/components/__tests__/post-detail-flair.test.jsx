@@ -18,8 +18,10 @@ const presubmitState = { data: undefined };
 const updatePost = vi.fn(() => Promise.resolve({ ok: true }));
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: null, activeClientId: null }),
   usePendpostHealth: () => ({ data: { setup: { platforms: [{ platform: 'reddit', status: 'connected' }] } } }),
+  useConfig: () => ({ data: null }),
   useAccounts: () => ({ data: { meta: { paused: false }, reddit: { subreddit: 'selfhosted' } } }),
   usePlatformValidate: () => ({ data: undefined }),
   useRedditFlairs: (...args) => { flairsState.calls = [...(flairsState.calls || []), args]; return flairsState; },

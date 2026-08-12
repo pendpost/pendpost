@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, CalendarPlus, PauseCircle, CheckCheck, Send, ExternalLink, FileImage, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, MessageSquare, ListPlus, ChevronLeft, ChevronRight, Cloud as CloudIcon, Zap, RefreshCw, Pin, PlugZap, ClipboardCopy, Wrench } from 'lucide-react';
-import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, handOffTarget, mastodonThreadUrl, fieldsForPost, deriveThread, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia } from '../lib/format.js';
+import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome } from '../lib/format.js';
 import {
-  useAccounts, usePendpostHealth, usePlatformValidate, usePresubmitCheck, useValidateMedia, useActiveClient, useRedditFlairs,
+  useAccounts, usePendpostHealth, usePlatformValidate, usePresubmitCheck, useValidateMedia, useActiveClient, useRedditFlairs, useInsights, useConfig,
   approvePost, rejectPost, deletePost, unschedulePost, reschedulePost, markPosted, verifyPost,
   runPublishDue, setCoverFrame, uploadCover, clearCover, updatePost, editPublished, discordScheduleEvent, mastodonPin,
 } from '../lib/api.js';
+import { MetricChips, makeMetricLabel } from './Insights.jsx';
 import { useCloudDelivery } from '../lib/cloud.js';
 import { StatusPill, ApprovalPill, PlatformIcons, PLATFORM_META, INNER_SURFACE, Modal, CloseButton, PostPreview, PlatformBlockers, setupLinkOffered, EYEBROW } from './ui.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
@@ -16,6 +17,7 @@ import { IconBadge } from './ui/IconBadge.jsx';
 import BrandLintBadge from './ui/BrandLintBadge.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { destinationFor, shortId } from './ui/DestinationStrip.jsx';
+import { ReviewStatusChip } from './ReviewLink.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { useConfirm, usePrompt } from './ui/confirm.jsx';
 import CommentsPanel from './CommentsPanel.jsx';
@@ -332,6 +334,20 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // react-query dedupes by key, so this is a read of a cache the modal simply never looked at.
   const { data: health } = usePendpostHealth(true);
   const offlineLanes = unconnectedLanes(post, health?.setup);
+  // dim-3 M5: the after-publish home shows THIS post's stored metric chips beside
+  // its verify chips (the ['insights'] query is already held by the Insights panel,
+  // react-query dedupes by key - no extra fetch). A per-platform map of the stored
+  // rows for this exact post; the metric label resolver is the SAME one the panel
+  // uses (makeMetricLabel), so the chips read identically.
+  const { data: insightsData } = useInsights(true);
+  const metricLabel = makeMetricLabel(t, insightsData?.metricLabels || {});
+  const metricsByPlatform = useMemo(() => {
+    const map = {};
+    for (const it of insightsData?.items || []) {
+      if (it.campaign === post.campaign && it.postId === post.id) map[it.platform] = it;
+    }
+    return map;
+  }, [insightsData, post.campaign, post.id]);
   // The account a lane publishes to, as a short label for the delivery rows. The
   // platform-confirmed account from the verify read-back beats the configured one:
   // after a publish, where the media ACTUALLY lives is the fact worth showing. Returns
@@ -643,15 +659,21 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // One dialog (not two): the link prompt IS the confirmation - its body explains
   // the post leaves the queue and nothing is published. null = cancel (snaps the
   // button back to idle), empty string = mark with no link.
-  const onMarkPosted = async () => {
+  const onMarkPosted = async (lane) => {
     setError(null);
+    // R5/G4/L4: on a MIXED multi-lane post, mark ONLY the named lane so the post
+    // keeps owing its still-open siblings (whole-post mark below closes all lanes,
+    // which is wrong when pendpost still owes one). A string lane = scoped; any
+    // non-string (e.g. an ActionButton event) falls back to the whole-post mark.
+    const scoped = typeof lane === 'string' && lane ? lane : null;
+    const laneLabel = scoped ? (PLATFORM_META[scoped]?.label || scoped) : null;
     const url = await prompt({
-      title: t('postDetail.markPosted.title'),
-      body: t('postDetail.markPosted.body', { id: post.id }),
+      title: scoped ? t('postDetail.markPosted.laneTitle', { lane: laneLabel }) : t('postDetail.markPosted.title'),
+      body: scoped ? t('postDetail.markPosted.laneBody', { id: post.id, lane: laneLabel }) : t('postDetail.markPosted.body', { id: post.id }),
       placeholder: t('postDetail.markPosted.placeholder'),
     });
     if (url === null) throw { canceled: true };
-    await markPosted(post.campaign, post.id, url.trim() || undefined);
+    await markPosted(post.campaign, post.id, url.trim() || undefined, scoped || undefined);
     refresh();
   };
   // Read the post back from its platforms to confirm it is actually live
@@ -668,18 +690,40 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   const onPublishNow = async () => {
     setError(null);
     const ok = await confirm({
-      title: t('postDetail.publishNow.title'),
-      body: withClientLine(t('postDetail.publishNow.body', { id: post.id })),
-      confirmLabel: t('postDetail.publishNow.confirmLabel'),
+      title: t(retryHeld ? 'postDetail.tryAgain.title' : 'postDetail.publishNow.title'),
+      body: withClientLine(t(retryHeld ? 'postDetail.tryAgain.body' : 'postDetail.publishNow.body', { id: post.id })),
+      confirmLabel: t(retryHeld ? 'postDetail.tryAgain.confirmLabel' : 'postDetail.publishNow.confirmLabel'),
       danger: true,
     });
     if (!ok) throw { canceled: true };
+    if (retryHeld) {
+      // Fix B7: clear the hold FIRST, or the run below fires zero lanes (lanesOwed
+      // skips a held post). A reschedule to the post's OWN unchanged scheduledAt is
+      // the engine's documented "retry now" verb (lib/publish-hold.mjs) - server-legal
+      // (reschedulePost validates ISO-8601 only, never future-ness) and otherwise
+      // GUI-inexpressible (the picker's disablePast). needs_confirm escalates like
+      // every other native-object mutation (a natively scheduled sibling lane).
+      try {
+        await reschedulePost(post.campaign, post.id, post.scheduledAt, false);
+      } catch (err) {
+        if (err?.code !== 'needs_confirm') throw err;
+        const ok2 = await confirm({ title: t('postDetail.confirm.title'), body: withClientLine(err.message), confirmLabel: t('postDetail.confirm.continue'), danger: true });
+        if (!ok2) throw { canceled: true };
+        await reschedulePost(post.campaign, post.id, post.scheduledAt, true);
+      }
+    }
     const res = await runPublishDue({ campaign: post.campaign, postId: post.id });
-    const mine = (res?.ran || []).filter((r) => r.postId === post.id);
-    const failed = mine.find((r) => !r.ok);
-    if (failed) {
+    const { rows: mine, fired, held, reason } = publishRunOutcome(res, post.id);
+    if (!fired && held) {
+      // The cloud owns this lane inside its handoff grace: nothing failed, the
+      // click just cannot fire locally yet. Say so instead of flashing success.
       refresh();
-      setError(t('postDetail.publishNow.laneFailed', { lane: failed.lane }));
+      setError(t('postDetail.publishNow.cloudHeld'));
+      throw { canceled: true };
+    }
+    if (!fired && mine.length) {
+      refresh();
+      setError(reason ? t('postDetail.publishNow.failedReason', { reason }) : t('postDetail.publishNow.laneFailed', { lane: mine[0].lane }));
       throw { canceled: true };
     }
     if (!mine.length) {
@@ -691,8 +735,35 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
       const fresh = (queryClient.getQueryData(['plans'])?.campaigns || [])
         .find((c) => c.id === post.campaign)?.posts?.find((p) => p.id === post.id);
       if (fresh?.derivedState === 'posted' || fresh?.status === 'posted') return;
-      setError(t('postDetail.publishNow.nothingRan'));
+      // For a held-post retry the "scheduler beat the click" story is impossible
+      // (the scheduler skips a held post), so never blame it - say plainly that
+      // the block was cleared but no lane fired, and point at Activity.
+      setError(t(retryHeld ? 'postDetail.publishNow.nothingRanHeld' : 'postDetail.publishNow.nothingRan'));
       throw { canceled: true };
+    }
+    refresh();
+  };
+  // Attach the live URL to a post that was hand-published without one (the
+  // copy-draft flow often records the permalink later). Server-side this is
+  // markPosted's one legal re-entry for manual posts.
+  const onAddExternalUrl = async () => {
+    setError(null);
+    const url = await prompt({
+      title: t('postDetail.addExternalUrl.title'),
+      body: t('postDetail.addExternalUrl.body'),
+      placeholder: 'https://',
+    });
+    if (url === null) return;
+    const clean = url.trim();
+    if (!/^https?:\/\//.test(clean)) {
+      setError(t('postDetail.addExternalUrl.invalid'));
+      return;
+    }
+    try {
+      await markPosted(post.campaign, post.id, clean);
+    } catch (err) {
+      setError(err?.message || t('postDetail.error.generic'));
+      return;
     }
     refresh();
   };
@@ -741,6 +812,14 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // Suppress the flag for the pill ONLY on a posted post; every non-posted post
   // keeps the real flag (and the gate it drives) untouched.
   const showEditedSinceApproval = post.derivedState !== 'posted' && post.editedSinceApproval;
+  // Spec 48 R10 (V6): whether this project requires client sign-off, and the status
+  // pill state clamped so a post awaiting sign-off never reads as overdue-red (the
+  // clock rule, section 4.6); the ReviewStatusChip carries the awaiting/signed state.
+  const { data: reviewConfig } = useConfig(true);
+  const reviewRequired = Boolean(reviewConfig?.posting?.review?.required);
+  const reviewPillState = post.reviewPending && (post.derivedState === 'overdue' || post.derivedState === 'publish-failed')
+    ? null
+    : post.derivedState;
   const canReject = post.approval !== 'rejected' && post.derivedState !== 'posted';
   const editable = post.derivedState !== 'posted';
   // Verify is meaningful once a post is handed off and past due (fired-assumed),
@@ -752,7 +831,25 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // 'publish-failed' is 'overdue' plus a recorded reason (lib/plans.mjs), so it must keep
   // the publish-now control - retrying by hand is a recovery, and hiding the button on the
   // exact posts that failed would remove the way out.
-  const canPublishNow = (post.derivedState === 'overdue' || post.derivedState === 'publish-failed') && post.approval === 'approved' && !post.editedSinceApproval;
+  // Fix B7 (ux-audit dim-1 G1): a publish-HELD post (publishHold stamped after
+  // MAX_PUBLISH_ATTEMPTS trailing failures, lib/publish-hold.mjs) owes NO lanes
+  // (lib/scheduler.mjs lanesOwed), so a bare "Publish now" would fire nothing and
+  // then blame the scheduler. The engine's documented recovery is a reschedule -
+  // even to the SAME time (lib/writes.mjs reschedulePost deletes the hold) - so
+  // for a held post the same primary slot becomes "Try again": clear the hold via
+  // a same-time reschedule, then refire. When the failing lane is OFFLINE the
+  // retry would only refail: drop the publish CTA entirely and let the failure
+  // banner's mark-as-posted own the recovery (post it yourself is then true).
+  const held = Boolean(post.publishHold);
+  const heldLaneOffline = held && offlineLanes.includes(post.publishHold?.lane);
+  // ux-audit dim-1 row 35 / R1a: a Radar reply whose external target 404'd is
+  // TERMINAL (the engine stamped radarReplyState='target_gone' and lanesOwed
+  // skips the lane forever - lib/scheduler.mjs). A "Publish now" here would fire
+  // zero lanes and then read like a scheduler bug (the exact B7 class), so the
+  // state's one recovery verb is the failure banner's "Discard draft" instead.
+  const targetGone = Boolean(post.radarReplyTo) && post.radarReplyState === 'target_gone' && post.derivedState !== 'posted';
+  const canPublishNow = (post.derivedState === 'overdue' || post.derivedState === 'publish-failed') && post.approval === 'approved' && !post.editedSinceApproval && !heldLaneOffline && !targetGone;
+  const retryHeld = canPublishNow && held;
   // The Comments thread panel (spec 02, Pattern P6) is offered on a POSTED post that
   // reached a comment-capable lane. Opening it pulls the comments on demand; the
   // reply loop is operator-in-the-loop (no auto-reply surface exists anywhere).
@@ -898,7 +995,14 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   const handOffTargets = offlineLanes.map((p) => handOffTarget(post, p, accounts)).filter(Boolean);
   const openableTargets = handOffTargets.filter((tgt) => tgt.url);
   const onHandOff = async () => {
-    const text = (post.caption || '').trim();
+    // Copy the lane's EFFECTIVE text (the same override precedence the engines
+    // publish: xCaption/redditText/tgCaption/... else caption), not the bare caption -
+    // otherwise the clipboard can differ from what the approval gate approved (gap G5).
+    // The clipboard holds ONE text: with several offline lanes that resolve
+    // differently, the shared caption is the only honest common ground, and each
+    // destination link already prefills its own lane's text via handOffTarget.
+    const texts = [...new Set(offlineLanes.map((p) => effectiveLaneText(post, p)))];
+    const text = texts.length === 1 ? texts[0] : (post.caption || '').trim();
     if (text) await navigator.clipboard.writeText(text);
     const target = post.radarReplyTo?.url
       || post.externalUrl
@@ -909,6 +1013,22 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
 
   // ⋯ overflow items (data, not markup) - filtered to what's valid for the state.
   // The full Composer stays reachable for heavy media work via "Open in editor".
+  // R5/G4/L4: mark-as-posted becomes lane-scoped on a MIXED multi-lane post - one
+  // "Mark <lane> posted" entry per still-owed lane, so recording one lane by hand
+  // never closes the siblings pendpost still owes. A single-lane post keeps the one
+  // whole-post entry. `pending` tier = the lane has no publish evidence yet (mirrors
+  // pendingPlatforms below), and lanes that already carry a manual marker drop out.
+  const isMixed = (post.platforms?.length || 0) > 1;
+  const owedForMark = post.derivedState === 'posted'
+    ? []
+    : (post.platforms || []).filter((p) => PLATFORM_META[p]
+        && platformState(post, p, t).tier === 'pending'
+        && !(post.manualCompletions && post.manualCompletions[p]));
+  const markEntries = post.derivedState === 'posted'
+    ? []
+    : isMixed
+      ? owedForMark.map((lane) => ({ key: `mark-${lane}`, icon: CheckCheck, label: t('postDetail.action.markLaneIdle', { lane: PLATFORM_META[lane]?.label || lane }), run: () => onMarkPosted(lane) }))
+      : [{ key: 'mark', icon: CheckCheck, label: t('postDetail.action.markIdle'), run: () => onMarkPosted() }];
   const menuItems = [
     // Reachable for a normal draft/scheduled post (editable) AND for a posted post
     // that reached at least one edit-capable lane (spec 12) - opens the
@@ -916,7 +1036,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
     (editable || (post.derivedState === 'posted' && editableLanes.length)) && { key: 'edit', icon: Pencil, label: t('postDetail.action.openEditor'), run: () => onEdit(post) },
     canReject && { key: 'reject', icon: XCircle, label: t('approvals.action.reject'), danger: true, run: onReject },
     editable && post.executionMode === 'fully-scheduled' && { key: 'park', icon: PauseCircle, label: t('postDetail.action.parkIdle'), run: onPark },
-    post.derivedState !== 'posted' && { key: 'mark', icon: CheckCheck, label: t('postDetail.action.markIdle'), run: onMarkPosted },
+    ...markEntries,
     canVerify && primary !== 'verify' && { key: 'verify', icon: ShieldCheck, label: t('postDetail.action.verifyIdle'), run: onVerify },
     // US-CMT-10: the Comments entry moved OUT of the overflow into a visible
     // control beside the panel below - a headline capability was hiding behind an
@@ -999,9 +1119,13 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // Per-field platform-icon rule: show icons only where a field diverges from
   // "every targeted platform" (redundant on a single-platform post, or on a field
   // all networks share), so a multi-platform post reads exactly what each network
-  // posts without noise. Override fields (x/mastodon/nostr) carry a text hint.
+  // posts without noise. Caption-override fields carry a text hint - the set is
+  // the shared OVERRIDE_FIELD map (lib/format.js, derived from
+  // LANE_TEXT_PRECEDENCE), so B1's tgCaption/dcCaption/ttCaption/redditText/
+  // pinDescription hint exactly like xCaption. pinTitle is deliberately absent:
+  // it shadows the title, not the caption, so the caption hint would lie.
   const targetCount = post.platforms.length;
-  const OVERRIDE_KEYS = new Set(['xCaption', 'mastodonCaption', 'nostrCaption']);
+  const OVERRIDE_KEYS = new Set(Object.values(OVERRIDE_FIELD));
   // Editable post: show every relevant field (empty ones are there to fill in).
   // Read-only (posted) post: hide the empty ones - a review of what actually
   // published should not carry blank "Not set" rows for fields left unused.
@@ -1047,32 +1171,61 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
           scheduler that is already running. Three answers in one block: what happened
           (the lane refused it), why (the platform's own sentence, quoted rather than
           paraphrased into something less true), and the one action that gets out of it. */}
-      {post.lastFailure ? (
+      {post.lastFailure || targetGone ? (
         <div role="alert" className="space-y-2 rounded-xl bg-red-500/10 px-3 py-2.5 ring-1 ring-red-500/25">
           <p className="flex items-start gap-1.5 text-xs font-bold text-red-700 dark:text-red-300">
             <ShieldX size={13} aria-hidden="true" className="mt-px shrink-0" />
-            {t('postDetail.failure.title', { lane: PLATFORM_META[post.lastFailure.lane]?.label || post.lastFailure.lane || t('postDetail.failure.laneUnknown') })}
+            {/* target_gone outranks the generic refusal title: the lane did not merely
+                refuse this reply - the thread it answers no longer exists, and that is
+                the fact the operator must act on (row 35). */}
+            {targetGone
+              ? t('postDetail.failure.targetGoneTitle')
+              : t('postDetail.failure.title', { lane: PLATFORM_META[post.lastFailure?.lane]?.label || post.lastFailure?.lane || t('postDetail.failure.laneUnknown') })}
+            {/* WHEN it failed, or a day-old refusal reads as breaking news: the banner
+                shows the LAST recorded failure, which for a rescheduled post can be from
+                before the fix that rescued it. Same fmtRelative idiom as the header. */}
+            {post.lastFailure?.at ? (
+              <span className="mt-px shrink-0 font-normal opacity-70">{fmtRelative(post.lastFailure.at)}</span>
+            ) : null}
           </p>
-          {post.lastFailure.message ? (
+          {post.lastFailure?.message ? (
             <p className="text-[11px] text-red-700/90 dark:text-red-300/80">{post.lastFailure.message}</p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2">
             <p className="min-w-0 flex-1 text-[11px] text-zinc-600 dark:text-zinc-300">
-              {post.lastFailure.terminal ? t('postDetail.failure.stopped') : t('postDetail.failure.retrying')}
+              {/* Fix B7: honest states, one line each. target_gone: the reply has no
+                  destination anymore and nothing will retry - never "tries again on
+                  its own" (a lie: lanesOwed skips the lane) and never "post it
+                  yourself" (there is nowhere to post it). Held with a working lane:
+                  the footer's "Try again" is the recovery - name it, and do NOT pair it
+                  with "post it yourself" (a contradiction with a live publish button).
+                  Terminal without that retry (cloud cap spent, failing lane offline):
+                  the way out really is the owner's hands. Still retrying: say so. */}
+              {targetGone ? t('postDetail.failure.targetGone')
+                : retryHeld ? t('postDetail.failure.heldRetry')
+                : post.lastFailure.terminal ? t('postDetail.failure.stopped')
+                : t('postDetail.failure.retrying')}
             </p>
-            {/* TERMINAL ONLY. The re-fire budget is spent, so the way out is the owner's
-                hands - post it where it lives, then record that - and "Mark as posted"
-                lives in the ⋯ overflow, which is not where anyone looks after reading a
-                failure. While something is still retrying the useful control is another
-                attempt now, and that is ALREADY the footer's primary "Publish now": adding
-                a second identical button here would be the same control twice on one
-                screen. The handler is the existing one either way. */}
-            {post.lastFailure.terminal ? (
+            {/* The state's ONE recovery verb, on the banner (never an overflow hunt).
+                target_gone: the draft has nowhere to go - discard it (the existing
+                delete flow with its confirms). Otherwise TERMINAL ONLY, and only when
+                no automatic retry exists (retryHeld posts recover via the footer's
+                primary instead): the re-fire budget is spent, so the way out is the
+                owner's hands - post it where it lives, then record that. */}
+            {targetGone ? (
+              <ActionButton
+                variant="danger"
+                icon={Trash2}
+                labels={{ idle: t('postDetail.failure.discardIdle'), loading: t('postDetail.failure.discardLoading'), success: t('postDetail.failure.discardSuccess'), error: t('postDetail.error.generic') }}
+                onAction={onDelete}
+                onError={setError}
+              />
+            ) : post.lastFailure.terminal && !retryHeld ? (
               <ActionButton
                 variant="subtle"
                 icon={CheckCheck}
-                labels={{ idle: t('postDetail.action.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }}
-                onAction={onMarkPosted}
+                labels={{ idle: (isMixed && post.lastFailure.lane) ? t('postDetail.action.markLaneIdle', { lane: PLATFORM_META[post.lastFailure.lane]?.label || post.lastFailure.lane }) : t('postDetail.action.markIdle'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }}
+                onAction={() => onMarkPosted((isMixed && post.lastFailure.lane) ? post.lastFailure.lane : undefined)}
                 onError={setError}
               />
             ) : null}
@@ -1388,6 +1541,22 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                     ) : null}
                   </div>
                 ) : null}
+                {/* dim-3 M5: this post's stored metric chips, beside its verify
+                    chips - measuring happens where approving/verifying already do.
+                    Reuses the Insights MetricChips (primary + "+N", delta badges),
+                    so the two panels never fork a renderer. A mock-lane row carries
+                    a tiny badge (consuming the orphaned per-item `mode` field) so
+                    fabricated mock numbers stop looking identical to live ones. */}
+                {metricsByPlatform[p] ? (
+                  <div className="mt-1.5 flex items-center gap-1.5 pl-[25px]">
+                    {metricsByPlatform[p].mode === 'mock' ? (
+                      <span className="inline-flex shrink-0 items-center rounded-full bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300" title={t('postDetail.metrics.mockTip')}>
+                        {t('postDetail.metrics.mock')}
+                      </span>
+                    ) : null}
+                    <MetricChips entry={metricsByPlatform[p]} metricLabel={metricLabel} t={t} />
+                  </div>
+                ) : null}
               </li>
             );
           })}
@@ -1583,8 +1752,11 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
               {/* `short` label ("Geplant", not "Geplant - pendpost"): the cloud-blind
                   delivery suffix is dropped here - the one delivery statement in the
                   Platforms section carries the honest, cloud-aware mechanism instead. */}
-              <StatusPill state={post.derivedState} short />
+              {/* V6: a post awaiting client sign-off never reads as overdue-red (spec
+                  48 section 4.6); the awaiting chip carries the honest state. */}
+              {reviewPillState ? <StatusPill state={reviewPillState} short /> : null}
               <ApprovalPill approval={post.approval} editedSinceApproval={showEditedSinceApproval} handOff={handOff} />
+              <ReviewStatusChip post={post} />
               <span className="flex items-center gap-1">
                 {post.platforms.map((p) => {
                   const meta = PLATFORM_META[p];
@@ -1632,7 +1804,20 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
               </p>
             ) : null}
             {post.publishedVia === 'manual' ? (
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('postDetail.postedExternally')}</p>
+              <p className="flex items-center gap-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+                {t('postDetail.postedExternally')}
+                {/* A hand-published post without a recorded permalink can get one
+                    after the fact - without this, the detail stays linkless forever. */}
+                {!post.externalUrl ? (
+                  <button
+                    type="button"
+                    onClick={onAddExternalUrl}
+                    className="rounded text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                  >
+                    {t('postDetail.addExternalUrl')}
+                  </button>
+                ) : null}
+              </p>
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -1732,7 +1917,18 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
 
           {/* Approval-flow CTAs keep precedence as the state primary ... */}
           {primary === 'approve' ? (
-            <ActionButton variant="success" size="md" icon={CheckCircle2} labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }} onAction={onApprove} onError={setError} />
+            <ActionButton
+              variant="success"
+              size="md"
+              icon={reviewRequired ? Send : CheckCircle2}
+              labels={reviewRequired
+                // O2: with review.required on, the operator's approve relabels to send
+                // for sign-off; the write is unchanged (onApprove -> approvePost).
+                ? { idle: t('review.action.sendForSignoff'), loading: t('review.action.sending'), success: t('review.action.sent'), error: t('approvals.action.error') }
+                : { idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
+              onAction={onApprove}
+              onError={setError}
+            />
           ) : null}
           {/* The lane is not connected, so pendpost cannot post this - the operator can.
               Sky (never emerald): this is not a green "done", it is work handed back. */}
@@ -1747,14 +1943,27 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
               <ActionButton key="handoff-copy" variant="manual" size="md" icon={ClipboardCopy} labels={{ idle: t('postDetail.handOff.copyIdle'), loading: t('postDetail.handOff.copyLoading'), success: t('postDetail.handOff.copySuccess'), error: t('postDetail.error.generic') }} onAction={onHandOff} onError={setError} />
             )
           ) : null}
+          {/* Fix B7: the SAME slot, relabeled per failure class - a held post's click
+              must clear the hold first (onPublishNow does both), so calling it
+              "Publish now" would promise a plain publish it cannot deliver. */}
           {primary === 'publishNow' ? (
-            <Tip label={t('postDetail.action.publishNowTip')}>
-              <ActionButton variant="success" size="md" icon={Send} ariaLabel={t('postDetail.action.publishNowTip')} labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
-            </Tip>
+            retryHeld ? (
+              <Tip label={t('postDetail.action.tryAgainTip')}>
+                <ActionButton key="publish-retry" variant="success" size="md" icon={RefreshCw} ariaLabel={t('postDetail.action.tryAgainTip')} labels={{ idle: t('postDetail.action.tryAgainIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
+              </Tip>
+            ) : (
+              <Tip label={t('postDetail.action.publishNowTip')}>
+                <ActionButton key="publish-now" variant="success" size="md" icon={Send} ariaLabel={t('postDetail.action.publishNowTip')} labels={{ idle: t('postDetail.action.publishNowIdle'), loading: t('postDetail.action.publishNowLoading'), success: t('postDetail.action.publishNowSuccess'), error: t('postDetail.error.generic') }} onAction={onPublishNow} onError={setError} />
+              </Tip>
+            )
           ) : null}
           {primary === 'verify' ? (
             <Tip label={t('postDetail.action.verifyTip')}>
-              <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t('postDetail.action.verifyTip')} labels={{ idle: t('postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.error.generic') }} onAction={onVerify} onError={setError} />
+              {/* ux-audit dim-1 G3/R1a: on a verify-FAILED post the same primary slot
+                  reads "Re-check" - the state-correct recovery verb (the read-back
+                  said not-live; the fix is to read again), mirroring how a held post's
+                  slot becomes "Try again". Same action, honest label. */}
+              <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckTip' : 'postDetail.action.verifyTip')} labels={{ idle: t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckIdle' : 'postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.error.generic') }} onAction={onVerify} onError={setError} />
             </Tip>
           ) : null}
 

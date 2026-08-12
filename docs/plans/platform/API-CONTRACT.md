@@ -145,6 +145,21 @@ degrade gracefully. The cloud CONTROL routes (`push`, `reconcile`, `enabled`, `c
 and the connect/billing ceremonies above stay operator-only and are NOT twinned. (`GET /api/cloud/enable/callback`
 is a plain loopback redirect and needs no exemption.)
 
+The client review link (spec 48 R10) ships all THREE operator-face verbs with matching
+faces, so parity sees them mechanically: `reviewer_list` -> `GET /api/clients/<id>/reviewers`
+(a read, tail-only), `reviewer_create` -> `POST /api/clients/<id>/reviewers` (owner-gated,
+returns the full link exactly once), `reviewer_revoke` -> `POST /api/clients/<id>/reviewers/<rid>/revoke`
+(owner-gated, idempotent). All three carry an optional `clientId` and reach the GUI through the
+Clients page reviewers surface (the `/api/clients/` prefix is referenced app-wide). No JSON
+exemption is needed for any of them. The reviewer's OWN decision verb is the deliberate FOURTH
+FACE: `POST /review/<token>/decision` on the separate review listener (`PENDPOST_REVIEW_PORT`,
+default 8091), authenticated by the reviewer token, NOT registered in `lib/api.mjs` ROUTES and
+NOT an `/api`/`/mcp` route - so parity-check never parses it and no `routes`/`tools`/`agentOnly`
+entry applies. It has no operator-face twin BY DESIGN: the token is the whole identity and the
+actor is minted server-side (`reviewer:<clientId>/<id>`); an MCP or REST caller is refused the
+`reviewer:` namespace outright (threat-model §3.2), so twinning it would forge the very identity
+the feature exists to make real. This paragraph is its fourth-face-exempt rationale (spec 48 §5).
+
 `connect_discover` (spec 22, connected-account discovery) is a READ tool: it enumerates who a
 connected lane authenticates as and which assets it manages. Its GET twin
 `GET /api/accounts/:platform/discover` carries no `mcpTool` (reads are exempt from the
@@ -152,9 +167,35 @@ route→tool parity direction), so the tool has no route that names it and is li
 here. It reaches the platform (open-world) but never writes - picking an asset flows through the
 existing `config_set` write, which has its own parity pair.
 
+`radar_geo_reset` is an owner-only maintenance verb that clears one tenant's polluted Radar GEO
+state (footprint log + derived backlog). It has no REST twin on purpose: it is a rare one-shot
+cleanup, run when a project's AI-visibility state was seeded with another brand's rows, not a
+recurring operator task - a permanent Studio button for it would be a speculative surface that the
+minimalism bar rejects, matching the agent-side, model-free posture of its siblings
+`radar_footprint_log` / `radar_ingest`. The owner invokes it through their agent (or headless)
+when the pollution is diagnosed; the normal path never needs it.
+
+Relationship memory (spec 49 R12) ships five MCP verbs with matching REST twins:
+`list_engagers` -> `GET /api/engagers` (a read; the ONLY tool gated behind the owner opt-in
+`posting.relationshipMemory.agentRead`, refused when off, S8d - the REST read is never gated),
+`forget_engager` -> `POST /api/engagers/forget` (destructive, confirm-gated),
+`unforget_engager` -> `POST /api/engagers/unforget` (restorative), `link_engagers` ->
+`POST /api/engagers/link` (a stored association, never a merge), and `unlink_engagers` ->
+`POST /api/engagers/unlink` (confirm-gated, lossless). There is deliberately NO `merge_engagers`
+on either face - a link is reversible, a merge is not, so only the reversible form exists.
+`POST /api/engagers/dismiss-link` (record a dismissed cross-lane GUESS, S4) is GUI/REST-ONLY by
+design: the dismissible hint is an operator affordance on the popover, not an agent verb, so it
+carries no MCP twin and is listed in `routes` + `uiOnly` below. The five verb routes
+(`/api/engagers` read + forget/unforget/link/unlink) are GUI-reachable through the reply-surface
+HistoryChip / HistoryPopover (spec 49 §6, `app/src/lib/api.js` `useEngager` + the forget/unforget/
+link/unlink twins), so they carry a full GUI face and need no exemption. All five carry an optional
+`clientId` (per-brand scoping); the person-graph is local-only and never leaves the disk (that is
+the feature - no cloud parity).
+
 ```json
 {
   "routes": [
+    "/api/engagers/dismiss-link",
     "/api/dashboard-update",
     "/api/connect",
     "/api/agent/connect",
@@ -176,9 +217,12 @@ existing `config_set` write, which has its own parity pair.
     "/api/cloud/sign-out"
   ],
   "tools": [
-    "connect_discover"
+    "connect_discover",
+    "radar_geo_reset"
   ],
-  "uiOnly": [],
+  "uiOnly": [
+    "/api/engagers/dismiss-link"
+  ],
   "agentOnly": {
     "/api/radar/draft-comparison": "The spawned child's own tool: the operator presses Draft it (which is /api/radar/comparison-draft, GUI-reachable), their agent writes the page, and calls this to file it. Its required argument is the page body, so a human calling it directly would already have written the page and would want the composer instead. It exists as its own tool, rather than plan_create_post, so that auto-approve cannot match a post seeded by untrusted threads.",
     "/api/radar/scan": "Spec 41 made Studio scanning AGENT-ONLY: Scan now spawns the operator's own agent (POST /api/radar/agent-scan), and a scan that cannot use an agent does not run rather than falling back to a keyword match pretending to be research. radar_scan / runLaneRadar stay SHIPPED for agents and headless callers that still want the credentialed keyword scan - deleting that machinery is its own net-simplify diff, not a rider on this feature. Until then it is genuinely agent-only, and a dead GUI helper kept alive to satisfy this check would fake the gate green.",

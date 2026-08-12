@@ -23,7 +23,7 @@ const signOutCloud = vi.fn(() => Promise.resolve({ ok: true }));
 const migrateCloud = vi.fn(() => Promise.resolve({ ok: true, connected: {}, tokens: { ok: true, handed: [], skipped: [] }, push: { ok: true, pushed: [], skipped: [], accepted: [], refused: [] } }));
 const reconcileCloud = vi.fn(() => Promise.resolve({ ok: true, patched: [], skipped: [], refused: [] }));
 const invalidate = vi.fn();
-const setClientAlwaysOn = vi.fn(() => Promise.resolve({ ok: true, clientId: 'globex', alwaysOn: true, push: null }));
+const setClientAlwaysOn = vi.fn(() => Promise.resolve({ ok: true, clientId: 'globex', alwaysOn: true, tokens: null, push: null }));
 const startCheckout = vi.fn(() => Promise.resolve({ ok: true, url: 'https://checkout.test' }));
 const startBillingPortal = vi.fn(() => Promise.resolve({ ok: true, url: 'https://portal.test' }));
 const setSpendCap = vi.fn(() => Promise.resolve({ ok: true, spendCapCents: 5000 }));
@@ -193,6 +193,30 @@ describe('Cloud', () => {
     await user.click(screen.getByRole('switch', { name: /24\/7 cloud for globex/i }));
     await user.click(await screen.findByRole('button', { name: /switch to cloud/i }));
     await waitFor(() => expect(setClientAlwaysOn).toHaveBeenCalledWith('globex', true));
+  });
+
+  // 2026-08-04 (ux-audit dim 4, row 14 + gap 3): turning a brand ON now seals its tokens
+  // first, fail-closed. When the seal fails the server rejects with `seal_failed` and the
+  // brand stays off - the UI must SURFACE that error, never report a silent success (the
+  // old behavior degraded silently into 20-minute-late posts).
+  it('CONNECTED: a seal_failed toggle surfaces the error and never reports success', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, status: 'active', tier: 'starter', extraBrandCents: 900, brandsBilled: 0, postsIncluded: 50, postsUsed: 0, billingMode: 'live', action: 'fire' } };
+    withClients([{ clientId: 'globex', name: 'Globex', active: false, alwaysOn: false }]);
+    const sealErr = Object.assign(new Error("could not seal this brand's tokens for: telegram - the brand stays off; check the cloud connection and try again, or run a re-sync"), { code: 'seal_failed' });
+    setClientAlwaysOn.mockRejectedValueOnce(sealErr);
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('switch', { name: /24\/7 cloud for globex/i }));
+    await user.click(await screen.findByRole('button', { name: /switch to cloud/i }));
+    await waitFor(() => expect(setClientAlwaysOn).toHaveBeenCalledWith('globex', true));
+    // The server's fail-closed message reaches the operator verbatim...
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/could not seal this brand's tokens/i);
+    // ...the activity refresh for a successful push never fires...
+    expect(invalidate).not.toHaveBeenCalled();
+    // ...and the row is usable again for a retry, not stuck busy.
+    await waitFor(() => expect(screen.getByRole('switch', { name: /24\/7 cloud for globex/i })).toBeEnabled());
   });
 
   // 2026-07-29: the owner switched every project off to stop cloud spend, and the page still

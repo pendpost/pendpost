@@ -29,6 +29,7 @@ import { initMultiClient } from './lib/multi-client.mjs';
 import { bootScheduler } from './lib/scheduler.mjs';
 import { bootCoverBackfill, bootScheduleBackfill } from './lib/writes.mjs';
 import { bootApprovalNotifier } from './lib/notify.mjs';
+import { bootReviewServer } from './lib/review-server.mjs';
 import { healConnection } from './lib/cloud-client.mjs';
 import { startHealthSchedule } from './lib/health.mjs';
 import { authGateEnabled, checkAuth } from './lib/flags.mjs';
@@ -174,6 +175,10 @@ server.listen(PORT, HOST, () => {
   absorbMetaBlockSentinel();
   bootScheduler();
   bootApprovalNotifier();
+  // Spec 48 (R10): the client review link listener. A SEPARATE http.createServer
+  // (its own host/port from PENDPOST_REVIEW_HOST/PORT, /review/* only, never a path
+  // to /api or /mcp), fail-closed: it runs only while an active reviewer exists.
+  bootReviewServer();
   startHealthSchedule();
   startUpdateCheckSchedule();
   // US-ASSET-13 follow-up: one-time, best-effort first-frame cover backfill for

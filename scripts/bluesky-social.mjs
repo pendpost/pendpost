@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { readEnv } from '../lib/util.mjs';
 
@@ -170,7 +171,10 @@ async function cmdPublishDue(args) {
       if (!s.ok || !s.json?.accessJwt) { RUN.results.push({ postId: post.id, platform: 'bluesky', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: `bluesky session HTTP ${s.status}` }); continue; }
       session = { jwt: s.json.accessJwt, did: s.json.did };
     }
-    const targetUri = String(rr.externalId);
+    // R11/N2: thread UNDER the author's follow-up post when one was captured (parentExternalId,
+    // an at:// uri), else reply to the thread root. getPosts resolves the target's CID either
+    // way, so a captured follow-up and the root share one code path - an honest fallback.
+    const targetUri = String(rr.parentExternalId || rr.externalId);
     const gp = await radarHttp(`${pds}/xrpc/app.bsky.feed.getPosts?${new URLSearchParams({ uris: targetUri }).toString()}`, { headers: { Authorization: `Bearer ${session.jwt}` } });
     const parent = gp.json?.posts?.[0];
     if (!gp.ok || !parent || !parent.cid) {
@@ -252,6 +256,7 @@ function parseArgs(argv) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'bluesky', scriptUrl: import.meta.url });
   JSON_MODE = Boolean(args.json);
   if (JSON_MODE) console.log = (...a) => console.error(...a);
   const commandName = args._[0];

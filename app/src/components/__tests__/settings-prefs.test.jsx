@@ -25,6 +25,12 @@ vi.mock('../../lib/api.js', () => ({
   saveConfig: (...args) => saveConfig(...args),
 }));
 
+// The auto-approve policy + the R6a gate knobs moved into the AutonomyLedger (ux-audit R7);
+// this suite is preferences-only, so the ledger is stubbed out here and covered by its own
+// suite (autonomy-ledger.test.jsx). Stubbing it also keeps this test independent of the
+// ledger's extra hooks (useAutonomy / usePendpostHealth).
+vi.mock('../AutonomyLedger.jsx', () => ({ default: () => null }));
+
 function renderSettings() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -118,30 +124,15 @@ describe('Settings public media host (spec 39 §4.0)', () => {
   });
 });
 
-describe('Settings auto-approve legibility (manual-lane fence)', () => {
-  // Single-feature on/off is a switch, named by its label text - click it by role + name.
-  const enableAutoApprove = async (user) => {
-    await user.click(screen.getByRole('switch', { name: 'Auto-approve agent drafts' }));
-  };
+// The auto-approve policy fieldset + the R6a gate refinements (approval expiry + slot slip)
+// moved into the Autonomy ledger (ux-audit R7) and are covered by autonomy-ledger.test.jsx.
+// The per-platform publishing on/off moved to each Setup platform card (WP6) - setup.test.jsx.
 
-  it('does NOT list Reddit as an auto-approve platform, but Instagram is offered', async () => {
-    const user = userEvent.setup();
-    renderSettings();
-    await enableAutoApprove(user);
-    // the auto-approve fieldset checkbox accessible name is the bare platform label
-    expect(screen.getByRole('checkbox', { name: 'Instagram' })).toBeInTheDocument();
-    expect(screen.queryByRole('checkbox', { name: 'Reddit' })).not.toBeInTheDocument();
-    // (Reddit's publish on/off lives on its Setup card since WP6 - no grid here to assert.)
-  });
-
-  it('the auto-approve hint is honest: it no longer claims "trust all" and names Reddit as always-manual', async () => {
-    const user = userEvent.setup();
-    renderSettings();
-    await enableAutoApprove(user);
-    expect(screen.queryByText(/trust all platforms/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/reddit always needs your approval/i)).toBeInTheDocument();
-  });
+it('no longer stacks the standalone Publishing automation card on the preferences page (absorbed into the ledger)', () => {
+  renderSettings();
+  // The former card heading and its gate fields are gone from Settings' own body; the
+  // AutonomyLedger (stubbed here) is now their single home.
+  expect(screen.queryByRole('heading', { name: /publishing automation/i })).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Approval expiry')).not.toBeInTheDocument();
+  expect(screen.queryByLabelText('Slot slip')).not.toBeInTheDocument();
 });
-
-// The per-platform publishing on/off moved to each Setup platform card (WP6: one
-// "active in pendpost" switch per lane) - covered by setup.test.jsx, not here.

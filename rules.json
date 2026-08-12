@@ -9,6 +9,12 @@
       "hint": "This link is empty or malformed (a bare scheme or an empty markdown link). Give it a real destination or remove it."
     },
     {
+      "id": "caption-hard-cap",
+      "severity": "error",
+      "matcher": "captionHardCap",
+      "hint": "X refuses posts over 280 characters without X Premium, so this cannot publish. Shorten the caption or split it into a thread."
+    },
+    {
       "id": "caption-length",
       "severity": "warn",
       "matcher": "captionLength",
@@ -29,37 +35,55 @@
     {
       "id": "em-dash",
       "severity": "warn",
-      "matcher": { "regex": "[\\u2013\\u2014]", "flags": "g" },
+      "matcher": {
+        "regex": "[\\u2013\\u2014]",
+        "flags": "g"
+      },
       "hint": "Em/en dashes are a tell of AI-written copy and overuse reads as breathless. Use a comma, a period, or restructure."
     },
     {
       "id": "ai-vocab",
       "severity": "warn",
-      "matcher": { "regex": "\\b(delve|leverage|seamless(?:ly)?|synerg(?:y|ies|istic)|robust|deep dive|at the heart of|stands as a testament|navigate the landscape|in today'?s fast-?paced world)\\b", "flags": "gi" },
+      "matcher": {
+        "regex": "\\b(delve|leverage|seamless(?:ly)?|synerg(?:y|ies|istic)|robust|deep dive|at the heart of|stands as a testament|navigate the landscape|in today'?s fast-?paced world)\\b",
+        "flags": "gi"
+      },
       "hint": "Classic AI-vocabulary. Say it plainly: 'leverage' -> 'use', 'delve into' -> 'look at', 'seamless' -> 'smooth' (or cut it)."
     },
     {
       "id": "negative-parallelism",
       "severity": "warn",
-      "matcher": { "regex": "\\bnot (just|only)\\b[^.!?]{0,60}?,?\\s+(but|it'?s|its|it is|they'?re|we'?re)\\b", "flags": "gi" },
+      "matcher": {
+        "regex": "\\bnot (just|only)\\b[^.!?]{0,60}?,?\\s+(but|it'?s|its|it is|they'?re|we'?re)\\b",
+        "flags": "gi"
+      },
       "hint": "The 'it's not just X, it's Y' construction is an AI tic. State the point directly instead of building it up."
     },
     {
       "id": "rule-of-three",
       "severity": "warn",
-      "matcher": { "regex": "\\b\\w+,\\s+\\w+,?\\s+and\\s+\\w+\\b", "flags": "gi" },
+      "matcher": {
+        "regex": "\\b\\w+,\\s+\\w+,?\\s+and\\s+\\w+\\b",
+        "flags": "gi"
+      },
       "hint": "Three-item lists ('fast, simple, and reliable') are padding when reflexive. Keep the one word that earns its place."
     },
     {
       "id": "filler-hedging",
       "severity": "warn",
-      "matcher": { "regex": "\\b(very|really|actually|basically|literally|simply|quite|in order to|that being said|at the end of the day)\\b", "flags": "gi" },
+      "matcher": {
+        "regex": "\\b(very|really|actually|basically|literally|simply|quite|in order to|that being said|at the end of the day)\\b",
+        "flags": "gi"
+      },
       "hint": "Filler and hedging dilute the line. Delete it - the sentence is almost always stronger without."
     },
     {
       "id": "promo-puffery",
       "severity": "warn",
-      "matcher": { "regex": "\\b(world-?class|cutting-?edge|best-?in-?class|game-?changer|game-?changing|revolutionary|unleash|unlock(?:ing)?|supercharge|elevate|next-?level|state-?of-?the-?art|transform your)\\b", "flags": "gi" },
+      "matcher": {
+        "regex": "\\b(world-?class|cutting-?edge|best-?in-?class|game-?changer|game-?changing|revolutionary|unleash|unlock(?:ing)?|supercharge|elevate|next-?level|state-?of-?the-?art|transform your)\\b",
+        "flags": "gi"
+      },
       "hint": "Promotional puffery reads as a press release. Show the concrete thing it does instead of claiming it is amazing."
     },
     {
@@ -83,8 +107,11 @@
     {
       "id": "de-ch-eszett",
       "severity": "warn",
-      "matcher": { "regex": "\\u00DF", "flags": "g" },
-      "hint": "Swiss German never uses the eszett - write 'ss' (Strasse, not Straße). The humanizer auto-fixes this on de-CH copy."
+      "matcher": {
+        "regex": "\\u00DF",
+        "flags": "g"
+      },
+      "hint": "Swiss German never uses the eszett - write 'ss' (Strasse, not Stra\u00dfe). The humanizer auto-fixes this on de-CH copy."
     }
   ]
 }

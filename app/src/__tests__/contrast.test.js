@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { accentChrome, accentInk } from '../review/contrast-clamp.js';
 
 // CONTRAST IS A NUMBER, SO IT IS A CHECK - not a review note, not a judgement call.
 //
@@ -181,5 +182,60 @@ describe('disabled primary buttons (DISABLED_PRIMARY in ui.jsx)', () => {
       });
     }
     expect(bad, `A filled primary with disabled:opacity-* measures ~2:1 in light mode. Use DISABLED_PRIMARY from ui.jsx instead.\n${bad.join('\n')}`).toEqual([]);
+  });
+});
+
+// R10 (spec 48 §7.2, the SINGLE highest-risk Tier 1 gate for the client review link):
+// the reviewer page (V1) renders on a CLIENT-SUPPLIED, arbitrary brand accent. Body
+// text must NEVER sit on the raw accent - the accent is CHROME ONLY - and wherever
+// the accent tints a readable foreground mark it must be CLAMPED to AA first. The
+// contrast-clamp helper (app/src/review/contrast-clamp.js) is the guard; this suite
+// proves it against HOSTILE accents, using this file's own contrastRatio() as an
+// INDEPENDENT oracle (the helper carries its own maths, so a bug in one is caught by
+// the other rather than hidden by a shared function).
+describe('review-page accent contrast clamp (spec 48 §7.2, WCAG AA on a client accent)', () => {
+  // Hostile accents a real client could paste: a screaming light yellow (fails white
+  // text AND fails as ink on the light page), a near-black (fails on the dark page),
+  // a pale lavender, and pure white (the worst - cannot host white text at all).
+  const HOSTILE_LIGHT = ['#ffe100', '#f5f5c0', '#ffffff', '#e8d9ff'];
+  const HOSTILE_DARK = ['#0a0a0a', '#101820', '#1b1b2f'];
+
+  it('accentChrome: the text/fill pair clears AA for EVERY accent, hostile or not', () => {
+    for (const accent of [...HOSTILE_LIGHT, ...HOSTILE_DARK, '#3355ff', '#0f766e', null, 'not-a-colour']) {
+      const { fill, text, ratio } = accentChrome(accent);
+      // measured with the OTHER maths (this file's contrastRatio), never the helper's:
+      expect(contrastRatio(text, fill), `chrome text on ${accent} -> ${text} on ${fill}`).toBeGreaterThanOrEqual(AA);
+      expect(ratio).toBeGreaterThanOrEqual(AA);
+    }
+  });
+
+  it('accentInk: a hostile LIGHT accent as foreground on the light page CLAMPS to AA', () => {
+    for (const accent of HOSTILE_LIGHT) {
+      const raw = contrastRatio(accent, LIGHT_BG);
+      expect(raw, `${accent} raw on the light page is supposed to be the hostile case`).toBeLessThan(AA);
+      const { color, clamped } = accentInk(accent, LIGHT_BG);
+      expect(clamped, `${accent} should trip the clamp on the light page`).toBe(true);
+      expect(contrastRatio(color, LIGHT_BG), `clamped ${accent} -> ${color} on the light page`).toBeGreaterThanOrEqual(AA);
+    }
+  });
+
+  it('accentInk: a hostile DARK accent as foreground on the dark page CLAMPS to AA', () => {
+    for (const accent of HOSTILE_DARK) {
+      const raw = contrastRatio(accent, DARK_BG);
+      expect(raw, `${accent} raw on the dark page is supposed to be the hostile case`).toBeLessThan(AA);
+      const { color, clamped } = accentInk(accent, DARK_BG);
+      expect(clamped, `${accent} should trip the clamp on the dark page`).toBe(true);
+      expect(contrastRatio(color, DARK_BG), `clamped ${accent} -> ${color} on the dark page`).toBeGreaterThanOrEqual(AA);
+    }
+  });
+
+  it('accentInk: an accent that already clears AA is left untouched (the clamp is not always-on)', () => {
+    // teal-700 on the light page and a bright accent on the dark page already pass.
+    const onLight = accentInk('#0f766e', LIGHT_BG);
+    expect(onLight.clamped).toBe(false);
+    expect(contrastRatio(onLight.color, LIGHT_BG)).toBeGreaterThanOrEqual(AA);
+    const onDark = accentInk('#5eead4', DARK_BG);
+    expect(onDark.clamped).toBe(false);
+    expect(contrastRatio(onDark.color, DARK_BG)).toBeGreaterThanOrEqual(AA);
   });
 });

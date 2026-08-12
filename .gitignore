@@ -17,8 +17,14 @@ state.json.corrupt-*
 *.log
 
 # dependencies + build output
-node_modules/
-app/node_modules/
+# node_modules is ignored WITHOUT a trailing slash, so it matches a node_modules of
+# ANY type at any depth: directory, regular file, or symlink (mode 120000). A dir-only
+# `node_modules/` rule once let a self-referential `node_modules` symlink get swept in
+# by a worktree `git add -A` and tracked on develop (fixed in 78e00cf); the ELOOP
+# self-loop then broke `npm run` / `node --run`. This bare form covers the
+# zero-dependency root (where node_modules is never legitimate) and every npm subtree
+# (app/, site-docs/, web/), against directories and symlink-files alike.
+node_modules
 app/dist/
 app/dist.new/
 app/dist.old/
@@ -26,8 +32,6 @@ app/.dashboard-build.lock
 dist/
 # desktop installer staging (build-bundle.mjs / build-app.sh / Inno output)
 build/
-site-docs/node_modules/
-web/node_modules/
 web/dist/
 .astro/
 
@@ -39,6 +43,10 @@ web/dist/
 .meta-block.json
 meta-lane.json
 covers/
+# Client review link (spec 48): the per-client reviewer store holds token HASHES
+# + tails. Path-anywhere so it is ignored inside EVERY client subtree, including
+# the tracked data/clients/default/ (the negation above would otherwise expose it).
+reviewers.json
 
 # --- Multi-client tenant boundary -------------------------------------------
 # Per-client subtrees hold real credentials + campaign content. Only the shipped
@@ -69,3 +77,4 @@ mockups/
 
 # os cruft
 .DS_Store
+.vercel

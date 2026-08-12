@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { ShieldCheck, ExternalLink, Send, CalendarDays, List as ListIcon, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ShieldCheck, ExternalLink, Send, CalendarDays, List as ListIcon, ChevronLeft, ChevronRight, Recycle } from 'lucide-react';
 import { useAccounts, verifyPost } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { StatusPill, CoverThumb, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton } from './ui.jsx';
+import { StatusPill, CoverThumb, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton, Segmented } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { MonthView } from './Planner.jsx';
@@ -76,9 +76,14 @@ function AccountStrip({ publicUrls, platforms, t }) {
   );
 }
 
-function Row({ post, onOpen, t }) {
+function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
   const queryClient = useQueryClient();
   const canVerify = post.derivedState === 'fired-assumed' || Boolean(post.verify);
+  // ux-audit dim-1 G3/R1a: a verify-FAILED row carries its one recovery verb as a
+  // visible, labelled "Re-check" right next to the red pill - the same shield
+  // action, but the failing state must offer it rather than hide it behind an
+  // icon-only tooltip hunt. Every other state keeps the quiet icon-only button.
+  const recheck = post.derivedState === 'verify-failed';
   const onVerify = async () => {
     await verifyPost(post.campaign, post.id);
     queryClient.invalidateQueries({ queryKey: ['plans'] });
@@ -107,6 +112,23 @@ function Row({ post, onOpen, t }) {
         </div>
       </button>
       <div className="flex shrink-0 items-center gap-1.5">
+        {/* Evergreen recycling (dim-3 M1): a proven old performer seeds a FRESH
+            draft through the normal gated create path - it never re-publishes or
+            edits the live post. Only shown when the recycling filter marked this
+            row a recyclable winner, so healthy rows stay uncluttered. */}
+        {recyclable && onRecycle ? (
+          <Tip label={t('published.recycle.tip')}>
+            <button
+              type="button"
+              onClick={() => onRecycle(post)}
+              aria-label={t('published.recycle.aria')}
+              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-brand transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light dark:hover:bg-zinc-700/60"
+            >
+              <Recycle size={14} aria-hidden="true" />
+              {t('published.recycle.action')}
+            </button>
+          </Tip>
+        ) : null}
         {links.map(({ p, href }) => {
           const meta = PLATFORM_META[p];
           const { Icon } = meta;
@@ -119,11 +141,11 @@ function Row({ post, onOpen, t }) {
           );
         })}
         {canVerify ? (
-          <Tip label={t('published.verify.idle')}>
+          <Tip label={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}>
             <ActionButton
               icon={ShieldCheck}
-              ariaLabel={t('published.verify.idle')}
-              labels={{ idle: '', loading: t('published.verify.loading'), success: t('published.verify.success'), error: t('published.verify.error') }}
+              ariaLabel={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}
+              labels={{ idle: recheck ? t('published.verify.recheck') : '', loading: t('published.verify.loading'), success: t('published.verify.success'), error: t('published.verify.error') }}
               onAction={onVerify}
             />
           </Tip>
@@ -133,34 +155,24 @@ function Row({ post, onOpen, t }) {
   );
 }
 
-// A segmented toggle (reused for the view + range controls). Single-tone, the
-// active segment carries the accent; mirrors the Approvals view toggle.
-function Segmented({ label, value, options, onChange }) {
-  return (
-    <div className="flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={label}>
-      {options.map((o) => (
-        <button
-          key={o.key}
-          type="button"
-          onClick={() => onChange(o.key)}
-          aria-pressed={value === o.key}
-          className={`flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
-            value === o.key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
-          }`}
-        >
-          {o.Icon ? <o.Icon size={13} aria-hidden="true" /> : null}
-          {o.label}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-export default function Published({ campaigns = [], onOpen, platformFilter = [], isLoading = false }) {
+export default function Published({ campaigns = [], onOpen, platformFilter = [], isLoading = false, evergreen = [], onRecycle }) {
   const { data: accounts } = useAccounts();
   const t = useT();
   const [view, setView] = useState('list'); // 'list' | 'month'
   const [range, setRange] = useState('all');
+  // Evergreen recycling filter (dim-3 M1): OFF by default so the archive reads
+  // normally; ON narrows to the aged high-performers worth re-sharing. The one
+  // new persistent control on this page. Deduped per post (campaign/id) since a
+  // post can be evergreen on several platforms - the highest score wins.
+  const [evergreenOn, setEvergreenOn] = useState(false);
+  const evergreenScores = useMemo(() => {
+    const m = new Map();
+    for (const e of evergreen || []) {
+      const k = `${e.campaign}/${e.postId}`;
+      m.set(k, Math.max(m.get(k) || 0, e.score || 0));
+    }
+    return m;
+  }, [evergreen]);
   // The month the calendar view is anchored to (first of month); list view
   // ignores it. Lazily seeded to the current month.
   const [monthAnchor, setMonthAnchor] = useState(() => {
@@ -168,7 +180,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
     return new Date(now.getFullYear(), now.getMonth(), 1);
   });
 
-  const { posts, unfilteredCount, rangeCounts, publishedPlatforms } = useMemo(() => {
+  const { posts, unfilteredCount, rangeCounts, publishedPlatforms, evergreenCount } = useMemo(() => {
     const now = Date.now();
     const inRange = (p, days) => {
       if (days == null) return true;
@@ -181,24 +193,38 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
       .flatMap((c) => c.posts || [])
       .filter((p) => PUBLISHED_STATES.has(p.derivedState))
       .filter((p) => !platformFilter.length || (p.platforms || []).some((x) => platformFilter.includes(x)));
+    // How many of the published posts the engine flagged evergreen (aged winners)
+    // - drives whether the recycling filter is offered at all (never an empty toggle).
+    const everCount = published.filter((p) => evergreenScores.has(`${p.campaign}/${p.id}`)).length;
     // Per-preset counts so each range segment can show how many posts it holds,
     // letting an owner tell an actively-filtering window apart from an empty one.
     const counts = Object.fromEntries(
       RANGES.map((r) => [r.key, published.filter((p) => inRange(p, r.days)).length]),
     );
     const days = RANGES.find((x) => x.key === range)?.days ?? null;
-    const flat = published.filter((p) => inRange(p, days));
-    flat.sort((a, b) => {
-      const ta = Date.parse(a.postedAt || a.scheduledAt || '') || 0;
-      const tb = Date.parse(b.postedAt || b.scheduledAt || '') || 0;
-      return tb - ta;
-    });
+    let flat;
+    if (evergreenOn) {
+      // Narrow to the evergreen winners and rank by their engagement score desc
+      // (the recycle shortlist reads best-first), not reverse-chron. The date
+      // range is bypassed here - evergreen posts are aged by definition, so a
+      // narrow window would just empty the list.
+      flat = published
+        .filter((p) => evergreenScores.has(`${p.campaign}/${p.id}`))
+        .sort((a, b) => (evergreenScores.get(`${b.campaign}/${b.id}`) || 0) - (evergreenScores.get(`${a.campaign}/${a.id}`) || 0));
+    } else {
+      flat = published.filter((p) => inRange(p, days));
+      flat.sort((a, b) => {
+        const ta = Date.parse(a.postedAt || a.scheduledAt || '') || 0;
+        const tb = Date.parse(b.postedAt || b.scheduledAt || '') || 0;
+        return tb - ta;
+      });
+    }
     // The platforms actually published to (across the archive, before the date
     // range) - so the accounts strip links only real live profiles, never a
     // platform this workspace never posted to.
     const platformsSet = new Set(published.flatMap((p) => p.platforms || []));
-    return { posts: flat, unfilteredCount: published.length, rangeCounts: counts, publishedPlatforms: platformsSet };
-  }, [campaigns, platformFilter, range]);
+    return { posts: flat, unfilteredCount: published.length, rangeCounts: counts, publishedPlatforms: platformsSet, evergreenCount: everCount };
+  }, [campaigns, platformFilter, range, evergreenOn, evergreenScores]);
 
   const groups = useMemo(() => {
     const out = [];
@@ -248,8 +274,25 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
         {/* The relative-days range is meaningful only for the reverse-chron list;
             against the calendar's month navigation it silently empties whatever
             month falls outside the window, so it is hidden in calendar mode. */}
-        {view === 'list' ? (
+        {view === 'list' && !evergreenOn ? (
           <Segmented label={t('published.range.aria')} value={range} options={rangeOptions} onChange={setRange} />
+        ) : null}
+        {/* Evergreen recycling filter (dim-3 M1): the one new persistent control
+            here. Offered only in list view AND only when the engine flagged aged
+            winners worth re-sharing, so it is never an empty toggle. ON narrows to
+            those posts (score-ranked) and reveals a Recycle action per row. */}
+        {view === 'list' && evergreenCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => setEvergreenOn((v) => !v)}
+            aria-pressed={evergreenOn}
+            className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+              evergreenOn ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : `${INNER_SURFACE} text-zinc-500 hover:ring-1 hover:ring-brand/40 dark:text-zinc-400`
+            }`}
+          >
+            <Recycle size={13} aria-hidden="true" />
+            {t('published.evergreen.filter', { n: evergreenCount })}
+          </button>
         ) : null}
       </div>
 
@@ -306,7 +349,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
               <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{g.header}</h3>
               <div className="space-y-1.5">
                 {g.entries.map((post) => (
-                  <Row key={`${post.campaign}/${post.id}`} post={post} onOpen={(p) => onOpen(p, posts)} t={t} />
+                  <Row key={`${post.campaign}/${post.id}`} post={post} onOpen={(p) => onOpen(p, posts)} t={t} recyclable={evergreenOn} onRecycle={onRecycle} />
                 ))}
               </div>
             </section>

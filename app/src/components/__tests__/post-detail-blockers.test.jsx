@@ -28,8 +28,10 @@ const lintText = vi.fn(() =>
 );
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: null, activeClientId: null }),
   usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
+  useConfig: () => ({ data: null }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => platformValidateState,
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),

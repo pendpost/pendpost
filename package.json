@@ -1,6 +1,6 @@
 {
   "name": "pendpost",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr, WordPress, and Ghost behind a human approval gate you control.",
   "type": "module",
   "license": "MIT",
@@ -63,6 +63,7 @@
     "dev:live": "sh launcher/dev-live.sh",
     "build": "cd app && npm install && npm run build",
     "prepack": "npm run build",
-    "check": "node --check server.mjs && for f in lib/*.mjs lib/drivers/*.mjs scripts/*.mjs bin/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && node scripts/check-encoding.mjs && node test/parity-check.mjs && for t in test/*.test.mjs; do node \"$t\" || exit 1; done"
+    "check": "node --check server.mjs && for f in lib/*.mjs lib/drivers/*.mjs scripts/*.mjs bin/*.mjs test/*.mjs; do node --check \"$f\" || exit 1; done && node scripts/check-encoding.mjs && node test/parity-check.mjs && for t in test/*.test.mjs; do node \"$t\" || exit 1; done",
+    "publish:docs": "node ops/publish-docs.mjs"
   }
 }

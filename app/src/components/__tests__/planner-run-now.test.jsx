@@ -15,7 +15,10 @@ import { I18nProvider } from '../../lib/i18n.js';
 // still disables the button (the blocked lane is never poked). The dialog IS the
 // confirmation; runPublishDue({campaign, postId}) is looped over the selection.
 
-const runPublishDue = vi.fn(() => Promise.resolve({ ok: true }));
+// The server's per-lane truth: a resolved call carries a matching ok `ran` row
+// (an HTTP 200 without one now reads as "nothing fired", by design).
+const ranRowFor = (scope = {}) => ({ ok: true, ran: [{ campaign: scope.campaign, postId: scope.postId, lane: 'x', ok: true }] });
+const runPublishDue = vi.fn((scope) => Promise.resolve(ranRowFor(scope)));
 
 vi.mock('../../lib/api.js', () => ({
   runPublishDue: (...args) => runPublishDue(...args),
@@ -86,7 +89,7 @@ const runBtn = () => screen.getByRole('button', { name: /run due now \(/i });
 
 beforeEach(() => {
   runPublishDue.mockReset();
-  runPublishDue.mockResolvedValue({ ok: true });
+  runPublishDue.mockImplementation((scope) => Promise.resolve(ranRowFor(scope)));
 });
 
 describe('PlannerRunNow', () => {

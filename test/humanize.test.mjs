@@ -89,6 +89,30 @@ ok(humanize(null, {}).text === '' && humanize(undefined, {}).changed === false, 
   ok(humanizeFields(null, ['caption'], 'en').changed === false, 'humanizeFields on a non-object is a safe no-op');
 }
 
+// ---- receipt: per-kind occurrence counts (R6b - the response-time receipt) ----
+{
+  const r = humanize('a — b – c “quoted” it’s here', {});
+  ok(r.counts && r.counts['em-dash'] === 2, 'counts report 2 dash occurrences');
+  ok(r.counts['curly-quote'] === 3, 'counts report the curly quote/apostrophe occurrences');
+  const clean = humanize('all clean here', {});
+  ok(clean.counts && Object.keys(clean.counts).length === 0, 'clean text yields empty counts');
+  const sz = humanize('Straße an der Straße', { locale: 'de-CH' });
+  ok(sz.counts.eszett === 2, 'de-CH eszett occurrences counted');
+}
+
+// ---- receipt: humanizeFields aggregates fixes across fields ----
+{
+  const obj = { caption: 'a — b — c', xCaption: 'x — y “q”' };
+  const res = humanizeFields(obj, ['caption', 'xCaption'], 'en');
+  ok(Array.isArray(res.fixes), 'humanizeFields returns a fixes array');
+  const em = res.fixes.find((f) => f.kind === 'em-dash');
+  const cq = res.fixes.find((f) => f.kind === 'curly-quote');
+  ok(em && em.count === 3, 'em-dash count aggregated across fields (2 + 1)');
+  ok(cq && cq.count === 2, 'curly-quote count aggregated (the pair around q)');
+  const none = humanizeFields({ caption: 'already clean' }, ['caption'], 'en');
+  ok(none.changed === false && none.fixes.length === 0, 'clean fields yield an empty fixes array');
+}
+
 // ---- POST_PROSE_FIELDS: prose in, structural out ----
 for (const f of ['caption', 'firstComment', 'title', 'xCaption', 'metaDescription', 'spoilerText']) {
   ok(POST_PROSE_FIELDS.includes(f), `POST_PROSE_FIELDS includes prose field ${f}`);

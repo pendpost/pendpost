@@ -22,8 +22,10 @@ const createMock = vi.fn(() => Promise.resolve({ ok: true, id: 'pl_new', title: 
 const addMock = vi.fn(() => Promise.resolve({ ok: true, id: 'item_1', playlistId: 'pl_a', videoId: 'VID123' }));
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme Retail', accent: '#22566d' }, activeClientId: 'acme' }),
   usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
+  useConfig: () => ({ data: null }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => ({ data: undefined }),
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),

@@ -54,10 +54,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
+import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { laneReadiness } from '../lib/lane-readiness.mjs';
 import { classifySubRules } from '../lib/reddit-norms.mjs';
 
@@ -76,6 +79,29 @@ function readEnvRaw() {
 function readEnv(name) {
   const m = readEnvRaw().match(new RegExp(`^${name}=(.+)$`, 'm'));
   return m ? m[1].trim() : null;
+}
+
+// Secret-safe .env writer (mirrors linkedin-social.mjs writeEnv): unlike the shared
+// writeEnvVars this tolerates '=' in a value (a client secret / password often ends
+// in '='), rejecting only newlines which would corrupt the line parser. Function
+// replacer so a '$NN' in a value is not treated as a replacement backref. Atomic
+// tmp+rename, 0600 - a crash mid-write must never truncate the secret-bearing .env.
+function writeEnv(vars) {
+  let raw = readEnvRaw();
+  for (const [k, v] of Object.entries(vars)) {
+    if (v == null) continue;
+    const val = String(v);
+    if (/[\n\r]/.test(val)) throw new Error(`value for ${k} contains a newline`);
+    if (new RegExp(`^${k}=`, 'm').test(raw)) {
+      raw = raw.replace(new RegExp(`^${k}=.*$`, 'm'), () => `${k}=${val}`);
+    } else {
+      raw += `${raw.endsWith('\n') || raw === '' ? '' : '\n'}${k}=${val}\n`;
+    }
+  }
+  fs.mkdirSync(path.dirname(ENV_PATH), { recursive: true });
+  const tmp = `${ENV_PATH}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, raw, { mode: 0o600 });
+  fs.renameSync(tmp, ENV_PATH);
 }
 
 const subreddit = () => readEnv('REDDIT_SUBREDDIT');
@@ -150,7 +176,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'redditPermalink', 'redditSubmitted', 'status', 'postedAt', 'attempts', 'radarReplyState', 'radarFollowup'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'redditPermalink', 'redditSubmitted', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState', 'radarFollowup'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -189,8 +215,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 }
 
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 export const RUN = { results: [] };
@@ -544,6 +571,84 @@ function evaluateSubProblems(post, rules, title) {
 
 // ---------- commands ----------
 
+// Guided credential entry. Reddit has no browser OAuth, so the four creds (plus the
+// non-secret destination subreddit) must be placed in the RESOLVED client .env before
+// `auth` can validate. enforceCeremonyClient (main) has already re-rooted us at the
+// target client, so ENV_PATH points at data/clients/<id>/.env. The OWNER types the
+// values; we never echo them. Interactive by default (secret + password read without
+// echo); with no TTY or --non-interactive the values come from same-named env vars
+// (used by the test with fake creds - real secrets never travel that way in normal use).
+async function cmdConnect(args) {
+  const interactive = Boolean(process.stdin.isTTY) && !args['non-interactive'];
+  const fields = [
+    { key: 'REDDIT_CLIENT_ID', label: 'Reddit app client id', secret: false },
+    { key: 'REDDIT_CLIENT_SECRET', label: 'Reddit app client secret', secret: true },
+    { key: 'REDDIT_USERNAME', label: 'Reddit username (without u/)', secret: false },
+    { key: 'REDDIT_PASSWORD', label: 'Reddit account password', secret: true },
+    { key: 'REDDIT_SUBREDDIT', label: 'Target subreddit (without r/)', secret: false, optional: true },
+  ];
+  const updates = {};
+  for (const f of fields) {
+    let value;
+    if (interactive) value = f.secret ? await promptSecret(`  ${f.label}: `) : await promptLine(`  ${f.label}${f.optional ? ' [optional]' : ''}: `);
+    else value = process.env[f.key] || '';
+    value = String(value || '').trim();
+    if (!value) {
+      if (f.optional) continue;
+      throw new Error(`${f.key} is required (nothing entered).`);
+    }
+    updates[f.key] = value;
+  }
+  writeEnv(updates);
+  // Never echo any value - only the key names and the destination path.
+  console.log(`[ok] wrote ${Object.keys(updates).join(', ')} to ${ENV_PATH}`);
+  // Validate live only on a real interactive owner run; never in mock / non-interactive
+  // (the test feeds fake creds and must not hit the network).
+  if (resolveMode('reddit') === 'live' && interactive && !args['no-verify']) {
+    console.log('[..] validating with Reddit ...');
+    await cmdAuth();
+  } else {
+    console.log('[i] next: node scripts/reddit-social.mjs auth --client <id>   (validates the credentials live)');
+    RUN.results.push({ platform: 'reddit', action: 'connect', ok: true, detail: `wrote ${Object.keys(updates).length} field(s)` });
+  }
+}
+
+// Read one visible line (non-secret fields). Prompt + echo go to stderr so a --json
+// stdout stays clean.
+async function promptLine(question) {
+  const { createInterface } = await import('node:readline/promises');
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try { return await rl.question(question); } finally { rl.close(); }
+}
+
+// Read one secret line with NO echo (raw mode, discard keystrokes from the display).
+// The owner types the secret; it never appears on screen and we never print it back.
+function promptSecret(question) {
+  return new Promise((resolve) => {
+    const stdin = process.stdin;
+    process.stderr.write(question);
+    let value = '';
+    const wasRaw = Boolean(stdin.isRaw);
+    if (stdin.isTTY) stdin.setRawMode(true);
+    stdin.resume();
+    const done = () => {
+      stdin.removeListener('data', onData);
+      if (stdin.isTTY) stdin.setRawMode(wasRaw);
+      stdin.pause();
+      process.stderr.write('\n');
+    };
+    const onData = (buf) => {
+      for (const ch of buf.toString('utf8')) {
+        if (ch === '\n' || ch === '\r' || ch === '\u0004') { done(); resolve(value); return; }
+        if (ch === '\u0003') { done(); process.exit(130); } // Ctrl-C
+        else if (ch === '\u007f' || ch === '\b') value = value.slice(0, -1); // backspace
+        else value += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
 async function cmdAuth() {
   const token = await mintToken();
   const me = await reddit(token, 'GET', '/api/v1/me');
@@ -622,6 +727,13 @@ export async function cmdPublishDue(args) {
     if (!isReddit(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
       continue;
@@ -644,7 +756,11 @@ export async function cmdPublishDue(args) {
       if (!body) { RUN.results.push({ postId: post.id, platform: 'reddit', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'radar reply needs a caption' }); continue; }
       const { radarHttp } = await import('../lib/radar.mjs');
       try { token = token || await mintToken(); } catch (err) { RUN.results.push({ postId: post.id, platform: 'reddit', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: String(err.message || err).slice(0, 200) }); continue; }
-      const form = new URLSearchParams({ api_type: 'json', thing_id: String(rr.externalId), text: body });
+      // R11/N2: thread UNDER the author's follow-up comment when one was captured
+      // (parentExternalId, a t1_ fullname), else reply to the thread root - an honest fallback,
+      // never a broken target.
+      const target = String(rr.parentExternalId || rr.externalId);
+      const form = new URLSearchParams({ api_type: 'json', thing_id: target, text: body });
       const { ok, status, json } = await radarHttp('https://oauth.reddit.com/api/comment', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'User-Agent': userAgent(), 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -660,11 +776,11 @@ export async function cmdPublishDue(args) {
         RUN.results.push({ postId: post.id, platform: 'reddit', action: 'publish', ok: false, errorCode: code, errorMessage: `reddit reply HTTP ${status}${apiErrors ? ` ${JSON.stringify(apiErrors).slice(0, 120)}` : ''}` });
         continue;
       }
-      post.redditPostId = String(json?.json?.data?.things?.[0]?.data?.name || `reply_${rr.externalId}`);
+      post.redditPostId = String(json?.json?.data?.things?.[0]?.data?.name || `reply_${target}`);
       post.status = 'posted';
       post.postedAt = new Date(now).toISOString();
       await savePlan(abs, plan, [post.id]);
-      RUN.results.push({ postId: post.id, platform: 'reddit', action: 'publish', ok: true, id: post.redditPostId, radarReply: rr.externalId });
+      RUN.results.push({ postId: post.id, platform: 'reddit', action: 'publish', ok: true, id: post.redditPostId, radarReply: target });
       published += 1;
       continue;
     }
@@ -727,6 +843,17 @@ export async function cmdPublishDue(args) {
       if (!mediaPath) {
         console.log(`[warn] ${post.id}: ${kind} submission has no local render - skipping (never a text fallback).`);
         RUN.results.push({ postId: post.id, platform: 'reddit', action: 'publish', ok: false, errorCode: 'media_missing', errorMessage: `reddit ${kind} submission needs a local media render` });
+        continue;
+      }
+    }
+    // Fresh-bytes A/V-sync backstop: probe the actual video bytes about to upload (not the
+    // manifest's stale author-time avSyncOk) - a measured desync is a malformed mux. Self-
+    // gates on an image submission (a jpg never probes).
+    if (kind === 'image' || kind === 'video') {
+      const avBlock = await avSyncBlocker(mediaPath);
+      if (avBlock) {
+        console.log(`[warn] ${post.id}: ${avBlock} - skipping.`);
+        RUN.results.push(avSyncBlockRow(post, 'reddit', avBlock));
         continue;
       }
     }
@@ -1253,7 +1380,7 @@ export async function cmdRadarFollowup(args) {
 
 const COMMANDS = {
   auth: cmdAuth,
-  connect: cmdAuth,
+  connect: cmdConnect,
   comments: cmdComments,
   reply: cmdReply,
   moderate: cmdModerate,
@@ -1274,6 +1401,9 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  // Guard: a hand-run credential ceremony must target an explicit client, never the
+  // global active client by accident. No-op for daemon/MCP spawns and non-ceremony verbs.
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'reddit', scriptUrl: import.meta.url });
   JSON_MODE = Boolean(args.json);
   ACTOR = typeof args.actor === 'string' ? args.actor : 'cli';
   if (JSON_MODE) console.log = (...a) => console.error(...a);

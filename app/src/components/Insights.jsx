@@ -156,9 +156,10 @@ function DigestMarkdown({ source }) {
 
 // Metric keys that are RATES (a 0-1 ratio), not counts - summing them across
 // posts is meaningless, so the per-platform totals strip skips them (they still
-// render per-post). LinkedIn `engagement` is the one such key today (spec 08
-// review #2); add any future rate metric here.
-const RATE_METRIC_KEYS = new Set(['engagement']);
+// render per-post). LinkedIn `engagement` (spec 08 review #2) and Reddit
+// `upvote_ratio` (R3, ux-audit 2026-08-04) are the such keys today; add any
+// future rate metric here.
+const RATE_METRIC_KEYS = new Set(['engagement', 'upvote_ratio']);
 
 // UX round 4 (2026-07-21): the PRIMARY metrics per platform - the three-or-so
 // numbers that answer "how did this do" at a glance. Everything else stays one
@@ -175,6 +176,10 @@ const PRIMARY_METRICS = {
   telegram: ['views'],
   ghost: ['sent', 'opened', 'clicks'],
   nostr: ['reactions', 'zaps', 'zapSats'],
+  // R3 (ux-audit 2026-08-04): the newly-swept lanes.
+  x: ['impressions', 'likes', 'shares'],
+  reddit: ['score', 'num_comments', 'upvote_ratio'],
+  mastodon: ['favourites', 'reblogs', 'replies'],
 };
 // The primary keys actually PRESENT on this payload; a platform whose primary
 // keys are absent falls back to its first three numeric keys, so a row never
@@ -202,9 +207,22 @@ function MetricChip({ k, v, history, metricLabel }) {
   );
 }
 
+// Localized metric label resolver, shared so PostDetail's stored-metric chips
+// (dim-3 M5) read identically to the Insights panel: prefer the metric.<k> locale
+// key, fall back to the envelope's stable English label, then the raw key.
+export function makeMetricLabel(t, metricLabels = {}) {
+  return (k) => {
+    const key = `metric.${k}`;
+    const v = t(key);
+    return v === key ? (metricLabels[k] || k) : v;
+  };
+}
+
 // The per-row metric block: primary chips at rest, the remaining metrics behind
 // one "+N" toggle. Local state per row - expanding one row never moves another.
-function MetricChips({ entry, metricLabel, t }) {
+// Exported so PostDetail (the after-publish home, dim-3 M5) reuses the SAME chip
+// component beside its verify chips - one metric renderer, never a second config.
+export function MetricChips({ entry, metricLabel, t }) {
   const [expanded, setExpanded] = useState(false);
   const numeric = Object.entries(entry.metrics || {}).filter(([, v]) => typeof v === 'number');
   const primaryKeys = primaryKeysFor(entry.platform, entry.metrics);
@@ -225,6 +243,66 @@ function MetricChips({ entry, metricLabel, t }) {
         </button>
       ) : null}
     </div>
+  );
+}
+
+// A summary lane -> its representative brand icon+label. Every lane matches a
+// PLATFORM_META key except 'meta' (which has no combined entry - Instagram is its
+// audience-facing face, mirroring ACCOUNT_LANE_ICON below). Used only by the
+// "What is working" strip to badge the winning lane.
+const LANE_ICON = { meta: 'instagram' };
+function laneMeta(lane) { return PLATFORM_META[LANE_ICON[lane] || lane]; }
+
+// One "What is working" finding chip: a muted dimension label, the winner, and
+// its average engagement. `icon`/`iconColor` badge a lane; type/hour pass text.
+function WorkingChip({ label, name, avg, posts, Icon, iconColor, t }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1 ${INNER_SURFACE}`}
+      aria-label={t('insights.working.sr', { label, name, avg, posts })}
+    >
+      <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{label}</span>
+      {Icon ? <Icon size={13} className={iconColor} aria-hidden="true" /> : null}
+      <span className="text-[11px] font-bold text-zinc-800 dark:text-zinc-100">{name}</span>
+      <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('insights.working.avg', { n: fmtInt(avg) })}</span>
+    </span>
+  );
+}
+
+// The performance-memory "What is working" strip (R8 / dim-3 M2): the top finding
+// per dimension - lane, format, hour - ranked by AVERAGE engagement (getInsights
+// summary). Honest by construction: below summary.minMeasured measured posts it
+// renders one plain "not enough history yet" line instead of a fabricated winner.
+// Read-only glyph strip, no new page - the operator's answer to "what should I
+// make more of", the same view the drafting agent reads via read_insights.
+function WhatIsWorking({ summary, t }) {
+  if (!summary) return null;
+  const eyebrow = <span className={EYEBROW}>{t('insights.working.title')}</span>;
+  if (!summary.hasEnough) {
+    return (
+      <section role="region" aria-label={t('insights.working.title')} className="space-y-1.5">
+        {eyebrow}
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('insights.working.empty')}</p>
+      </section>
+    );
+  }
+  const lane = summary.byLane?.[0];
+  const type = summary.byType?.[0];
+  const hour = summary.byHour?.[0];
+  const laneM = lane ? laneMeta(lane.key) : null;
+  return (
+    <section role="region" aria-label={t('insights.working.title')} className="flex flex-wrap items-center gap-2">
+      {eyebrow}
+      {lane ? (
+        <WorkingChip label={t('insights.working.lane')} name={laneM?.label || lane.key} avg={lane.avg} posts={lane.posts} Icon={laneM?.Icon} iconColor={laneM?.color} t={t} />
+      ) : null}
+      {type ? (
+        <WorkingChip label={t('insights.working.type')} name={t(`type.${type.key}`)} avg={type.avg} posts={type.posts} t={t} />
+      ) : null}
+      {hour ? (
+        <WorkingChip label={t('insights.working.hour')} name={`${String(hour.key).padStart(2, '0')}:00`} avg={hour.avg} posts={hour.posts} t={t} />
+      ) : null}
+    </section>
   );
 }
 
@@ -400,7 +478,7 @@ function MetricsAccountBlock({ lane, block, t, metricLabel }) {
 // is skipped.
 const ACCOUNT_BLOCKS = { gbp: GbpAccountBlock, meta: DemographicsBlock, youtube: DemographicsBlock, linkedin: DemographicsBlock, pinterest: DemographicsBlock, telegram: MetricsAccountBlock };
 
-export default function Insights({ active, platformFilter = [], campaignFilter = 'all' }) {
+export default function Insights({ active, platformFilter = [], campaignFilter = 'all', onOpenPost }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data, isLoading, isError, error } = useInsights(active);
@@ -411,11 +489,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
   // is localized via the metric.* locale keys; fall back to the envelope label
   // then the raw key for an unknown metric (de-CH reads German, en stays stable).
   const metricLabels = data?.metricLabels || {};
-  const metricLabel = (k) => {
-    const key = `metric.${k}`;
-    const v = t(key);
-    return v === key ? (metricLabels[k] || k) : v;
-  };
+  const metricLabel = makeMetricLabel(t, metricLabels);
   // Account-scoped store (spec 04, the "Audience & local" seam). A MAP keyed by
   // lane; this panel is a generic CONTAINER - the collapsible appears whenever ANY
   // account-lane block exists, and the body dispatches each lane through
@@ -513,6 +587,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
         </div>
       ) : items.length ? (
         <>
+        <WhatIsWorking summary={data?.summary} t={t} />
         {platformTotals.length ? (
           <section
             role="region"
@@ -567,8 +642,12 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
             const typeLabel = e.postType ? t(`type.${e.postType}`) : null;
             const snippet = (e.caption || '').trim();
             const primary = snippet.length > 60 ? `${snippet.slice(0, 60).trimEnd()}…` : snippet;
-            return (
-              <li key={`${e.campaign}-${e.postId}-${e.platform}`} className={`flex items-center gap-2.5 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
+            // dim-3 M5: the row's title block opens the post (the after-publish
+            // home), mirroring Activity's onOpenPost. Only the title is the
+            // button - MetricChips carries its own "+N" toggle, so a button-in-
+            // button is avoided while the whole label stays a generous target.
+            const titleInner = (
+              <>
                 {Icon ? <Icon size={15} className={meta.color} aria-hidden="true" /> : null}
                 <div className="min-w-0 flex-1">
                   <p className="flex min-w-0 items-center gap-1.5 text-xs font-bold">
@@ -584,6 +663,22 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
                     {new Date(e.fetchedAt).toLocaleString(dateLocale(), { dateStyle: 'short', timeStyle: 'short' })}
                   </p>
                 </div>
+              </>
+            );
+            return (
+              <li key={`${e.campaign}-${e.postId}-${e.platform}`} className={`flex items-center gap-2.5 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
+                {onOpenPost ? (
+                  <button
+                    type="button"
+                    onClick={() => onOpenPost({ campaign: e.campaign, id: e.postId })}
+                    aria-label={t('insights.row.open', { postId: e.postId, campaign: prettyCampaign(e.campaign) })}
+                    className="-m-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-1 text-left transition hover:bg-zinc-500/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  >
+                    {titleInner}
+                  </button>
+                ) : (
+                  <div className="flex min-w-0 flex-1 items-center gap-2.5">{titleInner}</div>
+                )}
                 <MetricChips entry={e} metricLabel={metricLabel} t={t} />
                 {sparkValues ? <Sparkline values={sparkValues} dir={sparkDir} /> : null}
               </li>

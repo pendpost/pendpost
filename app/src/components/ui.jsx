@@ -850,6 +850,31 @@ export function Skeleton({ className = '' }) {
   return <div className={`animate-pulse rounded-xl bg-zinc-300/40 dark:bg-zinc-700/40 ${className}`} />;
 }
 
+// A segmented toggle: single-tone, the active segment carries the accent. Lifted from
+// Published.jsx (it used it for the view + range controls) so Radar's Discovered / On your
+// posts toggle reuses the SAME control rather than a second visual answer to one job. Each
+// option is { key, label, Icon? }; aria-pressed marks the active segment on the button itself.
+export function Segmented({ label, value, options, onChange }) {
+  return (
+    <div className="flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.key}
+          type="button"
+          onClick={() => onChange(o.key)}
+          aria-pressed={value === o.key}
+          className={`flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+            value === o.key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
+          }`}
+        >
+          {o.Icon ? <o.Icon size={13} aria-hidden="true" /> : null}
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 // The four shared tokens now live at ui/tokens.js (a leaf both ui.jsx and the ui/
 // primitives can depend on, so a primitive needing one cannot form an import cycle).
 // Imported at the top and re-exported here, so every existing `from '../ui.jsx'` import

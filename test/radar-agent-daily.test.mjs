@@ -121,6 +121,14 @@ try {
   ok(await asClient(() => dailyAgentScan()) === null, '(d) dailyBudget:1 is respected - the clock allows it, the budget refuses it');
   ok(jobCount() === 1, 'the budget actually prevented the spawn');
 
+  // A limit-refused job spent nothing, so it must not eat the unattended budget: flag the
+  // job as reason:limit and the derived counter excludes it. (Restored right after - the
+  // rest of this file reasons about real spends.)
+  await asClient(() => { const st = loadState(); st.radar.jobs[0].reason = 'limit'; saveState(); });
+  ok(asClient(() => agentJobsToday(loadState())) === 0, 'a reason:limit job does NOT count toward the daily budget - the refusal spent nothing');
+  await asClient(() => { const st = loadState(); delete st.radar.jobs[0].reason; saveState(); });
+  ok(asClient(() => agentJobsToday(loadState())) === 1, 'restored: a real job still counts');
+
   // Raising the budget lets exactly one more through.
   await cfg({ agent: { dailyBudget: 2 } });
   const second = await asClient(() => dailyAgentScan());
@@ -136,6 +144,12 @@ try {
     '(d) the OPERATOR can still press Scan now past the budget - they are deciding to spend, in the moment, with the cost on the button');
   const bySched = await asClient(() => radarAgentScan({ actor: 'scheduler' }));
   ok(bySched.ok !== true && bySched.code === 'disabled', '(d) but the SCHEDULER is still refused - the budget bounds what runs unattended');
+
+  // The writes-side mirror of agentJobsToday: a day of limit refusals frees the scheduler
+  // budget too - refused jobs spent nothing, so the next tick may still try.
+  await asClient(() => { const st = loadState(); for (const j of st.radar.jobs) j.reason = 'limit'; saveState(); });
+  const freed = await asClient(() => radarAgentScan({ actor: 'scheduler' }));
+  ok(freed.ok === true && freed.job && freed.job.state === 'done', 'reason:limit jobs do not consume the scheduler budget either');
 
   // ===== (f) Activity =====
   const acts = asClient(() => getActivity(20)).filter((a) => a.action === 'radar-agent-scan');

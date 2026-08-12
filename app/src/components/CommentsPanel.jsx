@@ -9,6 +9,7 @@ import { fmtRelative } from '../lib/format.js';
 import { useComments, replyToComment, moderateComment, reactToPost } from '../lib/api.js';
 import { PLATFORM_META, INNER_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import { useLint, LintPanel } from './Composer.jsx';
+import HistoryChip from './HistoryChip.jsx';
 import { useT } from '../lib/i18n.js';
 
 // The inbound-engagement (inbox) thread panel (spec 02, Pattern P6; moderation is
@@ -80,7 +81,7 @@ const DEFAULT_REACT_EMOJI = '👍';
 // a per-row inline reply box, and (spec 06) a per-row moderation overflow listing
 // only the lane's supported actions. Optimistically-appended local replies render
 // with the same row (parentId set) so the operator sees their reply immediately.
-function CommentRow({ comment, laneMeta, moderateActions, reactActions, onReply, onModerate, onReact, replying, t }) {
+function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, onReply, onModerate, onReact, replying, t }) {
   const [draft, setDraft] = useState('');
   const [open, setOpen] = useState(false);
   const [error, setError] = useState(null);
@@ -107,7 +108,7 @@ function CommentRow({ comment, laneMeta, moderateActions, reactActions, onReply,
     if (!text) return;
     setError(null);
     try {
-      await onReply(comment.commentId, text);
+      await onReply(comment.commentId, text, comment.author);
       setDraft('');
       setOpen(false);
     } catch (err) {
@@ -159,6 +160,10 @@ function CommentRow({ comment, laneMeta, moderateActions, reactActions, onReply,
       <div className="flex items-center gap-2">
         {LaneIcon ? <LaneIcon size={13} className={laneMeta.color} aria-hidden="true" /> : null}
         <span className="text-sm font-bold">{comment.author || t('postDetail.comments.unknownAuthor')}</span>
+        {/* Relationship memory (spec 49 R12): a quiet "Nth exchange" chip beside the author,
+            at the reply moment. Covers post comments AND gbp reviews (both ride this row via
+            kind:'review'). Never on an optimistic local reply (that author is "you"). */}
+        {!comment.local && lane && comment.author ? <HistoryChip lane={lane} handle={comment.author} /> : null}
         {comment.ts ? <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{fmtRelative(comment.ts)}</span> : null}
         {comment.permalink ? (
           <a
@@ -358,7 +363,10 @@ function CommentRow({ comment, laneMeta, moderateActions, reactActions, onReply,
   );
 }
 
-export default function CommentsPanel({ campaign, postId, enabled = true }) {
+// onReplied (optional): called with the replied-to commentId after a successful reply. The
+// per-post PostDetail usage omits it (no behaviour change); the own-post comment inbox passes
+// it to mark that comment handled (comment_resolve) so it leaves the unanswered feed.
+export default function CommentsPanel({ campaign, postId, enabled = true, onReplied }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data, isLoading, isError, refetch } = useComments(campaign, postId, enabled);
@@ -367,16 +375,25 @@ export default function CommentsPanel({ campaign, postId, enabled = true }) {
   const [sent, setSent] = useState([]);
   const [replying, setReplying] = useState(false);
 
-  const onReply = async (commentId, text) => {
+  const onReply = async (commentId, text, author) => {
     setReplying(true);
     try {
-      await replyToComment(campaign, postId, commentId, text, data?.targetPlatform || undefined);
+      await replyToComment(campaign, postId, commentId, text, data?.targetPlatform || undefined, author);
       setSent((prev) => [
         ...prev,
         { commentId: `local-${Date.now()}`, parentId: commentId, author: t('postDetail.comments.you'), text, ts: new Date().toISOString(), kind: 'comment', local: true },
       ]);
       // Same mutation path as every other write + a panel refetch (spec 02 §2).
       queryClient.invalidateQueries({ queryKey: ['plans'] });
+      // R12 (BU-9): a reply accretes a me->them exchange server-side, so the engager
+      // query (['engager', lane, handle], staleTime 15s) is now stale - without this the
+      // "Nth exchange" chip keeps serving the pre-reply count for 15s and never lights
+      // until a hard reload. Invalidate it here (the un-forget/link paths already do).
+      queryClient.invalidateQueries({ queryKey: ['engager'] });
+      // Own-post comment inbox (optional): the reply handled this comment, so let the inbox
+      // mark it resolved and drop the row. Non-throwing - a resolve failure never breaks the
+      // reply the operator already made.
+      if (typeof onReplied === 'function') { try { onReplied(commentId); } catch { /* inbox-only */ } }
       refetch();
     } finally {
       setReplying(false);
@@ -439,7 +456,7 @@ export default function CommentsPanel({ campaign, postId, enabled = true }) {
       ) : (
         <ul className="space-y-1.5">
           {items.map((c) => (
-            <CommentRow key={c.commentId} comment={c} laneMeta={laneMeta} moderateActions={moderateActions} reactActions={reactActions} onReply={onReply} onModerate={onModerate} onReact={onReact} replying={replying} t={t} />
+            <CommentRow key={c.commentId} comment={c} lane={c.platform || data?.targetPlatform || data?.platform} laneMeta={laneMeta} moderateActions={moderateActions} reactActions={reactActions} onReply={onReply} onModerate={onModerate} onReact={onReact} replying={replying} t={t} />
           ))}
         </ul>
       )}

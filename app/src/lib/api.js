@@ -81,6 +81,25 @@ export function useConfig(enabled) {
   });
 }
 
+// The autonomy ledger read (ux-audit R7): { dryRun: { matched, total, limit },
+// revocable } from GET /api/autonomy (lib/writes.mjs autonomyStatus). dryRun is the
+// AU5 preview ("this scope would auto-approve N of your last M drafts", computed with
+// the policy forced enabled so it previews before the toggle is on); revocable is the
+// count of live policy approvals the AU4 sweep would return to review. Keyed off the
+// config rev so it re-derives the moment the owner edits the auto-approve scope.
+export function useAutonomy(rev, enabled = true) {
+  return useQuery({
+    queryKey: ['autonomy', rev],
+    queryFn: () => getJson('/api/autonomy'),
+    enabled,
+    staleTime: 10_000,
+  });
+}
+
+// AU4 revoke-that-unwinds: return every not-yet-published policy approval to review
+// (POST /api/autonomy/revoke -> autonomy_revoke). Owner-gated server-side.
+export const revokeAutonomy = () => postJson('/api/autonomy/revoke', { actor: ACTOR });
+
 // One-call readiness (US-ONB-05): { ok, ready, schedulerRunning, blockers[],
 // nextDue[] } from GET /api/pendpost-health (lib/writes.mjs pendpostHealth). Read-only
 // and client-scoped server-side; the checklist renders blockers as actionable steps.
@@ -143,6 +162,25 @@ export function useComments(campaign, postId, enabled = true) {
     queryFn: () => getJson(`/api/comments?campaign=${encodeURIComponent(campaign)}&postId=${encodeURIComponent(postId)}`),
     enabled: enabled && Boolean(campaign) && Boolean(postId),
     staleTime: 15_000,
+  });
+}
+
+// The own-post comment monitor (own-post comment inbox): the aggregated UNANSWERED comments
+// across this client's recently-published posts, from GET /api/comments/inbox
+// (lib/comment-watch.mjs commentInbox). A PURE cache read the scheduler sweep maintains, so it
+// always resolves 200 with a structured body ({ ok, enabled, unanswered, posts, sources,
+// lastSweep, intervalHours, windowDays }); the Radar "On your posts" segment renders an honest
+// state (off / empty / populated / per-lane degrade) rather than a thrown query error. A light
+// background poll (like nothing else here needs one, but a server-side sweep lands new comments
+// on its own cadence) so the feed surfaces them without a manual refresh; only while the segment
+// is mounted+enabled. A client switch invalidates ['commentInbox'].
+export function useCommentInbox(enabled = true) {
+  return useQuery({
+    queryKey: ['commentInbox'],
+    queryFn: () => getJson('/api/comments/inbox'),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: enabled ? 30_000 : false,
   });
 }
 
@@ -348,6 +386,38 @@ export function useValidateMedia(campaign, postId, enabled = true, rev = null) {
   });
 }
 
+// Relationship memory (spec 49 R12): one person's accreted history for a lane+handle,
+// from GET /api/engagers?lane=&handle= (lib/engagers.mjs readEngager over the per-brand
+// state.engagers). Always resolves 200 with a structured body ({ ok, engager:record|
+// tombstone|null, suggestions:[{handleNorm,otherKey,otherLane,otherHandle}], links:[...] })
+// so the HistoryChip/HistoryPopover render an honest state (no chip / ordinal chip /
+// forgotten indicator / degraded) rather than a thrown query error - a memory read that
+// fails must never shout on a reply surface (S9e). The SAME record the MCP list_engagers
+// returns (one source of truth). enabled-gated on a present lane+handle so an 'unknown'/
+// empty author never even fires the read (S2b). Keyed per lane+handle so each row reads
+// its own person; 'engager' is client-scoped (per brand) so a client switch invalidates it.
+export function useEngager(lane, handle, enabled = true) {
+  return useQuery({
+    queryKey: ['engager', lane || '', handle || ''],
+    queryFn: () => getJson(`/api/engagers?lane=${encodeURIComponent(lane)}&handle=${encodeURIComponent(handle)}`),
+    enabled: enabled && Boolean(lane) && Boolean(handle),
+    staleTime: 15_000,
+  });
+}
+
+// The four owner-driven relationship-memory write twins (spec 49 §5.MCP), each hitting the
+// SAME lib/engagers.mjs writer the MCP verb does so the inline popover controls and the
+// agent-reachable verbs can never drift. forget/unlink carry confirm:true (the click IS the
+// confirmation, mirroring the destructive-moderate posture); unforget/link/dismiss are
+// additive/restorative and take no confirm. link/unlink/dismiss operate on the pair only:
+// they NEVER touch the two underlying records (a stored association, never a merge - there
+// is no merge_engager on either face). The caller invalidates ['engager'] on success.
+export const forgetEngager = (lane, handle) => postJson('/api/engagers/forget', { lane, handle, confirm: true, actor: ACTOR });
+export const unforgetEngager = (lane, handle) => postJson('/api/engagers/unforget', { lane, handle, actor: ACTOR });
+export const linkEngagers = (a, b) => postJson('/api/engagers/link', { a, b, actor: ACTOR });
+export const unlinkEngagers = (a, b) => postJson('/api/engagers/unlink', { a, b, confirm: true, actor: ACTOR });
+export const dismissLinkGuess = (a, b) => postJson('/api/engagers/dismiss-link', { a, b, actor: ACTOR });
+
 // --- Multi-client (LOCAL, in-core) ---------------------------------------
 // The active client scopes every other call server-side; these read the
 // registry ({ activeClientId, clients:[{id,displayName,status,timezone?,accent?,logo?}] }).
@@ -369,6 +439,21 @@ export function useClientsOverview() {
   return useQuery({
     queryKey: ['clients-overview'],
     queryFn: () => getJson('/api/clients/overview'),
+    staleTime: 30_000,
+  });
+}
+
+// Client review link (spec 48 R10): the per-client reviewer roster from GET
+// /api/clients/<id>/reviewers (lib/reviewers.mjs listReviewers). Each row carries
+// only the 4-char tokenTail plus derived status booleans (active/revoked/expired) -
+// the full token is returned ONCE at mint (createReviewer) and never again. Keyed
+// per clientId so switching the active client naturally re-fetches under the new id
+// (no CLIENT_SCOPED_KEYS entry needed - the id is in the key, not the server scope).
+export function useReviewers(clientId, enabled = true) {
+  return useQuery({
+    queryKey: ['reviewers', clientId],
+    queryFn: () => getJson(`/api/clients/${encodeURIComponent(clientId)}/reviewers`),
+    enabled: enabled && Boolean(clientId),
     staleTime: 30_000,
   });
 }
@@ -410,7 +495,7 @@ export function useSetActiveClient() {
 // whole namespace - is correct (spec 23: the inbound-events feed is client-scoped, but
 // its cloud.js siblings ['cloud'], ['cloud','clients'], ['cloud','capabilities'],
 // ['cloud','subscription'] are workspace-wide and must NOT refetch on a client switch).
-const CLIENT_SCOPED_KEYS = ['plans', 'accounts', 'activity', 'insights', 'assets', 'config', 'digest', 'pendpost-health', 'platform-validate', 'validate-media', 'comments', 'reviews', 'discover', 'presubmit-check', 'youtube-playlists', 'reddit-flairs', 'pinterest-board-sections', 'pinterest-boards', 'gbp-media', 'gbp-attributes', 'ghost-members', 'ghost-newsletters', 'radar', ['cloud', 'events']];
+const CLIENT_SCOPED_KEYS = ['plans', 'accounts', 'activity', 'insights', 'assets', 'config', 'digest', 'pendpost-health', 'platform-validate', 'validate-media', 'comments', 'commentInbox', 'reviews', 'discover', 'presubmit-check', 'youtube-playlists', 'reddit-flairs', 'pinterest-board-sections', 'pinterest-boards', 'gbp-media', 'gbp-attributes', 'ghost-members', 'ghost-newsletters', 'radar', 'engager', ['cloud', 'events']];
 
 async function sendJson(method, path, body) {
   const res = await fetch(path, {
@@ -425,6 +510,9 @@ async function sendJson(method, path, body) {
     // The finer discriminator some writes carry alongside a stable code (e.g. spec 06
     // moderate returns code:'invalid_input' with error:'unsupported_action').
     if (data.error) err.error = data.error;
+    // A4 archive safety: the archive refusal (needs_confirm) carries the client's
+    // fresh in-flight counts so the UI can re-ask with the server's numbers.
+    if (data.inFlight) err.inFlight = data.inFlight;
     throw err;
   }
   return data;
@@ -449,7 +537,21 @@ export const getClients = () => getJson('/api/clients');
 export const setActiveClient = (id) => postJson('/api/clients/active', { id, actor: ACTOR });
 export const createClient = (body) => postJson('/api/clients', { ...body, actor: ACTOR });
 export const updateClient = (id, body) => sendJson('PATCH', `/api/clients/${id}`, { ...body, actor: ACTOR });
-export const archiveClient = (id) => postJson(`/api/clients/${id}/archive`, { actor: ACTOR });
+// A4 archive safety: opts may carry unscheduleInFlight / acknowledgeInFlight -
+// the server refuses a blind archive over natively scheduled platform objects.
+export const archiveClient = (id, opts = {}) => postJson(`/api/clients/${id}/archive`, { actor: ACTOR, ...opts });
+
+// --- Client review link reviewer admin (spec 48 R10, W7 twins) ------------
+// Three operator-only verbs mirroring the client_* helpers above. createReviewer
+// returns the full one-time link ({ ok, reviewer, token }) - the token is carried
+// exactly once and is never retrievable again, so the caller MUST show it at mint.
+// expiresAt is optional (owner decision O3: no default expiry; revoke is the kill
+// path). Owner-gated server-side; the UI always acts as the owner.
+export const listReviewers = (clientId) => getJson(`/api/clients/${encodeURIComponent(clientId)}/reviewers`);
+export const createReviewer = (clientId, { name, expiresAt } = {}) =>
+  postJson(`/api/clients/${encodeURIComponent(clientId)}/reviewers`, { name, ...(expiresAt ? { expiresAt } : {}), actor: ACTOR });
+export const revokeReviewer = (clientId, reviewerId) =>
+  postJson(`/api/clients/${encodeURIComponent(clientId)}/reviewers/${encodeURIComponent(reviewerId)}/revoke`, { actor: ACTOR });
 
 // --- Phase D write matrix ---
 // Create a campaign (US-ONB-04): the first-run empty-state's primary action.
@@ -465,8 +567,10 @@ export const rejectPost = (campaign, postId, note) => postJson(`/api/plans/${cam
 export const unschedulePost = (campaign, postId, confirm = false) => postJson(`/api/plans/${campaign}/posts/${postId}/unschedule`, { confirm, actor: ACTOR });
 export const reschedulePost = (campaign, postId, scheduledAt, confirm = false) => postJson(`/api/plans/${campaign}/posts/${postId}/reschedule`, { scheduledAt, confirm, actor: ACTOR });
 // Mark a post the owner published natively outside pendpost as posted, so it
-// leaves the publish-due queue. Never publishes; externalUrl is optional.
-export const markPosted = (campaign, postId, externalUrl) => postJson(`/api/plans/${campaign}/posts/${postId}/mark-posted`, { externalUrl, actor: ACTOR });
+// leaves the publish-due queue. Never publishes; externalUrl is optional. An
+// optional platform records manual completion for THAT lane only (a mixed
+// multi-lane post keeps owing its other lanes) - R5 lane-scoped completion.
+export const markPosted = (campaign, postId, externalUrl, platform) => postJson(`/api/plans/${campaign}/posts/${postId}/mark-posted`, { externalUrl, platform, actor: ACTOR });
 // Read a handed-off post back from its platforms to confirm it is live (writes a
 // non-destructive verify block; never publishes). The caller invalidates ['plans'].
 export const verifyPost = (campaign, postId) => postJson(`/api/plans/${campaign}/posts/${postId}/verify`, { actor: ACTOR });
@@ -535,6 +639,17 @@ export const radarDraftComparison = (backlogKey) => postJson('/api/radar/compari
 // changes. Idempotent; the UI always acts as the owner. Resolves { ok, source,
 // externalId, action, watched } or throws. The caller invalidates ['radar'].
 export const radarTriage = (source, externalId, action) => postJson('/api/radar/triage', { source, externalId, action, actor: ACTOR });
+// G8 (ux-audit 2026-08-04): the SAME triage route also declines one GEO comparison-backlog
+// entry, identified by backlogKey instead of source+externalId. dismiss = drop it durably
+// (the dismissedBacklog ledger; a re-scan never re-mints it), clear = undo. The caller
+// invalidates ['radar'].
+export const radarBacklogTriage = (backlogKey, action) => postJson('/api/radar/triage', { backlogKey, action, actor: ACTOR });
+// R5 piece 2 (ux-audit 2026-08-04, dim-2 G2/N1): record that a COPY-DRAFT signal (HN /
+// non-Enterprise X / karma post-idea) was posted BY HAND. There is no engine publish path
+// and so no repliedUrl - this durable { postedUrl?, ts } marker is the only proof it went
+// out, and it is what lets the feed count the copy draft as answered. postedUrl optional.
+// Resolves { ok, source, externalId, postedUrl, at } or throws. The caller invalidates ['radar'].
+export const radarMarkCopyPosted = (source, externalId, postedUrl) => postJson('/api/radar/mark-copy-posted', { source, externalId, postedUrl, actor: ACTOR });
 // NOTE: there is deliberately no radar ingest helper here. That capability is agent-only -
 // an agent submits what it found through its MCP tool, with no Studio round-trip. The old
 // helper backed a copy-the-prompt/paste-the-JSON surface that has been removed; the
@@ -549,14 +664,19 @@ export const radarTriage = (source, externalId, action) => postJson('/api/radar/
 // planner with its approval pill. confirm:true is INTRINSIC (the Queue click IS the
 // confirmation). Reddit/Mastodon/Bluesky only - HN is surface-only (copy-paste). Resolves
 // { ok, campaign, postId, approval:"pending" } or throws. The caller invalidates ['plans'].
-export const radarQueueReply = ({ campaign, signalUrl, source, externalId, text, executionMode } = {}) =>
-  postJson('/api/radar/reply', { campaign, signalUrl, source, externalId, text, executionMode, confirm: true, actor: ACTOR });
+// R11: parentExternalId (optional) threads the reply UNDER the thread author's follow-up
+// comment (the signal's authorReplied.commentId) instead of the root - "reply to their reply".
+export const radarQueueReply = ({ campaign, signalUrl, source, externalId, parentExternalId, text, executionMode } = {}) =>
+  postJson('/api/radar/reply', { campaign, signalUrl, source, externalId, parentExternalId, text, executionMode, confirm: true, actor: ACTOR });
 // The inbox seam WRITE (spec 02): reply to one comment on a posted post (POST
 // /api/comments/reply -> lib/writes.mjs replyToComment). Operator-triggered; the UI
 // always acts as the owner. Resolves { ok, id, platform } or throws (sendJson
 // surfaces the server message + code, e.g. not_configured when the scope is missing).
 // The caller invalidates ['plans'] + refetches the panel on success.
-export const replyToComment = (campaign, postId, commentId, text, platform) => postJson('/api/comments/reply', { campaign, postId, commentId, text, platform, actor: ACTOR });
+// author is the replied-TO comment's author: it threads the reply into the relationship-memory
+// 'me'-direction accretion (spec 49 R12), so replying to a returning commenter records the 2nd
+// exchange that lights the "Nth exchange" chip. Optional - a reply with no author still sends.
+export const replyToComment = (campaign, postId, commentId, text, platform, author) => postJson('/api/comments/reply', { campaign, postId, commentId, text, platform, author, actor: ACTOR });
 // The inbox seam WRITE (spec 06): moderate one comment (POST /api/comments/moderate ->
 // lib/writes.mjs moderateComment). action is one of the lane's supported moderate
 // actions (from the read's moderateActions). Operator-triggered; the UI supplies an
@@ -578,6 +698,13 @@ export const moderateComment = (campaign, postId, commentId, action, platform, c
 // scope, unsupported_reaction when the lane cannot do it). The caller invalidates
 // ['plans'] + refetches the panel on success.
 export const reactToPost = (campaign, postId, commentId, reaction, platform, emoji, remove, authorPubkey) => postJson('/api/comments/react', { campaign, postId, commentId, reaction, platform, actor: ACTOR, emoji, remove: remove === true, authorPubkey });
+
+// Own-post comment monitor (own-post comment inbox) writes. refresh forces a check-now sweep
+// and returns the fresh inbox (POST /api/comments/inbox/refresh); resolve marks one comment
+// handled so it leaves the unanswered set and the next sweep never re-surfaces it (POST
+// /api/comments/inbox/resolve). The actual reply still goes through replyToComment above.
+export const refreshCommentInbox = () => postJson('/api/comments/inbox/refresh', {});
+export const resolveInboxComment = (key, reason) => postJson('/api/comments/inbox/resolve', { key, reason, actor: ACTOR });
 // GBP reviews WRITE (spec 03): upsert/remove the owner reply on one review (POST
 // /api/reviews/reply -> lib/writes.mjs replyToReview). reviewId is the full resource
 // name (from useReviews items[].commentId); an empty text REMOVES the reply. Operator-

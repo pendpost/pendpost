@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-08-12
+
+This release turns pendpost outward. It now watches the comments on your own posts, lets a client sign off on work through a link of their own, remembers the people who engage with you across lanes, and hardens the moment a post publishes so a broken one is caught before it ships rather than after.
+
+### Added
+- A comment inbox for your own posts. pendpost watches the comments on the posts it published and gathers them into an inbox on Radar, where you can like a comment or open it on the platform without leaving the app. The sweep rides the same scheduler tick as everything else, hides your own replies so the list stays about your audience, sorts newest first, tints anything you have not seen, and marks a thread done once you have dealt with it. A lane that cannot actually read comments, such as LinkedIn on the Community Management API, says so plainly instead of showing a false empty state.
+- A client review link. You can invite a client or a teammate to sign off on posts through a dedicated review page that never exposes the rest of the app and fails closed. Reviewers get a shareable link, a post waits on a sign-off fence before it publishes, and both the approvals list and the post detail show whether a post is awaiting review or already signed. Reviewer management has full MCP and REST twins.
+- Relationship memory. pendpost remembers the people who engage with you across lanes and shows how many times you have gone back and forth with each one, so a reply can acknowledge a returning voice instead of treating every exchange as the first. The store is local and can forget a person on request.
+- An enforced pre-flight readiness gate. A post proves it is ready at three points: when you approve it, at the publish path itself, and when the cloud accepts it for always-on delivery. A lane that is not ready is refused rather than shipped broken, and you can force past the gate when you know better. The delivery envelope carries the verdict so the cloud and the local backstop agree on it.
+- A fresh-bytes backstop on every video lane. Before a video goes out, pendpost re-checks that the caption is present and that audio and video stay in sync, on Instagram, Facebook, YouTube, Mastodon, TikTok, Reddit, and the cloud lanes (LinkedIn, X, Telegram, Discord), so a desynced reel is caught here instead of being rejected by the platform.
+- A per-brand fact sheet for Radar. Each brand carries its own description that drives both what Radar scans for and how it drafts replies, editable from a Setup card with a live preview. An owner-only reset can prune a tenant's polluted AI-visibility state.
+- An autonomy ledger. The scattered auto-approve and auto-reply controls now live in one place that shows exactly what pendpost is allowed to do on its own, with a dry-run view and a one-press revoke sweep.
+- Performance memory in Insights. pendpost stores the metrics it reads, leads with what is working, flags breakout and slump outliers, and can recycle an evergreen post that earned it. Every lane that can measure now does, including X, Reddit, and Mastodon, and an MCP tool exposes the stored metrics to an agent.
+- Brand-mention listening. Radar can watch for mentions of your brand as a first-class query, with a chip and a pill in the app and a count line in the daily digest.
+- A closed loop on AI visibility (GEO). Radar bridges what it finds in AI answers into a backlog you can act on or decline, reads share-of-voice from the server, discloses the evidence behind each check, and labels which assistant it asked.
+- Reply to a reply. When the author of a post you replied to answers back, the badge is now actionable and pendpost can thread a reply onto their follow-up.
+- A feedback and suggestions pipeline. Feedback has three on-ramps that all land in GitHub without the app ever phoning home: an in-app Share feedback link that opens a prefilled, secret-safe GitHub page, a feedback issue form, and an optional form on pendpost.com for people without a GitHub account. Deeper proposals get an RFC track under `docs/rfcs/`, and issue triage is automated (auto-labelling, first-timer welcome, a needs-info stale policy, and RFC labelling). The full design is in `docs/specs/feedback-pipeline.md`.
+- Real product documentation. The Mintlify starter template is replaced with pendpost's actual docs, published through a mirror pipeline.
+- Smaller additions: a publish-failure hold across all thirteen engines that caps local retries at three and mirrors the cloud re-fire cap; approval-expiry and slot-slip sweeps in the publishing automation card; a digest that reports delivery, autonomy, GEO trend, and calendar gaps; a humanizer receipt that shows what the gate changed; the Nostr NIP-96 media upload path; splitting an over-cap X caption into an approvable thread; a today marker in the Week and Month planner; and one-decision project creation.
+
+### Changed
+- A hand-run command-line social ceremony now requires an explicit brand target or refuses, so a stray command can never post to the wrong account.
+- The shared scheduler tick honours each brand's own enabled flag, so a brand switched off no longer rides along on another brand's timer.
+- `config_set` can now write the Reddit subreddit and the Pinterest board id.
+
+### Fixed
+- A broad UX-audit sweep across the app: honest empty, error, and refused states; contrast and label fixes that meet WCAG AA; archive safety that surfaces in-flight work before you archive; a composer guard against losing edits on a project switch; a held post whose primary action clears the hold and refires; a delete gate that refuses to delete a natively scheduled post; and an auto-approve rule that matches nothing when its platform list is empty.
+- Radar legibility: a grouped signal is one card that states how many places it appeared, source status reads as a glyph per state rather than colour alone, a limit failure explains itself and offers a rescan, the AI-visibility gauge says exactly what it counts, a limit-refused scan no longer spends the daily budget, and zero-count chips are hidden.
+- Cloud delivery hardening: a cloud media-fetch fault fires the local backstop right away instead of after twenty minutes, and toggling a brand always-on seals its own tokens first, fail-closed.
+- Dependency and security updates: the marketing site moves to Astro 7.2.0 to clear the Astro and sharp advisories, and lockfile bumps resolve the remaining npm-audit high and moderate advisories.
+
 ## [2.0.1] - 2026-07-29
 
 Switching cloud always-on off now actually goes quiet. It always stopped the cloud from publishing, but the local daemon kept talking to it on every tick, and the app kept showing a green "on" pill while nothing was firing.

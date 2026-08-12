@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, AlertCircle, Check, X, HelpCircle, ChevronDown } from 'lucide-react';
 import { ToggleRow } from './ui/Switch.jsx';
-import { effectiveRadarSourcesClient, scannableRadarSources } from '../lib/format.js';
+import { effectiveRadarSourcesClient, radarBrandPreview } from '../lib/format.js';
 import { useConfig, useAccounts, useSignals, saveConfig } from '../lib/api.js';
 import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, EYEBROW, SectionHeading, DISABLED_PRIMARY } from './ui.jsx';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
@@ -30,7 +30,7 @@ const SOURCE_IDS = ['reddit', 'hackernews', 'bluesky', 'mastodon'];
 const sourceLabel = (t, id) => t(`radar.source.${id}`);
 // A new query pre-selects these (Bluesky excluded: search-only, no Studio connect path).
 const DEFAULT_SOURCE_IDS = ['reddit', 'hackernews', 'mastodon'];
-const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', warmup: false };
+const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', warmup: false, mention: false };
 
 function toDraft(q) {
   return {
@@ -43,6 +43,7 @@ function toDraft(q) {
     subreddits: (q.subreddits || []).join(', '),
     hashtags: (q.hashtags || []).join(', '),
     warmup: q.warmup === true,
+    mention: q.mention === true,
   };
 }
 const splitList = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -66,6 +67,10 @@ function buildQuery(draft, existing) {
     // one of its sources; drop reddit and the flag goes with it (never a stale true on a query
     // that no longer touches Reddit).
     warmup: draft.warmup === true && (draft.sources || []).includes('reddit'),
+    // A brand-mention query works on ANY lane (people name a brand everywhere), so the flag is
+    // not source-gated the way warmup is. It steers the agent brief toward reputation events and
+    // pins the mention pill/filter on this query's signals.
+    mention: draft.mention === true,
   };
 }
 
@@ -130,6 +135,16 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
           onChange={() => onChange({ ...draft, warmup: !(draft.warmup === true) })}
         />
       ) : null}
+
+      {/* R9 brand mention (reputation): turns this query into a watch for people talking ABOUT the
+          brand rather than for buying intent. Works on any lane, so it is always offered. A
+          single-feature on/off, so it uses the house ToggleRow (Switch). */}
+      <ToggleRow
+        label={t('radar.query.mention')}
+        tip={t('radar.query.mention.tip')}
+        checked={draft.mention === true}
+        onChange={() => onChange({ ...draft, mention: !(draft.mention === true) })}
+      />
 
       {/* Structured narrowing, one disclosure down (canon: config never stacks on the intent it
           refines). Everything here is optional; the brief above already makes a search complete. */}
@@ -213,44 +228,6 @@ function ScanScheduleControl({ q, onSetSchedule, t }) {
       <option value="manual">{t('radar.query.schedule.manual')}</option>
       <option value="daily">{t('radar.query.schedule.daily')}</option>
     </Select>
-  );
-}
-
-// When the daily research fires (posting.radar.dailyAt), shown only while a search is set to
-// daily - one quiet row, not a section. Native time input, styled like the other fields; the
-// agent hint appears only when no provider is connected (the keyword sweep still runs daily,
-// the paid agent research is what is missing).
-function DailyTimeControl({ config, radar, agentProvider, t }) {
-  const queryClient = useQueryClient();
-  const [error, setError] = useState(null);
-  const value = typeof radar?.dailyAt === 'string' && radar.dailyAt ? radar.dailyAt : '09:00';
-  const save = (v) => {
-    if (!config || !/^([01]\d|2[0-3]):[0-5]\d$/.test(v)) return;
-    setError(null);
-    saveConfig(config.rev, { posting: { radar: { dailyAt: v } } })
-      .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
-      .catch((err) => setError(err.message));
-  };
-  return (
-    <div className="space-y-1.5">
-      <label className="flex items-center justify-between gap-3">
-        <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.radar.dailyAt.label')}</span>
-        <input
-          type="time"
-          value={value}
-          onChange={(e) => save(e.target.value)}
-          className={`rounded-lg border-0 px-2 py-1 text-sm tabular-nums ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
-        />
-      </label>
-      {!agentProvider ? (
-        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.agentDaily.needsAgent')}</p>
-      ) : null}
-      {error ? (
-        <div role="alert" className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
-          <AlertCircle size={14} aria-hidden="true" />{error}
-        </div>
-      ) : null}
-    </div>
   );
 }
 
@@ -460,132 +437,12 @@ export default function RadarSearches({ focus = false, onNavigate }) {
           {hasQueries ? (
             <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} onNavigate={onNavigate} />
           ) : null}
-          {(radar.queries || []).some((q) => q && q.enabled !== false && q.cadence === 'daily') ? (
-            <DailyTimeControl config={config} radar={radar} agentProvider={radar?.agent?.provider} t={t} />
-          ) : null}
-
-          {/* WP8: the Radar autonomy (auto-reply + daily research) lives IN this card, under a
-              hairline - one Radar box: what it searches, where, and what it may do on its own.
-              It used to be its own Settings card; two boxes about the same feature was the
-              redundancy the owner flagged. */}
-          <RadarAutomation config={config} radar={radar} accounts={accounts} sourceStatus={feed?.sources} />
+          {/* The Radar autonomy that used to live here (auto-reply score + X Enterprise) and the
+              daily research fire-time moved into the Autonomy ledger (ux-audit R7): one surface for
+              "what may pendpost do without me". This card is now purely what Radar SEARCHES for. */}
         </>
       )}
     </section>
-  );
-}
-
-// The Radar autonomy control (config.posting.radar.autoReply), collapsed to ONE select
-// (owner round 3, point 2): "Automatisch antworten ab Score" [Aus | ab 40 .. ab 90].
-//   Aus  -> enabled:false, minScore cleared: the agent drafts by judgment, every draft
-//           waits for a human (the shipping default).
-//   ab N -> enabled:true + minScore:N + lanes derived: from score N the system drafts AND
-//           (through the policy's existing fences) posts without asking; below N it does
-//           not even draft (queueRadarReply refuses with below_threshold).
-// The lane checkboxes are gone - lanes are DERIVED at save time: every connected
-// reply-capable network (re-derived on each change, so a platform connected later joins on
-// the next save). requireLintClean stays config-true with no toggle: a brand-rule-breaking
-// reply waiting as a draft instead of auto-posting is a fence, not a preference.
-// The separate "daily research" toggle + budget input are gone too (point 1): setting a
-// search to "Täglich" IS the daily research (DailyTimeControl above carries its fire time),
-// and the runs-per-day budget stays enforced server-side (owner-only, default 1).
-const AUTO_REPLY_DEFAULT = { enabled: false, lanes: [], requireLintClean: true };
-const AUTO_REPLY_LANES = ['reddit', 'mastodon', 'bluesky'];
-function RadarAutomation({ config, radar, accounts, sourceStatus }) {
-  const t = useT();
-  const queryClient = useQueryClient();
-  const [autoReply, setAutoReply] = useState(AUTO_REPLY_DEFAULT);
-  const [error, setError] = useState(null);
-  useEffect(() => {
-    setAutoReply({ ...AUTO_REPLY_DEFAULT, ...(radar?.autoReply || {}) });
-  }, [config?.rev]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const saveAutoReply = (next) => {
-    if (!config) return;
-    const prior = autoReply;
-    setAutoReply(next);
-    setError(null);
-    saveConfig(config.rev, { posting: { radar: { autoReply: next } } })
-      .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
-      .catch((err) => { setAutoReply(prior); setError(err.message); });
-  };
-
-  const xEnterprise = radar?.xEnterprise === true;
-  const xConnected = Boolean(accounts?.x?.authenticated);
-  // Connected reply-capable lanes; x joins only under the owner-declared Enterprise flag
-  // (below the tier X refuses stranger replies, so the lane would only ever 403).
-  const connectedLanes = [
-    ...AUTO_REPLY_LANES.filter((id) => id !== 'x' && scannableRadarSources(accounts, sourceStatus).includes(id)),
-    ...(xEnterprise && xConnected ? ['x'] : []),
-  ];
-  const value = autoReply.enabled ? String(Number.isFinite(autoReply.minScore) ? autoReply.minScore : 70) : 'off';
-  const choose = (v) => {
-    if (v === 'off') {
-      // Aus clears the threshold too: with autonomy off, drafting goes back to the agent's
-      // own judgment (a leftover minScore would keep silently suppressing drafts).
-      const { minScore, ...rest } = autoReply;
-      void minScore;
-      saveAutoReply({ ...rest, enabled: false });
-      return;
-    }
-    saveAutoReply({ ...autoReply, enabled: true, minScore: Number(v), lanes: connectedLanes });
-  };
-
-  return (
-    <div className="space-y-2 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
-      {error ? (
-        <div role="alert" className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
-          <AlertCircle size={14} aria-hidden="true" />{error}
-        </div>
-      ) : null}
-      <label className="flex items-center justify-between gap-3">
-        <span className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-          {t('settings.autoReply.minScore.label')}
-          <Tip label={t('settings.autoReply.minScore.tip')}>
-            <button type="button" aria-label={t('settings.fieldHelp', { field: t('settings.autoReply.minScore.label') })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
-              <HelpCircle size={12} aria-hidden="true" />
-            </button>
-          </Tip>
-        </span>
-        {/* A picker over the sensible thresholds, not a bare spinner input (canon: a closed
-            set gets a picker). A stored off-grid value stays selectable so nothing moves. */}
-        <Select
-          aria-label={t('settings.autoReply.minScore.label')}
-          value={value}
-          onChange={(e) => choose(e.target.value)}
-          wrapClassName="w-auto"
-          className={`rounded-lg border-0 px-2 py-1.5 text-xs font-semibold tabular-nums text-zinc-600 ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300`}
-        >
-          <option value="off">{t('settings.autoReply.off')}</option>
-          {[...new Set([40, 50, 60, 70, 80, 90, ...(autoReply.enabled && Number.isFinite(autoReply.minScore) ? [autoReply.minScore] : [])])].sort((a, b) => a - b).map((n) => (
-            <option key={n} value={String(n)}>{t('settings.autoReply.minScore.option', { n })}</option>
-          ))}
-        </Select>
-      </label>
-      {/* Armed with nothing to post to: the one non-obvious truth here, stated plainly. */}
-      {autoReply.enabled && !autoReply.lanes.length ? (
-        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.autoReply.consequence.none')}</p>
-      ) : null}
-      {/* X Enterprise (owner round 3, point 6), disclosed only when an X account is even
-          connected: below Enterprise, X refuses API replies to strangers (Feb 2026), and the
-          tier cannot be probed - so this is the owner's declaration. Off = copy-paste
-          suggestions for X (the safe default). */}
-      {xConnected ? (
-        <ToggleRow
-          label={t('settings.xEnterprise.label')}
-          tip={t('settings.xEnterprise.tip')}
-          checked={xEnterprise}
-          onChange={() => {
-            if (!config) return;
-            setError(null);
-            const next = !xEnterprise;
-            saveConfig(config.rev, { posting: { radar: { xEnterprise: next, ...(autoReply.enabled ? { autoReply: { ...autoReply, lanes: next ? [...new Set([...autoReply.lanes, 'x'])] : autoReply.lanes.filter((l) => l !== 'x') } } : {}) } } })
-              .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
-              .catch((err) => setError(err.message));
-          }}
-        />
-      ) : null}
-    </div>
   );
 }
 
@@ -678,6 +535,128 @@ export function RadarGeo() {
           {t('settings.geo.add')}
         </button>
       </form>
+    </section>
+  );
+}
+
+// The brand fact sheet editor - the per-tenant product identity the Radar agent judges every thread
+// against, in BOTH phases (scan + draft). Writes config.posting.radar.brand via the same partial
+// radar-subtree save the searches use (setConfig recurses into brand, so a partial write never wipes
+// a sibling). Empty facts => the agent falls back to pendpost's built-in fact sheet, so the empty
+// state SAYS that (the fallback is never invisible). A live preview renders the exact block the agent
+// reads (radarBrandPreview mirrors the server's brandBlock). Renders only when Radar is on, mirroring
+// the searches + GEO editors: nothing to tune while it is off.
+const BRAND_FACTS_MAX = 2000;
+export function RadarBrand() {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const { data: config } = useConfig(true);
+  const radar = config?.posting?.radar || {};
+  const enabled = radar.enabled === true;
+  const brand = radar.brand && typeof radar.brand === 'object' ? radar.brand : {};
+
+  const [facts, setFacts] = useState(brand.facts || '');
+  const [audience, setAudience] = useState(brand.audience || '');
+  const [isSupplyOnly, setIsSupplyOnly] = useState(brand.isSupplyOnly === true);
+  const [error, setError] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  // Re-sync the local draft when the saved config changes underneath us (e.g. an agent tuned the
+  // brand over MCP): the saved value is the source of truth, the draft only leads while dirty.
+  useEffect(() => {
+    setFacts(brand.facts || '');
+    setAudience(brand.audience || '');
+    setIsSupplyOnly(brand.isSupplyOnly === true);
+  }, [brand.facts, brand.audience, brand.isSupplyOnly]);
+
+  const overCap = facts.length > BRAND_FACTS_MAX;
+  const dirty = facts !== (brand.facts || '') || audience !== (brand.audience || '') || isSupplyOnly !== (brand.isSupplyOnly === true);
+
+  const save = async () => {
+    if (!config || !dirty || overCap) return;
+    setError(null);
+    setSaving(true);
+    try {
+      await saveConfig(config.rev, { posting: { radar: { brand: { facts, audience, isSupplyOnly } } } });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+    } catch (err) {
+      setError(err?.message || t('radar.error.save'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!enabled) return null;
+  const preview = radarBrandPreview({ facts, audience, isSupplyOnly });
+  return (
+    <section className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
+      <SectionHeading
+        title={t('settings.brand.title')}
+        tip={t('settings.brand.subtitle')}
+        action={dirty ? (
+          <button
+            type="button"
+            onClick={save}
+            disabled={overCap || saving}
+            aria-label={t('settings.brand.save')}
+            className={`inline-flex shrink-0 items-center gap-1 rounded-xl bg-brand px-3 py-2 text-xs font-bold text-white transition dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}
+          >
+            <Check size={13} aria-hidden="true" />
+            {t('settings.brand.save')}
+          </button>
+        ) : null}
+      />
+
+      {error ? (
+        <div role="alert" className="flex items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-xs text-red-700 ring-1 ring-red-500/20 dark:text-red-300">
+          <AlertCircle size={14} aria-hidden="true" />{error}
+        </div>
+      ) : null}
+
+      <div className="space-y-1.5">
+        <label htmlFor="radar-brand-facts" className="block text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('settings.brand.facts')}</label>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('settings.brand.help')}</p>
+        <textarea
+          id="radar-brand-facts"
+          rows={5}
+          value={facts}
+          onChange={(e) => setFacts(e.target.value)}
+          placeholder={t('settings.brand.placeholder')}
+          className={`${FIELD_CLS} resize-y`}
+        />
+        <div className={`text-right text-[11px] ${overCap ? 'font-semibold text-red-600 dark:text-red-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
+          {overCap ? t('settings.brand.overCap', { max: BRAND_FACTS_MAX }) : `${facts.length}/${BRAND_FACTS_MAX}`}
+        </div>
+      </div>
+
+      <ToggleRow
+        label={t('settings.brand.supplyOnly')}
+        tip={t('settings.brand.supplyOnlyTip')}
+        checked={isSupplyOnly}
+        onChange={setIsSupplyOnly}
+      />
+
+      <div className="space-y-1.5">
+        <label htmlFor="radar-brand-audience" className="block text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('settings.brand.audience')}</label>
+        <input
+          id="radar-brand-audience"
+          value={audience}
+          onChange={(e) => setAudience(e.target.value)}
+          placeholder={t('settings.brand.audiencePlaceholder')}
+          className={FIELD_CLS}
+        />
+      </div>
+
+      {/* The exact block the agent reads (radarBrandPreview mirrors the server brandBlock). Empty
+          facts => the fallback note, so the pendpost-default is never invisible (data honesty). */}
+      <div className="space-y-1.5">
+        <span className="block text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('settings.brand.previewLabel')}</span>
+        {preview ? (
+          <pre className={`whitespace-pre-wrap rounded-xl px-3 py-2 text-xs leading-relaxed ${INNER_SURFACE} text-zinc-600 dark:text-zinc-300`}>{preview}</pre>
+        ) : (
+          <p className={`rounded-xl px-3 py-2 text-xs ${INNER_SURFACE} text-zinc-500 dark:text-zinc-400`}>{t('settings.brand.usingDefault')}</p>
+        )}
+      </div>
     </section>
   );
 }

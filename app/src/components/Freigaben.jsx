@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, Sparkles, LayoutGrid, List, Info, CornerUpLeft, PlugZap, ExternalLink, Wrench, ArrowDown, ArrowUp } from 'lucide-react';
-import { approvePost, rejectPost, useAccounts, usePendpostHealth } from '../lib/api.js';
+import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, Sparkles, LayoutGrid, List, Info, CornerUpLeft, PlugZap, ExternalLink, Wrench, ArrowDown, ArrowUp, Send } from 'lucide-react';
+import { approvePost, rejectPost, useAccounts, usePendpostHealth, useConfig } from '../lib/api.js';
 import { fmtFull, fmtStampShort, campaignBaseLabel, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, isActionable } from '../lib/format.js';
 import { CoverThumb, LinkCardPreview, PlatformIcons, ApprovalPill, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl } from './ui.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
@@ -13,6 +13,7 @@ import { Checkbox } from './ui/Checkbox.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import DestinationStrip from './ui/DestinationStrip.jsx';
 import { usePrompt } from './ui/confirm.jsx';
+import { ReviewStatusChip } from './ReviewLink.jsx';
 import { useT } from '../lib/i18n.js';
 
 const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
@@ -57,7 +58,7 @@ const prefersReduced = () =>
 // (it would also fire open-detail). freigaben-approval-card.test.jsx pins this with
 // a reddit-advisory fixture; an instagram/pending fixture renders no badges and
 // would let the regression back in unnoticed.
-function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed, setup = null, onNavigate = null }) {
+function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed, setup = null, onNavigate = null, reviewRequired = false }) {
   const queryClient = useQueryClient();
   const prompt = usePrompt();
   const t = useT();
@@ -229,8 +230,14 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
   ) : (
     <ActionButton
       variant="success"
-      icon={CheckCircle2}
-      labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
+      icon={reviewRequired ? Send : CheckCircle2}
+      labels={reviewRequired
+        // O2: with review.required on, the operator's approve RELABELS to send for
+        // sign-off, so a first-time operator sees the verb tell them the post goes to
+        // the client, not live. The write is unchanged (still approvePost) - the
+        // awaiting chip below is its confirmation.
+        ? { idle: t('review.action.sendForSignoff'), loading: t('review.action.sending'), success: t('review.action.sent'), error: t('approvals.action.error') }
+        : { idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
       onError={setError}
       onAction={async () => {
         await doApprove();
@@ -290,9 +297,17 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
   // button. contextBadges are deliberately NOT here: an IconBadge with a label is a
   // real <button> (Tip -> RT.Trigger asChild), so it renders in the badge row below,
   // beside BrandLintBadge, as a sibling of the button.
+  // V6: a post awaiting client sign-off must NEVER read as overdue-red (the clock
+  // rule, spec 48 section 4.6). The engine already keeps a reviewPending post out of
+  // the overdue state, but the GUI clamps defensively too, and the awaiting chip
+  // carries the honest state instead.
+  const pillState = post.reviewPending && (post.derivedState === 'overdue' || post.derivedState === 'publish-failed')
+    ? null
+    : post.derivedState;
   const statusBadges = (
     <span className="flex shrink-0 items-center gap-1">
-      <StatusPill state={post.derivedState} short />
+      <ReviewStatusChip post={post} />
+      {pillState ? <StatusPill state={pillState} short /> : null}
       <ApprovalPill approval={post.approval} editedSinceApproval={post.editedSinceApproval} handOff={offlineLanes.length > 0} />
     </span>
   );
@@ -334,6 +349,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
               >
                 {headline}
               </button>
+              <ReviewStatusChip post={post} />
               {contextBadges}
               {actions}
             </div>
@@ -543,6 +559,11 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
   // Read ONCE at the parent, exactly like the health signal above. 114 cards each
   // calling useAccounts would be 114 subscriptions re-rendering on every 60s refetch.
   const { data: accounts, isLoading: accountsLoading, isError: accountsError } = useAccounts();
+  // Spec 48 R10 (V6): whether this project requires client sign-off. Read once at the
+  // parent (client-scoped config) and threaded down so the approve control relabels to
+  // "Send for sign-off" for every card without a per-card config subscription.
+  const { data: reviewConfig } = useConfig(true);
+  const reviewRequired = Boolean(reviewConfig?.posting?.review?.required);
 
   useEffect(() => {
     try { localStorage.setItem('pendpost-approvals-density', density); } catch { /* private mode - ignore */ }
@@ -964,6 +985,7 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
               onActed={onActed}
               setup={setup}
               onNavigate={onNavigate}
+              reviewRequired={reviewRequired}
             />
           ))}
         </ul>

@@ -17,8 +17,10 @@ import { I18nProvider } from '../../lib/i18n.js';
 // album's recovery control reaching the same handler the overflow menu uses.
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: null, activeClientId: null }),
   usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
+  useConfig: () => ({ data: null }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => ({ data: undefined }),
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),

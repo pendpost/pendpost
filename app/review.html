@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="robots" content="noindex" />
+    <title>pendpost review</title>
+    <!--
+      Build entry for the CLIENT review page (spec 48 R10, W6). This is a SEPARATE,
+      dependency-free bundle from the Studio SPA (index.html) - it imports no React and
+      nothing from src/ except the review page + the contrast clamp, so the review entry
+      emits without pulling the whole SPA. At runtime the review LISTENER (lib/review-server.mjs)
+      renders its OWN page shell and inlines the built JS+CSS at the HOOK(W6) seam, injecting
+      window.__REVIEW__; this HTML exists only to drive the build.
+    -->
+  </head>
+  <body>
+    <main id="review-root"></main>
+    <script type="module" src="/src/review/main.js"></script>
+  </body>
+</html>

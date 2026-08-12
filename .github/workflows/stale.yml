@@ -1,0 +1,42 @@
+name: Stale
+
+# Nudge and eventually close issues that are waiting on the reporter (labelled
+# needs-info) and have gone quiet, so the backlog reflects reality. It only
+# touches needs-info items and never touches triaged or protected work: accepted,
+# rfc, security, help wanted, good first issue, and blocked are exempt.
+# See docs/specs/feedback-pipeline.md (section 9).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  stale:
+    # OSS community automation: runs on the public repo only.
+    if: github.repository == 'pendpost/pendpost'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          only-labels: needs-info
+          exempt-issue-labels: accepted,rfc,security,help wanted,good first issue,blocked
+          days-before-stale: 21
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-issue-message: >-
+            This issue is waiting on more information and has been quiet for a
+            while, so it is marked stale. Add the requested details to keep it
+            open; otherwise it will be closed in a couple of weeks. You can always
+            reopen it later.
+          close-issue-message: >-
+            Closing this for now because it is still waiting on information. That
+            is not a judgement on the request; reopen it whenever you can add the
+            details.
+          # Pull requests are reviewed by hand, not aged out by this job.
+          days-before-pr-stale: -1
+          days-before-pr-close: -1

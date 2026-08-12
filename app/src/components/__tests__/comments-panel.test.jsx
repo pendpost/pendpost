@@ -20,6 +20,13 @@ const moderateMock = vi.fn(() => Promise.resolve({ ok: true, id: 'm-1', platform
 const reactMock = vi.fn(() => Promise.resolve({ ok: true, id: 'react-1', platform: 'telegram', reaction: 'emoji' }));
 
 vi.mock('../../lib/api.js', () => ({
+  // R12: CommentRow now renders a HistoryChip, which reads useEngager. No record -> no chip.
+  useEngager: () => ({ data: undefined }),
+  unforgetEngager: vi.fn(() => Promise.resolve({ ok: true })),
+  forgetEngager: vi.fn(() => Promise.resolve({ ok: true })),
+  linkEngagers: vi.fn(() => Promise.resolve({ ok: true })),
+  unlinkEngagers: vi.fn(() => Promise.resolve({ ok: true })),
+  dismissLinkGuess: vi.fn(() => Promise.resolve({ ok: true })),
   useComments: () => ({ data: commentsData, isLoading: loadingFlag, isError: queryErrorFlag, refetch: refetchMock }),
   replyToComment: (...a) => replyMock(...a),
   moderateComment: (...a) => moderateMock(...a),
@@ -86,7 +93,10 @@ describe('CommentsPanel (spec 02 inbox seam)', () => {
     await user.click(screen.getByRole('button', { name: /send/i }));
 
     await waitFor(() => expect(replyMock).toHaveBeenCalledTimes(1));
-    expect(replyMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'thanks for reading!', 'telegram');
+    // The replied-to comment's author (mock_reader) is threaded through so the reply accretes as a
+    // 'me'-direction relationship-memory exchange (spec 49 R12); without it the "Nth exchange" chip
+    // never lights on the read+reply loop (BU-9 regression).
+    expect(replyMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'thanks for reading!', 'telegram', 'mock_reader');
     // The shared mutation path: invalidateQueries(['plans']) + a panel refetch.
     expect(spy).toHaveBeenCalledWith({ queryKey: ['plans'] });
     expect(refetchMock).toHaveBeenCalled();

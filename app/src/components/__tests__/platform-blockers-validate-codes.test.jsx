@@ -21,7 +21,7 @@ describe('PlatformBlockers - validate problemCodes (spec 39 §4j)', () => {
     renderBlockers({
       youtube: {
         ready: false,
-        problems: ['youtube does not publish an image post (the image TYPE is for reddit, pinterest and instagram)'],
+        problems: ['youtube does not publish an image post (the image TYPE is for reddit, pinterest, instagram, x, telegram, discord and mastodon)'],
         problemCodes: [{ code: 'validate.imageTypeLane', params: { platform: 'youtube' } }],
         warnings: [],
         needsSetup: false,

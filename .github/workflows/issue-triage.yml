@@ -1,0 +1,52 @@
+name: Issue triage
+
+# Auto-label incoming issues from their form fields, so triage starts in a known
+# state. This reads the "What is this about" dropdown that the feedback and other
+# issue forms render and maps it to an area:* label. It is additive: the forms
+# already apply their base label (bug / enhancement / feedback) and needs-triage.
+# Advisory only, it never closes or edits human decisions.
+#
+# The full design lives in docs/specs/feedback-pipeline.md (sections 8 and 9).
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label-area:
+    # OSS community automation: runs on the public repo only.
+    if: github.repository == 'pendpost/pendpost'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue.body || "";
+            // Issue-form fields render as "### <label>\n\n<value>". Pull the value
+            // under the "What is this about" heading.
+            const m = body.match(/#+\s*What is this about\s*\n+\s*(.+)/i);
+            const value = m ? m[1].trim().toLowerCase() : "";
+            const map = {
+              "composing": "area:compose",
+              "approval queue": "area:approval",
+              "scheduling": "area:scheduling",
+              "setup": "area:setup",
+              "mcp": "area:mcp",
+              "docs": "area:docs",
+            };
+            const label = map[value];
+            if (!label) {
+              core.info(`No area mapping for "${value}"; leaving for manual triage.`);
+              return;
+            }
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              labels: [label],
+            });
+            core.info(`Applied ${label}.`);

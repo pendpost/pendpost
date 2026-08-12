@@ -163,6 +163,13 @@ const READ_ONLY_TOOLS = new Set([
   'validate_media', 'platform_validate', 'pendpost_health', 'publish_preview', 'brand_lint',
   'generate_digest', 'config_get', 'health_recheck', 'agent_recheck', 'client_list', 'clients_overview',
   'cloud_status', 'cloud_capabilities', 'cloud_clients', 'cloud_subscription',
+  // Client review link (spec 48 R10): listing a brand's reviewers is a read (GET twin
+  // /api/clients/<id>/reviewers) - tail-only, never a live token. reviewer_create /
+  // reviewer_revoke are the paired owner-gated WRITEs (they carry an optional clientId).
+  'reviewer_list',
+  // Stored-metrics READ (R8 / dim-3 M2); the twin of GET /api/insights, no engine
+  // spawn. fetch_insights is the paired WRITE (it stores the swept metrics).
+  'read_insights',
   // The webhook/realtime ingestion seam READ (spec 23); no paired write tool (it only
   // changes what TRIGGERS specs 02/06/24's existing reply/moderate/react writes).
   'list_inbound_events',
@@ -210,6 +217,12 @@ const READ_ONLY_TOOLS = new Set([
   // needed. Enabling Radar / editing queries reuses the existing config_set write
   // (set.posting.radar) - there is no bespoke Radar write tool in this spec.
   'radar_scan', 'radar_list',
+  // Relationship memory READ (spec 49 R12); its GET twin names mcpTool:'list_engagers'
+  // directly, so no API-CONTRACT.md tool-exemption is needed. It is the ONLY engager tool
+  // gated behind the owner opt-in posting.relationshipMemory.agentRead (refused when off,
+  // S8d). forget_engager/unforget_engager/link_engagers/unlink_engagers are the paired
+  // owner-driven WRITEs (they carry an optional clientId); dismiss-link is GUI/REST-only.
+  'list_engagers',
 ]);
 const { TOOLS } = await import(path.join(ROOT, 'lib', 'mcp.mjs'));
 for (const tool of TOOLS) {

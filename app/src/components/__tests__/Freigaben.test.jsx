@@ -31,6 +31,7 @@ vi.mock('../../lib/api.js', () => ({
   // Spec 37: Freigaben reads the setup signal (reddit warmth) for the per-card tier cue.
   // These posts are non-reddit, so the tier is always approved-auto (no manual cue).
   usePendpostHealth: () => ({ data: null }),
+  useConfig: () => ({ data: null }),
   // Freigaben reads the connected accounts once at the parent for the destination strip.
   useAccounts: () => ({ data: null, isLoading: false, isError: false }),
 }));

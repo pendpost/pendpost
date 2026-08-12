@@ -15,8 +15,10 @@ import { vi } from 'vitest';
 // every platform - including the wave-2 lanes the live demo data lacks.
 
 vi.mock('../../lib/api.js', () => ({
+  useInsights: () => ({ data: undefined }),
   useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme', accent: '#22566d' }, activeClientId: 'acme' }),
   usePendpostHealth: () => ({ data: { setup: { platforms: [] } } }),
+  useConfig: () => ({ data: null }),
   useAccounts: () => ({ data: { meta: { paused: false } } }),
   usePlatformValidate: () => ({ data: undefined }),
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),
@@ -227,6 +229,28 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(labels).toEqual(['Post text']);
   });
 
+  // B1 (ux-audit dim-6 P1): the per-lane prose overrides the engines publish
+  // (tgCaption/dcCaption/ttCaption/redditText/pinTitle/pinDescription) must be
+  // VISIBLE here once set - an MCP agent writes them server-side, and the
+  // approver has to see exactly what each lane will publish.
+  it.each([
+    ['telegram', 'tgCaption', 'Telegram message'],
+    ['tiktok', 'ttCaption', 'TikTok caption'],
+    ['reddit', 'redditText', 'Reddit text'],
+  ])('B1 %s: a saved %s override renders with the override hint', (platform, field, label) => {
+    renderDetail(makePost({ type: 'video', platforms: [platform], caption: 'base', [field]: 'agent-written text' }));
+    const labels = contentLabels();
+    expect(labels).toContain('Post text');
+    expect(labels).toContain(label);
+    expect(screen.getByText('Overrides the post text')).toBeInTheDocument();
+  });
+
+  it('B1 multi-lane chat post: each lane shows its own override field', () => {
+    renderDetail(makePost({ type: 'text', platforms: ['telegram', 'discord'], caption: 'c' }));
+    const labels = contentLabels();
+    expect(labels).toEqual(['Post text', 'Telegram message', 'Discord message', 'Forum thread name', 'Existing thread id']);
+  });
+
   // Spec 26: discord ALSO shows the two forum/thread-targeting fields
   // (dcThreadName/dcThreadId) - plain EDITABLE fields whenever discord targets
   // the post, distinct from the caption-only siblings above.
@@ -236,12 +260,19 @@ describe('PostDetail — platform-relevant fields', () => {
     expect(labels).toEqual(['Post text', 'Forum thread name', 'Existing thread id']);
   });
 
-  // Pinterest is a caption-only lane like its siblings above, PLUS the spec-21
-  // alt-text field (Pinterest is one of the three live alt-text lanes).
-  it('pinterest: shows the post text + alt text (spec 21 live lane)', () => {
+  // Pinterest rides the shared caption, PLUS the spec-21 alt-text field and the
+  // B1 pin-title override (pinTitle shadows post.title, which has no pinterest
+  // surface of its own; the empty pinDescription collapses like xCaption).
+  it('pinterest: shows the post text + pin title + alt text', () => {
     renderDetail(makePost({ type: 'video', platforms: ['pinterest'], caption: 'c' }));
     const labels = contentLabels();
-    expect(labels).toEqual(['Post text', 'Alt text']);
+    expect(labels).toEqual(['Post text', 'Pin title', 'Alt text']);
+  });
+
+  it('B1 pinterest: a saved pinDescription renders alongside the pin title', () => {
+    renderDetail(makePost({ type: 'video', platforms: ['pinterest'], caption: 'c', pinTitle: 'Board headline', pinDescription: 'agent pin copy' }));
+    const labels = contentLabels();
+    expect(labels).toEqual(['Post text', 'Pin title', 'Pin description', 'Alt text']);
   });
 
   // Spec 17: the board-section target, shown as a Details row ONLY when set - a

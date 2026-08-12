@@ -2,7 +2,7 @@ import { render, screen, waitFor, within, fireEvent } from '@testing-library/rea
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import RadarSearches, { RadarGeo } from '../RadarSearches.jsx';
+import RadarSearches, { RadarGeo, RadarBrand } from '../RadarSearches.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
@@ -143,6 +143,88 @@ describe('RadarGeo (GEO buying-questions editor)', () => {
   });
 });
 
+// The brand fact sheet editor (config.posting.radar.brand). Empty facts must SAY the agent falls
+// back to the pendpost default (the fallback is never invisible); a partial write must not clobber
+// a sibling; the live preview must render the exact block the agent reads.
+function renderBrand() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>
+      <I18nProvider locale="en">
+        <TooltipProvider>
+          <RadarBrand />
+        </TooltipProvider>
+      </I18nProvider>
+    </QueryClientProvider>,
+  );
+}
+const brandOn = (brand = {}) => ({ rev: 'r1', posting: { radar: { enabled: true, queries: [], brand } } });
+
+describe('RadarBrand (per-tenant brand fact sheet)', () => {
+  it('renders nothing while Radar is off', () => {
+    configData = { rev: 'r1', posting: { radar: { enabled: false, brand: { facts: 'x' } } } };
+    const { container } = renderBrand();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('shows the default-fallback note when no fact sheet is set (the fallback is never invisible)', () => {
+    configData = brandOn({});
+    renderBrand();
+    expect(screen.getByText(/uses the pendpost default fact sheet/i)).toBeInTheDocument();
+  });
+
+  it('renders a live preview of the exact block the agent reads once facts are set', () => {
+    configData = brandOn({ facts: 'Acme: a payroll tool for small teams.' });
+    renderBrand();
+    // The facts text also lives in the textarea, so scope the check to the preview <pre> block.
+    const pre = screen.getByText(/THE BRAND \/ THE PRODUCT/);
+    expect(pre.tagName).toBe('PRE');
+    expect(pre).toHaveTextContent('Acme: a payroll tool for small teams.');
+    // With a fact sheet present, the fallback note is gone.
+    expect(screen.queryByText(/uses the pendpost default fact sheet/i)).not.toBeInTheDocument();
+  });
+
+  it('shows no Save action until the draft is dirty, then saves the partial brand subtree', async () => {
+    const user = userEvent.setup();
+    configData = brandOn({ facts: 'old facts' });
+    renderBrand();
+    // Not dirty yet: Save is absent (canon: Save appears only when dirty).
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+    const box = screen.getByLabelText('Fact sheet');
+    await user.clear(box);
+    await user.type(box, 'Acme: a payroll tool for small teams.');
+    const save = screen.getByRole('button', { name: /^save$/i });
+    await user.click(save);
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
+    const [rev, payload] = saveConfigMock.mock.calls[0];
+    expect(rev).toBe('r1');
+    expect(payload.posting.radar.brand.facts).toBe('Acme: a payroll tool for small teams.');
+  });
+
+  it('supply-only posture reaches the preview and the saved payload', async () => {
+    const user = userEvent.setup();
+    configData = brandOn({ facts: 'Acme marketplace.', audience: 'independent trainers' });
+    renderBrand();
+    await user.click(screen.getByRole('switch', { name: /one-sided market/i }));
+    // The preview immediately reflects the supply-vs-demand routing line.
+    expect(screen.getByText(/wrong side of the market/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
+    expect(saveConfigMock.mock.calls[0][1].posting.radar.brand.isSupplyOnly).toBe(true);
+  });
+
+  it('disables Save when the fact sheet is over the length cap', () => {
+    configData = brandOn({ facts: 'seed' });
+    renderBrand();
+    const box = screen.getByLabelText('Fact sheet');
+    // 2001 chars: one past the 2000 cap. fireEvent.change sets it in one shot (typing 2001 chars is slow).
+    fireEvent.change(box, { target: { value: 'a'.repeat(2001) } });
+    expect(screen.getByText(/characters max/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+    expect(saveConfigMock).not.toHaveBeenCalled();
+  });
+});
+
 // A manual reddit+HN search. The reconciliation deleted this coverage from radar-panel.test.jsx
 // because the editor moved off the Radar page; it is restored here against RadarSearches.
 const Q1 = { id: 'q1', label: 'scheduling', enabled: true, sources: ['reddit', 'hackernews'], keywords: ['schedule'], competitors: ['Buffer'], cadence: 'manual' };
@@ -272,6 +354,28 @@ describe('RadarSearches query editor', () => {
     expect(screen.queryByRole('switch', { name: /warm up/i })).not.toBeInTheDocument();
   });
 
+  it('R9: the Brand mentions toggle shows on any lane and turning it on persists query.mention', async () => {
+    const user = userEvent.setup();
+    // A non-Reddit query: warmup is hidden, but the mention toggle is always offered.
+    configData = radarOn([{ id: 'q1', label: 'fedi', enabled: true, sources: ['mastodon'], keywords: ['x'], competitors: [], cadence: 'manual' }]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    const mention = screen.getByRole('switch', { name: /brand mentions/i });
+    expect(mention).toHaveAttribute('aria-checked', 'false');
+    await user.click(mention);
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    const q = saveConfigMock.mock.calls.at(-1)[1].posting.radar.queries.find((x) => x.id === 'q1');
+    expect(q.mention).toBe(true);
+  });
+
+  it('R9: reflects an already-mention query as a checked toggle', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([{ ...Q1, mention: true }]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    expect(screen.getByRole('switch', { name: /brand mentions/i })).toHaveAttribute('aria-checked', 'true');
+  });
+
   it('a new query pre-selects reddit/hackernews/mastodon but not bluesky', async () => {
     const user = userEvent.setup();
     configData = radarOn([]);
@@ -332,16 +436,12 @@ describe('RadarSearches scan schedule (one Off / On demand / Daily control)', ()
     expect(daily.disabled).toBe(false);
   });
 
-  it('a daily query surfaces the fire-time control; changing it writes posting.radar.dailyAt', async () => {
-    const user = userEvent.setup();
+  it('the fire-time control moved to the Autonomy ledger (ux-audit R7): even a daily query does not surface it here', () => {
+    // dailyAt is an autonomy knob, so it now lives in the AutonomyLedger "Overnight research"
+    // row, not stacked under the searches. This card is purely what Radar SEARCHES for.
     configData = radarOn([{ ...Q1, cadence: 'daily' }]);
     renderSearches();
-    const time = screen.getByLabelText(/research daily at/i);
-    expect(time).toHaveValue('09:00');
-    fireEvent.change(time, { target: { value: '07:30' } });
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled());
-    expect(saveConfigMock.mock.calls.at(-1)[1].posting.radar.dailyAt).toBe('07:30');
-    void user;
+    expect(screen.queryByLabelText(/research daily at/i)).not.toBeInTheDocument();
   });
 
   it('a manual-only project shows no fire-time control (nothing runs daily)', () => {

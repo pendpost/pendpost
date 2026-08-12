@@ -150,10 +150,13 @@ export function useCapabilities() {
   });
 }
 
-// POST /api/cloud/clients/always-on { clientId, alwaysOn } -> { ok, clientId, alwaysOn, push }.
+// POST /api/cloud/clients/always-on { clientId, alwaysOn } -> { ok, clientId, alwaysOn, tokens, push }.
 // Toggles one client's always-on: sets the local brand flag (the scheduler reads it),
-// tells the cloud which brand the worker fires, and (turning ON) pushes that client's
-// approved jobs. Errors carry the same transport codes as the other cloud actions.
+// tells the cloud which brand the worker fires, and (turning ON) first seals that
+// client's tokens into the cloud vault, then pushes its approved jobs. The seal is
+// fail-closed on the server: a seal failure rejects with code `seal_failed` and the
+// brand stays off - the caller must surface the error, never report success. Errors
+// carry the same transport codes as the other cloud actions.
 export const setClientAlwaysOn = (clientId, alwaysOn) => postJson('/api/cloud/clients/always-on', { clientId, alwaysOn });
 
 // GET /api/cloud/subscription -> the metered subscription view { ok, alwaysOn, status,

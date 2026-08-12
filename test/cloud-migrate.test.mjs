@@ -92,7 +92,9 @@ try {
   installFetch();
   setCloud({ enabled: true, baseUrl: 'https://cloud.test', workspaceId: 'ws_x' });
   const managed = await runDueExclusive('owner');
-  ok(managed.code === 'cloud_managed' && managed.ran.length === 0, 'a cloud-managed client does NOT fire a freshly-acked cloud-lane job locally (the cloud owns its grace window)');
+  // Since c69be0d ("publish-now tells the truth") a held lane reports itself in ran[]
+  // as an informational cloud_held row - only a NON-cloud_held row would be a real fire.
+  ok(managed.code === 'cloud_managed' && managed.ran.every((r) => r.errorCode === 'cloud_held'), 'a cloud-managed client does NOT fire a freshly-acked cloud-lane job locally (ran[] carries only informational cloud_held rows - the cloud owns its grace window)');
 
   setCloud({ enabled: false, baseUrl: '', workspaceId: '' });
   const local = await runDueExclusive('owner', { campaign: 'no-such-campaign' });

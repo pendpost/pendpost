@@ -25,6 +25,9 @@ const radarAgentStopMock = vi.fn(() => Promise.resolve({ ok: true, stopped: true
 const radarDraftComparisonMock = vi.fn(() => Promise.resolve({ ok: true, drafted: true }));
 let healthData;
 const radarTriageMock = vi.fn(() => Promise.resolve({ ok: true }));
+const radarBacklogTriageMock = vi.fn(() => Promise.resolve({ ok: true }));
+// R5 piece 2: record a copy-draft posted by hand.
+const radarMarkCopyPostedMock = vi.fn(() => Promise.resolve({ ok: true, source: 'hackernews', externalId: 'h2', postedUrl: null }));
 const radarFollowupCheckMock = vi.fn(() => Promise.resolve({ checked: 2, replied: 0, sources: [] }));
 let queueApproval = 'pending'; // what the SERVER says the reply landed on
 const radarQueueReplyMock = vi.fn(() => Promise.resolve({ ok: true, campaign: 'c1', postId: 'radar-reddit-1', approval: queueApproval }));
@@ -33,6 +36,13 @@ const radarQueueReplyMock = vi.fn(() => Promise.resolve({ ok: true, campaign: 'c
 const lintMock = vi.fn(() => Promise.resolve({ ok: true, clean: false, warnings: 1, truncated: false, findings: [{ rule: 'ai-tell', match: 'game-changer', hint: 'avoid AI hype', severity: 'warning', index: 0 }] }));
 
 vi.mock('../../lib/api.js', () => ({
+  // R12: SignalRow now renders a HistoryChip, which reads useEngager. No record -> no chip.
+  useEngager: () => ({ data: undefined }),
+  unforgetEngager: vi.fn(() => Promise.resolve({ ok: true })),
+  forgetEngager: vi.fn(() => Promise.resolve({ ok: true })),
+  linkEngagers: vi.fn(() => Promise.resolve({ ok: true })),
+  unlinkEngagers: vi.fn(() => Promise.resolve({ ok: true })),
+  dismissLinkGuess: vi.fn(() => Promise.resolve({ ok: true })),
   useConfig: () => ({ data: configData, isLoading: false }),
   useSignals: () => ({ data: feedData, isLoading: feedLoading }),
   // The per-source coverage rows still read accountStatus: those credentials stay real for
@@ -45,6 +55,8 @@ vi.mock('../../lib/api.js', () => ({
   radarAgentStop: (...a) => radarAgentStopMock(...a),
   radarDraftComparison: (...a) => radarDraftComparisonMock(...a),
   radarTriage: (...a) => radarTriageMock(...a),
+  radarBacklogTriage: (...a) => radarBacklogTriageMock(...a),
+  radarMarkCopyPosted: (...a) => radarMarkCopyPostedMock(...a),
   radarQueueReply: (...a) => radarQueueReplyMock(...a),
   radarFollowupCheck: (...a) => radarFollowupCheckMock(...a),
   lintText: (...a) => lintMock(...a),
@@ -84,6 +96,8 @@ beforeEach(() => {
   radarDraftComparisonMock.mockClear();
   healthData = agentLive();
   radarTriageMock.mockClear();
+  radarBacklogTriageMock.mockClear();
+  radarMarkCopyPostedMock.mockClear();
   radarQueueReplyMock.mockClear();
   queueApproval = 'pending';
   onNavigateMock.mockClear();
@@ -126,9 +140,10 @@ describe('Radar panel - US-RAD-30 duplicate grouping', () => {
       { source: 'mastodon', externalId: 'd2', url: 'https://mock.masto/d2', author: 'same_author', community: 'mastodon.social', text, ts: now, intentScore: 78, intentTags: ['buying-question'], suggestedAction: 'reply' },
     ];
     renderPanel();
-    // ONE lead card (the author renders once), plus the sibling chip strip.
+    // ONE lead card (the author renders once), plus the sibling chip strip whose label states
+    // the sibling count, so the grouped card visibly accounts for the signals folded into it.
     expect(screen.getAllByText('same_author')).toHaveLength(1);
-    expect(screen.getByText('Also on')).toBeInTheDocument();
+    expect(screen.getByText(/Also on 1 more/)).toBeInTheDocument();
     const chip = screen.getByRole('button', { name: /Mastodon/ });
     await user.click(chip);
     // The sibling's own full row appears - its actions apply to that signal only.
@@ -144,7 +159,7 @@ describe('Radar panel - US-RAD-30 duplicate grouping', () => {
     renderPanel();
     expect(screen.getByText('author_a')).toBeInTheDocument();
     expect(screen.getByText('author_b')).toBeInTheDocument();
-    expect(screen.queryByText('Also on')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Also on \d+ more/)).not.toBeInTheDocument();
   });
 });
 
@@ -404,8 +419,35 @@ describe('Radar panel (spec 32 listening seam)', () => {
       const user = userEvent.setup();
       feedData.jobs = [job({ state: 'failed', reason: 'no_credential', tail: 'no credential stored', finishedAt: new Date().toISOString() })];
       renderPanel();
-      await user.click(within(screen.getByRole('region', { name: /research job/i })).getByRole('button', { name: /connect your agent/i }));
+      const region = screen.getByRole('region', { name: /research job/i });
+      await user.click(within(region).getByRole('button', { name: /connect your agent/i }));
       expect(onNavigateMock).toHaveBeenCalledWith('setup', 'agent');
+      // A retry cannot mint a token - setup failures get the Setup link INSTEAD of retry.
+      expect(within(region).queryByRole('button', { name: /scan again/i })).not.toBeInTheDocument();
+    });
+
+    it('failed on a usage limit: names the real cause, quotes the CLI labeled, offers retry', async () => {
+      // The 9-days-on-screen bug: a weekly-limit refusal read "your agent quit unexpectedly"
+      // over bare English CLI text with nothing clickable. reason:limit now has its own
+      // message, the tail is labeled as the agent's own words, and retry is on the strip.
+      const user = userEvent.setup();
+      feedData.jobs = [job({ state: 'failed', reason: 'limit', tail: "You've hit your weekly limit - resets 5am (Europe/Zurich)", finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).toMatch(/hit its usage limit/i);
+      expect(region.textContent).toMatch(/your agent's note/i);
+      expect(region.textContent).toMatch(/resets 5am/);
+      await user.click(within(region).getByRole('button', { name: /scan again/i }));
+      expect(radarAgentScanMock).toHaveBeenCalled();
+    });
+
+    it('failed on a crash: the generic exit also offers retry on the strip itself', () => {
+      feedData.jobs = [job({ state: 'failed', reason: 'exit', tail: 'segfault', finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(within(region).getByRole('button', { name: /scan again/i })).toBeEnabled();
+      // The failed tail carries the agent-note label too - quoted, never pendpost's voice.
+      expect(region.textContent).toMatch(/your agent's note/i);
     });
 
     it('stopped: the job is failed/stopped and the feed KEEPS what was already ingested', () => {
@@ -533,6 +575,48 @@ describe('Radar panel (spec 32 listening seam)', () => {
     // The transient copied state is announced in words, not colour.
     expect(within(row).getByRole('button', { name: /copied/i })).toBeInTheDocument();
     openSpy.mockRestore();
+  });
+
+  // R5 piece 2: after Copy & open, the row reveals a "Posted" control (with an optional link
+  // paste) that records the durable copy-posted marker - the copy loop's close.
+  it('after Copy & open, marking Posted records the copy-posted marker', async () => {
+    feedData.items = [{
+      source: 'hackernews', externalId: 'h2', url: 'https://mock.hn/2', author: 'pain_point',
+      community: 'news.ycombinator.com', text: 'every scheduler I tried is overpriced or unusable',
+      ts: new Date().toISOString(), intentScore: 70, scoredBy: 'agent', reason: 'open pain point',
+      draft: { text: 'We hit the same wall; happy to share what worked.', mode: 'copy', ts: new Date().toISOString() },
+    }];
+    vi.spyOn(window, 'open').mockImplementation(() => null);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(() => Promise.resolve()) }, configurable: true });
+    const user = userEvent.setup();
+    renderPanel();
+    const row = screen.getByText('pain_point').closest('li');
+    // No "Posted" control before the operator has taken the text to the thread.
+    expect(within(row).queryByRole('button', { name: /^posted$/i })).not.toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /copy reply & open thread/i }));
+    const postedBtn = await within(row).findByRole('button', { name: /^posted$/i });
+    await user.type(within(row).getByLabelText(/link to the post/i), 'https://news.ycombinator.com/item?id=42');
+    await user.click(postedBtn);
+    await waitFor(() => expect(radarMarkCopyPostedMock).toHaveBeenCalledWith('hackernews', 'h2', 'https://news.ycombinator.com/item?id=42'));
+  });
+
+  // R5 piece 2: a signal already carrying the copyPosted marker collapses to the confirmation
+  // pill and counts as answered (the isAnswered fix - a copy draft is answered only when posted).
+  it('a copy-posted signal shows the Posted pill and counts as answered', async () => {
+    feedData.items = [{
+      source: 'hackernews', externalId: 'h2', url: 'https://mock.hn/2', author: 'pain_point',
+      community: 'news.ycombinator.com', text: 'every scheduler I tried is overpriced or unusable',
+      ts: new Date().toISOString(), intentScore: 70, scoredBy: 'agent', reason: 'open pain point',
+      draft: { text: 'We hit the same wall; happy to share what worked.', mode: 'copy', ts: new Date().toISOString() },
+      copyPosted: { postedUrl: 'https://news.ycombinator.com/item?id=42', at: new Date().toISOString() },
+    }];
+    renderPanel();
+    const row = screen.getByText('pain_point').closest('li');
+    // The confirmation pill (a link, since we have a url) replaces the copy button.
+    expect(within(row).getByRole('link', { name: /^posted$/i })).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /copy reply & open thread/i })).not.toBeInTheDocument();
+    // The answered filter counts it (isAnswered now keys on copyPosted).
+    expect(screen.getByRole('button', { name: /answered/i })).toBeInTheDocument();
   });
 
   // WP3 (2026-07-17): the card overview. The agent's WHY is folded behind the Bot glyph
@@ -681,6 +765,43 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(within(row).queryByRole('button', { name: /draft reply/i })).not.toBeInTheDocument();
   });
 
+  // R11 (dim-2 N2): once the thread's author answers, the payoff badge becomes actionable -
+  // "Reply to their reply" opens the SAME drafter pre-targeted at the author's follow-up
+  // comment, and the queued turn carries parentExternalId so the engine threads under it.
+  it('R11: an author_replied signal offers "Reply to their reply", queued with parentExternalId', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{
+      ...feedData.items[0],
+      repliedUrl: 'https://mock.reddit/1/reply',
+      authorReplied: { author: 'high_intent', text: 'that helped, one more thing', permalink: 'https://mock.reddit/1/authorreply', ts: new Date().toISOString(), commentId: 't1_authorreply' },
+    }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    // The payoff badge is present AND the new quiet action.
+    expect(within(row).getByRole('link', { name: /author replied/i })).toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /reply to their reply/i }));
+    // The threaded editor names whose reply this continues, then queues with parentExternalId.
+    expect(within(row).getByText(/continues the thread/i)).toBeInTheDocument();
+    await user.type(within(row).getByRole('textbox'), 'glad it helped - here is the short version');
+    await user.click(within(row).getByRole('button', { name: /^queue reply$/i }));
+    await waitFor(() => expect(radarQueueReplyMock).toHaveBeenCalledTimes(1));
+    expect(radarQueueReplyMock).toHaveBeenCalledWith(expect.objectContaining({ source: 'reddit', externalId: 'r1', parentExternalId: 't1_authorreply', text: 'glad it helped - here is the short version' }));
+  });
+
+  // Honesty: with no captured comment id (the lane never threaded one back) the badge still
+  // links out, but there is no "Reply to their reply" action - never a broken target.
+  it('R11: an author reply with no captured commentId shows no threaded action (falls back to link-out)', () => {
+    feedData.items = [{
+      ...feedData.items[0],
+      repliedUrl: 'https://mock.reddit/1/reply',
+      authorReplied: { author: 'high_intent', text: 'thanks', permalink: 'https://mock.reddit/1/authorreply', ts: new Date().toISOString(), commentId: null },
+    }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).getByRole('link', { name: /author replied/i })).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /reply to their reply/i })).not.toBeInTheDocument();
+  });
+
   // Owner round 3, point 5: the card shows BOTH clocks, the whole card is clickable, and
   // expanding reveals facts (matched search, exact score + who scored, humanized tags).
   it('the card shows the post age AND when Radar found it', () => {
@@ -754,13 +875,71 @@ describe('Radar panel (spec 32 listening seam)', () => {
 
   // S5: the counts are a filter bar above the feed (not a dead header line), derived from the
   // feed (zero new collection). A number is never just a number - it opens the signals behind it.
-  it('S5: a filter bar shows signals / to-act / watched counts derived from the feed', () => {
-    // beforeEach feed: 2 signals (1 reply=actionable, 1 ignore), 0 watched.
+  it('S5: a filter bar shows signals / to-act counts derived from the feed; zero chips hide', () => {
+    // beforeEach feed: 2 signals (1 reply=actionable, 1 ignore), 0 watched. Every chip except
+    // "all" hides at zero - a clickable "0 watched" would filter to a guaranteed-empty list
+    // under a header still advertising the total.
     renderPanel();
     const group = screen.getByRole('group', { name: /filter signals/i });
     expect(within(group).getByRole('button', { name: /2 signals/i })).toBeInTheDocument();
     expect(within(group).getByRole('button', { name: /1 to act/i })).toBeInTheDocument();
-    expect(within(group).getByRole('button', { name: /0 watched/i })).toBeInTheDocument();
+    expect(within(group).queryByRole('button', { name: /watched/i })).not.toBeInTheDocument();
+  });
+
+  it('chip/list coherence: every rendered chip filters to exactly the count it advertises', async () => {
+    // The invariant behind the "8 Signale above an empty list" bug: a chip only renders when
+    // its count > 0, and the count predicates are the list's own filter predicates, so
+    // clicking any visible chip can never produce the zero-match empty state.
+    const user = userEvent.setup();
+    feedData.items = [
+      ...feedData.items,
+      { source: 'reddit', externalId: 'w1', url: 'https://mock.reddit/w1', author: 'watched_user', community: 'r/x', text: 'Keeping an eye on this thread.', ts: new Date().toISOString(), intentScore: 15, intentTags: [], suggestedAction: 'watch', watched: true },
+    ];
+    renderPanel();
+    const group = screen.getByRole('group', { name: /filter signals/i });
+    // 3 signals / 1 to act / 1 watched; new+answered+karma+mentions hidden at zero.
+    for (const { name, count } of [
+      { name: /1 to act/i, count: 1 },
+      { name: /1 watched/i, count: 1 },
+      { name: /3 signals/i, count: 3 },
+    ]) {
+      await user.click(within(group).getByRole('button', { name }));
+      // Expand the older/weak group when it renders, so the row count covers the whole view.
+      const older = screen.queryByRole('button', { name: /older and weak signals/i });
+      if (older && older.getAttribute('aria-expanded') === 'false') await user.click(older);
+      expect(screen.getAllByRole('link', { name: /open on/i })).toHaveLength(count);
+      expect(screen.queryByText(/no signals in this view/i)).not.toBeInTheDocument();
+    }
+  });
+
+  it('a stuck filter self-heals: when the selected chip\'s count drops to 0, the all view renders', async () => {
+    // The filter state is the REQUESTED filter; the rendered filter derives from live counts.
+    // A selected chip whose count later drops to 0 (out-of-band config change, client switch)
+    // must not leave an invisible filter pinning an empty list under "N signals".
+    const user = userEvent.setup();
+    const watchedItem = { source: 'reddit', externalId: 'w1', url: 'https://mock.reddit/w1', author: 'watched_user', community: 'r/x', text: 'Keeping an eye on this thread.', ts: new Date().toISOString(), intentScore: 15, intentTags: [], suggestedAction: 'watch', watched: true };
+    feedData = { ...feedData, items: [...feedData.items, watchedItem] };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const tree = () => (
+      <QueryClientProvider client={qc}>
+        <I18nProvider locale="en">
+          <TooltipProvider>
+            <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} />
+          </TooltipProvider>
+        </I18nProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree());
+    await user.click(screen.getByRole('button', { name: /1 watched/i }));
+    expect(screen.getByText('watched_user')).toBeInTheDocument();
+    expect(screen.queryByText('high_intent')).not.toBeInTheDocument();
+    // The watched signal disappears from the feed (e.g. unwatched elsewhere); the chip hides.
+    feedData = { ...feedData, items: feedData.items.filter((s) => s.externalId !== 'w1') };
+    rerender(tree());
+    // No phantom empty view: the full list renders and the "all" chip reads as pressed.
+    expect(screen.queryByText(/no signals in this view/i)).not.toBeInTheDocument();
+    expect(screen.getByText('high_intent')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /2 signals/i })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('S5: clicking the "to act" filter narrows the feed to actionable signals', async () => {
@@ -777,10 +956,69 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(screen.queryByText('low_intent')).not.toBeInTheDocument();
   });
 
+  it('the older/weak strip survives the newest sort (demotion is not sort-dependent)', async () => {
+    // Flipping Priorität/Neueste used to make the collapsed strip vanish and its rows splice
+    // inline - 8 cards appearing from nowhere. The strip now persists; only order changes.
+    const user = userEvent.setup();
+    renderPanel();
+    expect(screen.getByRole('button', { name: /older and weak signals/i })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /newest/i }));
+    expect(screen.getByRole('button', { name: /older and weak signals/i })).toBeInTheDocument();
+    // The demoted chatter stays foldered, not inline.
+    expect(screen.queryByText('low_intent')).not.toBeInTheDocument();
+  });
+
+  it('an all-demoted feed renders inline - no lonely strip above an empty list', () => {
+    // Demotion separates weak rows from fresh peers; with no fresh rows there is no peer
+    // problem. "8 Signale" above an empty region with only a dashed strip read as broken.
+    feedData.items = [
+      { source: 'reddit', externalId: 'o1', url: 'https://mock.reddit/o1', author: 'old_one', community: 'r/x', text: 'Ancient low-intent thread.', ts: new Date(Date.now() - 100 * 24 * 3600 * 1000).toISOString(), intentScore: 5, intentTags: [], suggestedAction: 'ignore' },
+      { source: 'reddit', externalId: 'o2', url: 'https://mock.reddit/o2', author: 'old_two', community: 'r/x', text: 'More ancient chatter.', ts: new Date(Date.now() - 200 * 24 * 3600 * 1000).toISOString(), intentScore: 3, intentTags: [], suggestedAction: 'ignore' },
+    ];
+    renderPanel();
+    expect(screen.getByText('old_one')).toBeInTheDocument();
+    expect(screen.getByText('old_two')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /older and weak signals/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/no signals in this view/i)).not.toBeInTheDocument();
+  });
+
   it('S5: no filter bar when the feed is empty', () => {
     feedData = { ok: true, enabled: true, lastScan: null, items: [] };
     renderPanel();
     expect(screen.queryByRole('group', { name: /filter signals/i })).not.toBeInTheDocument();
+  });
+
+  // R9 brand-mention radar: the mentions filter chip is HIDE-AT-ZERO. It appears only when a
+  // mention query has surfaced a signal, so it never becomes permanent chrome; the matching
+  // signal carries a "Mention" pill, and clicking the chip narrows the feed to mentions.
+  describe('R9 brand mentions', () => {
+    it('no mentions -> no mentions chip (hide-at-zero, no permanent chrome)', () => {
+      // beforeEach config has only an ordinary query; the feed has no mention signals.
+      renderPanel();
+      const group = screen.getByRole('group', { name: /filter signals/i });
+      expect(within(group).queryByRole('button', { name: /mentions/i })).not.toBeInTheDocument();
+    });
+
+    it('a mention query with a matching signal shows the chip, the pill, and filters to it', async () => {
+      const user = userEvent.setup();
+      configData = radarOn([
+        { id: 'q1', label: 'scheduling', enabled: true, sources: ['reddit'], keywords: ['schedule'], cadence: 'manual' },
+        { id: 'bm', label: 'Brand mentions', enabled: true, sources: ['reddit'], mention: true, cadence: 'manual' },
+      ]);
+      feedData.items = [
+        { source: 'reddit', externalId: 'r1', url: 'https://mock.reddit/1', author: 'high_intent', community: 'r/x', text: 'What scheduler should I use?', ts: new Date().toISOString(), matchedQuery: 'q1', intentScore: 82, intentTags: ['buying-question'], suggestedAction: 'reply' },
+        { source: 'reddit', externalId: 'm1', url: 'https://mock.reddit/m1', author: 'fan_person', community: 'r/x', text: 'pendpost has been solid for us', ts: new Date().toISOString(), matchedQuery: 'bm', intentScore: 12, intentTags: [], suggestedAction: 'ignore' },
+      ];
+      renderPanel();
+      // The pill rides the mention row.
+      const mentionRow = screen.getByText('fan_person').closest('li');
+      expect(within(mentionRow).getByText('Mention')).toBeInTheDocument();
+      // The hide-at-zero chip is present (count 1) and narrows the feed to the mention.
+      const chip = screen.getByRole('button', { name: /1 mentions/i });
+      await user.click(chip);
+      expect(screen.getByText('fan_person')).toBeInTheDocument();
+      expect(screen.queryByText('high_intent')).not.toBeInTheDocument();
+    });
   });
 
   // The redesign moves the thread URL to a single prominent Open pill (the owner: "make it a pill");
@@ -826,6 +1064,136 @@ describe('Radar panel (spec 32 listening seam)', () => {
     // The never-checked question still shows, honestly pending - typed input never vanishes.
     expect(screen.getByText(/top social media tools\?/i)).toBeInTheDocument();
     expect(screen.getByText(/not checked yet/i)).toBeInTheDocument();
+  });
+
+  // Dim-7 gap (ux-audit 2026-08-04): the agent files an EXCERPT of what the AI assistant
+  // actually said (radar_footprint_log, capped 500 chars) and radar_list returns it, but the
+  // GUI never rendered it - the human saw a percentage, never the evidence. Progressive
+  // disclosure: the per-question row expands (one interaction) to the LATEST check's excerpt
+  // plus its verdict and when - never the whole history.
+  it('a question row expands to the latest check evidence: excerpt, verdict, and when', async () => {
+    const user = userEvent.setup();
+    const old = new Date(Date.now() - 7 * 86_400_000).toISOString();
+    feedData.geo = {
+      comparisonBacklog: [],
+      footprint: [
+        { question: 'best scheduler?', mentioned: false, ts: old, excerpt: 'An older answer naming only Buffer.' },
+        { question: 'best scheduler?', mentioned: true, ts: new Date().toISOString(), excerpt: 'The answer recommended pendpost for local-first scheduling.' },
+      ],
+      footprintRate: { checks: 2, mentioned: 1, rate: 0.5 },
+      buyingQuestions: ['best scheduler?'],
+    };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /named in AI answers/i }));
+    // Hidden until asked for (progressive disclosure): the row shows rate only.
+    expect(screen.queryByText(/recommended pendpost/i)).not.toBeInTheDocument();
+    const row = screen.getByRole('button', { name: /best scheduler\?/i });
+    expect(row).toHaveAttribute('aria-expanded', 'false');
+    await user.click(row);
+    // One interaction away: the latest excerpt, its verdict (word, not colour alone), and when.
+    expect(screen.getByText(/recommended pendpost/i)).toBeInTheDocument();
+    expect(screen.getByText(/named you/i)).toBeInTheDocument();
+    // Only the LATEST check's excerpt - never the whole history at scale.
+    expect(screen.queryByText(/older answer naming only Buffer/i)).not.toBeInTheDocument();
+    // ...and it folds back.
+    await user.click(row);
+    expect(screen.queryByText(/recommended pendpost/i)).not.toBeInTheDocument();
+  });
+
+  it('a checked question with NO stored excerpt still discloses verdict + when (honest partial evidence)', async () => {
+    const user = userEvent.setup();
+    feedData.geo = {
+      comparisonBacklog: [],
+      footprint: [{ question: 'best scheduler?', mentioned: false, ts: new Date().toISOString() }],
+      footprintRate: { checks: 1, mentioned: 0, rate: 0 },
+      buyingQuestions: ['best scheduler?'],
+    };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /watching 1 ai answer question|named in AI answers/i }));
+    await user.click(screen.getByRole('button', { name: /best scheduler\?/i }));
+    expect(screen.getByText(/did not name you/i)).toBeInTheDocument();
+  });
+
+  // R4/P2 (ux-audit 2026-08-04): the rivals caption is the SERVER's share-of-voice tally
+  // now (geo.shareOfVoice from listRadar, most-frequent-first with counts) - the old
+  // client-side aggregation over footprint[].competitorsMentioned is deleted, so the two
+  // displays are ONE and the panel can never disagree with MCP or the digest.
+  it('the rivals caption renders the server shareOfVoice tally with counts (top 4)', async () => {
+    const user = userEvent.setup();
+    feedData.geo = {
+      ...feedData.geo,
+      shareOfVoice: [
+        { key: 'buffer', name: 'Buffer', count: 4 },
+        { key: 'hootsuite', name: 'Hootsuite', count: 2 },
+        { key: 'later', name: 'Later', count: 2 },
+        { key: 'sprout', name: 'Sprout', count: 1 },
+        { key: 'planable', name: 'Planable', count: 1 },
+      ],
+    };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /named in AI answers/i }));
+    // Counts ride the names, server order preserved, capped at 4 (one quiet line).
+    expect(screen.getByText(/who else gets named: Buffer \(4\), Hootsuite \(2\), Later \(2\), Sprout \(1\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Planable/)).not.toBeInTheDocument();
+  });
+
+  it('no client-side rivals aggregation remains: competitorsMentioned alone renders no caption', async () => {
+    const user = userEvent.setup();
+    feedData.geo = {
+      comparisonBacklog: [],
+      // The raw footprint names rivals, but the server sent no shareOfVoice - the panel
+      // must NOT re-derive its own tally (the deleted aggregation stays deleted).
+      footprint: [{ question: 'best scheduler?', mentioned: false, ts: new Date().toISOString(), competitorsMentioned: ['Buffer'] }],
+      footprintRate: { checks: 1, mentioned: 0, rate: 0 },
+      buyingQuestions: ['best scheduler?'],
+    };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /named in AI answers/i }));
+    expect(screen.queryByText(/who else gets named/i)).not.toBeInTheDocument();
+  });
+
+  // R4/P4: the assistant label the agent filed rides the per-question disclosure, so the
+  // owner can tell what surface the verdict came from (a model's knowledge vs live retrieval).
+  it('the question disclosure names the assistant surface when the check carries one', async () => {
+    const user = userEvent.setup();
+    feedData.geo = {
+      comparisonBacklog: [],
+      footprint: [
+        { question: 'best scheduler?', mentioned: true, ts: new Date().toISOString(), excerpt: 'The answer recommended pendpost.', assistant: 'Claude web search' },
+      ],
+      footprintRate: { checks: 1, mentioned: 1, rate: 1 },
+      buyingQuestions: ['best scheduler?'],
+    };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /named in AI answers/i }));
+    // Hidden until disclosed, like the excerpt.
+    expect(screen.queryByText(/checked via/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /best scheduler\?/i }));
+    expect(screen.getByText(/checked via Claude web search/i)).toBeInTheDocument();
+  });
+
+  it('a check without an assistant label discloses cleanly - the label is optional, never a blank slot', async () => {
+    const user = userEvent.setup();
+    feedData.geo = {
+      comparisonBacklog: [],
+      footprint: [{ question: 'best scheduler?', mentioned: false, ts: new Date().toISOString(), assistant: null }],
+      footprintRate: { checks: 1, mentioned: 0, rate: 0 },
+      buyingQuestions: ['best scheduler?'],
+    };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /named in AI answers/i }));
+    await user.click(screen.getByRole('button', { name: /best scheduler\?/i }));
+    expect(screen.getByText(/did not name you/i)).toBeInTheDocument();
+    expect(screen.queryByText(/checked via/i)).not.toBeInTheDocument();
+  });
+
+  it('an unchecked question row stays a plain row - nothing to expand, no dead control', async () => {
+    const user = userEvent.setup();
+    feedData.geo = { comparisonBacklog: [], footprint: [], footprintRate: { checks: 0, mentioned: 0, rate: 0 }, buyingQuestions: ['top social media tools?'] };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /watching 1 ai answer question/i }));
+    expect(screen.getByText(/top social media tools\?/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /top social media tools\?/i })).not.toBeInTheDocument();
   });
 
   it('questions alone (zero checks) still render the footprint card - entered input is never a dead end', async () => {
@@ -1002,6 +1370,33 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(screen.getByText('2 pages worth writing for AI answers')).toBeInTheDocument();
     });
 
+    // G8 (ux-audit 2026-08-04): a backlog row had exactly two outcomes - draft it, or stare
+    // at it forever. The quiet overflow (the signal row's own pattern) adds the third:
+    // decline it, durably, via the SAME triage write signals use.
+    it('a backlog row can be declined: overflow > Dismiss writes durable backlog triage', async () => {
+      const user = userEvent.setup();
+      withBacklog();
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /worth writing for AI answers/i }));
+      const row = screen.getByText('pendpost vs Buffer').closest('li');
+      await user.click(within(row).getByRole('button', { name: /more actions/i }));
+      await user.click(within(row).getByRole('menuitem', { name: /dismiss/i }));
+      await waitFor(() => expect(radarBacklogTriageMock).toHaveBeenCalledWith('buffer', 'dismiss'));
+      // The overflow carries NO watch item - a backlog entry has no thread to pin.
+      expect(radarTriageMock).not.toHaveBeenCalled();
+    });
+
+    it('the backlog overflow offers Dismiss only, never a dead Watch item', async () => {
+      const user = userEvent.setup();
+      withBacklog();
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /worth writing for AI answers/i }));
+      const row = screen.getByText('pendpost vs Buffer').closest('li');
+      await user.click(within(row).getByRole('button', { name: /more actions/i }));
+      expect(within(row).getAllByRole('menuitem')).toHaveLength(1);
+      expect(within(row).queryByRole('menuitem', { name: /watch/i })).not.toBeInTheDocument();
+    });
+
     // US-RAD-32: the VISIBLE label is the source domain (never a bare "#1" the
     // reader has to gamble on); an unparseable url falls back to the number.
     it('a backlog example link shows its thread domain as the visible label', async () => {
@@ -1058,12 +1453,18 @@ describe('Radar panel (spec 32 listening seam)', () => {
       await waitFor(() => expect(radarAgentScanMock).toHaveBeenCalledWith({ scope: 'geo' }));
     });
 
-    it('WS4: the Reddit standing gauge shows whenever Reddit is a scanned source, with no warm-up query', () => {
-      // Mirror the server capability shape (reddit is a searchable lane), no warm-up query, warmth
-      // unmeasured -> the gauge shows an honest connect/measure affordance, never a fabricated number.
+    it('WS4: with Reddit scanned but warmth unmeasured, the gauge stays hidden (no fabricated number, no redundant connect nudge)', () => {
+      // Reddit is a searchable lane, no warm-up query, warmth never measured. The gauge used to
+      // render a "connect Reddit" chip here, but that duplicated the connect path the source-glyph
+      // strip already carries (both go to setup/reddit) - a second nudge for one action. The gauge
+      // now shows nothing until there is real warmth; connecting Reddit lives on the glyph.
       feedData.capabilities = { reddit: { reply: true, search: true }, hackernews: { reply: false, search: true } };
       renderPanel();
-      expect(screen.getByText(/connect reddit to track karma/i)).toBeInTheDocument();
+      expect(screen.queryByText(/connect reddit to track karma/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/reddit karma/i)).not.toBeInTheDocument();
+      // The connect path is not lost: the source-glyph strip carries Reddit's connect affordance.
+      const coverage = screen.getByRole('list', { name: /sources these searches cover/i });
+      expect(within(coverage).getByRole('button', { name: /reddit: scanned\. connect it to reply/i })).toBeInTheDocument();
     });
   });
 });

@@ -49,4 +49,19 @@ describe('Planner ListView today-onwards (Mandate G)', () => {
     renderList([PAST]);
     expect(screen.getByText('PAST-ITEM')).toBeInTheDocument();
   });
+
+  it('shows ALL days when a status filter is active (showAllDays) - no hidden matches, no toggle', () => {
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ConfirmProvider>
+          <TooltipProvider>
+            <ListView posts={[PAST, FUTURE]} onSelect={() => {}} loading={false} lane={{}} showAllDays />
+          </TooltipProvider>
+        </ConfirmProvider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText('PAST-ITEM')).toBeInTheDocument();
+    expect(screen.getByText('FUTURE-ITEM')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /show earlier/i })).not.toBeInTheDocument();
+  });
 });

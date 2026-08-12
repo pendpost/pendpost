@@ -63,6 +63,7 @@ fs.writeFileSync(path.join(campDir, 'post-plan.json'), JSON.stringify({
     post('ig-nourl', ['instagram']),
     post('ig-url', ['instagram'], { imageUrl: URL_OK, altText: 'a described image' }),
     post('pin-url', ['pinterest'], { imageUrl: URL_OK }),
+    post('x-image', ['x']),
     post('yt-image', ['youtube']),
     post('car-urls', ['instagram'], { type: 'carousel', path: undefined, mediaItems: [{ path: 'data/media/pic.jpg', url: URL_OK }, { path: 'data/media/pic2.jpg', url: 'https://cdn.example.com/pic2.jpg' }] }),
     post('car-halfurl', ['instagram'], { type: 'carousel', path: undefined, mediaItems: [{ path: 'data/media/pic.jpg', url: URL_OK }, { path: 'data/media/pic2.jpg' }] }),
@@ -96,8 +97,10 @@ try {
   ok(!igYes.problems.some((p) => /image/i.test(p) && /URL|TYPE/i.test(p)), 'validate: IG image WITH imageUrl carries no image-type/url problem');
   const pin = (await v('pin-url')).pinterest;
   ok(!pin.problems.some((p) => /image TYPE|image post/i.test(p)), 'validate: pinterest image pin is no longer refused as Reddit-only (defect 3 fixed)');
+  const xImg = (await v('x-image')).x;
+  ok(!xImg.problems.some((p) => /does not publish an image post/i.test(p)), 'validate: an X image tweet is NOT stranded by the image-type lane gate (the X engine uploads a single image)');
   const yt = (await v('yt-image')).youtube;
-  ok(yt.problems.some((p) => /does not publish an image post/.test(p) && /reddit, pinterest and instagram/.test(p)), 'validate: a non-image lane blocks with the honest three-lane string');
+  ok(yt.problems.some((p) => /does not publish an image post/.test(p) && /reddit, pinterest, instagram, x, telegram, discord and mastodon/.test(p)), 'validate: a non-image lane blocks with the honest lane list');
   ok(yt.problemCodes.some((c) => c && c.code === 'validate.imageTypeLane' && c.params.platform === 'youtube'), 'validate: the lane gate carries its §4j code + platform param');
   const carU = (await v('car-urls')).instagram;
   ok(!carU.problems.some((p) => /image-carousel|image_url/i.test(p)), 'validate: an IG image carousel with per-slide urls has NO seam problem (the spec 05 block is now conditional)');

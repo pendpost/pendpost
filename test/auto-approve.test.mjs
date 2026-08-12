@@ -52,24 +52,36 @@ try {
   const reel = { type: 'reel', platforms: ['instagram'], caption: CLEAN };
   ok(autoApproveDecision(reel, { enabled: false }, 'acme').approve === false, 'disabled policy never auto-approves');
   ok(autoApproveDecision(reel, null, 'acme').approve === false, 'missing policy never auto-approves');
-  ok(autoApproveDecision(reel, { enabled: true }, 'acme').approve === true, 'enabled + empty scope + clean caption auto-approves');
   ok(autoApproveDecision(reel, { enabled: true, platforms: ['linkedin'] }, 'acme').approve === false, 'a post on an untrusted platform stays manual');
   ok(autoApproveDecision({ ...reel, platforms: ['instagram', 'facebook'] }, { enabled: true, platforms: ['instagram'] }, 'acme').approve === false, 'auto-approved only if ALL platforms are trusted (subset rule)');
   ok(autoApproveDecision(reel, { enabled: true, platforms: ['instagram', 'facebook'] }, 'acme').approve === true, 'a subset of the trusted platforms auto-approves');
-  ok(autoApproveDecision(reel, { enabled: true, types: ['text'] }, 'acme').approve === false, 'a type outside the policy types stays manual');
-  ok(autoApproveDecision(reel, { enabled: true, types: ['reel'] }, 'acme').approve === true, 'a type inside the policy types auto-approves');
-  ok(autoApproveDecision(reel, { enabled: true, campaigns: ['other'] }, 'acme').approve === false, 'a campaign outside the policy stays manual');
-  ok(autoApproveDecision(reel, { enabled: true, campaigns: ['acme'] }, 'acme').approve === true, 'a campaign inside the policy auto-approves');
-  ok(autoApproveDecision({ ...reel, caption: DIRTY }, { enabled: true, requireLintClean: true }, 'acme').approve === false, 'requireLintClean blocks an error-severity caption');
-  ok(autoApproveDecision({ ...reel, caption: DIRTY }, { enabled: true, requireLintClean: false }, 'acme').approve === true, 'requireLintClean off lets a lint-failing caption auto-approve');
-  ok(inAutoApproveScope(reel, { enabled: true }, 'acme').match === true, 'inAutoApproveScope is the pure scope half');
+  ok(autoApproveDecision(reel, { enabled: true, platforms: ['instagram'], types: ['text'] }, 'acme').approve === false, 'a type outside the policy types stays manual');
+  ok(autoApproveDecision(reel, { enabled: true, platforms: ['instagram'], types: ['reel'] }, 'acme').approve === true, 'a type inside the policy types auto-approves');
+  ok(autoApproveDecision(reel, { enabled: true, platforms: ['instagram'], campaigns: ['other'] }, 'acme').approve === false, 'a campaign outside the policy stays manual');
+  ok(autoApproveDecision(reel, { enabled: true, platforms: ['instagram'], campaigns: ['acme'] }, 'acme').approve === true, 'a campaign inside the policy auto-approves');
+  ok(autoApproveDecision({ ...reel, caption: DIRTY }, { enabled: true, platforms: ['instagram'], requireLintClean: true }, 'acme').approve === false, 'requireLintClean blocks an error-severity caption');
+  ok(autoApproveDecision({ ...reel, caption: DIRTY }, { enabled: true, platforms: ['instagram'], requireLintClean: false }, 'acme').approve === true, 'requireLintClean off lets a lint-failing caption auto-approve');
+  ok(inAutoApproveScope(reel, { enabled: true, platforms: ['instagram'] }, 'acme').match === true, 'inAutoApproveScope is the pure scope half');
+
+  // ============ layer 1a: EMPTY platforms = approves NOTHING (ux-audit 2026-08-04 P1) ============
+  // The platforms axis is FAIL-CLOSED: an enabled policy with zero trusted platforms is
+  // inert. Before this fix an empty list meant match-ALL, silently granting maximum scope
+  // the moment the toggle went on, while the Settings hint claimed the opposite. Both
+  // autonomy policies now agree that empty = off (the sibling radar.autoReply already
+  // treated lanes:[] as nothing-fires).
+  ok(autoApproveDecision(reel, { enabled: true }, 'acme').approve === false, 'enabled + EMPTY platforms auto-approves NOTHING (empty = off, fail-closed)');
+  const emptyScope = inAutoApproveScope(reel, { enabled: true, platforms: [] }, 'acme');
+  ok(emptyScope.match === false && emptyScope.reason === 'no platforms trusted', 'the legacy enabled+platforms:[] shape (previously match-all) fails closed with a legible reason');
+  ok(autoApproveDecision(reel, { enabled: true, campaigns: ['acme'], types: ['reel'], requireLintClean: false }, 'acme').approve === false, 'matching campaigns/types cannot rescue an empty platforms list (a trusted platform is required)');
+  // campaigns/types keep their empty-list = no-constraint semantics, UNCHANGED.
+  ok(autoApproveDecision(reel, { enabled: true, platforms: ['instagram'], campaigns: [], types: [] }, 'acme').approve === true, 'empty campaigns/types still mean no constraint on those axes (unchanged)');
 
   // ============ layer 1b: a Radar reply NEVER auto-approves (spec 34 SAFETY invariant) ============
   // The one hard guarantee: a post carrying radarReplyTo can never be auto-approved under
   // ANY policy shape - it is a FIELD exclusion, so no enabled/scope/lint combination matches.
   const radarReply = { type: 'text', platforms: ['reddit'], caption: CLEAN, radarReplyTo: { url: 'https://reddit.com/r/x/comments/abc', source: 'reddit', externalId: 't3_abc' } };
   const POLICY_SHAPES = [
-    ['enabled + empty scope (matches all)', { enabled: true }],
+    ['enabled + empty platforms (matches nothing since the P1 fix)', { enabled: true }],
     ['enabled + matching platform', { enabled: true, platforms: ['reddit'] }],
     ['enabled + matching campaign', { enabled: true, campaigns: ['acme'] }],
     ['enabled + matching type text', { enabled: true, types: ['text'] }],
@@ -120,6 +132,13 @@ try {
   ok(/owner/i.test(denied.error || denied.message || ''), 'the refusal explains autonomy is owner-authorized');
   ok(getConfig().posting.autoApprove.enabled === false, 'the policy is unchanged after the refused agent write (still fail-closed)');
 
+  // the enabled + zero-platforms shape (the pre-fix default the toggle used to store, and
+  // any legacy stored config) is VALID config but INERT at the loop level: nothing approves.
+  const inert = setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { autoApprove: { enabled: true, platforms: [] } } } });
+  ok(inert.ok === true, 'the owner can store the enabled+no-platforms shape (valid config, just inert)');
+  const inertDraft = await draftReel('reel-inert', CLEAN);
+  ok(inertDraft.ok && inertDraft.autoApproved !== true && getPost('reel-inert').approval === 'draft', 'with zero platforms selected the enabled policy approves NOTHING (legacy match-all is gone)');
+
   // owner enables it, scoped to instagram, lint-clean required.
   const owned = setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { autoApprove: { enabled: true, platforms: ['instagram'], requireLintClean: true } } } });
   ok(owned.ok && owned.posting.autoApprove.enabled === true, 'the owner can enable the auto-approve policy');
@@ -153,9 +172,10 @@ try {
   ok(self.code === 'invalid_input', 'the drafting agent still cannot approve its own post (no-self-approval intact)');
 
   // ============ layer 3: a queued Radar reply through the REAL create path (spec 34) ============
-  // Re-enable a BROAD auto-approve policy (empty scope = matches all, lint off) - the most
-  // permissive shape - to PROVE that even so a queued Radar reply is NEVER auto-approved.
-  setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { autoApprove: { enabled: true, requireLintClean: false } } } });
+  // Re-enable a BROAD auto-approve policy (every reply-capable platform trusted, lint off) -
+  // the most permissive matching shape now that empty platforms means match-NOTHING - to
+  // PROVE that even so a queued Radar reply is NEVER auto-approved.
+  setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { autoApprove: { enabled: true, platforms: ['reddit', 'mastodon', 'bluesky', 'x', 'instagram'], requireLintClean: false } } } });
   const q = await queueRadarReply({ campaign: CAMP, signalUrl: 'https://reddit.com/r/x/comments/abc', source: 'reddit', externalId: 't3_abc', text: 'happy to help - here is how we handle that', actor: 'agent:radar', confirm: true });
   ok(q.ok && q.approval === 'pending', 'queueRadarReply seeds a PENDING reply-post (not posted, not approved)');
   const rr = getPost(q.postId);

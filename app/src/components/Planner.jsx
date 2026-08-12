@@ -230,16 +230,19 @@ export function WeekView({ posts, weekStart, onSelect, onMoveToDay, loading, lan
             }}
           >
             <header
-              className={`mb-2 flex items-baseline gap-1.5 rounded-xl px-2 py-1.5 ${
+              className={`mb-2 rounded-xl px-2 py-1.5 ${
                 isToday ? 'bg-brand/10 dark:bg-brand-light/10' : ''
               }`}
             >
-              <span className={`text-xs font-bold ${isToday ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
-                {fmtDayShort(day)}
-              </span>
-              <span className={`font-display text-sm font-bold ${isToday ? 'text-brand dark:text-brand-light' : ''}`}>
-                {fmtDayNum(day)}
-              </span>
+              <div className="flex items-baseline gap-1.5">
+                <span className={`text-xs font-bold ${isToday ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
+                  {fmtDayShort(day)}
+                </span>
+                <span className={`font-display text-sm font-bold ${isToday ? 'text-brand dark:text-brand-light' : ''}`}>
+                  {fmtDayNum(day)}
+                </span>
+              </div>
+              {isToday ? <div aria-hidden="true" className="mt-1 h-[3px] w-4 rounded-full bg-brand dark:bg-brand-light" /> : null}
             </header>
             <div className="space-y-2">
               {loading ? (
@@ -328,13 +331,14 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
             aria-label={fmtDayAria(day)}
             className={`min-h-[92px] rounded-xl p-1.5 ${
               isToday
-                ? 'bg-brand/10 dark:bg-brand-light/10 ring-1 ring-brand/30'
+                ? 'bg-brand/10 ring-1 ring-zinc-900/5 dark:bg-brand-light/10 dark:ring-white/5'
                 : 'bg-white/50 ring-1 ring-zinc-900/5 dark:bg-zinc-900/35 dark:ring-white/5'
             } ${inMonth ? '' : 'opacity-40'} ${allEmpty ? 'hidden' : ''}`}
           >
-            <p className={`mb-1 text-[11px] font-bold ${isToday ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
+            <p className={`mb-0.5 text-[11px] font-bold ${isToday ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
               {fmtDayNum(day)}
             </p>
+            {isToday ? <div aria-hidden="true" className="mb-1 h-[3px] w-4 rounded-full bg-brand dark:bg-brand-light" /> : null}
             <div className="space-y-1">
               {dayPosts.slice(0, 3).map((post) => (
                 <button
@@ -498,7 +502,7 @@ function ListRow({ post, posts = [], onSelect, lane }) {
   );
 }
 
-export function ListView({ posts, onSelect, loading, lane }) {
+export function ListView({ posts, onSelect, loading, lane, showAllDays = false }) {
   const t = useT();
   const dated = useMemo(
     () => posts.filter((p) => p.scheduledAt).sort(comparePostDate),
@@ -532,8 +536,12 @@ export function ListView({ posts, onSelect, loading, lane }) {
   const upcoming = useMemo(() => groups.filter((g) => g.key >= todayKey), [groups, todayKey]);
   const pastCount = useMemo(() => past.reduce((n, g) => n + g.posts.length, 0), [past]);
   const [showPast, setShowPast] = useState(false);
-  const pastVisible = showPast || upcoming.length === 0;
-  const canToggle = past.length > 0 && upcoming.length > 0;
+  // showAllDays: with an active status filter the list is an ANSWER, not an
+  // agenda - every match must be visible. Collapsing an overdue post from an
+  // earlier day behind "Show earlier" while the chip says 2 is how "the count
+  // says two, the list shows one" happened.
+  const pastVisible = showAllDays || showPast || upcoming.length === 0;
+  const canToggle = !showAllDays && past.length > 0 && upcoming.length > 0;
 
   if (loading) {
     return (

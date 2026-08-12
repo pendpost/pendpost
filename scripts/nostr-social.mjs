@@ -72,6 +72,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
+import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { envPath } from '../lib/util.mjs';
@@ -81,7 +83,20 @@ const ENV_PATH = envPath();
 
 // Every relay exchange (EVENT publish, REQ read-back, reachability probe) is
 // wrapped in a promise with this timeout - a dead relay must never hang a tick.
+// The 10s ceiling is sized for a WRITE: an OK acceptance frame can settle over
+// several seconds, so a publish must wait it out.
 const RELAY_TIMEOUT_MS = 10 * 1000;
+
+// READS and reachability probes get a TIGHTER ceiling. A live relay answers a
+// trivial REQ (EVENT/EOSE) in well under 2s; a relay that cannot is dead FOR OUR
+// PURPOSES. The fan-outs behind the health probe and the NIP-65 relay-list read
+// use Promise.allSettled, so their wall-time is the SLOWEST relay - at 10s each a
+// single dead relay (e.g. one that times out rather than erroring fast) can push
+// the whole call past its parent execFile budget and surface as a hard "no probe
+// result" / "engine produced no envelope", certifying the lane as FAILED even
+// though live relays answered instantly. Capping reads at 4s keeps a dead relay
+// from dragging a read/probe over that edge, while giving a live relay 2x margin.
+const RELAY_READ_TIMEOUT_MS = 4 * 1000;
 
 // Relay I/O rides the GLOBAL WebSocket (Node >= 22). Guarded per network
 // command so the offline commands (keygen, selftest, validate, status) still
@@ -481,6 +496,9 @@ function fetchEventsForNote(url, eventId, kinds) {
 }
 
 // Reachability: a relay that answers a tiny REQ (any EVENT or the EOSE) is alive.
+// Read-timeout budget (RELAY_READ_TIMEOUT_MS): the health probe fans this out over
+// every relay and waits for the slowest, so a dead relay must fail FAST here or it
+// can drag the whole probe past its parent budget and mis-report the lane as failed.
 function probeRelay(url) {
   const subId = 'pendpost-auth';
   return relayExchange(url, {
@@ -491,7 +509,7 @@ function probeRelay(url) {
         done(true);
       }
     },
-  });
+  }, RELAY_READ_TIMEOUT_MS);
 }
 
 // ---------- plan helpers (same shape as the sibling engines) ----------
@@ -501,7 +519,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -540,8 +558,9 @@ async function savePlan(abs, plan, touchedIds = null) {
 }
 
 function appendAttempt(post, entry) {
-  post.attempts = Array.isArray(post.attempts) ? post.attempts : [];
-  post.attempts.push(entry);
+  // Shared recorder (lib/publish-hold.mjs): trims the attempts tail and maintains
+  // the publishHold failure cap - the local mirror of the cloud re-fire cap.
+  recordAttempt(post, entry);
 }
 
 const RUN = { results: [] };
@@ -684,7 +703,7 @@ export function planArticleImage({ image, localPath, mediaServer } = {}) {
 //      without it) with the SAME key and send it base64'd in `Authorization: Nostr <...>`.
 //   3. multipart/form-data POST the file bytes -> nip94_event.tags -> url/m/dim/ox.
 // THROWS on any failure so the caller degrades to a text-only article/note (never fatal).
-async function uploadNostrMedia(keys, localPath, mediaServer) {
+export async function uploadNostrMedia(keys, localPath, mediaServer) {
   const base = String(mediaServer).replace(/\/+$/, '');
   const discovery = await fetch(`${base}/.well-known/nostr/nip96.json`, { headers: { Accept: 'application/json' } });
   if (!discovery.ok) throw new Error(`NIP-96 discovery failed: HTTP ${discovery.status}`);
@@ -1093,6 +1112,13 @@ async function cmdPublishDue(args) {
     if (!isNostr(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status !== 'planned') continue;
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') {
       console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
       continue;
@@ -1623,7 +1649,7 @@ function fetchLatestEventOfKind(url, pubHex, kind, extraFilter = null) {
         done(found);
       }
     },
-  });
+  }, RELAY_READ_TIMEOUT_MS);
 }
 
 // relay-list-set (spec 31, NIP-65): --relays is a JSON array of [url, marker?]
@@ -1896,6 +1922,13 @@ async function cmdPublishRadar(args) {
     if (post.executionMode !== 'fully-scheduled') continue;
     if (post.status === 'posted' || post.nostrEventId) continue; // idempotent - a fired reply never re-posts
     if (post.radarReplyState === 'target_gone') continue; // terminal - never re-attempt a dead note
+    // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
+    // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
+    // held post from the fire loop. Reschedule or edit clears the hold.
+    if (post.publishHold) {
+      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      continue;
+    }
     if ((post.approval || 'draft') !== 'approved') { console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`); continue; }
     const dueMs = Date.parse(post.scheduledAt);
     if (Number.isNaN(dueMs) || dueMs > now) continue;
@@ -1970,6 +2003,7 @@ const COMMANDS = {
 
 async function main() {
   const args = parseArgs(process.argv);
+  await enforceCeremonyClient({ argv: args, command: args._[0], lane: 'nostr', scriptUrl: import.meta.url });
   JSON_MODE = Boolean(args.json);
   ACTOR = typeof args.actor === 'string' ? args.actor : 'cli';
   if (JSON_MODE) console.log = (...a) => console.error(...a);
