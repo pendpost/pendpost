@@ -7,7 +7,8 @@
       "id": "welcome",
       "type": "text",
       "platforms": [
-        "linkedin"
+        "linkedin",
+        "hackernews"
       ],
       "scheduledAt": "2026-06-22T09:00:00Z",
       "caption": "We built Acme so small teams can ship without the busywork. Three months in beta, hundreds of fixes, and now it is open. Tell us what you want next.",
