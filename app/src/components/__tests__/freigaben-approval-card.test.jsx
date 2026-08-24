@@ -1,6 +1,6 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
 import Freigaben from '../Freigaben.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
@@ -14,6 +14,7 @@ import { I18nProvider } from '../../lib/i18n.js';
 // advisory brand-lint badge stays silent and does not interfere.
 const approvePost = vi.fn(() => Promise.resolve({ ok: true }));
 const rejectPost = vi.fn(() => Promise.resolve({ ok: true }));
+const markPosted = vi.fn(() => Promise.resolve({ ok: true }));
 const lintText = vi.fn(() =>
   Promise.resolve({ ok: true, clean: true, errors: 0, warnings: 0, findings: [] }),
 );
@@ -21,6 +22,7 @@ const lintText = vi.fn(() =>
 vi.mock('../../lib/api.js', () => ({
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
+  markPosted: (...a) => markPosted(...a),
   lintText: (...a) => lintText(...a),
   usePendpostHealth: () => healthState,
   useConfig: () => ({ data: null }),
@@ -84,9 +86,10 @@ const redditAdvisoryPost = {
   media: { file: null, exists: false, bytes: null, url: null, cover: null, path: null },
 };
 
-// The OTHER IconBadge trigger on an actionable card: auto-approved. editedSinceApproval
-// keeps it actionable (so it stays in the default "to review" tab) while approvalBy
-// renders the Sparkles badge. Same nesting path as the advisory, different condition.
+// An auto-approved post edited after approval. editedSinceApproval keeps it actionable
+// (so it stays in the default "to review" tab); since the next-actor consolidation the
+// auto-approve PROVENANCE no longer renders its own Sparkles badge - the re-approve
+// chip is the one truthful state (the edit invalidated the provenance).
 const autoApprovedPost = {
   ...mediaPost,
   id: 'p4',
@@ -155,7 +158,8 @@ describe('the queue tells the truth about a lane it cannot publish to', () => {
   it('replaces Approve on the CARD when the lane is not connected', () => {
     healthState = { data: { setup: { platforms: [{ platform: 'reddit', status: 'incomplete' }] } } };
     renderFreigaben([radarReplyPost]);
-    expect(screen.getByRole('button', { name: /post yourself/i })).toBeInTheDocument();
+    // B2: the offline slot IS the hand-off now - copy the text, open the thread.
+    expect(screen.getByRole('button', { name: /copy reply & open/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument();
   });
 
@@ -280,5 +284,156 @@ describe('Freigaben edited-since-approval (trust gate)', () => {
   it('does NOT show a re-approve badge for a cleanly-approved post', () => {
     renderFreigaben([{ ...mediaPost, id: 'p10', approval: 'approved', editedSinceApproval: false, derivedState: 'waiting-due' }]);
     expect(screen.queryByText('Re-approve')).toBeNull();
+  });
+});
+
+// B2: the copy-lane hand-off ON the card. "Manually post" is one flow: copy the
+// effective text, open the destination, then capture the live link and mark it
+// posted - the evidence contract closed without opening PostDetail.
+describe('Freigaben copy-lane hand-off on the card', () => {
+  const offlineX = { data: { setup: { platforms: [{ platform: 'x', status: 'incomplete' }] } } };
+  const xReplyPost = {
+    ...radarReplyPost,
+    id: 'radar-x-abc',
+    platforms: ['x'],
+    radarReplyTo: { ...radarReplyPost.radarReplyTo, source: 'x', url: 'https://x.com/someone/status/123' },
+  };
+  let writeText;
+  let openSpy;
+  beforeEach(() => {
+    writeText = vi.fn(() => Promise.resolve());
+    Object.defineProperty(window.navigator, 'clipboard', { value: { writeText }, configurable: true });
+    openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+  });
+  afterEach(() => {
+    openSpy.mockRestore();
+  });
+
+  it('renders Kopieren & oeffnen instead of Freigeben on the offline lane', () => {
+    healthState = offlineX;
+    renderFreigaben([xReplyPost]);
+    expect(screen.getByRole('button', { name: /copy reply & open/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument();
+  });
+
+  it('click copies the text, opens the thread, and reveals the link capture', async () => {
+    healthState = offlineX;
+    renderFreigaben([xReplyPost]);
+    fireEvent.click(screen.getByRole('button', { name: /copy reply & open/i }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(xReplyPost.caption));
+    expect(openSpy).toHaveBeenCalledWith('https://x.com/someone/status/123', '_blank', 'noopener,noreferrer');
+    // The capture row is revealed so the loop can close with evidence.
+    expect(screen.getByLabelText(/Link to the published post/i)).toBeInTheDocument();
+  });
+
+  it('saving the URL calls markPosted and refreshes the plans', async () => {
+    healthState = offlineX;
+    renderFreigaben([xReplyPost]);
+    fireEvent.click(screen.getByRole('button', { name: /copy reply & open/i }));
+    const input = await screen.findByLabelText(/Link to the published post/i);
+    fireEvent.change(input, { target: { value: 'https://x.com/pendpost/status/456' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Posted' }));
+    await waitFor(() => expect(markPosted).toHaveBeenCalledWith('radar-replies', 'radar-x-abc', 'https://x.com/pendpost/status/456'));
+  });
+
+  it('a clipboard refusal shows the error and NO false success', async () => {
+    healthState = offlineX;
+    writeText.mockImplementation(() => Promise.reject(new Error('denied')));
+    renderFreigaben([xReplyPost]);
+    fireEvent.click(screen.getByRole('button', { name: /copy reply & open/i }));
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
+    // No tab opened, no capture revealed, no "Copied" claim.
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/Link to the published post/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Copied')).not.toBeInTheDocument();
+  });
+});
+
+// Posted = linked (chip 3): the "Alle Beitraege" view's posted cards carry the same
+// quiet open-live-post links Published's rows use - and NOTHING when no permalink is
+// provable (never a dead control).
+describe('Freigaben posted cards link the live post in all-mode', () => {
+  const postedWithProof = {
+    ...mediaPost,
+    id: 'posted-1',
+    approval: 'approved',
+    derivedState: 'posted',
+    permalinks: { instagram: 'https://www.instagram.com/p/live-proof/' },
+  };
+  const postedNoProof = {
+    ...mediaPost,
+    id: 'posted-2',
+    title: 'Posted without evidence',
+    approval: 'approved',
+    derivedState: 'posted',
+  };
+
+  it('a posted card with a resolvable permalink renders the icon-only live link', async () => {
+    renderFreigaben([postedWithProof]);
+    const user = (await import('@testing-library/user-event')).default;
+    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    const link = screen.getByRole('link', { name: /view on instagram/i });
+    expect(link).toHaveAttribute('href', 'https://www.instagram.com/p/live-proof/');
+    expect(link).toHaveAttribute('target', '_blank');
+  });
+
+  it('a posted card with NO evidence renders no link at all', async () => {
+    renderFreigaben([postedNoProof]);
+    const user = (await import('@testing-library/user-event')).default;
+    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    expect(screen.getByText('Posted without evidence')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /view on/i })).not.toBeInTheDocument();
+  });
+});
+
+// ONE truthful next-actor state per card (nextActorOf). The old badge stack could show
+// "Scheduled" + "You post this yourself" + "Auto-approved" side by side - three
+// independent derivations of who acts next, two of them false at any given moment.
+describe('Freigaben next-actor consolidation', () => {
+  it('a scheduled post on an unconnected lane renders exactly ONE state: the hand-off', async () => {
+    healthState = { data: { setup: { platforms: [{ platform: 'reddit', status: 'incomplete' }] } } };
+    const scheduledOffline = {
+      ...radarReplyPost,
+      id: 'sched-offline',
+      approval: 'approved',
+      approvalBy: 'policy:auto-approve',
+      derivedState: 'waiting-due',
+      scheduledAt: '2026-08-20T07:00:00Z',
+    };
+    renderFreigaben([scheduledOffline]);
+    // Approved posts live in the "All posts" tab.
+    const user = (await import('@testing-library/user-event')).default;
+    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    // The hand-off truth renders...
+    expect(screen.getByText(/you post this yourself/i)).toBeInTheDocument();
+    // ...and neither of the contradicting claims does.
+    expect(screen.queryByText(/goes out/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Auto-approved')).not.toBeInTheDocument();
+  });
+
+  it('auto-approved + edited reads re-approve, with NO auto-approved badge', () => {
+    renderFreigaben([autoApprovedPost]);
+    expect(screen.getByText('Re-approve')).toBeInTheDocument();
+    expect(screen.queryByText('Auto-approved')).not.toBeInTheDocument();
+  });
+
+  it('a cleanly scheduled approved post says when it goes out, with the auto-approve provenance a hover away', async () => {
+    const scheduled = {
+      ...mediaPost,
+      id: 'sched-clean',
+      approval: 'approved',
+      approvalBy: 'policy:auto-approve',
+      editedSinceApproval: false,
+      derivedState: 'waiting-due',
+      scheduledAt: '2026-08-20T07:00:00Z',
+    };
+    const { container } = renderFreigaben([scheduled]);
+    const user = (await import('@testing-library/user-event')).default;
+    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    expect(screen.getByText(/goes out/i)).toBeInTheDocument();
+    // Provenance moved into the chip's tooltip - never a third badge.
+    const chip = screen.getByText(/goes out/i).closest('span[title]');
+    expect(chip?.getAttribute('title')).toMatch(/auto-approve rule/i);
+    expect(container.textContent).not.toContain('Auto-approved by');
   });
 });

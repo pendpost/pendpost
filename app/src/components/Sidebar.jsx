@@ -5,7 +5,7 @@ import { setSchedulerRunning, useSignals } from '../lib/api.js';
 import { useCloud, useCloudClients } from '../lib/cloud.js';
 import { fmtTime, fmtDayShort, fmtFull, visiblePlatforms } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
-import { INNER_SURFACE, PLATFORM_META } from './ui.jsx';
+import { INNER_SURFACE, PLATFORM_META, DISABLED_PRIMARY } from './ui.jsx';
 import ClientSwitcher from './ClientSwitcher.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import { Tip } from './ui/Tooltip.jsx';
@@ -154,7 +154,7 @@ export function SchedulerToggle({ running, setupReady }) {
   );
 }
 
-export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue, onCreateProject, onBeforeSwitchClient }) {
+export default function Sidebar({ accounts, posting, pendingCount, nextPost, overdueCount, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue, onCreateProject, onBeforeSwitchClient, allClients = false, onAllClientsChange }) {
   const t = useT();
   const [showFeedback, setShowFeedback] = useState(false);
   // The Radar nav row reflects the live scan (owner ask 2026-07-20): while a research job
@@ -164,15 +164,17 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
   const radarEnabled = posting?.radar?.enabled === true;
   const { data: radarFeed } = useSignals(radarEnabled);
   const radarScanning = radarEnabled && (radarFeed?.jobs || []).some((j) => j.state === 'running');
-  // The unread dot: signals found since the last Radar visit (the same localStorage clock
-  // the panel's "Neu" chips read). Suppressed while you are ON the page - the chips carry
-  // it there - and while scanning, where the spinner is the louder truth.
-  const radarUnread = radarEnabled && !radarScanning && activePage !== 'radar' && (() => {
+  // New-signals count: how many signals were found since the last Radar visit (the same
+  // localStorage clock the panel's "Neu" chips read). Rendered as a quiet count pill, like
+  // Freigaben/Setup - it replaces the old unread dot (one signal, not two). Suppressed while
+  // you are ON the page - the chips carry it there - and while scanning, where the spinner is
+  // the louder truth. Zero => no badge at all (no "Beta" chip; that lives on the page header).
+  const radarNewCount = radarEnabled && !radarScanning && activePage !== 'radar' ? (() => {
     try {
       const seen = localStorage.getItem('pendpost.radar.lastSeen');
-      return Boolean(seen) && (radarFeed?.items || []).some((s) => s.foundAt && s.foundAt > seen);
-    } catch { return false; }
-  })();
+      return seen ? (radarFeed?.items || []).filter((s) => s.foundAt && s.foundAt > seen).length : 0;
+    } catch { return 0; }
+  })() : 0;
   // Show only the relevant logos: the same connected+enabled+not-skipped rule the
   // dashboard uses (lib/format.js). The set holds DISPLAY ids (facebook/instagram
   // separately), so a chip renders only when its id is in `visible`.
@@ -293,28 +295,36 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
 
       {/* Multi-client switcher: the first thing the eye lands on, so the active
           client is unmistakable (anti-goal: acting on the wrong client). */}
-      <ClientSwitcher onManage={() => onNavigate('clients')} onCreate={onCreateProject} onBeforeSwitch={onBeforeSwitchClient} />
+      <ClientSwitcher onManage={() => onNavigate('clients')} onCreate={onCreateProject} onBeforeSwitch={onBeforeSwitchClient} allClients={allClients} onAllClientsChange={onAllClientsChange} />
 
       {/* Primary action: always one click away. The tooltip surfaces the
           otherwise-undiscoverable ⌘K palette (no inline kbd chip - it cost the
           width that wrapped the German label onto two lines). */}
       {/* Split primary action: the main click stays "New post" (one click away);
           the caret opens a small menu to start a New post or a New X thread. */}
+      {/* Issue 6 step 5: a new post needs one client, so the primary create action
+          is disabled (never hidden - the position and the reason both stay legible)
+          while all-clients mode is on. Forcing a picker here would add a decision;
+          picking a single client (the switcher's own row) already clears the mode. */}
       <div className="flex items-stretch gap-1">
-        <Tip label={t('sidebar.commandPalette')}>
+        <Tip label={allClients ? t('composer.pickClientFirst') : t('sidebar.commandPalette')}>
           <button
             type="button"
             onClick={onNew}
-            className="flex flex-1 items-center justify-center gap-1.5 rounded-l-xl rounded-r-md bg-brand px-3 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900"
+            disabled={allClients}
+            aria-disabled={allClients || undefined}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-l-xl rounded-r-md bg-brand px-3 py-2.5 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:pointer-events-none dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}
           >
             <Plus size={16} aria-hidden="true" />
             <span className="flex-1 whitespace-nowrap text-center">{t('composer.newPost')}</span>
           </button>
         </Tip>
         <Popover>
-          <Tip label={t('sidebar.newMenu')}>
+          <Tip label={allClients ? t('composer.pickClientFirst') : t('sidebar.newMenu')}>
             <PopoverTrigger
-              className="grid place-items-center rounded-l-md rounded-r-xl bg-brand px-2 text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900"
+              disabled={allClients}
+              aria-disabled={allClients || undefined}
+              className={`grid place-items-center rounded-l-md rounded-r-xl bg-brand px-2 text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:pointer-events-none dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}
               aria-label={t('sidebar.newMenu')}
             >
               <ChevronDown size={16} aria-hidden="true" />
@@ -351,15 +361,15 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, ove
         <NavItem icon={Send} label={t('nav.published')} active={activePage === 'published'} onClick={() => onNavigate('published')} />
         <NavItem icon={Activity} label={t('nav.activity')} active={activePage === 'activity'} onClick={() => onNavigate('activity')} />
         <NavItem icon={BarChart3} label={t('nav.insights')} active={activePage === 'insights'} onClick={() => onNavigate('insights')} />
-        {/* Radar (beta) social listening (spec 32): a Beta-badged nav row. The page
-            itself gates on posting.radar.enabled (off by default), like the cloud row. */}
+        {/* Radar (spec 32) social listening: while a scan runs the badge is a spinner; otherwise
+            it is a quiet count of signals found since your last visit (nothing when there are none).
+            "Beta" is not shown here - it lives on the Radar page header. The page itself gates on
+            posting.radar.enabled (off by default), like the cloud row. */}
         <NavItem
           icon={Radar}
           label={t('nav.radar')}
-          badge={radarScanning ? <Loader2 size={11} className="animate-spin" aria-hidden="true" /> : t('radar.beta')}
-          badgeLabel={radarScanning ? t('sidebar.radarScanning') : t('radar.beta')}
-          dot={radarUnread}
-          dotLabel={t('sidebar.radarNew')}
+          badge={radarScanning ? <Loader2 size={11} className="animate-spin" aria-hidden="true" /> : (radarNewCount > 0 ? String(radarNewCount) : undefined)}
+          badgeLabel={radarScanning ? t('sidebar.radarScanning') : (radarNewCount > 0 ? t('sidebar.radarNewBadge', { count: radarNewCount }) : undefined)}
           active={activePage === 'radar'}
           onClick={() => onNavigate('radar')}
         />

@@ -49,6 +49,7 @@ import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker
 import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -65,6 +66,23 @@ function readEnvRaw() {
 function readEnv(name) {
   const m = readEnvRaw().match(new RegExp(`^${name}=(.+)$`, 'm'));
   return m ? m[1].trim() : null;
+}
+
+function writeEnv(vars) {
+  let raw = readEnvRaw();
+  for (const [k, v] of Object.entries(vars)) {
+    if (v == null) continue;
+    // function replacer: token values may contain '$' which is special in a string replacement.
+    if (new RegExp(`^${k}=`, 'm').test(raw)) {
+      raw = raw.replace(new RegExp(`^${k}=.*$`, 'm'), () => `${k}=${v}`);
+    } else {
+      raw += `${raw.endsWith('\n') || raw === '' ? '' : '\n'}${k}=${v}\n`;
+    }
+  }
+  // Atomic + 0600: a crash mid-write must never truncate the secret-bearing .env.
+  const tmp = `${ENV_PATH}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, raw, { mode: 0o600 });
+  fs.renameSync(tmp, ENV_PATH);
 }
 
 const apiBase = () => `https://api.telegram.org/bot${readEnv('TELEGRAM_BOT_TOKEN')}`;
@@ -94,7 +112,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -213,11 +231,26 @@ function tgCtaExtra(post) {
 // ---------- commands ----------
 
 async function cmdAuth() {
-  if (!readEnv('TELEGRAM_BOT_TOKEN')) { console.error('[err] TELEGRAM_BOT_TOKEN missing in .env (get it from @BotFather).'); process.exit(2); }
+  // .env still wins; otherwise, on an interactive terminal, prompt the operator to paste
+  // what they copied (the bot token hidden, never echoed, never in shell history) and
+  // persist it so the liveness probe below (and every later run) can read it. A
+  // non-interactive run (daemon/CI/mock) skips the prompt and fails closed at the guard.
+  const botToken = await resolveCredential({
+    value: readEnv('TELEGRAM_BOT_TOKEN'),
+    secret: true,
+    hint: 'Paste your Telegram bot token (from @BotFather): ',
+  });
+  if (!botToken) { console.error('[err] TELEGRAM_BOT_TOKEN missing in .env (get it from @BotFather).'); process.exit(2); }
+  writeEnv({ TELEGRAM_BOT_TOKEN: botToken });
   const me = await tg('getMe');
   console.log(`[ok] Bot token valid - authenticated as @${me.username} (id ${me.id}).`);
+  const chId = await resolveCredential({
+    value: readEnv('TELEGRAM_CHANNEL_ID'),
+    hint: 'Paste your Telegram channel id (@username or numeric id of the destination channel): ',
+  });
+  if (!chId) { console.error('[err] TELEGRAM_CHANNEL_ID missing in .env (the @username or numeric id of the destination channel).'); process.exit(2); }
+  writeEnv({ TELEGRAM_CHANNEL_ID: chId });
   const ch = channelId();
-  if (!ch) { console.error('[err] TELEGRAM_CHANNEL_ID missing in .env (the @username or numeric id of the destination channel).'); process.exit(2); }
   const chat = await tg('getChat', { body: { chat_id: ch } });
   console.log(`[ok] Channel reachable - ${chat.type} "${chat.title || ch}". Ensure the bot is an admin with Post Messages.`);
   RUN.results.push({ platform: 'telegram', action: 'auth', ok: true, detail: `@${me.username} -> ${chat.title || ch}` });

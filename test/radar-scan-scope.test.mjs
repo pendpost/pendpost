@@ -22,7 +22,7 @@ process.env.PENDPOST_ROOT = WS;
 process.env.PENDPOST_MODE = 'mock';
 
 try {
-  const { effectiveRadarSources, RADAR_SOURCES } = await import('../lib/radar.mjs');
+  const { effectiveRadarSources, agentResearchSources, RADAR_SOURCES } = await import('../lib/radar.mjs');
   const { setConfig, getConfig } = await import('../lib/config.mjs');
   const { withClient } = await import('../lib/context.mjs');
   const { clientRoot, activeClientId } = await import('../lib/multi-client.mjs');
@@ -42,6 +42,19 @@ try {
 
   const forcedOn = effectiveRadarSources({ sources: { youtube: { scan: true } } }, () => false);
   ok(forcedOn.includes('youtube'), 'an explicit scan:true wins over the not-connected default');
+
+  // ===== agentResearchSources: the agent SPAWNS only on agent-found (search:false) sources =====
+  // The searchable lanes are the native engine's job; the agent WebFetching them is wasted budget
+  // (Reddit is blocked for it) and starves the agent-found lanes under the 10-min job cap.
+  const mixed = agentResearchSources(['reddit', 'mastodon', 'bluesky', 'hackernews', 'x', 'youtube', 'linkedin', 'instagram']);
+  ok(JSON.stringify(mixed) === JSON.stringify(['x', 'youtube', 'linkedin', 'instagram']),
+    'agentResearchSources drops every search lane and keeps the agent-found sources in order');
+  ok(agentResearchSources(['reddit', 'mastodon', 'bluesky', 'hackernews']).length === 0,
+    'a set of only searchable lanes yields ZERO agent lanes - the engine owns them (caller falls back so a GEO-only scan still rides one lane)');
+  ok(JSON.stringify(agentResearchSources(['linkedin', 'instagram'])) === JSON.stringify(['linkedin', 'instagram']),
+    'the new linkedin/instagram sources are agent-found and survive the filter');
+  ok(agentResearchSources([]).length === 0 && agentResearchSources(null).length === 0,
+    'empty / non-array input is safe (never throws)');
 
   // ===== config validation =====
   const rev = () => getConfig().rev;

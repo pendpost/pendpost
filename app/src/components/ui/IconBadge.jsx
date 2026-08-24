@@ -13,13 +13,30 @@ const TONES = {
   neutral: 'bg-zinc-500/15 text-zinc-600 ring-zinc-500/30 dark:text-zinc-300',
 };
 
-export function IconBadge({ icon: Icon, tone = 'neutral', label, text, side = 'top' }) {
+export function IconBadge({ icon: Icon, tone = 'neutral', label, text, side = 'top', static: isStatic = false }) {
   const chip = (
     <span className={cn('inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1', TONES[tone] || TONES.neutral)}>
       {Icon ? <Icon size={11} aria-hidden="true" /> : null}
       {text ? <span>{text}</span> : null}
     </span>
   );
+  // Static variant: a NON-interactive labelled span, never a Radix Tooltip trigger
+  // <button>. Use it wherever the badge lives INSIDE another interactive control (a
+  // card's open-detail button), where a nested button is invalid HTML AND focusable
+  // content inside a button violates the nested-interactive rule. The span still
+  // triggers the house Tip on hover (Radix asChild, no tabIndex so nothing gains
+  // focus), and the label stays the accessible name (role="img" + aria-label).
+  if (isStatic) {
+    if (!label) return chip;
+    return (
+      <Tip label={label} side={side}>
+        <span role="img" aria-label={label} className={cn('inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1', TONES[tone] || TONES.neutral)}>
+          {Icon ? <Icon size={11} aria-hidden="true" /> : null}
+          {text ? <span aria-hidden="true">{text}</span> : null}
+        </span>
+      </Tip>
+    );
+  }
   if (!label) return chip;
   return (
     <Tip label={label} side={side}>

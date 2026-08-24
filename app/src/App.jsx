@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff, Menu } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff, Menu, Rows2, Rows3 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { usePlans, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, useInsights, recheckHealth, setCampaignInternal } from './lib/api.js';
-import { useT, useLocale, useSetLocale } from './lib/i18n.js';
-import { applyAccent, clientAccent } from './lib/theme.js';
+import { usePlans, usePlansAll, useSignalsAll, useActivityAll, useInsightsAll, useCommentInboxAll, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, useInsights, recheckHealth, setCampaignInternal } from './lib/api.js';
+import { useT, useLocale, useSetLocale, useAdoptLocale, hasStoredLocale } from './lib/i18n.js';
+import { applyAccent, clientAccent, DEFAULT_ACCENT } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
 import { useCloud, useCloudClients, useInvalidateCloud } from './lib/cloud.js';
-import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, isLate, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable } from './lib/format.js';
+import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, isLate, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable, getPlannerDensity, setPlannerDensity } from './lib/format.js';
 import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
 import { useConfirm } from './components/ui/confirm.jsx';
@@ -17,6 +17,7 @@ import Sidebar from './components/Sidebar.jsx';
 import SidebarResizer from './components/SidebarResizer.jsx';
 import UpdateToast from './components/UpdateToast.jsx';
 import HumanizerReceipt from './components/HumanizerReceipt.jsx';
+import AppToast from './components/AppToast.jsx';
 import DevReadonlyBadge from './components/DevReadonlyBadge.jsx';
 import { WeekView, MonthView, ListView } from './components/Planner.jsx';
 import PostDetail from './components/PostDetail.jsx';
@@ -80,9 +81,47 @@ export default function App() {
   const locale = useLocale();
   const setLocale = useSetLocale();
   const pageTitle = (p) => t(PAGE_TITLE_KEYS[p] || p);
-  const { data: plansData, isLoading, isError } = usePlans();
+  // Issue 6 (cross-client Freigaben/Planner): the "All projects" UI mode, driven
+  // from the sidebar ClientSwitcher's own row. Persisted so a reload keeps the
+  // operator's chosen scope. It never calls the server by itself - the active
+  // client (below) stays whatever it was; every single-client surface (Settings,
+  // Setup, Radar, ...) keeps reading it untouched.
+  const [allClients, setAllClients] = useState(() => {
+    try { return localStorage.getItem('pendpost.allClients') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('pendpost.allClients', allClients ? '1' : '0'); } catch { /* private mode - ignore */ }
+  }, [allClients]);
+  const { data: plansData, isLoading: plansLoading, isError: plansIsError } = usePlans();
   const { data: accounts } = useAccounts();
   const { activeClient, data: clientsData, activeClientId } = useActiveClient();
+  // The offer list for the mode: every ACTIVE (non-archived, non-dormant-default)
+  // client, mirroring ClientSwitcher's own "listed" derivation so the trigger's
+  // "{n} projects" sublabel and what actually gets fetched here can never disagree.
+  const allClientsList = useMemo(
+    () => (clientsData?.clients || []).filter((c) => (c.status || 'active') === 'active' && !c.isDormantDefault),
+    [clientsData],
+  );
+  const plansAllQueries = usePlansAll(allClientsList, allClients);
+  // One quiet inline notice per client whose plans read failed - never blocks the
+  // rest of the merged list. Each entry keeps its own refetch so "try again" only
+  // retries that one client's query.
+  const allClientsFailed = useMemo(
+    () => (allClients
+      ? plansAllQueries
+        .map((q, i) => ({ q, client: allClientsList[i] }))
+        .filter(({ q, client }) => q.isError && client)
+      : []),
+    [allClients, plansAllQueries, allClientsList],
+  );
+  // Skeletons until the FIRST client's read resolves, then stream the rest in as
+  // their own queries settle (react-query's normal per-query lifecycle).
+  const allClientsLoading = allClients && plansAllQueries.length > 0 && plansAllQueries.every((q) => q.isLoading);
+  const isLoading = allClients ? allClientsLoading : plansLoading;
+  // A single client's failure never blocks the merged view (the inline notice
+  // above carries it); the page-level error state stays reserved for the
+  // single-client read failing outright.
+  const isError = allClients ? false : plansIsError;
   // C4: Cmd-K "Switch to {client}" actions are PROP-DRIVEN (the palette stays
   // hook-free for testability) - thread the client list + active id + the switch
   // mutation (which invalidates clients + every CLIENT_SCOPED_KEYS) here.
@@ -90,6 +129,22 @@ export default function App() {
   // One readiness read shared (react-query dedupes by key) with the embedded
   // checklist; drives the quiet planner readiness panel below (US-ONB-05).
   const { data: pendpostHealth } = usePendpostHealth();
+  // Server locale adoption: with NO stored preference, the FIRST health payload's
+  // posting.locale (setup.config key 'locale', set:true) drives the session locale,
+  // session-only (never persisted), so the header toggle and future server changes
+  // stay in charge. One-shot per load: the ref trips on the first payload whether or
+  // not it adopts, so a later client switch (new health payload) never flips the UI
+  // mid-session.
+  const adoptLocale = useAdoptLocale();
+  const localeAdoptedRef = useRef(false);
+  useEffect(() => {
+    if (localeAdoptedRef.current) return;
+    const cfg = pendpostHealth?.setup?.config;
+    if (!Array.isArray(cfg)) return;
+    localeAdoptedRef.current = true;
+    const entry = cfg.find((c) => c?.key === 'locale' && c.set && typeof c.value === 'string');
+    if (entry && !hasStoredLocale()) adoptLocale(entry.value);
+  }, [pendpostHealth, adoptLocale]);
   // Posting policy (config.posting): feeds presentPlatforms so the chips lead with
   // the connected + enabled + not-skipped lanes (plus any lane the loaded posts
   // actually target). Same ['config'] react-query key as Settings, so this dedupes
@@ -178,6 +233,10 @@ export default function App() {
   }, [cloudLaunch.any, cloudLaunch.paramsPresent]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [view, setView] = useState('week');
+  // Week-view card density (comfortable big cards vs compact chips). A persisted
+  // display preference (getPlannerDensity/setPlannerDensity mirror the card-accent
+  // idiom); the local state bump re-renders the board, like Settings#cardAccent.
+  const [density, setDensity] = useState(getPlannerDensity());
   const [anchor, setAnchor] = useState(() => startOfWeek(new Date()));
   const [campaignFilter, setCampaignFilter] = useState('active');
   // Operator debug toggle: reveal internal (validation/test) campaigns that are
@@ -287,7 +346,163 @@ export default function App() {
     document.title = ['pendpost', clientName, t(PAGE_TITLE_KEYS[page] || page)].filter(Boolean).join(' - ');
   }, [activeClient?.displayName, page, t]);
 
-  const campaigns = useMemo(() => plansData?.campaigns || [], [plansData]);
+  // Issue 6: the ONE campaigns list every downstream derivation reads. Off, it is
+  // the untouched single-client read. In all-clients mode it is the MERGE of every
+  // per-client read, with clientId/clientName/accent stamped onto each campaign
+  // AND each of its posts (issue 6 step 2) - Freigaben/Planner/Sidebar counts all
+  // read this one array unchanged, so the mode reuses every existing derivation
+  // instead of forking a second code path.
+  const campaigns = useMemo(() => {
+    if (!allClients) return plansData?.campaigns || [];
+    const merged = [];
+    plansAllQueries.forEach((q, i) => {
+      const client = allClientsList[i];
+      if (!client || !q.data?.campaigns) return;
+      const clientAccentColor = clientAccent(client) || DEFAULT_ACCENT;
+      for (const c of q.data.campaigns) {
+        merged.push({
+          ...c,
+          clientId: client.id,
+          clientName: client.displayName,
+          accent: clientAccentColor,
+          posts: (c.posts || []).map((p) => ({ ...p, clientId: client.id, clientName: client.displayName, accent: clientAccentColor })),
+        });
+      }
+    });
+    return merged;
+  }, [allClients, plansData, plansAllQueries, allClientsList]);
+  // Radar "all projects" overview (issue 6 for the radar feed): the same fan-out
+  // the planner/approvals use, but only the SIGNAL FEED merges - the per-client
+  // control/summary strips (scan, jobs, GEO, next/last scan) stay single-client
+  // (Radar hides them in this mode). Gated on the radar page so we do not fire N
+  // radar reads while the operator is elsewhere. Each signal is stamped with its
+  // project (clientId/clientName/accent) so SignalRow can badge it; single-client
+  // mode never stamps, so the badge self-hides there.
+  const radarAll = allClients && page === 'radar';
+  const signalsAllQueries = useSignalsAll(allClientsList, radarAll);
+  const radarAllSignals = useMemo(() => {
+    if (!radarAll) return null;
+    const merged = [];
+    signalsAllQueries.forEach((q, i) => {
+      const client = allClientsList[i];
+      if (!client || !Array.isArray(q.data?.items)) return;
+      const accent = clientAccent(client) || DEFAULT_ACCENT;
+      for (const s of q.data.items) {
+        merged.push({ ...s, clientId: client.id, clientName: client.displayName, accent });
+      }
+    });
+    return merged;
+  }, [radarAll, signalsAllQueries, allClientsList]);
+  // One quiet inline notice per client whose radar read failed - never blocks the
+  // rest of the merged feed (mirrors allClientsFailed for plans).
+  const radarAllFailed = useMemo(
+    () => (radarAll
+      ? signalsAllQueries
+        .map((q, i) => ({ q, client: allClientsList[i] }))
+        .filter(({ q, client }) => q.isError && client)
+      : []),
+    [radarAll, signalsAllQueries, allClientsList],
+  );
+  // Skeletons until the FIRST project's radar read resolves, then stream the rest.
+  const radarAllLoading = radarAll && signalsAllQueries.length > 0 && signalsAllQueries.every((q) => q.isLoading);
+  // Radar "On your posts" all-projects inbox (issue 6 for the own-post comment inbox):
+  // gated on the SAME radarAll as the signal feed. Each per-client inbox read carries a
+  // `posts` array (the post groups with unanswered comments); the merge flattens them,
+  // stamping each group with its project so CommentInbox can badge it and thread the
+  // clientId through its reply/moderate/react/resolve writes. Single-client mode never
+  // stamps, so the badge self-hides and the writes bind the active client.
+  const commentInboxAllQueries = useCommentInboxAll(allClientsList, radarAll);
+  const radarInboxAll = useMemo(() => {
+    if (!radarAll) return null;
+    const merged = [];
+    commentInboxAllQueries.forEach((q, i) => {
+      const client = allClientsList[i];
+      if (!client || !Array.isArray(q.data?.posts)) return;
+      const accent = clientAccent(client) || DEFAULT_ACCENT;
+      for (const g of q.data.posts) {
+        merged.push({ ...g, clientId: client.id, clientName: client.displayName, accent });
+      }
+    });
+    return merged;
+  }, [radarAll, commentInboxAllQueries, allClientsList]);
+  // One quiet inline notice per client whose inbox read failed - never blocks the rest.
+  const radarInboxAllFailed = useMemo(
+    () => (radarAll
+      ? commentInboxAllQueries
+        .map((q, i) => ({ q, client: allClientsList[i] }))
+        .filter(({ q, client }) => q.isError && client)
+      : []),
+    [radarAll, commentInboxAllQueries, allClientsList],
+  );
+  const radarInboxAllLoading = radarAll && commentInboxAllQueries.length > 0 && commentInboxAllQueries.every((q) => q.isLoading);
+  // Activity "all projects" overview (issue 6 for the event log): the same fan-out the
+  // planner/approvals/radar use. Gated on the activity page so we do not fire N activity
+  // reads while the operator is elsewhere. Each row is stamped with its project
+  // (clientId/clientName/accent) so ActivityView can badge it and re-scope the post it
+  // opens; single-client mode never stamps, so the badge self-hides there. Each client
+  // feed is independently newest-first, so the merge RE-SORTS by ts desc.
+  const activityAll = allClients && page === 'activity';
+  const activityAllQueries = useActivityAll(allClientsList, activityAll);
+  const activityAllRows = useMemo(() => {
+    if (!activityAll) return null;
+    const merged = [];
+    activityAllQueries.forEach((q, i) => {
+      const client = allClientsList[i];
+      if (!client || !Array.isArray(q.data?.activity)) return;
+      const accent = clientAccent(client) || DEFAULT_ACCENT;
+      for (const e of q.data.activity) {
+        merged.push({ ...e, clientId: client.id, clientName: client.displayName, accent });
+      }
+    });
+    merged.sort((a, b) => (Date.parse(b.ts || 0) || 0) - (Date.parse(a.ts || 0) || 0));
+    return merged;
+  }, [activityAll, activityAllQueries, allClientsList]);
+  // One quiet inline notice per client whose activity read failed - never blocks the
+  // rest of the merged feed (mirrors radarAllFailed).
+  const activityAllFailed = useMemo(
+    () => (activityAll
+      ? activityAllQueries
+        .map((q, i) => ({ q, client: allClientsList[i] }))
+        .filter(({ q, client }) => q.isError && client)
+      : []),
+    [activityAll, activityAllQueries, allClientsList],
+  );
+  // Skeletons until the FIRST project's activity read resolves, then stream the rest.
+  const activityAllLoading = activityAll && activityAllQueries.length > 0 && activityAllQueries.every((q) => q.isLoading);
+  // Insights "all projects" overview (issue 6 for the metrics feed): the same fan-out,
+  // feed-only. Gated on the insights page so we do not fire N reads while elsewhere. Only
+  // the per-post `items` merge across projects (each stamped with its project so the row
+  // badges + re-scopes); the server-computed summary/account/metricLabels are per-client
+  // and stay out (Insights hides those strips in this mode). Each client feed is
+  // freshest-first, so the merge RE-SORTS by fetchedAt desc.
+  const insightsAll = allClients && page === 'insights';
+  const insightsAllQueries = useInsightsAll(allClientsList, insightsAll);
+  const insightsAllItems = useMemo(() => {
+    if (!insightsAll) return null;
+    const merged = [];
+    insightsAllQueries.forEach((q, i) => {
+      const client = allClientsList[i];
+      if (!client || !Array.isArray(q.data?.items)) return;
+      const accent = clientAccent(client) || DEFAULT_ACCENT;
+      for (const it of q.data.items) {
+        merged.push({ ...it, clientId: client.id, clientName: client.displayName, accent });
+      }
+    });
+    merged.sort((a, b) => (Date.parse(b.fetchedAt || 0) || 0) - (Date.parse(a.fetchedAt || 0) || 0));
+    return merged;
+  }, [insightsAll, insightsAllQueries, allClientsList]);
+  // One quiet inline notice per client whose insights read failed - never blocks the
+  // rest of the merged feed (mirrors radarAllFailed).
+  const insightsAllFailed = useMemo(
+    () => (insightsAll
+      ? insightsAllQueries
+        .map((q, i) => ({ q, client: allClientsList[i] }))
+        .filter(({ q, client }) => q.isError && client)
+      : []),
+    [insightsAll, insightsAllQueries, allClientsList],
+  );
+  // Skeletons until the FIRST project's insights read resolves, then stream the rest.
+  const insightsAllLoading = insightsAll && insightsAllQueries.length > 0 && insightsAllQueries.every((q) => q.isLoading);
   // The campaign scope feeding the visible views: the planner honours the
   // campaign-filter select; the approvals page defaults to active campaigns (its
   // own "Show archive" toggle widens it). presentTypes + posts derive from here.
@@ -388,7 +603,16 @@ export default function App() {
   const [composerReturn, setComposerReturn] = useState('planner');
   // Optional orderedList threads a triage list (prev/next); callers without one
   // open a single post (no triage nav). Both paths keep the {campaign,id} model.
-  const openPost = (post, orderedList) => {
+  // Issue 6 step 6 (the explicit first-cut fallback, shipped as-is): a card opened
+  // from all-clients mode may belong to a client that is not the active one.
+  // PostDetail itself stays untouched (zero new code paths there) - instead we
+  // silently re-scope the active client FIRST, then open, exactly like a manual
+  // ClientSwitcher pick. One extra beat, no new reads/writes to thread through
+  // PostDetail's own client-scoped queries (config/accounts/setup/...).
+  const openPost = async (post, orderedList) => {
+    if (allClients && post.clientId && post.clientId !== activeClientId) {
+      try { await setActiveClient(post.clientId); } catch { /* best-effort; open with whatever client ends up active */ }
+    }
     setSelectedKey({ campaign: post.campaign, id: post.id });
     setTriageKeys(orderedList ? orderedList.map((p) => ({ campaign: p.campaign, id: p.id })) : null);
   };
@@ -512,10 +736,10 @@ export default function App() {
   // local day-key) and the existing unchanged-time no-op, returning null for
   // both. The shared hook handles native handoffs (FB scheduled post / YouTube
   // publishAt) escalating to a confirm.
-  const moveToDay = async ({ campaign, id, scheduledAt }, day) => {
+  const moveToDay = async ({ campaign, id, scheduledAt, clientId }, day) => {
     const next = moveToDayTarget(scheduledAt, day);
     if (!next) return;
-    await reschedule({ campaign, id }, next.toISOString());
+    await reschedule({ campaign, id, clientId }, next.toISOString());
   };
 
   // FR1: the active client's Meta lane signals, normalized for timeChipTone. A
@@ -565,6 +789,9 @@ export default function App() {
         {/* R6b: the quiet post-save humanizer receipt. Renders nothing when the
             last save was clean. Reuses UpdateToast's bottom-right glass pattern. */}
         <HumanizerReceipt fixes={humanizerReceipt?.fixes} onDismiss={() => setHumanizerReceipt(null)} />
+        {/* The generic transient outcome notice (showToast): fired by surfaces that
+            close before the server answers - e.g. the one-motion post delete. */}
+        <AppToast />
         {/* dev:live read/compose-only marker (renders only when PENDPOST_DEV_READONLY=1). */}
         <DevReadonlyBadge />
         <div className="relative z-10 mx-auto flex h-dvh max-w-none gap-4 overflow-hidden p-4">
@@ -596,6 +823,8 @@ export default function App() {
             onShowOverdue={() => { closeSidebar(); showOverdue(); }}
             onCreateProject={() => { closeSidebar(); setClientsCreateIntent(true); navigateTo('clients'); }}
             onBeforeSwitchClient={guardClientSwitch}
+            allClients={allClients}
+            onAllClientsChange={setAllClients}
           />
 
           {/* Drag handle for the rail width. Sits inside the gap-4 above, so it
@@ -685,6 +914,28 @@ export default function App() {
                         </button>
                       ))}
                     </div>
+                    {/* Week density toggle: one glyph that flips comfortable big cards
+                        vs compact chips, so a busy day stays scannable. Week only -
+                        Month is always compact, List is always dense. */}
+                    {view === 'week' ? (
+                      <Tip label={t(density === 'compact' ? 'app.density.toComfortable' : 'app.density.toCompact')}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = density === 'compact' ? 'comfortable' : 'compact';
+                            setPlannerDensity(next);
+                            setDensity(getPlannerDensity());
+                          }}
+                          aria-pressed={density === 'compact'}
+                          aria-label={t(density === 'compact' ? 'app.density.toComfortable' : 'app.density.toCompact')}
+                          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand ${
+                            density === 'compact' ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
+                          }`}
+                        >
+                          {density === 'compact' ? <Rows3 size={15} aria-hidden="true" /> : <Rows2 size={15} aria-hidden="true" />}
+                        </button>
+                      </Tip>
+                    ) : null}
                     <label className="sr-only" htmlFor="campaign-filter">
                       {t('app.campaign.label')}
                     </label>
@@ -882,16 +1133,37 @@ export default function App() {
               </div>
             ) : null}
 
-            {plansData?.manifestError ? (
+            {!allClients && plansData?.manifestError ? (
               <div
                 role="alert"
                 className="glass-panel flex items-start gap-2 rounded-2xl px-4 py-3 ring-1 ring-amber-500/40"
               >
-                <TriangleAlert size={15} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+                <TriangleAlert size={15} className="mt-0.5 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
                 <div className="min-w-0">
                   <p className="text-xs font-bold text-amber-700 dark:text-amber-300">{t('app.error.manifestInvalid')}</p>
                   <p className="break-words text-[11px] text-amber-700/80 dark:text-amber-300/80">{plansData.manifestError}</p>
                 </div>
+              </div>
+            ) : null}
+
+            {/* Issue 6 edge case: a per-client failure in all-clients mode never
+                blocks the merged list (the other clients' cards render regardless) -
+                it gets ONE quiet inline notice per failed client, with its own retry
+                link, never a page-level error. */}
+            {allClients && allClientsFailed.length ? (
+              <div className="glass-panel space-y-1 rounded-2xl px-4 py-2.5">
+                {allClientsFailed.map(({ q, client }) => (
+                  <p key={client.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    <span>{t('clientSwitcher.loadFailed', { name: client.displayName })}</span>
+                    <button
+                      type="button"
+                      onClick={() => q.refetch()}
+                      className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                    >
+                      {t('clientSwitcher.retry')}
+                    </button>
+                  </p>
+                ))}
               </div>
             ) : null}
 
@@ -900,7 +1172,7 @@ export default function App() {
                 zero-campaign first-run panel below carries its own checklist. */}
             {page === 'planner' && campaigns.length > 0 && pendpostHealth && !pendpostHealth.ready ? (
               <div id="planner-readiness" className="glass-panel rounded-2xl px-4 py-3">
-                <ReadinessChecklist onNavigate={setPage} collapsible />
+                <ReadinessChecklist onNavigate={setPage} onOpenPost={openPost} collapsible />
               </div>
             ) : null}
 
@@ -908,7 +1180,7 @@ export default function App() {
                 then remembered. Teaches the model the chip only hints at. */}
             {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} suppressed={activeOnCloud} /> : null}
 
-            <div className="glass-panel shrink-0 overflow-x-auto rounded-2xl p-4">
+            <div className="glass-panel flex min-h-0 flex-1 flex-col overflow-auto rounded-2xl p-4">
               {/* The at-risk strip is GONE. It only ever appeared once the owner had
                   already filtered to overdue, so it restated the filter they had just
                   chosen; it carried no control (two <p> tags); its count already lives in
@@ -928,13 +1200,13 @@ export default function App() {
                   </div>
                 </div>
               ) : page === 'activity' ? (
-                <ActivityView active={page === 'activity'} platformFilter={platformFilter} failuresOnly={failuresOnly} actionGroups={actionGroups} campaigns={campaigns} onOpenPost={openPost} onNavigate={navigateTo} onShowSystem={() => setActionGroups(['system'])} onClearFilters={clearFilters} />
+                <ActivityView active={page === 'activity'} platformFilter={platformFilter} failuresOnly={failuresOnly} actionGroups={actionGroups} campaigns={campaigns} allClients={activityAll} allRows={activityAllRows} allFailed={activityAllFailed} allLoading={activityAllLoading} onOpenPost={openPost} onNavigate={navigateTo} onShowSystem={() => setActionGroups(['system'])} onClearFilters={clearFilters} />
               ) : page === 'published' ? (
                 <Published campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} isLoading={isLoading} evergreen={insightsData?.evergreen || []} onRecycle={recyclePost} />
               ) : page === 'freigaben' ? (
-                <Freigaben campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={navigateTo} onModeChange={setFreigabenMode} />
+                <Freigaben campaigns={visibleCampaigns} onOpen={openPost} onEdit={editComposer} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={navigateTo} onModeChange={setFreigabenMode} />
               ) : page === 'insights' ? (
-                <Insights active={page === 'insights'} platformFilter={platformFilter} campaignFilter={campaignFilter} onOpenPost={openPost} />
+                <Insights active={page === 'insights'} platformFilter={platformFilter} campaignFilter={campaignFilter} allClients={insightsAll} allItems={insightsAllItems} allFailed={insightsAllFailed} allLoading={insightsAllLoading} onOpenPost={openPost} onNavigate={navigateTo} />
               ) : page === 'assets' ? (
                 <Assets onAttach={openComposer} />
               ) : page === 'setup' ? (
@@ -951,7 +1223,7 @@ export default function App() {
                   deepLinkInterval={cloudLaunch.interval}
                 />
               ) : page === 'radar' ? (
-                <Radar active={page === 'radar'} campaigns={campaigns} onNavigate={navigateTo} onNewPost={openComposer} />
+                <Radar active={page === 'radar'} campaigns={campaigns} allClients={radarAll} allSignals={radarAllSignals} allFailed={radarAllFailed} allLoading={radarAllLoading} allInbox={radarInboxAll} allInboxFailed={radarInboxAllFailed} allInboxLoading={radarInboxAllLoading} onNavigate={navigateTo} onNewPost={openComposer} onOpenPost={openPost} />
               ) : page === 'composer' && composer?.mode === 'thread' ? (
                 <ThreadComposer
                   seed={composer.seed}
@@ -984,11 +1256,11 @@ export default function App() {
                 // mock framing + create-first-campaign, even under a manifest error.
                 <FirstRunEmptyState onNavigate={setPage} />
               ) : view === 'week' ? (
-                <WeekView posts={posts} weekStart={weekStart} onSelect={openPost} onMoveToDay={moveToDay} loading={isLoading} lane={lane} />
+                <WeekView posts={posts} weekStart={weekStart} onSelect={openPost} onEdit={editComposer} onMoveToDay={moveToDay} loading={isLoading} lane={lane} density={density} />
               ) : view === 'month' ? (
-                <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} loading={isLoading} lane={lane} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
+                <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} onMoveToDay={moveToDay} loading={isLoading} lane={lane} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
               ) : (
-                <ListView posts={posts} onSelect={openPost} loading={isLoading} lane={lane} showAllDays={statusFilter.length > 0} />
+                <ListView posts={posts} onSelect={openPost} onEdit={editComposer} loading={isLoading} lane={lane} showAllDays={statusFilter.length > 0} />
               )}
             </div>
           </main>
@@ -1022,9 +1294,13 @@ export default function App() {
           dark={dark}
           clients={clientsData?.clients || []}
           activeClientId={activeClientId}
+          allClients={allClients}
           onSwitchClient={async (id) => {
             // Same guard as the sidebar switcher: never re-scope over a dirty draft.
             if (!(await guardClientSwitch())) return;
+            // A direct client pick always clears all-clients mode (ClientSwitcher's
+            // own rule), even from the palette.
+            setAllClients(false);
             setActiveClient(id).catch(() => {});
           }}
         />

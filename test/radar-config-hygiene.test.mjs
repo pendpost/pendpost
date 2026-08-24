@@ -98,7 +98,18 @@ try {
   ok(set({ dailyAt: 'soonish' }).code === 'invalid_input', 'dailyAt refuses a non-time string');
   ok(radarOf().dailyAt === '07:30', 'a refused dailyAt write leaves the stored value untouched');
 
-  console.log(`[radar-config-hygiene] OK - sources is enum-validated like cadence, the retired autoScan + agent.daily keys are refused and stripped on load, dailyAt is shape-checked, and an install carrying legacy values can still save through the read-modify-write the Studio performs (${pass} assertions).`);
+  // ===== (6) the refusal message tells the WHOLE truth: it names every allowed radar key =====
+  // The old string omitted sources/dailyAt-siblings xEnterprise/geo/autoReply/agent - a caller
+  // refused for a typo was handed a shape that itself would be refused for missing keys.
+  {
+    const refused = set({ nope: true });
+    ok(refused.code === 'invalid_input', 'an unknown radar key is refused');
+    for (const k of ['enabled', 'competitorsDefault', 'replyVoiceDefault', 'queries', 'sources', 'dailyAt', 'xEnterprise', 'geo', 'brand', 'autoReply', 'agent', 'drafting']) {
+      ok(String(refused.message || '').includes(k), `the radar refusal message names '${k}' (honest allowed-key list)`);
+    }
+  }
+
+  console.log(`[radar-config-hygiene] OK - sources is enum-validated like cadence, the retired autoScan + agent.daily keys are refused and stripped on load, dailyAt is shape-checked, the refusal message names every allowed key, and an install carrying legacy values can still save through the read-modify-write the Studio performs (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

@@ -2,9 +2,9 @@ import { useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Pencil, Trash2, AlertCircle, Check, X, HelpCircle, ChevronDown } from 'lucide-react';
 import { ToggleRow } from './ui/Switch.jsx';
-import { effectiveRadarSourcesClient, radarBrandPreview } from '../lib/format.js';
-import { useConfig, useAccounts, useSignals, saveConfig } from '../lib/api.js';
-import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, EYEBROW, SectionHeading, DISABLED_PRIMARY } from './ui.jsx';
+import { effectiveRadarSourcesClient } from '../lib/format.js';
+import { useConfig, useAccounts, useSignals, saveConfig, errText } from '../lib/api.js';
+import { PLATFORM_META, INNER_SURFACE, FIELD, FIELD_MULTILINE, EYEBROW, SectionHeading, DISABLED_PRIMARY } from './ui.jsx';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { Select } from './ui/Select.jsx';
@@ -17,8 +17,6 @@ import { useT } from '../lib/i18n.js';
 // prioritized feed, and everything you tune about it lives in one place. Reads/writes the same
 // config.posting.radar.queries subtree through the existing saveConfig (config_set merges the
 // partial, so it never clobbers a sibling field).
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-
 // The four Radar SEARCH sources (X/YouTube/web are agent-ingested, never editor-selectable).
 const SOURCE_META = {
   reddit: PLATFORM_META.reddit,
@@ -88,6 +86,71 @@ function FieldLabel({ htmlFor, label, tip, t }) {
   );
 }
 
+// A label + house-tooltip pair for a row whose value sits at the OTHER end of the same line
+// (a `justify-between` label/control pair, not a stacked field) - the shape the moved
+// "Täglicher Lauf" controls carry over from the Autonomy ledger (UX issue 4).
+function TipLabel({ label, tip, t }) {
+  return (
+    <span className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+      {label}
+      <Tip label={tip}>
+        <button type="button" aria-label={t('radar.fieldHelp', { field: label })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
+          <HelpCircle size={12} aria-hidden="true" />
+        </button>
+      </Tip>
+    </span>
+  );
+}
+
+// The "Täglicher Lauf" block (UX issue 4): the daily research fire-time + paid-run budget,
+// moved here from the Autonomy ledger row 3 (AutonomyLedger.jsx) - this is Radar cadence
+// config, not an autonomy policy, so it belongs where the rest of Radar is tuned. Saves stay
+// the exact radar-subtree read-modify-write the ledger row used (`saveRadar`, replicated
+// below rather than imported, since AutonomyLedger's own saveRadar also backs its unrelated
+// drafting-policy rows and must stay there).
+function DailyRunBlock({ radar, config, onNavigate, setError, t }) {
+  const queryClient = useQueryClient();
+  const agent = radar.agent || {};
+  const agentConnected = Boolean(agent.provider);
+  const dailyAt = typeof radar.dailyAt === 'string' && radar.dailyAt ? radar.dailyAt : '09:00';
+  const dailyBudget = Number.isInteger(agent.dailyBudget) ? agent.dailyBudget : 1;
+  const saveRadar = (partial) => {
+    if (!config) return;
+    setError(null);
+    saveConfig(config.rev, { posting: { radar: partial } })
+      .then(() => queryClient.invalidateQueries({ queryKey: ['config'] }))
+      .catch((err) => setError(errText(err, t, 'radar.error.save')));
+  };
+  return (
+    <div className={`space-y-2 rounded-xl p-3 ${INNER_SURFACE}`}>
+      <SectionHeading title={t('settings.radar.dailyRun.title')} />
+      {!agentConnected ? (
+        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+          {t('settings.radar.dailyRun.needsAgent')}{' '}
+          {onNavigate ? (
+            <button type="button" onClick={() => onNavigate('setup')} className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">{t('settings.radar.dailyRun.needsAgent.link')}</button>
+          ) : null}
+        </p>
+      ) : null}
+      <label className="flex items-center justify-between gap-3">
+        <TipLabel label={t('settings.radar.dailyAt.label')} tip={t('settings.radar.dailyAt.tip')} t={t} />
+        <input type="time" aria-label={t('settings.radar.dailyAt.label')} value={dailyAt} onChange={(e) => { if (/^([01]\d|2[0-3]):[0-5]\d$/.test(e.target.value)) saveRadar({ dailyAt: e.target.value }); }} className={`${FIELD} w-auto tabular-nums`} />
+      </label>
+      <label className="flex items-center justify-between gap-3">
+        <TipLabel label={t('settings.radar.budget.label')} tip={t('settings.radar.budget.tip')} t={t} />
+        <Select aria-label={t('settings.radar.budget.label')} value={String(dailyBudget)} onChange={(e) => saveRadar({ agent: { ...agent, dailyBudget: Number(e.target.value) } })} wrapClassName="w-auto" className={`${FIELD} w-auto tabular-nums`}>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+            <option key={n} value={String(n)}>{t('settings.radar.budget.option', { n })}</option>
+          ))}
+        </Select>
+      </label>
+      {/* D3 consequence sentence: the daily scan consumes budget 1, so unattended x/youtube
+          follow-up checks need at least 2 - stated where the knob lives. */}
+      <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.radar.budget.consequence')}</p>
+    </div>
+  );
+}
+
 // One saved-query editor form (add or edit). Auto-saves as you type (no Save button).
 // TWO fields lead: a name and a plain-words brief - the brief is what the agent actually reads
 // (it reasons about intent, not keywords), so it is the star. The keyword/competitor/place
@@ -109,17 +172,17 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
             <Check size={12} aria-hidden="true" />{t('radar.query.saved')}
           </span>
         ) : null}
-        <button type="button" onClick={onClose} aria-label={t('radar.query.close')} className={`${saved ? '' : 'ml-auto'} rounded-lg p-1 text-zinc-500 hover:text-zinc-600 dark:hover:text-zinc-300`}>
+        <button type="button" onClick={onClose} aria-label={t('radar.query.close')} className={`${saved ? '' : 'ml-auto'} rounded-lg p-1 text-zinc-500 dark:text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300`}>
           <X size={14} aria-hidden="true" />
         </button>
       </div>
       <div className="space-y-1">
         <FieldLabel htmlFor="radar-q-label" label={t('radar.query.label')} tip={t('radar.query.label.tip')} t={t} />
-        <input id="radar-q-label" className={FIELD_CLS} value={draft.label} placeholder={t('radar.query.labelPlaceholder')} onChange={(e) => onChange({ ...draft, label: e.target.value })} />
+        <input id="radar-q-label" className={`${FIELD} w-full`} value={draft.label} placeholder={t('radar.query.labelPlaceholder')} onChange={(e) => onChange({ ...draft, label: e.target.value })} />
       </div>
       <div className="space-y-1">
         <FieldLabel htmlFor="radar-q-brief" label={t('radar.query.brief')} tip={t('radar.query.brief.tip')} t={t} />
-        <textarea id="radar-q-brief" rows={3} className={`${FIELD_CLS} resize-y`} value={draft.brief} placeholder={t('radar.query.briefPlaceholder')} onChange={(e) => onChange({ ...draft, brief: e.target.value })} />
+        <textarea id="radar-q-brief" rows={3} className={`${FIELD_MULTILINE} w-full resize-y`} value={draft.brief} placeholder={t('radar.query.briefPlaceholder')} onChange={(e) => onChange({ ...draft, brief: e.target.value })} />
       </div>
 
       {/* Warm-up (Reddit karma builder): only meaningful on a query that scans Reddit, so it
@@ -156,11 +219,11 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
         <div className="mt-2 space-y-3">
           <div className="space-y-1">
             <FieldLabel htmlFor="radar-q-keywords" label={t('radar.query.keywords')} tip={t('radar.query.keywords.tip')} t={t} />
-            <input id="radar-q-keywords" className={FIELD_CLS} value={draft.keywords} placeholder={t('radar.query.keywordsPlaceholder')} onChange={(e) => onChange({ ...draft, keywords: e.target.value })} />
+            <input id="radar-q-keywords" className={`${FIELD} w-full`} value={draft.keywords} placeholder={t('radar.query.keywordsPlaceholder')} onChange={(e) => onChange({ ...draft, keywords: e.target.value })} />
           </div>
           <div className="space-y-1">
             <FieldLabel htmlFor="radar-q-competitors" label={t('radar.query.competitors')} tip={t('radar.query.competitors.tip')} t={t} />
-            <input id="radar-q-competitors" className={FIELD_CLS} value={draft.competitors} placeholder={t('radar.query.competitorsPlaceholder')} onChange={(e) => onChange({ ...draft, competitors: e.target.value })} />
+            <input id="radar-q-competitors" className={`${FIELD} w-full`} value={draft.competitors} placeholder={t('radar.query.competitorsPlaceholder')} onChange={(e) => onChange({ ...draft, competitors: e.target.value })} />
           </div>
           <fieldset className="space-y-1.5">
             <legend className="flex items-center gap-1">
@@ -181,7 +244,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
                     type="button"
                     onClick={() => toggleSource(id)}
                     aria-pressed={on}
-                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 transition ${on ? 'bg-brand/15 text-brand ring-brand/40 dark:text-brand-light' : 'text-zinc-500 ring-zinc-300/60 dark:ring-zinc-600/60'}`}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 transition ${on ? 'bg-brand/15 text-brand ring-brand/40 dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400 ring-zinc-300/60 dark:ring-zinc-600/60'}`}
                   >
                     <Icon size={13} className={on ? color : ''} aria-hidden="true" />
                     {sourceLabel(t, id)}
@@ -193,13 +256,13 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
           {draft.sources.includes('reddit') ? (
             <div className="space-y-1">
               <FieldLabel htmlFor="radar-q-subreddits" label={t('radar.query.subreddits')} tip={t('radar.query.subreddits.tip')} t={t} />
-              <input id="radar-q-subreddits" className={FIELD_CLS} value={draft.subreddits} placeholder={t('radar.query.subredditsPlaceholder')} onChange={(e) => onChange({ ...draft, subreddits: e.target.value })} />
+              <input id="radar-q-subreddits" className={`${FIELD} w-full`} value={draft.subreddits} placeholder={t('radar.query.subredditsPlaceholder')} onChange={(e) => onChange({ ...draft, subreddits: e.target.value })} />
             </div>
           ) : null}
           {draft.sources.includes('mastodon') || draft.sources.includes('bluesky') ? (
             <div className="space-y-1">
               <FieldLabel htmlFor="radar-q-hashtags" label={t('radar.query.hashtags')} tip={t('radar.query.hashtags.tip')} t={t} />
-              <input id="radar-q-hashtags" className={FIELD_CLS} value={draft.hashtags} placeholder={t('radar.query.hashtagsPlaceholder')} onChange={(e) => onChange({ ...draft, hashtags: e.target.value })} />
+              <input id="radar-q-hashtags" className={`${FIELD} w-full`} value={draft.hashtags} placeholder={t('radar.query.hashtagsPlaceholder')} onChange={(e) => onChange({ ...draft, hashtags: e.target.value })} />
             </div>
           ) : null}
         </div>
@@ -222,7 +285,7 @@ function ScanScheduleControl({ q, onSetSchedule, t }) {
       value={value}
       onChange={(e) => onSetSchedule(q, e.target.value)}
       wrapClassName="w-auto"
-      className={`rounded-lg border-0 px-2 py-1.5 text-xs font-semibold text-zinc-600 ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300`}
+      className={`${FIELD} w-auto`}
     >
       <option value="off">{t('radar.query.schedule.off')}</option>
       <option value="manual">{t('radar.query.schedule.manual')}</option>
@@ -397,6 +460,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
         </div>
       ) : (
         <>
+          <DailyRunBlock radar={radar} config={config} onNavigate={onNavigate} setError={setError} t={t} />
           {editing === 'new' ? (
             <QueryForm draft={draft} onChange={setDraft} onClose={closeEdit} saved={saved} sourceIds={sourceIds} t={t} />
           ) : null}
@@ -422,10 +486,10 @@ export default function RadarSearches({ focus = false, onNavigate }) {
                         still sits last, and its confirm is the real guard against a mis-tap. */}
                     <div className="flex shrink-0 items-center gap-0.5">
                       <ScanScheduleControl q={q} onSetSchedule={setScheduleFor} t={t} />
-                      <button type="button" onClick={() => startEdit(q)} aria-label={t('radar.query.edit')} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-900/5 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-white/10 dark:hover:text-zinc-200">
+                      <button type="button" onClick={() => startEdit(q)} aria-label={t('radar.query.edit')} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-900/5 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-white/10 dark:hover:text-zinc-200">
                         <Pencil size={14} aria-hidden="true" />
                       </button>
-                      <button type="button" onClick={() => removeQuery(q)} aria-label={t('radar.query.remove')} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-red-500/10 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:hover:text-red-400">
+                      <button type="button" onClick={() => removeQuery(q)} aria-label={t('radar.query.remove')} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 dark:text-zinc-400 transition hover:bg-red-500/10 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:hover:text-red-400">
                         <Trash2 size={14} aria-hidden="true" />
                       </button>
                     </div>
@@ -437,9 +501,11 @@ export default function RadarSearches({ focus = false, onNavigate }) {
           {hasQueries ? (
             <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} onNavigate={onNavigate} />
           ) : null}
-          {/* The Radar autonomy that used to live here (auto-reply score + X Enterprise) and the
-              daily research fire-time moved into the Autonomy ledger (ux-audit R7): one surface for
-              "what may pendpost do without me". This card is now purely what Radar SEARCHES for. */}
+          {/* The Radar AUTONOMY (auto-reply score + X Enterprise) stays in the Autonomy ledger
+              (ux-audit R7): one surface for "what may pendpost do without me". The daily research
+              fire-time + budget moved back HERE (UX issue 4, DailyRunBlock above): it is Radar
+              cadence config - when Radar runs, not what it may do unattended - so it lives with
+              the rest of what Radar searches for. */}
         </>
       )}
     </section>
@@ -522,7 +588,7 @@ export function RadarGeo() {
 
       <form onSubmit={(e) => { e.preventDefault(); addQuestion(); }} className="flex items-center gap-2">
         <input
-          className={FIELD_CLS}
+          className={`${FIELD} w-full`}
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder={t('settings.geo.placeholder')}
@@ -543,10 +609,19 @@ export function RadarGeo() {
 // against, in BOTH phases (scan + draft). Writes config.posting.radar.brand via the same partial
 // radar-subtree save the searches use (setConfig recurses into brand, so a partial write never wipes
 // a sibling). Empty facts => the agent falls back to pendpost's built-in fact sheet, so the empty
-// state SAYS that (the fallback is never invisible). A live preview renders the exact block the agent
-// reads (radarBrandPreview mirrors the server's brandBlock). Renders only when Radar is on, mirroring
-// the searches + GEO editors: nothing to tune while it is off.
+// state SAYS that (the fallback is never invisible). Renders only when Radar is on, mirroring the
+// searches + GEO editors: nothing to tune while it is off.
+//
+// KISS pass (UX issue 5): reduced from four stacked elements (help paragraph, always-on char
+// counter, supply-only toggle, live preview) to one field - the facts textarea - plus the
+// supply-only toggle tucked behind a quiet "More options" disclosure. The old "who it serves"
+// audience input is gone from the UI; its content now belongs in the same free-text prose (the
+// placeholder demonstrates it). Old stored `brand.audience` values are migrated once, on first
+// load, by appending them as a final line into the facts textarea (see migratedAudienceRef below);
+// the very next facts save then writes `audience: ''` so no stored data is silently orphaned. The
+// server keeps accepting `audience` (MCP callers unaffected) - it is only cut from this UI.
 const BRAND_FACTS_MAX = 2000;
+const BRAND_FACTS_WARN = 1800;
 export function RadarBrand() {
   const t = useT();
   const queryClient = useQueryClient();
@@ -556,28 +631,42 @@ export function RadarBrand() {
   const brand = radar.brand && typeof radar.brand === 'object' ? radar.brand : {};
 
   const [facts, setFacts] = useState(brand.facts || '');
-  const [audience, setAudience] = useState(brand.audience || '');
   const [isSupplyOnly, setIsSupplyOnly] = useState(brand.isSupplyOnly === true);
   const [error, setError] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Guards the one-time audience migration so it fires exactly once (on the first render that
+  // carries real config data) and never again re-clobbers text the operator is mid-typing on a
+  // later resync (e.g. after our own save, or an agent editing brand.facts over MCP).
+  const migratedAudienceRef = useRef(false);
 
   // Re-sync the local draft when the saved config changes underneath us (e.g. an agent tuned the
   // brand over MCP): the saved value is the source of truth, the draft only leads while dirty.
   useEffect(() => {
-    setFacts(brand.facts || '');
-    setAudience(brand.audience || '');
+    const storedAudience = (brand.audience || '').trim();
+    if (storedAudience && !migratedAudienceRef.current) {
+      migratedAudienceRef.current = true;
+      const prefix = t('settings.brand.audienceMigrationPrefix');
+      const base = brand.facts || '';
+      setFacts(base ? `${base}\n${prefix} ${storedAudience}` : `${prefix} ${storedAudience}`);
+    } else {
+      setFacts(brand.facts || '');
+    }
     setIsSupplyOnly(brand.isSupplyOnly === true);
-  }, [brand.facts, brand.audience, brand.isSupplyOnly]);
+  }, [brand.facts, brand.audience, brand.isSupplyOnly, t]);
 
   const overCap = facts.length > BRAND_FACTS_MAX;
-  const dirty = facts !== (brand.facts || '') || audience !== (brand.audience || '') || isSupplyOnly !== (brand.isSupplyOnly === true);
+  const nearCap = facts.length >= BRAND_FACTS_WARN;
+  const dirty = facts !== (brand.facts || '') || isSupplyOnly !== (brand.isSupplyOnly === true);
 
   const save = async () => {
     if (!config || !dirty || overCap) return;
     setError(null);
     setSaving(true);
     try {
-      await saveConfig(config.rev, { posting: { radar: { brand: { facts, audience, isSupplyOnly } } } });
+      // Always write audience: '' - the UI no longer manages it, and this is the migration's
+      // completion step: any stored audience already folded into `facts` above stops being a
+      // second, now-orphaned source of truth the moment the operator saves.
+      await saveConfig(config.rev, { posting: { radar: { brand: { facts, audience: '', isSupplyOnly } } } });
       queryClient.invalidateQueries({ queryKey: ['config'] });
     } catch (err) {
       setError(err?.message || t('radar.error.save'));
@@ -587,7 +676,6 @@ export function RadarBrand() {
   };
 
   if (!enabled) return null;
-  const preview = radarBrandPreview({ facts, audience, isSupplyOnly });
   return (
     <section className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
       <SectionHeading
@@ -615,48 +703,40 @@ export function RadarBrand() {
 
       <div className="space-y-1.5">
         <label htmlFor="radar-brand-facts" className="block text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('settings.brand.facts')}</label>
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('settings.brand.help')}</p>
         <textarea
           id="radar-brand-facts"
           rows={5}
           value={facts}
           onChange={(e) => setFacts(e.target.value)}
           placeholder={t('settings.brand.placeholder')}
-          className={`${FIELD_CLS} resize-y`}
+          className={`${FIELD_MULTILINE} w-full resize-y`}
         />
-        <div className={`text-right text-[11px] ${overCap ? 'font-semibold text-red-600 dark:text-red-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
-          {overCap ? t('settings.brand.overCap', { max: BRAND_FACTS_MAX }) : `${facts.length}/${BRAND_FACTS_MAX}`}
-        </div>
-      </div>
-
-      <ToggleRow
-        label={t('settings.brand.supplyOnly')}
-        tip={t('settings.brand.supplyOnlyTip')}
-        checked={isSupplyOnly}
-        onChange={setIsSupplyOnly}
-      />
-
-      <div className="space-y-1.5">
-        <label htmlFor="radar-brand-audience" className="block text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('settings.brand.audience')}</label>
-        <input
-          id="radar-brand-audience"
-          value={audience}
-          onChange={(e) => setAudience(e.target.value)}
-          placeholder={t('settings.brand.audiencePlaceholder')}
-          className={FIELD_CLS}
-        />
-      </div>
-
-      {/* The exact block the agent reads (radarBrandPreview mirrors the server brandBlock). Empty
-          facts => the fallback note, so the pendpost-default is never invisible (data honesty). */}
-      <div className="space-y-1.5">
-        <span className="block text-xs font-semibold text-zinc-600 dark:text-zinc-300">{t('settings.brand.previewLabel')}</span>
-        {preview ? (
-          <pre className={`whitespace-pre-wrap rounded-xl px-3 py-2 text-xs leading-relaxed ${INNER_SURFACE} text-zinc-600 dark:text-zinc-300`}>{preview}</pre>
-        ) : (
+        {overCap || nearCap ? (
+          <div className={`text-right text-[11px] ${overCap ? 'font-semibold text-red-600 dark:text-red-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
+            {overCap ? t('settings.brand.overCap', { max: BRAND_FACTS_MAX }) : `${facts.length}/${BRAND_FACTS_MAX}`}
+          </div>
+        ) : null}
+        {!facts ? (
           <p className={`rounded-xl px-3 py-2 text-xs ${INNER_SURFACE} text-zinc-500 dark:text-zinc-400`}>{t('settings.brand.usingDefault')}</p>
-        )}
+        ) : null}
       </div>
+
+      {/* The supply-only posture is a single, rarely-touched toggle - one quiet disclosure down,
+          same idiom as the search-query "narrow it down" advanced fields. */}
+      <details className="group rounded-xl">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1 text-xs font-semibold text-zinc-500 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
+          <ChevronDown size={13} aria-hidden="true" className="transition-transform group-open:rotate-180" />
+          {t('settings.brand.moreOptions')}
+        </summary>
+        <div className="mt-2">
+          <ToggleRow
+            label={t('settings.brand.supplyOnly')}
+            tip={t('settings.brand.supplyOnlyTip')}
+            checked={isSupplyOnly}
+            onChange={setIsSupplyOnly}
+          />
+        </div>
+      </details>
     </section>
   );
 }

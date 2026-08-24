@@ -19,6 +19,9 @@ vi.mock('../../lib/api.js', () => ({
 const mk = (over = {}) => ({
   id: 'p1', title: 'Launch reel', campaign: 'acme', caption: 'Launch reel', type: 'reel',
   platforms: ['instagram'], derivedState: 'scheduled-native', approval: 'approved',
+  // The DTO defaults executionMode to 'fully-scheduled' (lib/plans.mjs), which the
+  // shared park gate (canParkPost) keys on - a real scheduled post always carries it.
+  executionMode: 'fully-scheduled',
   media: null, image: '', scheduledAt: '2099-01-01T09:00:00.000Z', ...over,
 });
 
@@ -81,23 +84,26 @@ describe('Finding 6: month "+N more" reveals the day', () => {
   });
 });
 
-describe('Finding 8: List row inline park', () => {
+describe('Finding 8: List row park via the ⋯ menu', () => {
   const renderList = (posts) => wrap(<ListView posts={posts} onSelect={() => {}} loading={false} lane={{}} />);
+  const openMenu = () => fireEvent.click(screen.getByRole('button', { name: /more actions/i }));
 
-  it('offers a Park control on a scheduled non-published row and unschedules on click', async () => {
+  it('offers Park in the ⋯ menu on a scheduled non-published row and unschedules on click', () => {
     renderList([mk()]);
-    const park = screen.getByRole('button', { name: /stop auto-publish/i });
-    fireEvent.click(park);
+    openMenu();
+    fireEvent.click(screen.getByRole('menuitem', { name: /^park$/i }));
     expect(unschedulePost).toHaveBeenCalledWith('acme', 'p1');
   });
 
   it('does not offer Park on a published row', () => {
     renderList([mk({ derivedState: 'posted', scheduledAt: '2020-01-01T09:00:00.000Z' })]);
-    expect(screen.queryByRole('button', { name: /stop auto-publish/i })).not.toBeInTheDocument();
+    openMenu();
+    expect(screen.queryByRole('menuitem', { name: /^park$/i })).not.toBeInTheDocument();
   });
 
   it('does not offer Park on an already-parked row', () => {
-    renderList([mk({ derivedState: 'parked' })]);
-    expect(screen.queryByRole('button', { name: /stop auto-publish/i })).not.toBeInTheDocument();
+    renderList([mk({ derivedState: 'parked', executionMode: 'parked' })]);
+    openMenu();
+    expect(screen.queryByRole('menuitem', { name: /^park$/i })).not.toBeInTheDocument();
   });
 });

@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { fmtRelative } from '../lib/format.js';
 import { useComments, replyToComment, moderateComment, reactToPost } from '../lib/api.js';
-import { PLATFORM_META, INNER_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
+import { PLATFORM_META, INNER_SURFACE, EYEBROW, DISABLED_PRIMARY, FIELD_MULTILINE } from './ui.jsx';
 import { useLint, LintPanel } from './Composer.jsx';
 import HistoryChip from './HistoryChip.jsx';
 import { useT } from '../lib/i18n.js';
@@ -21,7 +21,6 @@ import { useT } from '../lib/i18n.js';
 // write, plus a panel refetch. Every state is icon+text (never color-only); the
 // moderation overflow lists ONLY the lane's supported actions (from the read's
 // moderateActions - GUI honesty), and Delete routes through an inline confirm step.
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 // Action -> its i18n label key + glyph (icon+text, never color-only). The keys are
 // the SAME the overflow renders; `done` reuses the action label for the applied badge.
@@ -189,7 +188,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
             aria-label={t('postDetail.comments.reply')}
             placeholder={t('postDetail.comments.replyPlaceholder')}
             rows={2}
-            className={`resize-y ${FIELD_CLS}`}
+            className={`${FIELD_MULTILINE} w-full resize-y`}
           />
           <LintPanel lint={replyLint} />
           {error ? (
@@ -366,10 +365,14 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
 // onReplied (optional): called with the replied-to commentId after a successful reply. The
 // per-post PostDetail usage omits it (no behaviour change); the own-post comment inbox passes
 // it to mark that comment handled (comment_resolve) so it leaves the unanswered feed.
-export default function CommentsPanel({ campaign, postId, enabled = true, onReplied }) {
+// `clientId` (optional): in the all-projects comment inbox a thread may belong to a
+// project that is not the active one, so the read AND every write are scoped to ITS
+// client (the server reads ?clientId= for the GET and clientId from the body for the
+// writes). PostDetail passes none - single-client behaviour is byte-identical.
+export default function CommentsPanel({ campaign, postId, enabled = true, onReplied, clientId }) {
   const t = useT();
   const queryClient = useQueryClient();
-  const { data, isLoading, isError, refetch } = useComments(campaign, postId, enabled);
+  const { data, isLoading, isError, refetch } = useComments(campaign, postId, enabled, clientId);
   // Optimistically-rendered local replies (spec 02: the reply appears inline on
   // success). Keyed by parent comment id; each also triggers a real panel refetch.
   const [sent, setSent] = useState([]);
@@ -378,7 +381,7 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
   const onReply = async (commentId, text, author) => {
     setReplying(true);
     try {
-      await replyToComment(campaign, postId, commentId, text, data?.targetPlatform || undefined, author);
+      await replyToComment(campaign, postId, commentId, text, data?.targetPlatform || undefined, author, clientId);
       setSent((prev) => [
         ...prev,
         { commentId: `local-${Date.now()}`, parentId: commentId, author: t('postDetail.comments.you'), text, ts: new Date().toISOString(), kind: 'comment', local: true },
@@ -404,7 +407,7 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
   // path. confirm rides through for the suppressing actions (server-gated). Throws on
   // failure so the row can surface the error affordance.
   const onModerate = async (commentId, action, confirm) => {
-    await moderateComment(campaign, postId, commentId, action, data?.targetPlatform || undefined, confirm);
+    await moderateComment(campaign, postId, commentId, action, data?.targetPlatform || undefined, confirm, clientId);
     queryClient.invalidateQueries({ queryKey: ['plans'] });
     refetch();
   };
@@ -415,7 +418,7 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
   // p tag and ignored elsewhere. Throws on failure so the row can surface the error affordance.
   const onReact = async (commentId, reaction, remove, authorPubkey) => {
     const emoji = reaction === 'emoji' ? DEFAULT_REACT_EMOJI : undefined;
-    await reactToPost(campaign, postId, commentId, reaction, data?.targetPlatform || undefined, emoji, remove, authorPubkey);
+    await reactToPost(campaign, postId, commentId, reaction, data?.targetPlatform || undefined, emoji, remove, authorPubkey, clientId);
     queryClient.invalidateQueries({ queryKey: ['plans'] });
     refetch();
   };
@@ -444,7 +447,7 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
         </p>
       ) : data?.needsScope ? (
         <div className={`space-y-1 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
-          <p className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-300">
+          <p className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
             <ShieldAlert size={13} aria-hidden="true" /> {t('postDetail.comments.needsScope')}
           </p>
           {data.scope ? <p className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">{data.scope}</p> : null}

@@ -25,6 +25,12 @@ vi.mock('../../lib/api.js', () => ({
   useSignals: () => ({ data: feedData, isLoading: false }),
   useAccounts: () => ({ data: accountsData }),
   saveConfig: (...a) => saveConfigMock(...a),
+  // Issue 7: the real humanize-by-code helper, mirrored here since this suite mocks the
+  // whole module - matches app/src/lib/api.js's own implementation exactly (used by the
+  // DailyRunBlock save path, UX issue 4).
+  errText: (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
+    : err instanceof TypeError ? t('error.network')
+      : (err?.message || t(fallbackKey))),
 }));
 
 function renderGeo() {
@@ -143,9 +149,12 @@ describe('RadarGeo (GEO buying-questions editor)', () => {
   });
 });
 
-// The brand fact sheet editor (config.posting.radar.brand). Empty facts must SAY the agent falls
-// back to the pendpost default (the fallback is never invisible); a partial write must not clobber
-// a sibling; the live preview must render the exact block the agent reads.
+// The brand editor (config.posting.radar.brand). UX issue 5 (KISS pass): reduced to one visible
+// field - the facts textarea - plus the supply-only toggle behind a "More options" disclosure.
+// Empty facts must SAY the agent falls back to the pendpost default (the fallback is never
+// invisible); a partial write must not clobber a sibling; the old audience input is gone from the
+// UI but a stored `brand.audience` must still be migrated once into the facts text, and cleared on
+// the next save, so no data is silently orphaned.
 function renderBrand() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -160,7 +169,9 @@ function renderBrand() {
 }
 const brandOn = (brand = {}) => ({ rev: 'r1', posting: { radar: { enabled: true, queries: [], brand } } });
 
-describe('RadarBrand (per-tenant brand fact sheet)', () => {
+const BRAND_FACTS_LABEL = 'What is your product, and who is it for?';
+
+describe('RadarBrand (per-tenant brand)', () => {
   it('renders nothing while Radar is off', () => {
     configData = { rev: 'r1', posting: { radar: { enabled: false, brand: { facts: 'x' } } } };
     const { container } = renderBrand();
@@ -173,14 +184,15 @@ describe('RadarBrand (per-tenant brand fact sheet)', () => {
     expect(screen.getByText(/uses the pendpost default fact sheet/i)).toBeInTheDocument();
   });
 
-  it('renders a live preview of the exact block the agent reads once facts are set', () => {
+  // (a) UX issue 5: reduced to one visible field. No separate audience input, no live preview block.
+  it('reduces to one visible field: a single textarea, no audience input, no preview block', () => {
     configData = brandOn({ facts: 'Acme: a payroll tool for small teams.' });
     renderBrand();
-    // The facts text also lives in the textarea, so scope the check to the preview <pre> block.
-    const pre = screen.getByText(/THE BRAND \/ THE PRODUCT/);
-    expect(pre.tagName).toBe('PRE');
-    expect(pre).toHaveTextContent('Acme: a payroll tool for small teams.');
-    // With a fact sheet present, the fallback note is gone.
+    expect(screen.getAllByRole('textbox')).toHaveLength(1);
+    expect(screen.queryByLabelText(/who it serves/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/what the radar agent reads/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/THE BRAND \/ THE PRODUCT/)).not.toBeInTheDocument();
+    // With a fact sheet present, the fallback note is gone too.
     expect(screen.queryByText(/uses the pendpost default fact sheet/i)).not.toBeInTheDocument();
   });
 
@@ -190,7 +202,7 @@ describe('RadarBrand (per-tenant brand fact sheet)', () => {
     renderBrand();
     // Not dirty yet: Save is absent (canon: Save appears only when dirty).
     expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
-    const box = screen.getByLabelText('Fact sheet');
+    const box = screen.getByLabelText(BRAND_FACTS_LABEL);
     await user.clear(box);
     await user.type(box, 'Acme: a payroll tool for small teams.');
     const save = screen.getByRole('button', { name: /^save$/i });
@@ -201,22 +213,69 @@ describe('RadarBrand (per-tenant brand fact sheet)', () => {
     expect(payload.posting.radar.brand.facts).toBe('Acme: a payroll tool for small teams.');
   });
 
-  it('supply-only posture reaches the preview and the saved payload', async () => {
+  // (b) back-compat migration: a stored non-empty audience is folded into the facts textarea's
+  // initial value once, as a final "For whom: ..." line, and the next facts save clears it.
+  it('migrates a stored audience into the facts textarea once, and clears it on the next save', async () => {
     const user = userEvent.setup();
     configData = brandOn({ facts: 'Acme marketplace.', audience: 'independent trainers' });
     renderBrand();
-    await user.click(screen.getByRole('switch', { name: /one-sided market/i }));
-    // The preview immediately reflects the supply-vs-demand routing line.
-    expect(screen.getByText(/wrong side of the market/i)).toBeInTheDocument();
+    const box = screen.getByLabelText(BRAND_FACTS_LABEL);
+    expect(box.value).toBe('Acme marketplace.\nFor whom: independent trainers');
+    // The migration itself makes the draft dirty (it now differs from the stored facts) - Save appears.
+    const save = screen.getByRole('button', { name: /^save$/i });
+    await user.click(save);
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
+    const [, payload] = saveConfigMock.mock.calls[0];
+    expect(payload.posting.radar.brand.facts).toBe('Acme marketplace.\nFor whom: independent trainers');
+    expect(payload.posting.radar.brand.audience).toBe('');
+  });
+
+  it('does not re-migrate when there is no stored audience (facts mirror the saved value as-is)', () => {
+    configData = brandOn({ facts: 'Acme marketplace.' });
+    renderBrand();
+    expect(screen.getByLabelText(BRAND_FACTS_LABEL).value).toBe('Acme marketplace.');
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+  });
+
+  // (c) the supply-only toggle sits behind the "More options" disclosure. jsdom does not hide
+  // closed <details> content from RTL queries (matching the house convention noted on the
+  // search-query "narrow it down" disclosure test above), so this asserts the disclosure's native
+  // `open` state directly: closed on mount, open after the summary is clicked.
+  it('keeps the supply-only toggle behind a closed "More options" disclosure until opened', async () => {
+    const user = userEvent.setup();
+    configData = brandOn({ facts: 'Acme marketplace.' });
+    renderBrand();
+    const toggle = screen.getByRole('switch', { name: /providers, not buyers/i });
+    const details = toggle.closest('details');
+    expect(details.open).toBe(false);
+    await user.click(screen.getByText(/more options/i));
+    expect(details.open).toBe(true);
+  });
+
+  it('supply-only posture, set behind the disclosure, reaches the saved payload', async () => {
+    const user = userEvent.setup();
+    configData = brandOn({ facts: 'Acme marketplace.' });
+    renderBrand();
+    await user.click(screen.getByText(/more options/i));
+    await user.click(screen.getByRole('switch', { name: /providers, not buyers/i }));
     await user.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
     expect(saveConfigMock.mock.calls[0][1].posting.radar.brand.isSupplyOnly).toBe(true);
   });
 
+  it('shows the char counter only near the cap (1800+), not permanently', () => {
+    configData = brandOn({ facts: 'seed' });
+    renderBrand();
+    expect(screen.queryByText('4/2000')).not.toBeInTheDocument();
+    const box = screen.getByLabelText(BRAND_FACTS_LABEL);
+    fireEvent.change(box, { target: { value: 'a'.repeat(1800) } });
+    expect(screen.getByText('1800/2000')).toBeInTheDocument();
+  });
+
   it('disables Save when the fact sheet is over the length cap', () => {
     configData = brandOn({ facts: 'seed' });
     renderBrand();
-    const box = screen.getByLabelText('Fact sheet');
+    const box = screen.getByLabelText(BRAND_FACTS_LABEL);
     // 2001 chars: one past the 2000 cap. fireEvent.change sets it in one shot (typing 2001 chars is slow).
     fireEvent.change(box, { target: { value: 'a'.repeat(2001) } });
     expect(screen.getByText(/characters max/i)).toBeInTheDocument();
@@ -395,6 +454,66 @@ describe('RadarSearches query editor', () => {
   });
 });
 
+// UX issue 4: the daily research fire-time + paid-run budget moved here from the Autonomy
+// ledger row 3 - it is Radar cadence config ("when Radar runs"), not an autonomy policy
+// ("what Radar may do unattended"), so it belongs at the top of this card, beside the rest of
+// what Radar searches for. Saves stay the same partial radar-subtree read-modify-write.
+describe('RadarSearches "Daily run" block (UX issue 4)', () => {
+  it('renders the title, the fire-time picker and the paid-run budget picker at the top of the card', () => {
+    configData = radarOn([Q1]);
+    configData.posting.radar.agent = { provider: 'claude-code', dailyBudget: 2 };
+    configData.posting.radar.dailyAt = '14:00';
+    const { container } = renderSearches();
+    expect(screen.getByText('Daily run')).toBeInTheDocument();
+    expect(screen.getByText(/runs daily at/i)).toBeInTheDocument();
+    // input[type=time] carries no ARIA role testing-library recognizes (role "generic" in
+    // jsdom), so it is queried by type rather than getByRole/getByLabelText - the sibling
+    // house-tooltip button also carries an aria-label built from the same field text
+    // ("Help: Runs daily at"), which would otherwise ambiguously double-match.
+    expect(container.querySelector('input[type="time"]')).toHaveValue('14:00');
+    expect(screen.getByRole('combobox', { name: /paid jobs per day/i })).toHaveValue('2');
+  });
+
+  it('persists posting.radar.dailyAt when the time picker changes', async () => {
+    configData = radarOn([Q1]);
+    const { container } = renderSearches();
+    fireEvent.change(container.querySelector('input[type="time"]'), { target: { value: '07:30' } });
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith('r1', { posting: { radar: { dailyAt: '07:30' } } }));
+  });
+
+  it('persists posting.radar.agent.dailyBudget via read-modify-write, preserving the sibling provider', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    configData.posting.radar.agent = { provider: 'claude-code', dailyBudget: 1 };
+    renderSearches();
+    await user.selectOptions(screen.getByRole('combobox', { name: /paid jobs per day/i }), '3');
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith('r1', { posting: { radar: { agent: expect.objectContaining({ provider: 'claude-code', dailyBudget: 3 }) } } }));
+  });
+
+  it('states the budget consequence sentence beside the dailyBudget control', () => {
+    configData = radarOn([Q1]);
+    renderSearches();
+    expect(screen.getByText(/budget 1 is consumed by the daily scan/i)).toBeInTheDocument();
+    expect(screen.getByText(/at least 2 runs a day/i)).toBeInTheDocument();
+  });
+
+  it('shows the "no agent connected" note + Setup link when no agent is connected', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]); // no posting.radar.agent
+    renderSearches();
+    expect(screen.getByText(/no research agent is connected yet/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /connect one in setup/i }));
+    expect(onNavigateMock).toHaveBeenCalledWith('setup');
+  });
+
+  it('hides the "no agent connected" note once an agent is connected', () => {
+    configData = radarOn([Q1]);
+    configData.posting.radar.agent = { provider: 'claude-code', dailyBudget: 1 };
+    renderSearches();
+    expect(screen.queryByText(/no research agent is connected yet/i)).not.toBeInTheDocument();
+  });
+});
+
 describe('RadarSearches scan schedule (one Off / On demand / Daily control)', () => {
   const schedule = () => screen.getByRole('combobox', { name: /scan schedule/i });
 
@@ -436,18 +555,20 @@ describe('RadarSearches scan schedule (one Off / On demand / Daily control)', ()
     expect(daily.disabled).toBe(false);
   });
 
-  it('the fire-time control moved to the Autonomy ledger (ux-audit R7): even a daily query does not surface it here', () => {
-    // dailyAt is an autonomy knob, so it now lives in the AutonomyLedger "Overnight research"
-    // row, not stacked under the searches. This card is purely what Radar SEARCHES for.
+  it('UX issue 4: the fire-time control moved HERE from the Autonomy ledger - a daily query surfaces it', () => {
+    // dailyAt is Radar cadence config, not an autonomy policy, so it moved from the ledger's
+    // former "Overnight research" row into this card's own "Daily run" block.
     configData = radarOn([{ ...Q1, cadence: 'daily' }]);
-    renderSearches();
-    expect(screen.queryByLabelText(/research daily at/i)).not.toBeInTheDocument();
+    const { container } = renderSearches();
+    expect(screen.getByText(/runs daily at/i)).toBeInTheDocument();
+    expect(container.querySelector('input[type="time"]')).toBeInTheDocument();
   });
 
-  it('a manual-only project shows no fire-time control (nothing runs daily)', () => {
+  it('the Daily run block is present even on a manual-only project (it is Radar-wide, not per-query)', () => {
     configData = radarOn([Q1]);
-    renderSearches();
-    expect(screen.queryByLabelText(/research daily at/i)).not.toBeInTheDocument();
+    const { container } = renderSearches();
+    expect(screen.getByText(/runs daily at/i)).toBeInTheDocument();
+    expect(container.querySelector('input[type="time"]')).toBeInTheDocument();
   });
 
   it('choosing On demand on a daily query writes cadence:manual', async () => {

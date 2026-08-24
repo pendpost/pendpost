@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronDown, HelpCircle, CircleCheck, CircleSlash, AlertCircle, RotateCcw } from 'lucide-react';
-import { useConfig, useAccounts, useAutonomy, usePendpostHealth, saveConfig, setSchedulerRunning, revokeAutonomy } from '../lib/api.js';
+import { useConfig, useAccounts, useAutonomy, usePendpostHealth, saveConfig, setSchedulerRunning, revokeAutonomy, errText } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { MANUAL_LANES, scannableRadarSources } from '../lib/format.js';
-import { FIELD_SURFACE } from './ui.jsx';
+import { MANUAL_LANES, scannableRadarSources, visiblePlatforms } from '../lib/format.js';
+import { FIELD, FIELD_ERR } from './ui.jsx';
+import { PILL_BASE, PILL_TONES, BTN_QUIET } from './ui/recipes.js';
 import { ToggleRow, Switch } from './ui/Switch.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import { Select } from './ui/Select.jsx';
@@ -14,13 +15,12 @@ import { useConfirm } from './ui/confirm.jsx';
 // The autonomy ledger (ux-audit 2026-08-04, R7 = AU1 + AU5 + AU4). ONE surface that
 // answers "what may pendpost do without me, per lane, right now" and lets the owner
 // change it where they see it. It ABSORBS the former Settings "Publishing automation"
-// card and the Radar "auto-reply" automation block (both deleted): four rows instead of
-// three scattered clusters, and net component count goes down. All state already exists
+// card and the Radar "auto-reply" automation block (both deleted): three rows instead of
+// scattered clusters, and net component count goes down. All state already exists
 // via config_get + pendpost_health + the derived /api/autonomy read - no new engine state.
-
-const NUM_CLS = `w-20 rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-const NUM_CLS_ERR = `w-20 rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
-const PICK_CLS = `rounded-lg border-0 px-2 py-1.5 text-xs font-semibold text-zinc-600 ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300`;
+// The former row 3 (daily research fire-time + paid-run budget) moved into the Radar
+// settings group (RadarSearches.jsx "Täglicher Lauf" block, UX issue 4) - it is Radar
+// cadence config, not an autonomy policy, so it belongs where the rest of Radar is tuned.
 
 const AUTO_DEFAULT = { enabled: false, platforms: [], campaigns: [], types: [], requireLintClean: true };
 const AUTO_REPLY_DEFAULT = { enabled: false, lanes: [], requireLintClean: true };
@@ -51,7 +51,7 @@ const platformLabel = (id) => AUTO_PLATFORMS.find((p) => p.id === id)?.label || 
 function StatePill({ on, label }) {
   const Icon = on ? CircleCheck : CircleSlash;
   return (
-    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ${on ? 'bg-brand/10 text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
+    <span className={`${PILL_BASE} ${on ? PILL_TONES.accent : PILL_TONES.neutral}`}>
       <Icon size={12} aria-hidden="true" />
       {label}
     </span>
@@ -124,21 +124,24 @@ export default function AutonomyLedger({ onNavigate }) {
 
   const [auto, setAuto] = useState(AUTO_DEFAULT);
   const [autoReply, setAutoReply] = useState(AUTO_REPLY_DEFAULT);
-  const [approvalExpiry, setApprovalExpiry] = useState('');
-  const [approvalExpiryError, setApprovalExpiryError] = useState(null);
-  const [slotSlip, setSlotSlip] = useState('');
-  const [slotSlipError, setSlotSlipError] = useState(null);
+  const [draftMax, setDraftMax] = useState('20');
+  const [draftMaxError, setDraftMaxError] = useState(null);
   const [error, setError] = useState(null);
 
   const radar = config?.posting?.radar || {};
-  const agent = radar.agent || {};
+  // S7 drafting policy (radar engagement engine): the DRAFT threshold + per-scan cap,
+  // shipped defaults mirrored from the engine (lib/radar drafting {minScore:30, maxPerRun:20}).
+  const drafting = radar.drafting || {};
+  const draftMinScore = Number.isFinite(drafting.minScore) ? drafting.minScore : 30;
+  const draftMaxPerRun = Number.isInteger(drafting.maxPerRun) ? drafting.maxPerRun : 20;
 
   useEffect(() => {
     if (!config) return;
     setAuto({ ...AUTO_DEFAULT, ...(config.posting.autoApprove || {}) });
     setAutoReply({ ...AUTO_REPLY_DEFAULT, ...(config.posting.radar?.autoReply || {}) });
-    setApprovalExpiry(config.posting.approvalExpiryHours == null ? '' : String(config.posting.approvalExpiryHours));
-    setSlotSlip(config.posting.slotSlipMinutes == null ? '' : String(config.posting.slotSlipMinutes));
+    const mpr = config.posting.radar?.drafting?.maxPerRun;
+    setDraftMax(String(Number.isInteger(mpr) ? mpr : 20));
+    setDraftMaxError(null);
   }, [config?.rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const invalidate = () => {
@@ -152,19 +155,32 @@ export default function AutonomyLedger({ onNavigate }) {
     const prior = auto;
     setAuto(next);
     setError(null);
-    saveConfig(config.rev, { posting: { autoApprove: next } }).then(invalidate).catch((err) => { setAuto(prior); setError(err.message); });
+    saveConfig(config.rev, { posting: { autoApprove: next } }).then(invalidate).catch((err) => { setAuto(prior); setError(errText(err, t, 'radar.error.save')); });
   };
   const saveAutoReply = (next) => {
     if (!config) return;
     const prior = autoReply;
     setAutoReply(next);
     setError(null);
-    saveConfig(config.rev, { posting: { radar: { autoReply: next } } }).then(invalidate).catch((err) => { setAutoReply(prior); setError(err.message); });
+    saveConfig(config.rev, { posting: { radar: { autoReply: next } } }).then(invalidate).catch((err) => { setAutoReply(prior); setError(errText(err, t, 'radar.error.save')); });
   };
   const saveRadar = (partial) => {
     if (!config) return;
     setError(null);
-    saveConfig(config.rev, { posting: { radar: partial } }).then(invalidate).catch((err) => setError(err.message));
+    saveConfig(config.rev, { posting: { radar: partial } }).then(invalidate).catch((err) => setError(errText(err, t, 'radar.error.save')));
+  };
+  // Read-modify-write the WHOLE drafting object (the autoReply pattern) so a partial
+  // save never clobbers the sibling field. The dashboard writes as the owner, so the
+  // server's owner-only drafting gate accepts it.
+  const saveDrafting = (partial) => saveRadar({ drafting: { minScore: draftMinScore, maxPerRun: draftMaxPerRun, ...partial } });
+  // "Entwürfe pro Scan": constrained number input (native min/max), validated on blur
+  // as the backstop (A4) - out of range keeps the typed value + an inline error.
+  const saveDraftMax = () => {
+    const next = Number(draftMax.trim());
+    if (next === draftMaxPerRun) { setDraftMax(String(draftMaxPerRun)); setDraftMaxError(null); return; }
+    if (!Number.isInteger(next) || next < 1 || next > 50) { setDraftMaxError(t('settings.drafting.maxPerRun.invalid')); return; }
+    setDraftMaxError(null);
+    saveDrafting({ maxPerRun: next });
   };
 
   // The AU4 sweep, reachable two ways: offered when the owner disables a policy that has a
@@ -186,7 +202,7 @@ export default function AutonomyLedger({ onNavigate }) {
       await revokeAutonomy();
       invalidate();
       queryClient.invalidateQueries({ queryKey: ['plans'] });
-    } catch (err) { setError(err.message); }
+    } catch (err) { setError(errText(err, t, 'radar.error.save')); }
   };
 
   // Draft-approval toggle: turning OFF stops future approvals immediately, then offers to
@@ -196,30 +212,13 @@ export default function AutonomyLedger({ onNavigate }) {
       saveAuto({ ...auto, enabled: false });
       if ((autonomy?.revocable || 0) > 0) await runRevoke({ ask: true });
     } else {
-      saveAuto({ ...auto, enabled: true });
+      // #1: default-on trusts every CONNECTED lane so the owner unticks, never builds from zero.
+      saveAuto({ ...auto, enabled: true, platforms: offeredPlatforms });
     }
   };
   const toggleAutoPlatform = (pid) => {
     const has = auto.platforms.includes(pid);
     saveAuto({ ...auto, platforms: has ? auto.platforms.filter((p) => p !== pid) : [...auto.platforms, pid] });
-  };
-
-  // R6a gate numbers (approvalExpiryHours / slotSlipMinutes): empty = off. Saved on blur,
-  // optimistic with an inline error; the server owns the bounds.
-  const saveGateNumber = (key, raw, setVal, setFieldErr) => {
-    if (!config) return;
-    const trimmed = raw.trim();
-    const next = trimmed === '' ? null : Number(trimmed);
-    const prior = config.posting[key] == null ? null : config.posting[key];
-    if (next === prior) { setVal(next == null ? '' : String(next)); setFieldErr(null); return; }
-    if (next !== null && !Number.isInteger(next)) { setFieldErr(t('settings.gate.invalidNumber')); return; }
-    setError(null);
-    setFieldErr(null);
-    saveConfig(config.rev, { posting: { [key]: next } }).then(invalidate).catch((err) => {
-      setVal(prior == null ? '' : String(prior));
-      if ((err.message || '').startsWith(`${key} `)) setFieldErr(err.message);
-      else setError(err.message);
-    });
   };
 
   // Reply autonomy: one select (Off | from score N). Off clears the threshold too; on
@@ -242,9 +241,6 @@ export default function AutonomyLedger({ onNavigate }) {
     saveAutoReply({ ...autoReply, enabled: true, minScore: Number(v), lanes: connectedLanes });
   };
 
-  const dailyAt = typeof radar.dailyAt === 'string' && radar.dailyAt ? radar.dailyAt : '09:00';
-  const dailyBudget = Number.isInteger(agent.dailyBudget) ? agent.dailyBudget : 1;
-  const agentConnected = Boolean(agent.provider);
   const radarOn = radar.enabled === true;
   const schedulerRunning = Boolean(accounts?.scheduler?.running);
   const setupReady = health?.ready;
@@ -252,6 +248,9 @@ export default function AutonomyLedger({ onNavigate }) {
 
   // --- per-row summaries (the audit-at-a-glance line) ---
   const trusted = (auto.platforms || []).filter((p) => !MANUAL_LANES.has(p));
+  // #1: offer ONLY connected, enabled lanes as checkboxes (never all 14). visiblePlatforms is the
+  // shared connected-AND-enabled-AND-not-skipped derivation; reddit is always manual, so drop it.
+  const offeredPlatforms = visiblePlatforms(accounts, config?.posting).filter((id) => !MANUAL_LANES.has(id));
   const draftSummary = !auto.enabled
     ? t('autonomy.draft.summary.off')
     : trusted.length
@@ -262,7 +261,6 @@ export default function AutonomyLedger({ onNavigate }) {
     : autoReply.lanes && autoReply.lanes.length
       ? t('autonomy.reply.summary.on', { score: Number.isFinite(autoReply.minScore) ? autoReply.minScore : 70, lanes: autoReply.lanes.join(', ') })
       : t('autonomy.reply.summary.armedNoLane', { score: Number.isFinite(autoReply.minScore) ? autoReply.minScore : 70 });
-  const researchSummary = agentConnected ? t('autonomy.research.summary.on', { time: dailyAt, n: dailyBudget }) : t('autonomy.research.summary.off');
   const schedulerSummary = schedulerRunning ? t('autonomy.scheduler.summary.on') : t('autonomy.scheduler.summary.off');
 
   return (
@@ -289,18 +287,26 @@ export default function AutonomyLedger({ onNavigate }) {
           <div className="space-y-2.5 border-l-2 border-zinc-200/70 pl-3 dark:border-zinc-700/60">
             <fieldset className="space-y-1.5">
               <legend className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.label')}</legend>
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.hint')}</p>
-              {trusted.length === 0 ? (
-                <p role="status" className="text-[11px] text-amber-700 dark:text-amber-300">{t('settings.automation.platforms.none')}</p>
-              ) : null}
-              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
-                {AUTO_PLATFORMS.filter((p) => !MANUAL_LANES.has(p.id)).map((p) => (
-                  <label key={p.id} className="flex cursor-pointer items-center gap-1.5 text-sm">
-                    <Checkbox checked={auto.platforms.includes(p.id)} onChange={() => toggleAutoPlatform(p.id)} aria-label={p.label} />
-                    {p.label}
-                  </label>
-                ))}
-              </div>
+              {offeredPlatforms.length === 0 ? (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  {t('settings.automation.platforms.noneConnected')}{onNavigate ? <>{' '}<button type="button" onClick={() => onNavigate('setup')} className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand rounded dark:text-brand-light">{t('settings.automation.platforms.setupLink')}</button></> : null}
+                </p>
+              ) : (
+                <>
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.automation.platforms.hint')}</p>
+                  {trusted.length === 0 ? (
+                    <p role="status" className="text-[11px] text-amber-700 dark:text-amber-300">{t('settings.automation.platforms.none')}</p>
+                  ) : null}
+                  <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                    {offeredPlatforms.map((id) => (
+                      <label key={id} className="flex cursor-pointer items-center gap-1.5 text-sm">
+                        <Checkbox checked={auto.platforms.includes(id)} onChange={() => toggleAutoPlatform(id)} aria-label={platformLabel(id)} />
+                        {platformLabel(id)}
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
             </fieldset>
             <ToggleRow label={t('settings.automation.lintClean.label')} tip={t('settings.automation.lintClean.tip')} checked={auto.requireLintClean} onChange={() => saveAuto({ ...auto, requireLintClean: !auto.requireLintClean })} />
           </div>
@@ -317,33 +323,13 @@ export default function AutonomyLedger({ onNavigate }) {
         {(autonomy?.revocable || 0) > 0 ? (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-500/10 px-3 py-2">
             <span className="text-[11px] text-amber-800 dark:text-amber-200">{t('autonomy.revoke.backlog', { n: autonomy.revocable })}</span>
-            <button type="button" onClick={() => runRevoke({ ask: true })} className="inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] font-bold text-amber-800 transition hover:bg-amber-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-200">
+            <button type="button" onClick={() => runRevoke({ ask: true })} className={BTN_QUIET}>
               <RotateCcw size={12} aria-hidden="true" />
               {t('autonomy.revoke.action')}
             </button>
           </div>
         ) : null}
 
-        {/* The R6a gate refinements live here too: they are autonomy knobs on the SAME owner
-            gate (when an approval ages out, when a slot moves), so they belong in the ledger. */}
-        <div className="grid gap-3 border-t border-zinc-200/70 pt-3 sm:grid-cols-2 dark:border-zinc-700/60">
-          <div className="space-y-1">
-            <TipLabel label={t('settings.approvalExpiry.label')} tip={t('settings.approvalExpiry.tip')} />
-            <div className="flex items-center gap-2">
-              <input type="number" min="1" max="8760" inputMode="numeric" value={approvalExpiry} onChange={(e) => setApprovalExpiry(e.target.value)} onBlur={() => saveGateNumber('approvalExpiryHours', approvalExpiry, setApprovalExpiry, setApprovalExpiryError)} placeholder={t('settings.gate.off')} className={approvalExpiryError ? NUM_CLS_ERR : NUM_CLS} aria-label={t('settings.approvalExpiry.label')} aria-invalid={approvalExpiryError ? 'true' : undefined} />
-              <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.approvalExpiry.suffix')}</span>
-            </div>
-            {approvalExpiryError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{approvalExpiryError}</p> : null}
-          </div>
-          <div className="space-y-1">
-            <TipLabel label={t('settings.slotSlip.label')} tip={t('settings.slotSlip.tip')} />
-            <div className="flex items-center gap-2">
-              <input type="number" min="1" max="10080" inputMode="numeric" value={slotSlip} onChange={(e) => setSlotSlip(e.target.value)} onBlur={() => saveGateNumber('slotSlipMinutes', slotSlip, setSlotSlip, setSlotSlipError)} placeholder={t('settings.gate.off')} className={slotSlipError ? NUM_CLS_ERR : NUM_CLS} aria-label={t('settings.slotSlip.label')} aria-invalid={slotSlipError ? 'true' : undefined} />
-              <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.slotSlip.suffix')}</span>
-            </div>
-            {slotSlipError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{slotSlipError}</p> : null}
-          </div>
-        </div>
       </LedgerRow>
 
       {/* Row 2: reply autonomy (Radar auto-reply) */}
@@ -358,7 +344,7 @@ export default function AutonomyLedger({ onNavigate }) {
         ) : null}
         <label className="flex items-center justify-between gap-3">
           <TipLabel label={t('settings.autoReply.minScore.label')} tip={t('settings.autoReply.minScore.tip')} />
-          <Select aria-label={t('settings.autoReply.minScore.label')} value={replyValue} onChange={(e) => chooseReply(e.target.value)} wrapClassName="w-auto" className={`${PICK_CLS} tabular-nums`}>
+          <Select aria-label={t('settings.autoReply.minScore.label')} value={replyValue} onChange={(e) => chooseReply(e.target.value)} wrapClassName="w-auto" className={`${FIELD} w-auto tabular-nums`}>
             <option value="off">{t('settings.autoReply.off')}</option>
             {[...new Set([40, 50, 60, 70, 80, 90, ...(autoReply.enabled && Number.isFinite(autoReply.minScore) ? [autoReply.minScore] : [])])].sort((a, b) => a - b).map((n) => (
               <option key={n} value={String(n)}>{t('settings.autoReply.minScore.option', { n })}</option>
@@ -368,6 +354,28 @@ export default function AutonomyLedger({ onNavigate }) {
         {autoReply.enabled && !autoReply.lanes.length ? (
           <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.autoReply.consequence.none')}</p>
         ) : null}
+        {/* S7 drafting rows: the DRAFT threshold + per-scan cap, decoupled from the
+            auto-reply score above (that one gates auto-POSTING; these gate what gets
+            PREPARED as a pending draft at all). Owner-only server-side; the dashboard
+            always writes as the owner. */}
+        <label className="flex items-center justify-between gap-3">
+          <TipLabel label={t('settings.drafting.minScore.label')} tip={t('settings.drafting.minScore.tip')} />
+          <Select aria-label={t('settings.drafting.minScore.label')} value={String(draftMinScore)} onChange={(e) => saveDrafting({ minScore: Number(e.target.value) })} wrapClassName="w-auto" className={`${FIELD} w-auto tabular-nums`}>
+            {[...new Set([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, draftMinScore])].sort((a, b) => a - b).map((n) => (
+              <option key={n} value={String(n)}>{t('settings.drafting.minScore.option', { n })}</option>
+            ))}
+          </Select>
+        </label>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-3">
+            <TipLabel label={t('settings.drafting.maxPerRun.label')} tip={t('settings.drafting.maxPerRun.tip')} />
+            <input type="number" min="1" max="50" inputMode="numeric" value={draftMax} onChange={(e) => setDraftMax(e.target.value)} onBlur={saveDraftMax} className={`${draftMaxError ? FIELD_ERR : FIELD} w-24 tabular-nums`} aria-label={t('settings.drafting.maxPerRun.label')} aria-invalid={draftMaxError ? 'true' : undefined} />
+          </div>
+          {draftMaxError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{draftMaxError}</p> : null}
+        </div>
+        {/* The pinned relationship sentence: it defines the two-threshold middle state
+            (drafted for review, not auto-posted) in one line. */}
+        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.drafting.relation')}</p>
         {xConnected ? (
           <ToggleRow
             label={t('settings.xEnterprise.label')}
@@ -377,37 +385,13 @@ export default function AutonomyLedger({ onNavigate }) {
               if (!config) return;
               setError(null);
               const next = !xEnterprise;
-              saveConfig(config.rev, { posting: { radar: { xEnterprise: next, ...(autoReply.enabled ? { autoReply: { ...autoReply, lanes: next ? [...new Set([...autoReply.lanes, 'x'])] : autoReply.lanes.filter((l) => l !== 'x') } } : {}) } } }).then(invalidate).catch((err) => setError(err.message));
+              saveConfig(config.rev, { posting: { radar: { xEnterprise: next, ...(autoReply.enabled ? { autoReply: { ...autoReply, lanes: next ? [...new Set([...autoReply.lanes, 'x'])] : autoReply.lanes.filter((l) => l !== 'x') } } : {}) } } }).then(invalidate).catch((err) => setError(errText(err, t, 'radar.error.save')));
             }}
           />
         ) : null}
       </LedgerRow>
 
-      {/* Row 3: overnight research (the paid daily agent scan) - dailyAt + dailyBudget (P5). */}
-      <LedgerRow id="autonomy-research" title={t('autonomy.research.title')} summary={researchSummary} on={agentConnected} stateLabel={agentConnected ? t('autonomy.state.on') : t('autonomy.state.off')}>
-        {!agentConnected ? (
-          <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-            {t('autonomy.research.needsAgent')}{' '}
-            {onNavigate ? (
-              <button type="button" onClick={() => onNavigate('setup')} className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">{t('autonomy.research.needsAgent.link')}</button>
-            ) : null}
-          </p>
-        ) : null}
-        <label className="flex items-center justify-between gap-3">
-          <TipLabel label={t('settings.radar.dailyAt.label')} tip={t('autonomy.research.dailyAt.tip')} />
-          <input type="time" value={dailyAt} onChange={(e) => { if (/^([01]\d|2[0-3]):[0-5]\d$/.test(e.target.value)) saveRadar({ dailyAt: e.target.value }); }} className={`rounded-lg border-0 px-2 py-1 text-sm tabular-nums ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`} />
-        </label>
-        <label className="flex items-center justify-between gap-3">
-          <TipLabel label={t('autonomy.research.budget.label')} tip={t('autonomy.research.budget.tip')} />
-          <Select aria-label={t('autonomy.research.budget.label')} value={String(dailyBudget)} onChange={(e) => saveRadar({ agent: { ...agent, dailyBudget: Number(e.target.value) } })} wrapClassName="w-auto" className={`${PICK_CLS} tabular-nums`}>
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-              <option key={n} value={String(n)}>{t('autonomy.research.budget.option', { n })}</option>
-            ))}
-          </Select>
-        </label>
-      </LedgerRow>
-
-      {/* Row 4: publishing scheduler - the same state the sidebar toggles, surfaced in the
+      {/* Row 3: publishing scheduler - the same state the sidebar toggles, surfaced in the
           audit. A direct switch (no sub-config), disabled until setup is ready to start. */}
       <LedgerRow
         id="autonomy-scheduler"
@@ -418,7 +402,7 @@ export default function AutonomyLedger({ onNavigate }) {
             ariaLabel={schedulerRunning ? t('sidebar.scheduler.stop') : t('sidebar.scheduler.start')}
             checked={schedulerRunning}
             disabled={!schedulerRunning && setupReady === false}
-            onChange={() => { setSchedulerRunning(!schedulerRunning).then(() => queryClient.invalidateQueries({ queryKey: ['accounts'] })).catch((err) => setError(err.message)); }}
+            onChange={() => { setSchedulerRunning(!schedulerRunning).then(() => queryClient.invalidateQueries({ queryKey: ['accounts'] })).catch((err) => setError(errText(err, t, 'radar.error.save'))); }}
           />
         )}
       />

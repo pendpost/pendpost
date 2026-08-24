@@ -17,6 +17,8 @@ let configData;
 let feedData;
 let accountsData;
 let feedLoading = false;
+let feedIsError = false;
+const feedRefetchMock = vi.fn();
 const saveConfigMock = vi.fn(() => Promise.resolve({}));
 // Spec 41: Scan now spawns the operator's agent (radar_agent_scan). The engine keyword scan
 // is no longer reachable from the Studio at all, so there is no radarScan mock any more.
@@ -31,6 +33,7 @@ const radarMarkCopyPostedMock = vi.fn(() => Promise.resolve({ ok: true, source: 
 const radarFollowupCheckMock = vi.fn(() => Promise.resolve({ checked: 2, replied: 0, sources: [] }));
 let queueApproval = 'pending'; // what the SERVER says the reply landed on
 const radarQueueReplyMock = vi.fn(() => Promise.resolve({ ok: true, campaign: 'c1', postId: 'radar-reddit-1', approval: queueApproval }));
+const markPostedMock = vi.fn(() => Promise.resolve({ ok: true }));
 // S4: the reply drawer reuses the Composer brand-lint (useLint -> lintText). Return a
 // canned finding so the LintPanel renders on the reply surface.
 const lintMock = vi.fn(() => Promise.resolve({ ok: true, clean: false, warnings: 1, truncated: false, findings: [{ rule: 'ai-tell', match: 'game-changer', hint: 'avoid AI hype', severity: 'warning', index: 0 }] }));
@@ -44,7 +47,9 @@ vi.mock('../../lib/api.js', () => ({
   unlinkEngagers: vi.fn(() => Promise.resolve({ ok: true })),
   dismissLinkGuess: vi.fn(() => Promise.resolve({ ok: true })),
   useConfig: () => ({ data: configData, isLoading: false }),
-  useSignals: () => ({ data: feedData, isLoading: feedLoading }),
+  useSignals: () => ({ data: feedData, isLoading: feedLoading, isError: feedIsError, refetch: feedRefetchMock }),
+  // Direction C: the "On your posts" segment shows an unanswered count from the comment inbox.
+  useCommentInbox: () => ({ data: undefined }),
   // The per-source coverage rows still read accountStatus: those credentials stay real for
   // REPLIES, even though they no longer gate the scan control.
   useAccounts: () => ({ data: accountsData }),
@@ -59,7 +64,13 @@ vi.mock('../../lib/api.js', () => ({
   radarMarkCopyPosted: (...a) => radarMarkCopyPostedMock(...a),
   radarQueueReply: (...a) => radarQueueReplyMock(...a),
   radarFollowupCheck: (...a) => radarFollowupCheckMock(...a),
+  markPosted: (...a) => markPostedMock(...a),
   lintText: (...a) => lintMock(...a),
+  // Issue 7: the real humanize-by-code helper, mirrored here since this suite mocks the
+  // whole module - matches app/src/lib/api.js's own implementation exactly.
+  errText: (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
+    : err instanceof TypeError ? t('error.network')
+      : (err?.message || t(fallbackKey))),
 }));
 
 // setup.agent, as pendpost_health reports it. Default: an agent PROVEN live, because that is
@@ -76,7 +87,7 @@ function renderPanel() {
       <QueryClientProvider client={qc}>
         <I18nProvider locale="en">
           <TooltipProvider>
-            <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} />
+            <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} onOpenPost={onOpenPostMock} />
           </TooltipProvider>
         </I18nProvider>
       </QueryClientProvider>,
@@ -85,6 +96,7 @@ function renderPanel() {
 }
 const onNavigateMock = vi.fn();
 const onNewPostMock = vi.fn();
+const onOpenPostMock = vi.fn();
 
 const radarOn = (queries = []) => ({ rev: 'r1', posting: { radar: { enabled: true, competitorsDefault: ['Buffer'], replyVoiceDefault: '', queries } } });
 const radarOff = () => ({ rev: 'r1', posting: { radar: { enabled: false, competitorsDefault: [], replyVoiceDefault: '', queries: [] } } });
@@ -101,8 +113,12 @@ beforeEach(() => {
   radarQueueReplyMock.mockClear();
   queueApproval = 'pending';
   onNavigateMock.mockClear();
+  onOpenPostMock.mockClear();
+  markPostedMock.mockClear();
   onNewPostMock.mockClear();
   feedLoading = false;
+  feedIsError = false;
+  feedRefetchMock.mockClear();
   // The DEFAULT project is the norm spec 40 designs for: no Radar source credentialed,
   // so the engine scan is absent and the agent scan is the whole story. Tests that need
   // the engine secondary connect a source explicitly.
@@ -469,9 +485,65 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(screen.queryByText(/last scan/i)).not.toBeInTheDocument();
     });
 
-    it('never claims a NEXT run: pendpost cannot know the generated schedule was installed', () => {
+    // DELIBERATE OVERTURN (radar engagement engine, 2026-08-17): this block used to
+    // assert the ABSENCE of any next-run copy. The spec 40 §4 rationale - "pendpost
+    // cannot see the operator's LaunchAgents, so it never asserts a schedule exists" -
+    // is obsolete: the scheduler owns the tick itself (lib/scheduler.mjs dailyRadarScan/
+    // dailyAgentScan) and dailyAt is pendpost's own config, so the server CAN say when
+    // the next scan fires and ships it as feed.nextScan. The surviving honesty rule is
+    // conditional: a server that cannot say ships no nextScan, and no next-scan copy
+    // renders.
+    it('claims the next scan exactly when the server says so (feed.nextScan), never otherwise', () => {
+      feedData.nextScan = {
+        timezone: 'Europe/Zurich',
+        dailyAt: '07:00',
+        agent: { armed: true, at: '2026-08-18T05:00:00.000Z' },
+        keyword: { armed: false, at: null },
+      };
+      renderPanel();
+      expect(screen.getByText(/next scan/i)).toBeInTheDocument();
+    });
+
+    it('renders NO next-scan copy when the server ships no nextScan (older server honesty)', () => {
+      delete feedData.nextScan;
       renderPanel();
       expect(screen.queryByText(/next (scheduled )?run|next scan/i)).not.toBeInTheDocument();
+    });
+
+    // A12/F2 budget honesty: with the agent's paid budget spent, the fragment SAYS so
+    // instead of a bare clock - the payload (agent.budget/spent) already stated it, and
+    // the surface must not be quieter than the data. The scan itself is never hidden.
+    it('says the agent budget is spent when spent >= budget on the agent clock', () => {
+      feedData.nextScan = {
+        timezone: 'Europe/Zurich',
+        dailyAt: '07:00',
+        agent: { armed: true, at: '2026-08-19T05:00:00.000Z', budget: 1, spent: 2 },
+        keyword: { armed: false, at: null },
+      };
+      renderPanel();
+      expect(screen.getByText(/budget spent, next scan/i)).toBeInTheDocument();
+    });
+
+    it('keeps the plain next-scan copy while budget remains', () => {
+      feedData.nextScan = {
+        timezone: 'Europe/Zurich',
+        dailyAt: '07:00',
+        agent: { armed: true, at: '2026-08-19T05:00:00.000Z', budget: 1, spent: 0 },
+        keyword: { armed: false, at: null },
+      };
+      renderPanel();
+      expect(screen.getByText(/next scan/i)).toBeInTheDocument();
+      expect(screen.queryByText(/budget spent/i)).not.toBeInTheDocument();
+    });
+
+    it('shows what the last scan produced from feed.lastProduced, and nothing without it', () => {
+      feedData.lastProduced = { jobId: 'j1', finishedAt: '2026-08-17T05:04:00.000Z', state: 'done', drafted: 5, accepted: 8, autoPosted: 0 };
+      const { unmount } = renderPanel();
+      expect(screen.getByText(/5 drafts created/i)).toBeInTheDocument();
+      unmount();
+      delete feedData.lastProduced;
+      renderPanel();
+      expect(screen.queryByText(/drafts created/i)).not.toBeInTheDocument();
     });
 
     // Spec 40 §4: pendpost cannot see the operator's LaunchAgents, so it never asserts a
@@ -501,35 +573,68 @@ describe('Radar panel (spec 32 listening seam)', () => {
   // Finding 2 (net-simplify): the scan handoff must not render twice on the zero-signal screen.
   // The always-on top-up handoff is gated on a non-empty feed; the empty state owns the zero case.
 
-  it('dismissing a signal calls radar_triage (durable) and invalidates the feed', async () => {
+  // Dismiss moved OUT of the overflow menu to the first-class "Done" (with a confirm
+  // guard) in UX round 4; this pins the shipped flow, not the pre-round-4 menu item.
+  it('dismissing a signal (Done -> confirm) calls radar_triage (durable) and invalidates the feed', async () => {
     const user = userEvent.setup();
     const { qc } = renderPanel();
     const spy = vi.spyOn(qc, 'invalidateQueries');
     const row = screen.getByText('high_intent').closest('li');
-    // Dismiss is a destructive step, so it lives one deliberate move away in the row's overflow menu.
-    await user.click(within(row).getByRole('button', { name: /more actions/i }));
-    await user.click(within(row).getByRole('menuitem', { name: /dismiss/i }));
+    // Done is destructive-adjacent (never re-surfaces), so it takes a deliberate confirm.
+    await user.click(within(row).getByRole('button', { name: /done/i }));
+    await user.click(within(row).getByRole('button', { name: /^hide$/i }));
     await waitFor(() => expect(radarTriageMock).toHaveBeenCalledTimes(1));
-    expect(radarTriageMock).toHaveBeenCalledWith('reddit', 'r1', 'dismiss');
+    // The trailing clientId scopes the write to a signal's own project in the all-projects
+    // overview; single-client mode (this test) passes undefined and the write binds the active client.
+    expect(radarTriageMock).toHaveBeenCalledWith('reddit', 'r1', 'dismiss', undefined);
     expect(spy).toHaveBeenCalledWith({ queryKey: ['radar'] });
   });
 
-  it('a watched signal renders pinned (server watched flag) and its Watch toggle clears it', async () => {
+  // UX issue 10: "Erledigt"/"Done" used to be a GHOST_BTN (borderless text), visually
+  // indistinguishable from the muted status words beside it. It is now a named, deliberate
+  // secondary action - BTN_QUIET (ring-bordered), a real button both before and after this
+  // change, but now visually distinct from tertiary/ghost affordances like the overflow
+  // trigger and "Abbrechen".
+  it('"Done" renders as the quiet-tier control (BTN_QUIET), not a bare ghost text', () => {
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    const doneBtn = within(row).getByRole('button', { name: /done/i });
+    // BTN_QUIET carries a ring; BTN_GHOST (the old treatment) does not.
+    expect(doneBtn.className).toMatch(/ring-1/);
+    expect(doneBtn.className).toMatch(/rounded-xl/);
+  });
+
+  it('a watched signal renders pinned under the Priority sort and its Watch toggle clears it', async () => {
     const user = userEvent.setup();
-    // The low-intent chatter is server-flagged watched -> the panel shows it pinned; the
-    // feed already delivers watched-first (server sorts), and re-clicking Watch clears it.
+    // The low-intent chatter is server-flagged watched -> under the intent-ranked Priority
+    // sort the panel keeps the server's watched-first order ('newest', today's default,
+    // re-orders by thread recency instead); re-clicking Watch clears the pin.
     feedData.items = [
       { ...feedData.items[1], watched: true },
       feedData.items[0],
     ];
-    renderPanel();
-    const rows = [...document.querySelectorAll('ol > li')].map((li) => li.textContent).join('|');
+    const { container } = renderPanel();
+    await user.click(screen.getByRole('button', { name: /priority/i }));
+    const rows = [...container.querySelectorAll('ol > li')].map((li) => li.textContent).join('|');
     expect(rows.indexOf('low_intent')).toBeLessThan(rows.indexOf('high_intent'));
     const watchedRow = screen.getByText('low_intent').closest('li');
     // Watch/Unwatch lives in the row's overflow menu; on a watched row it reads "Watching".
     await user.click(within(watchedRow).getByRole('button', { name: /more actions/i }));
     await user.click(within(watchedRow).getByRole('menuitem', { name: /watch/i }));
-    await waitFor(() => expect(radarTriageMock).toHaveBeenCalledWith('hackernews', 'h1', 'clear'));
+    await waitFor(() => expect(radarTriageMock).toHaveBeenCalledWith('hackernews', 'h1', 'clear', undefined));
+  });
+
+  it('a watched signal stays pinned to the top under the default newest (recency) sort', () => {
+    // The older, low-intent HN row is watched; the fresher Reddit row is not. Under 'newest'
+    // (today's default) pure recency would bury the watched row under the fresher chatter -
+    // the pin overrides that so "watched = pinned" holds no matter the sort.
+    feedData.items = [
+      feedData.items[0], // high_intent, ts = now, not watched
+      { ...feedData.items[1], watched: true }, // low_intent, ts = now - 1h, watched
+    ];
+    const { container } = renderPanel();
+    const rows = [...container.querySelectorAll('ol > li')].map((li) => li.textContent).join('|');
+    expect(rows.indexOf('low_intent')).toBeLessThan(rows.indexOf('high_intent'));
   });
 
   it('a reply-incapable source (Hacker News) leads with Open, never a reply control (spec 33)', async () => {
@@ -595,14 +700,40 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(within(row).queryByRole('button', { name: /^posted$/i })).not.toBeInTheDocument();
     await user.click(within(row).getByRole('button', { name: /copy reply & open thread/i }));
     const postedBtn = await within(row).findByRole('button', { name: /^posted$/i });
-    await user.type(within(row).getByLabelText(/link to the post/i), 'https://news.ycombinator.com/item?id=42');
+    await user.type(within(row).getByLabelText(/link to the published post/i), 'https://news.ycombinator.com/item?id=42');
     await user.click(postedBtn);
-    await waitFor(() => expect(radarMarkCopyPostedMock).toHaveBeenCalledWith('hackernews', 'h2', 'https://news.ycombinator.com/item?id=42'));
+    await waitFor(() => expect(radarMarkCopyPostedMock).toHaveBeenCalledWith('hackernews', 'h2', 'https://news.ycombinator.com/item?id=42', undefined));
+  });
+
+  // F3: an invalid pasted link is refused CLIENT-side with the localized message - the
+  // raw English engine string ("postedUrl must be an absolute http(s) URL") never
+  // renders - and the typed value survives, resubmittable.
+  it('an invalid pasted link on the copy path shows the localized error and never calls the server', async () => {
+    feedData.items = [{
+      source: 'hackernews', externalId: 'h2', url: 'https://mock.hn/2', author: 'pain_point',
+      community: 'news.ycombinator.com', text: 'every scheduler I tried is overpriced or unusable',
+      ts: new Date().toISOString(), intentScore: 70, scoredBy: 'agent', reason: 'open pain point',
+      draft: { text: 'We hit the same wall; happy to share what worked.', mode: 'copy', ts: new Date().toISOString() },
+    }];
+    vi.spyOn(window, 'open').mockImplementation(() => null);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn(() => Promise.resolve()) }, configurable: true });
+    const user = userEvent.setup();
+    renderPanel();
+    const row = screen.getByText('pain_point').closest('li');
+    await user.click(within(row).getByRole('button', { name: /copy reply & open thread/i }));
+    const input = await within(row).findByLabelText(/link to the published post/i);
+    await user.type(input, 'news.ycombinator.com/item?id=42');
+    await user.click(within(row).getByRole('button', { name: /^posted$/i }));
+    expect(within(row).getByText('Invalid link. Please paste the address of the published post.')).toBeInTheDocument();
+    expect(radarMarkCopyPostedMock).not.toHaveBeenCalled();
+    expect(input).toHaveValue('news.ycombinator.com/item?id=42');
   });
 
   // R5 piece 2: a signal already carrying the copyPosted marker collapses to the confirmation
-  // pill and counts as answered (the isAnswered fix - a copy draft is answered only when posted).
-  it('a copy-posted signal shows the Posted pill and counts as answered', async () => {
+  // pill and counts as done (the isAnswered fix - a copy draft is answered only when posted). Direction
+  // C: a thread WE answered (not one where the author replied back) folds into the "done" facet.
+  it('a copy-posted signal shows the Posted pill and counts as done', async () => {
+    const user = userEvent.setup();
     feedData.items = [{
       source: 'hackernews', externalId: 'h2', url: 'https://mock.hn/2', author: 'pain_point',
       community: 'news.ycombinator.com', text: 'every scheduler I tried is overpriced or unusable',
@@ -611,12 +742,15 @@ describe('Radar panel (spec 32 listening seam)', () => {
       copyPosted: { postedUrl: 'https://news.ycombinator.com/item?id=42', at: new Date().toISOString() },
     }];
     renderPanel();
+    // The default landing view is the OPEN worklist, which hides handled items - view the "done"
+    // facet to see this answered signal's row.
+    await user.click(screen.getByRole('button', { name: /1 done/i }));
     const row = screen.getByText('pain_point').closest('li');
     // The confirmation pill (a link, since we have a url) replaces the copy button.
     expect(within(row).getByRole('link', { name: /^posted$/i })).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: /copy reply & open thread/i })).not.toBeInTheDocument();
-    // The answered filter counts it (isAnswered now keys on copyPosted).
-    expect(screen.getByRole('button', { name: /answered/i })).toBeInTheDocument();
+    // The done filter counts it (isAnswered now keys on copyPosted; no author reply back -> "done").
+    expect(screen.getByRole('button', { name: /1 done/i })).toBeInTheDocument();
   });
 
   // WP3 (2026-07-17): the card overview. The agent's WHY is folded behind the Bot glyph
@@ -734,6 +868,28 @@ describe('Radar panel (spec 32 listening seam)', () => {
     await waitFor(() => expect(within(redditRow).getByRole('button', { name: /approve & post/i })).toBeInTheDocument());
   });
 
+  // F3: the below_threshold refusal maps by its stable CODE to a localized template
+  // carrying both numbers (the signal's own agent score + the owner's drafting
+  // threshold) - the raw English engine prose never leads, and the typed text survives.
+  it('a below_threshold refusal renders localized with both numbers and keeps the typed text', async () => {
+    const user = userEvent.setup();
+    configData.posting.radar.drafting = { minScore: 40, maxPerRun: 20 };
+    feedData.items = [{ ...feedData.items[0], intentScore: 35, scoredBy: 'agent' }];
+    radarQueueReplyMock.mockRejectedValueOnce(Object.assign(
+      new Error('this signal scored 35, below the drafting threshold 40 (posting.radar.drafting.minScore) - skip it, do not retry'),
+      { code: 'below_threshold' },
+    ));
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /draft reply/i }));
+    await user.type(within(row).getByRole('textbox'), 'my typed reply');
+    await user.click(within(row).getByRole('button', { name: /^queue reply$/i }));
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent('Score 35 is below the drafting threshold 40, so no reply is queued.');
+    expect(alert.textContent).not.toMatch(/skip it, do not retry/);
+    expect(within(row).getByRole('textbox')).toHaveValue('my typed reply');
+  });
+
   // Spec 42: the pill renders the approval the SERVER returned, never an assumption. Since spec 40
   // §6.7 an owner with auto-reply on for this lane gets `approved` back from this very call, and the
   // row used to hard-code amber "pending approval" over it - telling the operator a human would read
@@ -756,13 +912,156 @@ describe('Radar panel (spec 32 listening seam)', () => {
 
   // S3(b): once a queued reply is approved + posted, the signal shows a "Replied" link and no
   // longer offers a draft (finishes the previously-unused radar.reply.posted state).
-  it('S3: a replied signal shows a Replied link and no Draft reply button', () => {
-    feedData.items = [{ ...feedData.items[0], repliedUrl: 'https://mock.reddit/1/reply' }];
+  it('S3: a replied signal shows a Replied link and no Draft reply button', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1' }, repliedUrl: 'https://mock.reddit/1/reply' }];
     renderPanel();
+    // Handled signals are hidden from the default open worklist - view the "done" facet.
+    await user.click(screen.getByRole('button', { name: /1 done/i }));
     const row = screen.getByText('high_intent').closest('li');
     const replied = within(row).getByRole('link', { name: /replied/i });
     expect(replied).toHaveAttribute('href', 'https://mock.reddit/1/reply');
     expect(within(row).queryByRole('button', { name: /draft reply/i })).not.toBeInTheDocument();
+  });
+
+  // The evidence-first contract (the "Beantwortet linked the question" fix): a reply marked
+  // posted by hand with NO link renders a visibly different muted claim - never a link, never
+  // the signal's own thread url - plus the add-a-link repair that upgrades it.
+  it('a no-evidence manual mark renders the distinct claim, no link, and the add-a-link repair', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], replied: { url: null, via: 'manual', postId: 'radar-x-1', campaign: 'c1' }, repliedUrl: null }];
+    renderPanel();
+    // Handled signals are hidden from the default open worklist - view the "done" facet.
+    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).getByText(/marked answered by hand/i)).toBeInTheDocument();
+    expect(within(row).queryByRole('link', { name: /^replied$/i })).not.toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /draft reply/i })).not.toBeInTheDocument();
+    // The repair: paste the live answer's URL -> the one legal mark-posted re-entry.
+    await user.click(within(row).getByRole('button', { name: /add link/i }));
+    await user.type(within(row).getByRole('textbox', { name: /link to the published post/i }), 'https://x.com/op/status/9');
+    await user.click(within(row).getByRole('button', { name: /posted/i }));
+    await waitFor(() => expect(markPostedMock).toHaveBeenCalledWith('c1', 'radar-x-1', 'https://x.com/op/status/9'));
+  });
+
+  // A published reply whose lane has no derivable public link stays an honest "Replied"
+  // WITHOUT an href, and "Open answer" opens the reply post itself in the planner.
+  it('a published reply without a derivable link offers Open answer -> onOpenPost({campaign,id})', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], replied: { url: null, via: 'published', postId: 'radar-mastodon-7', campaign: 'c1' }, repliedUrl: null }];
+    renderPanel();
+    // Handled signals are hidden from the default open worklist - view the "done" facet.
+    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).getByText(/^replied$/i)).toBeInTheDocument();
+    expect(within(row).queryByRole('link', { name: /^replied$/i })).not.toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /open answer/i }));
+    expect(onOpenPostMock).toHaveBeenCalledWith({ campaign: 'c1', id: 'radar-mastodon-7' });
+  });
+
+  // UX issue 10: the pre-fire heads-up is now split - a non-interactive STATUS pill ("Auto-
+  // reply armed", round-full, never a button) plus a SEPARATE named action, "Draft now"
+  // (BTN_QUIET, round-xl), in the card's action bar. Tapping the action asks the server to
+  // draft THIS signal now (scope:'draft-one'), held pending for review.
+  it('willAutoPost renders as a non-interactive status pill plus a separate "Draft now" action', async () => {
+    const user = userEvent.setup();
+    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    // The status pill carries the word, but it is not a button - round-full = state, never an
+    // action a tap can trigger.
+    expect(within(row).getByText(/auto-reply armed/i)).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /auto-reply armed/i })).not.toBeInTheDocument();
+    // The action lives separately, enabled, and drives the same draft-one spawn the old
+    // combined pill-button used to.
+    const draftNowBtn = within(row).getByRole('button', { name: /draft now/i });
+    expect(draftNowBtn).toBeEnabled();
+    await user.click(draftNowBtn);
+    await waitFor(() => expect(radarAgentScanMock).toHaveBeenCalledWith({ scope: 'draft-one', target: { source: 'reddit', externalId: 'r1' } }));
+  });
+
+  it('a running draft-one job renders the busy state on its target card (no badge button)', () => {
+    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
+    feedData.jobs = [{ id: 'j1', state: 'running', scope: 'draft-one', target: 'reddit r1', phase: 'drafting', providerId: 'claude-code', sources: ['reddit'], startedAt: new Date().toISOString(), activity: [] }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).getByText(/drafting the reply/i)).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /auto-reply armed/i })).not.toBeInTheDocument();
+  });
+
+  // Honesty: once the agent examined the thread and declined to reply, the badge stops
+  // predicting an auto-post the agent already refused.
+  it('an agent-declined signal shows no auto-reply badge', () => {
+    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    feedData.items = [{ ...feedData.items[0], scoredBy: 'agent', agentDeclined: { ts: new Date().toISOString(), reason: 'not a buying question' } }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).queryByText(/auto-reply armed/i)).not.toBeInTheDocument();
+  });
+
+  it('without a live agent the "Draft now" action falls back to the inline editor instead of a dead spawn', async () => {
+    const user = userEvent.setup();
+    healthData = agentNotLive();
+    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /draft now/i }));
+    expect(within(row).getByRole('textbox')).toBeInTheDocument();
+    expect(radarAgentScanMock).not.toHaveBeenCalled();
+  });
+
+  // Issue 7 step 3: the card's own outcome. Before this, a failed draft-one job left the badge
+  // silently gone with no trace beyond the JobRow line, reading as hung. The newest settled
+  // draft-one job for THIS signal's key, when failed and the signal still carries no draft,
+  // renders a quiet line + a retry that re-spawns the exact same draft-one target.
+  it('a failed draft-one job with no draft shows "Draft failed" + Try again, which re-spawns onDraftNow', async () => {
+    const user = userEvent.setup();
+    feedData.jobs = [{ id: 'j1', state: 'failed', reason: 'exit', scope: 'draft-one', target: 'reddit r1', providerId: 'claude-code', sources: ['reddit'], finishedAt: new Date().toISOString(), activity: [] }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).getByText(/draft failed/i)).toBeInTheDocument();
+    await user.click(within(row).getByRole('button', { name: /try again/i }));
+    await waitFor(() => expect(radarAgentScanMock).toHaveBeenCalledWith({ scope: 'draft-one', target: { source: 'reddit', externalId: 'r1' } }));
+  });
+
+  // The failed outcome must never linger once a draft actually exists (e.g. a later run
+  // succeeded) - "no draft" is part of the derivation, not just "job failed once".
+  it('a failed draft-one job does NOT show the outcome once the signal has a draft', () => {
+    feedData.jobs = [{ id: 'j1', state: 'failed', reason: 'exit', scope: 'draft-one', target: 'reddit r1', providerId: 'claude-code', sources: ['reddit'], finishedAt: new Date().toISOString(), activity: [] }];
+    feedData.items = [{ ...feedData.items[0], draft: { text: 'a draft that landed anyway', approval: 'pending' } }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).queryByText(/draft failed/i)).not.toBeInTheDocument();
+  });
+
+  // Issue 7 step 1: the Scan button already disables while an agent job is running; the same
+  // rule now applies to the remaining agent trigger on a card (issue 10: the "Draft now"
+  // action, split out of the willAutoPost badge) - it renders disabled with the busy Tip,
+  // regardless of which signal the running job actually targets (only one job runs per
+  // client at a time). The status pill itself is unaffected (it was never interactive).
+  it('while ANY agent job is running, the "Draft now" action renders disabled (the status pill stays)', () => {
+    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
+    feedData.jobs = [{ id: 'j2', state: 'running', scope: 'scan', providerId: 'claude-code', sources: ['reddit'], startedAt: new Date().toISOString(), activity: [] }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    expect(within(row).getByText(/auto-reply armed/i)).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: /draft now/i })).toBeDisabled();
+  });
+
+  // An auto-approved draft's badge and Edit open THE draft (PostDetail), not the whole
+  // approvals queue - the address {campaign, postId} was already on the signal.
+  it('the auto-approved badge opens the draft itself via onOpenPost, not the Freigaben page', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], draft: { text: 'agent draft', approval: 'approved', postId: 'radar-reddit-9', campaign: 'c1' } }];
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    await user.click(within(row).getByRole('button', { name: /approved, going out/i }));
+    expect(onOpenPostMock).toHaveBeenCalledWith({ campaign: 'c1', id: 'radar-reddit-9' });
+    expect(onNavigateMock).not.toHaveBeenCalledWith('freigaben');
   });
 
   // R11 (dim-2 N2): once the thread's author answers, the payoff badge becomes actionable -
@@ -772,7 +1071,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     const user = userEvent.setup();
     feedData.items = [{
       ...feedData.items[0],
-      repliedUrl: 'https://mock.reddit/1/reply',
+      replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1' }, repliedUrl: 'https://mock.reddit/1/reply',
       authorReplied: { author: 'high_intent', text: 'that helped, one more thing', permalink: 'https://mock.reddit/1/authorreply', ts: new Date().toISOString(), commentId: 't1_authorreply' },
     }];
     renderPanel();
@@ -793,13 +1092,109 @@ describe('Radar panel (spec 32 listening seam)', () => {
   it('R11: an author reply with no captured commentId shows no threaded action (falls back to link-out)', () => {
     feedData.items = [{
       ...feedData.items[0],
-      repliedUrl: 'https://mock.reddit/1/reply',
+      replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1' }, repliedUrl: 'https://mock.reddit/1/reply',
       authorReplied: { author: 'high_intent', text: 'thanks', permalink: 'https://mock.reddit/1/authorreply', ts: new Date().toISOString(), commentId: null },
     }];
     renderPanel();
     const row = screen.getByText('high_intent').closest('li');
     expect(within(row).getByRole('link', { name: /author replied/i })).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: /reply to their reply/i })).not.toBeInTheDocument();
+  });
+
+  // A8 (owner decision 4): an author-replied signal is a LIVE conversation - it leads the
+  // priority feed (stable partition, server rank preserved within regions), is never demoted
+  // for age/score, and continuing the conversation (R11) is the row's PRIMARY.
+  describe('author-replied leads the feed', () => {
+    const answered = (over = {}) => ({
+      source: 'reddit', externalId: 'r9', url: 'https://mock.reddit/9', author: 'answered_author',
+      community: 'r/socialmedia', text: 'Asked about tooling a while back.',
+      ts: new Date(Date.now() - 3 * 864e5).toISOString(), intentScore: 35, intentTags: [], suggestedAction: 'reply',
+      replied: { url: 'https://mock.reddit/9/reply', via: 'published', postId: 'radar-reddit-9', campaign: 'c1' },
+      repliedUrl: 'https://mock.reddit/9/reply',
+      authorReplied: { author: 'answered_author', text: 'any update?', permalink: 'https://mock.reddit/9/authorreply', ts: new Date().toISOString(), commentId: 't1_follow' },
+      ...over,
+    });
+
+    it('priority sort: the author-replied region leads, server rank preserved within regions', async () => {
+      const user = userEvent.setup();
+      // Server order: high_intent (rank 1) BEFORE the lower-ranked answered signal.
+      feedData.items = [feedData.items[0], answered()];
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /priority/i }));
+      const a = screen.getByText('answered_author').closest('li');
+      const b = screen.getByText('high_intent').closest('li');
+      // The live conversation renders ABOVE the higher-scored cold signal.
+      expect(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('the default posted sort stays pure recency - no author-replied pinning', () => {
+      // Default sort is now "posted" (post-time recency); the answered signal's thread is 3 days
+      // old, so the fresh high-intent signal stays first (author-replied leads only in priority).
+      feedData.items = [feedData.items[0], answered()];
+      renderPanel();
+      const a = screen.getByText('high_intent').closest('li');
+      const b = screen.getByText('answered_author').closest('li');
+      expect(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('an aged, low-scored author-replied signal is NEVER demoted into the older group', () => {
+      // 200 days old, low score - without authorReplied this is exactly the demotion
+      // profile. The person just answered us, so it stays inline.
+      feedData.items = [
+        feedData.items[0],
+        answered({ ts: new Date(Date.now() - 200 * 864e5).toISOString(), intentScore: 5, suggestedAction: 'ignore', intentTags: [] }),
+      ];
+      renderPanel();
+      expect(screen.getByText('answered_author')).toBeInTheDocument();
+    });
+
+    it('R11 is the row PRIMARY there; the open-thread pill demotes to quiet (one primary per row)', () => {
+      feedData.items = [answered()];
+      renderPanel();
+      const row = screen.getByText('answered_author').closest('li');
+      const r11 = within(row).getByRole('button', { name: /reply to their reply/i });
+      expect(r11.className).toMatch(/bg-brand/);
+      const open = within(row).getByRole('link', { name: /open on/i });
+      expect(open.className).not.toMatch(/bg-brand/);
+    });
+  });
+
+  // Issue 8: two explicit recency sorts. "Neu gepostet" ranks by the post's own time (ts),
+  // "Neu gefunden" by radar ingest time (foundAt). The two disagree when a post is old but was
+  // found recently, which is exactly the case the owner wants to separate.
+  describe('sort options: newly found vs newly posted (issue 8)', () => {
+    const twoSignals = () => {
+      const now = Date.now();
+      return [
+        // A: posted long ago, found just now (old thread the scan surfaced).
+        { source: 'reddit', externalId: 'A', url: 'https://mock.reddit/A', author: 'old_post_new_find', community: 'r/x', text: 'old thread', ts: new Date(now - 30 * 864e5).toISOString(), foundAt: new Date(now - 60e3).toISOString(), intentScore: 70, intentTags: [], suggestedAction: 'reply' },
+        // B: posted just now, found an hour ago.
+        { source: 'reddit', externalId: 'B', url: 'https://mock.reddit/B', author: 'fresh_post_old_find', community: 'r/x', text: 'fresh thread', ts: new Date(now - 60e3).toISOString(), foundAt: new Date(now - 36e5).toISOString(), intentScore: 70, intentTags: [], suggestedAction: 'reply' },
+      ];
+    };
+    const order = (first, second) => {
+      const a = screen.getByText(first).closest('li');
+      const b = screen.getByText(second).closest('li');
+      return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    };
+
+    it('newly found orders by radar ingest time (foundAt)', async () => {
+      const user = userEvent.setup();
+      feedData.items = twoSignals();
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /newly found/i }));
+      // A was found 1 minute ago, B an hour ago: A leads.
+      expect(order('old_post_new_find', 'fresh_post_old_find')).toBe(true);
+    });
+
+    it('newly posted orders by the post time (ts)', async () => {
+      const user = userEvent.setup();
+      feedData.items = twoSignals();
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /newly posted/i }));
+      // B was posted 1 minute ago, A 30 days ago: B leads.
+      expect(order('fresh_post_old_find', 'old_post_new_find')).toBe(true);
+    });
   });
 
   // Owner round 3, point 5: the card shows BOTH clocks, the whole card is clickable, and
@@ -834,7 +1229,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
   it('check-replies reports its result inline - no new answers reads back honestly', async () => {
     const user = userEvent.setup();
     radarFollowupCheckMock.mockResolvedValueOnce({ checked: 2, replied: 0, sources: [] });
-    feedData.items = [{ ...feedData.items[0], repliedUrl: 'https://mock.reddit/1/reply' }];
+    feedData.items = [{ ...feedData.items[0], replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1' }, repliedUrl: 'https://mock.reddit/1/reply' }];
     renderPanel();
     await user.click(screen.getByRole('button', { name: /check for author replies/i }));
     expect(await screen.findByRole('status')).toHaveTextContent(/no new answers yet/i);
@@ -843,10 +1238,34 @@ describe('Radar panel (spec 32 listening seam)', () => {
   it('check-replies names the count when authors DID answer back', async () => {
     const user = userEvent.setup();
     radarFollowupCheckMock.mockResolvedValueOnce({ checked: 3, replied: 2, sources: ['reddit'] });
-    feedData.items = [{ ...feedData.items[0], repliedUrl: 'https://mock.reddit/1/reply' }];
+    feedData.items = [{ ...feedData.items[0], replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1' }, repliedUrl: 'https://mock.reddit/1/reply' }];
     renderPanel();
     await user.click(screen.getByRole('button', { name: /check for author replies/i }));
     expect(await screen.findByRole('status')).toHaveTextContent(/new answers: 2/i);
+  });
+
+  // S1 glyph state 3 (canon finding 17): once a follow-up check has run, the glyph's
+  // tooltip states WHEN - "Last checked {time}" from the joined replied.lastCheckedTs -
+  // so a forced check that found nothing still has a visible outcome. Never checked
+  // keeps the idle explainer (no fabricated clock).
+  it('the check-replies glyph states "Last checked ..." from the joined lastCheckedTs', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1', lastCheckedTs: new Date(Date.now() - 2 * 36e5).toISOString() } }];
+    renderPanel();
+    await user.hover(screen.getByRole('button', { name: /check for author replies/i }));
+    await waitFor(() => {
+      expect(screen.getAllByText(/last checked 2 hours ago/i).length).toBeGreaterThan(0);
+    });
+  });
+
+  it('the check-replies glyph keeps its idle explainer when no check has ever run', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{ ...feedData.items[0], replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1', lastCheckedTs: null } }];
+    renderPanel();
+    await user.hover(screen.getByRole('button', { name: /check for author replies/i }));
+    await waitFor(() => {
+      expect(screen.getAllByText(/checks whether anyone has answered/i).length).toBeGreaterThan(0);
+    });
   });
 
   // S4: the highest-stakes external text (a cold reply into someone else's community) gets
@@ -882,8 +1301,92 @@ describe('Radar panel (spec 32 listening seam)', () => {
     renderPanel();
     const group = screen.getByRole('group', { name: /filter signals/i });
     expect(within(group).getByRole('button', { name: /2 signals/i })).toBeInTheDocument();
-    expect(within(group).getByRole('button', { name: /1 to act/i })).toBeInTheDocument();
+    expect(within(group).getByRole('button', { name: /1 to answer/i })).toBeInTheDocument();
     expect(within(group).queryByRole('button', { name: /watched/i })).not.toBeInTheDocument();
+  });
+
+  // Owner-requested default: Radar opens on the OPEN worklist (everything not yet handled), not
+  // the full feed - opening on 'all' put the already-cleared signals right back on screen. The
+  // "open" anchor leads the chip row and is pressed on load; answered items are absent.
+  it('defaults to the open worklist: answered signals are hidden, the "open" chip leads and is pressed', () => {
+    // beforeEach feed: high_intent (actionable, open) + low_intent (demoted, open). Add one
+    // answered/"done" signal - it must NOT show in the default landing view.
+    feedData.items = [
+      ...feedData.items,
+      { source: 'reddit', externalId: 'ans1', url: 'https://mock.reddit/ans1', author: 'answered_done', community: 'r/x', text: 'We already spoke into this thread.', ts: new Date().toISOString(), intentScore: 60, intentTags: [], suggestedAction: 'reply', replied: { url: 'https://mock.reddit/ans1/reply', via: 'published', postId: 'radar-reddit-ans1', campaign: 'c1' } },
+    ];
+    renderPanel();
+    const group = screen.getByRole('group', { name: /filter signals/i });
+    // The open worklist = 2 (both unanswered); the answered one is filtered out and folded into
+    // the "done" facet. The open anchor is pressed; the answered author is off-screen.
+    const openChip = within(group).getByRole('button', { name: /2 new/i });
+    expect(openChip).toHaveAttribute('aria-pressed', 'true');
+    expect(within(group).getByRole('button', { name: /1 done/i })).toBeInTheDocument();
+    expect(screen.getByText('high_intent')).toBeInTheDocument();
+    expect(screen.queryByText('answered_done')).not.toBeInTheDocument();
+  });
+
+  // The fully-handled edge: when the open worklist empties it must NOT fall back to the full feed
+  // (that would put the cleared items back on screen). It shows an honest "all clear" with one
+  // quiet way to widen to everything.
+  it('an empty worklist shows an all-clear state and never silently falls back to the processed items', async () => {
+    const user = userEvent.setup();
+    feedData.items = [
+      { source: 'reddit', externalId: 'd1', url: 'https://mock.reddit/d1', author: 'already_handled', community: 'r/x', text: 'Answered and closed.', ts: new Date().toISOString(), intentScore: 60, intentTags: [], suggestedAction: 'reply', replied: { url: 'https://mock.reddit/d1/reply', via: 'published', postId: 'radar-reddit-d1', campaign: 'c1' } },
+    ];
+    renderPanel();
+    // All clear, and the processed signal is NOT auto-shown by the default view.
+    expect(screen.getByText(/all clear/i)).toBeInTheDocument();
+    expect(screen.queryByText('already_handled')).not.toBeInTheDocument();
+    // The one quiet next step widens to the full feed, where the handled signal lives.
+    await user.click(screen.getByRole('button', { name: /show all/i }));
+    expect(screen.getByText('already_handled')).toBeInTheDocument();
+  });
+
+  // Non-happy path: the all-clear worklist is never a dead end. With a live agent it also offers
+  // "Scan now" (the real "get new finds" move), not only "show all".
+  it('the all-clear worklist offers Run scan when an agent is live', async () => {
+    const user = userEvent.setup();
+    feedData.items = [
+      { source: 'reddit', externalId: 'd1', url: 'https://mock.reddit/d1', author: 'handled', community: 'r/x', text: 'done', ts: new Date().toISOString(), intentScore: 60, intentTags: [], suggestedAction: 'reply', replied: { url: 'https://mock.reddit/d1/reply', via: 'published', postId: 'radar-reddit-d1', campaign: 'c1' } },
+    ];
+    renderPanel(); // healthData defaults to agentLive()
+    // Scope to the all-clear card (the header also carries a Scan now button).
+    const card = screen.getByText(/all clear/i).closest('div');
+    await user.click(within(card).getByRole('button', { name: /scan now/i }));
+    expect(radarAgentScanMock).toHaveBeenCalled();
+  });
+
+  // Non-happy path: a failed feed LOAD must be an honest, recoverable error - never the silent
+  // "nothing found" (or, worse, "all clear") it used to masquerade as. Retry refetches.
+  it('a feed load error shows an honest error with a Retry that refetches, not a false empty state', async () => {
+    const user = userEvent.setup();
+    feedIsError = true;
+    feedData = undefined;
+    renderPanel();
+    expect(screen.getByText(/couldn't load signals/i)).toBeInTheDocument();
+    // It must NOT read as an empty scan or an all-clear.
+    expect(screen.queryByText(/all clear/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /retry/i }));
+    expect(feedRefetchMock).toHaveBeenCalled();
+  });
+
+  // Non-happy path: a per-source scan degrade (rate limit / expired access) is otherwise invisible
+  // - the glyphs only show connect status. Surface it as a quiet notice; needs_scope gets a
+  // Reconnect deep-link, the transient ones just state the reason.
+  it('a per-source scan degrade surfaces a quiet notice, with Reconnect only where it recovers', async () => {
+    const user = userEvent.setup();
+    feedData.sources = {
+      reddit: { ok: false, error: 'needs_scope', scope: 'read' },
+      mastodon: { ok: false, error: 'rate_limited', retryAfter: 60 },
+    };
+    renderPanel();
+    expect(screen.getByText(/access expired, reconnect/i)).toBeInTheDocument();
+    expect(screen.getByText(/rate limit hit/i)).toBeInTheDocument();
+    // needs_scope is recoverable in Setup; rate_limited is transient (no fake button).
+    const reconnect = screen.getByRole('button', { name: /reconnect/i });
+    await user.click(reconnect);
+    expect(onNavigateMock).toHaveBeenCalledWith('setup', 'reddit');
   });
 
   it('chip/list coherence: every rendered chip filters to exactly the count it advertises', async () => {
@@ -899,7 +1402,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     const group = screen.getByRole('group', { name: /filter signals/i });
     // 3 signals / 1 to act / 1 watched; new+answered+karma+mentions hidden at zero.
     for (const { name, count } of [
-      { name: /1 to act/i, count: 1 },
+      { name: /1 to answer/i, count: 1 },
       { name: /1 watched/i, count: 1 },
       { name: /3 signals/i, count: 3 },
     ]) {
@@ -950,19 +1453,39 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(screen.getByText('high_intent')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /older and weak signals/i }));
     expect(screen.getByText('low_intent')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /1 to act/i }));
+    await user.click(screen.getByRole('button', { name: /1 to answer/i }));
     // Only the actionable (reply) signal remains; the ignore chatter is filtered out.
     expect(screen.getByText('high_intent')).toBeInTheDocument();
     expect(screen.queryByText('low_intent')).not.toBeInTheDocument();
   });
 
-  it('the older/weak strip survives the newest sort (demotion is not sort-dependent)', async () => {
-    // Flipping Priorität/Neueste used to make the collapsed strip vanish and its rows splice
+  // Issue 9 (Direction C): "to answer" and "done" must be disjoint. A signal the scan flagged for a
+  // reply that WE have already answered (no author reply back) counts only under "done", never "to
+  // answer". (An author replying BACK would instead lead the feed under "replied to you".)
+  it('an answered actionable signal counts as done only, never as to-answer', async () => {
+    const user = userEvent.setup();
+    feedData.items = [{
+      source: 'reddit', externalId: 'ra', url: 'https://mock.reddit/ra', author: 'answered_actionable',
+      community: 'r/x', text: 'flagged for reply and already answered', ts: new Date().toISOString(),
+      intentScore: 80, intentTags: [], suggestedAction: 'reply',
+      replied: { url: 'https://mock.reddit/ra/reply', via: 'published', postId: 'radar-reddit-ra', campaign: 'c1' },
+    }];
+    renderPanel();
+    const group = screen.getByRole('group', { name: /filter signals/i });
+    // It appears under "1 done", and the "to answer" chip is hidden (count 0), never both.
+    expect(within(group).getByRole('button', { name: /1 done/i })).toBeInTheDocument();
+    expect(within(group).queryByRole('button', { name: /to answer/i })).not.toBeInTheDocument();
+    await user.click(within(group).getByRole('button', { name: /1 done/i }));
+    expect(screen.getByText('answered_actionable')).toBeInTheDocument();
+  });
+
+  it('the older/weak strip survives a recency sort (demotion is not sort-dependent)', async () => {
+    // Flipping the sort used to make the collapsed strip vanish and its rows splice
     // inline - 8 cards appearing from nowhere. The strip now persists; only order changes.
     const user = userEvent.setup();
     renderPanel();
     expect(screen.getByRole('button', { name: /older and weak signals/i })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /newest/i }));
+    await user.click(screen.getByRole('button', { name: /newly posted/i }));
     expect(screen.getByRole('button', { name: /older and weak signals/i })).toBeInTheDocument();
     // The demoted chatter stays foldered, not inline.
     expect(screen.queryByText('low_intent')).not.toBeInTheDocument();

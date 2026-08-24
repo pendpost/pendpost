@@ -337,7 +337,7 @@ describe('Setup page - guided cards', () => {
     renderSetup();
     const youtube = await expandManual(user, 'YouTube');
     await user.type(within(youtube).getByLabelText('Client ID'), '1234-abc.apps.googleusercontent.com');
-    await user.type(within(youtube).getByLabelText('Client Secret'), 'GOCSPX-secret');
+    await user.type(within(youtube).getByLabelText('Client secret'), 'GOCSPX-secret');
     await user.click(within(youtube).getByRole('button', { name: 'Connect' }));
     await waitFor(() => expect(connectPlatform).toHaveBeenCalledWith('youtube', { oauthClientId: '1234-abc.apps.googleusercontent.com', clientSecret: 'GOCSPX-secret' }));
     // the waiting controls + the consent link render off the immediate status fetch
@@ -357,7 +357,7 @@ describe('Setup page - guided cards', () => {
     renderSetup();
     const youtube = await expandManual(user, 'YouTube');
     await user.type(within(youtube).getByLabelText('Client ID'), '1234-abc.apps.googleusercontent.com');
-    await user.type(within(youtube).getByLabelText('Client Secret'), 'GOCSPX-secret');
+    await user.type(within(youtube).getByLabelText('Client secret'), 'GOCSPX-secret');
     await user.click(within(youtube).getByRole('button', { name: 'Connect' }));
     // the failed ceremony surfaces its detail (role=alert) + a Retry out, never a stuck spinner
     expect(await within(youtube).findByRole('alert')).toHaveTextContent('listen EADDRINUSE :::8088');

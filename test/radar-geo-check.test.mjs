@@ -111,10 +111,22 @@ try {
   ok(scanTool.inputSchema.properties.scope && scanTool.inputSchema.properties.scope.enum.includes('geo'), 'radar_agent_scan declares the scope:"geo" option');
 
   // Enable Radar with a query AND buying questions, and connect the agent.
+  // PIN A SINGLE SEARCHABLE SOURCE. A manual feed scan runs PER-SOURCE ISOLATION (acb6915): one
+  // child spawn per effective source (reddit/mastodon/bluesky/hackernews), and foldBin logs one
+  // footprint UNCONDITIONALLY per spawn - so four lanes would record four checks, not the one this
+  // case proves. The GEO check folds into the FIRST lane only in production, so a real four-lane
+  // scan still checks each question once; the stub cannot model that per-lane conditionality, so
+  // pinning one source keeps the "footprint has 1 check" arithmetic exact.
   await asClient(() => setConfig({
     ifRev: getConfig().rev,
     actor: 'owner',
-    set: { posting: { radar: { enabled: true, queries: [{ id: 'q1', label: 'Scheduling', enabled: true, keywords: ['scheduling'], competitors: ['Buffer'] }], geo: { buyingQuestions: ['best social scheduler'] }, agent: { provider: 'claude-code' } } } },
+    set: { posting: { radar: {
+      enabled: true,
+      queries: [{ id: 'q1', label: 'Scheduling', enabled: true, keywords: ['scheduling'], competitors: ['Buffer'] }],
+      sources: { reddit: { scan: true }, mastodon: { scan: false }, bluesky: { scan: false }, hackernews: { scan: false } },
+      geo: { buyingQuestions: ['best social scheduler'] },
+      agent: { provider: 'claude-code' },
+    } } },
   }));
 
   // ===== (c) E2E: a normal scan ALSO checks the questions (footprint lands) =====

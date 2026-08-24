@@ -12,7 +12,7 @@
   <img src="brand/github/readme-hero-preview.png" alt="pendpost: an AI agent drafts and schedules posts; a human approval gate decides what publishes" width="820">
 </p>
 
-pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr, and more, including long-form blogs on WordPress and Ghost, behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
+pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, and Nostr, plus long-form blogs on WordPress and Ghost, with Reddit, Pinterest, TikTok, and Google Business Profile in beta, all behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
 
 ## Why pendpost is different (not just a scheduler)
 
@@ -135,6 +135,8 @@ node scripts/ghost-social.mjs auth      # GHOST_SITE_URL + GHOST_ADMIN_API_KEY
 node scripts/nostr-social.mjs keygen --save && node scripts/nostr-social.mjs auth  # + NOSTR_RELAYS
 ```
 
+Running more than one client? Append `--client <client-id>` to any command above so the credential lands in that client's `.env` (single-client installs don't need it, and `pendpost_health`'s `connectAction` already fills the flag in for you).
+
 **X (Twitter)** supports two auth paths; **OAuth 1.0a is recommended** because it needs no browser and sidesteps the `ERR_TOO_MANY_REDIRECTS` that some apps hit on X's OAuth 2.0 consent screen.
 
 - **OAuth 1.0a (recommended, zero browser).** In the X developer portal: (1) set the app's **User authentication settings to Read and Write FIRST**; (2) then under **Keys and tokens**, generate/regenerate **both** the API Key/Secret **and** the Access Token/Secret; (3) paste all four into `.env` as `X_API_KEY`, `X_API_SECRET`, `X_ACCESS_TOKEN`, `X_ACCESS_TOKEN_SECRET`. The lane goes live the moment `X_ACCESS_TOKEN_SECRET` is set - no `auth` command. Verify with `node scripts/x-social.mjs probe` (prints `connected as @handle`). Gotchas, in order:
@@ -151,7 +153,7 @@ Captions run through a brand-lint pass before they can publish. The rule set liv
 
 ## Architecture
 
-pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 117 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are 14 publish engines in `scripts/` - one per platform (`meta-social.mjs` handles Facebook and Instagram) - each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
+pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 120 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are 14 publish engines in `scripts/` - one per platform (`meta-social.mjs` handles Facebook and Instagram) - each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
 
 ## Platforms
 

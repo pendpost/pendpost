@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText, PlugZap, HelpCircle, Tag } from 'lucide-react';
-import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, postDisplayStatusKey, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia } from '../lib/format.js';
+import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText, PlugZap, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
+import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, postDisplayStatusKey, rowStatusKey, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtFull, fmtStampShort } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
 import { MediaLightbox } from './ui/MediaLightbox.jsx';
 import { CarouselPreview } from './ui/CarouselPreview.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
-import { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW } from './ui/tokens.js';
+import { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW, FIELD, FIELD_ERR, FIELD_MULTILINE } from './ui/tokens.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
 
@@ -184,7 +184,7 @@ export function PlatformIcons({ platforms, size = 13 }) {
 export function StatusPill({ state, short = false }) {
   const t = useT();
   const meta = STATE_META[state];
-  const cls = meta?.cls || 'bg-zinc-500/15 text-zinc-500 ring-zinc-500/30';
+  const cls = meta?.cls || 'bg-zinc-500/15 text-zinc-500 dark:text-zinc-400 ring-zinc-500/30';
   const Icon = meta?.Icon;
   // Known states resolve their (short/long) label from the pack; an unknown state
   // falls back to its raw key rather than a stray "state.x" id.
@@ -243,6 +243,61 @@ export function ApprovalPill({ approval, editedSinceApproval = false, handOff = 
   );
 }
 
+// ONE truthful next-actor chip per approval card (nextActorOf, lib/format.js).
+// Replaces the old ApprovalPill + schedule-side StatusPill + "Automatisch
+// freigegeben" IconBadge stack, whose three independent conditions could
+// contradict each other on one card. A plain <span> (native title for the
+// tooltip), so it may live INSIDE the card's open-detail button - the same
+// contract StatusPill/ApprovalPill honoured.
+//
+// Keys that render NOTHING here are carried by a sibling: overdue/publish-failed
+// keep today's red StatusPill (the alarm treatment must not change), and
+// clientSignoff yields to ReviewStatusChip (which names who and for how long).
+const NEXT_ACTOR_CHIP = 'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1';
+export function NextActorChip({ post, setup = null }) {
+  const t = useT();
+  const next = nextActorOf(post, setup);
+  const chip = (cls, Icon, label, title) => (
+    <span title={title} className={`${NEXT_ACTOR_CHIP} ${cls}`}>
+      <Icon size={11} className="shrink-0" aria-hidden="true" />
+      <span className="truncate">{label}</span>
+    </span>
+  );
+  switch (next.key) {
+    case 'done':
+      return chip('bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30', CheckCircle, t('state.short.posted'));
+    case 'handOff':
+      return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', PlugZap, t('approval.postYourself'));
+    case 'reApprove':
+      // B9/F4: when the suppressed state is an auto-approval, the provenance is a
+      // hover away - same native-title contract the scheduled branch uses.
+      return chip(
+        'bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30',
+        AlertTriangle,
+        t('approval.editedSinceApproval'),
+        post.approvalBy === 'policy:auto-approve' ? t('nextActor.reApprove.autoTip') : undefined,
+      );
+    case 'approve':
+      return chip('bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30', Clock, t('approval.pending'));
+    case 'rejected':
+      return chip('bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', OctagonX, t('approval.rejected'));
+    case 'scheduled': {
+      // The auto-approve PROVENANCE lives in this chip's tooltip now, not as a
+      // third badge: the state is "goes out at {time}" either way; how it got
+      // approved is the detail a hover answers.
+      const time = fmtStampShort(next.at);
+      const title = post.approvalBy === 'policy:auto-approve'
+        ? t('nextActor.scheduled.autoTip', { time: fmtFull(next.at) })
+        : fmtFull(next.at);
+      return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', CalendarClock, t('nextActor.scheduled', { time }), title);
+    }
+    case 'awaitingSlot':
+      return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', Clock, t('nextActor.awaitingSlot'));
+    default:
+      return null;
+  }
+}
+
 // Triage-first: the ONE status pill the Planner cards render, collapsing the
 // approval + schedule axes into a single bucket (postStatusKey) so a card no longer
 // shows a StatusPill AND an ApprovalPill saying the same thing. Attention buckets are
@@ -254,8 +309,12 @@ export function ApprovalPill({ approval, editedSinceApproval = false, handOff = 
 // axes legitimately matter.
 export function PostStatusPill({ post }) {
   const t = useT();
-  const key = postDisplayStatusKey(post);
-  const meta = STATUS_PILL_META[key] || STATUS_PILL_META.scheduled;
+  // rowStatusKey adds ONE bucket over postDisplayStatusKey: an approved, on-track post
+  // reads green 'approved' ("Freigegeben") instead of the neutral zinc 'scheduled'
+  // (brand/DESIGN.md section 3). Every attention bucket still overrides it, so green is
+  // the calm baseline, never a competing tone. ROW_STATUS_META carries that extra tone.
+  const key = rowStatusKey(post);
+  const meta = ROW_STATUS_META[key] || STATUS_PILL_META.scheduled;
   const Icon = meta.Icon;
   // Power-off legibility (W1): the planner card collapses scheduled-native and
   // waiting-due into one 'scheduled' bucket, so its pill cannot show whether a
@@ -265,21 +324,26 @@ export function PostStatusPill({ post }) {
   const tipKey = `status.tip.${key}`;
   const tip = t(tipKey);
   const title = tip === tipKey ? undefined : tip;
+  // The green 'approved' bucket has no status.<key> label (it is not a Status-filter
+  // bucket) - it resolves from approval.approved ("Freigegeben"), the same word the
+  // detail/approval surfaces use. Every other bucket keeps its status.<key> label.
+  const label = key === 'approved' ? t('approval.approved') : t(`status.${key}`);
   return (
     <span title={title} className={`inline-flex min-w-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ring-1 ${meta.cls}`}>
       {Icon ? <Icon size={11} className="shrink-0" aria-hidden="true" /> : null}
-      <span className="truncate">{t(`status.${key}`)}</span>
+      <span className="truncate">{label}</span>
     </span>
   );
 }
 
 // A neutral placeholder background sits behind every media element so a thumb
 // reads as a calm loading tile (never a stark empty box) until the pixels paint;
-// the opaque object-cover media covers it once loaded. A load error anywhere in
-// the chain, OR a genuine text post (no media at all), resolves to an honest
-// "text post" tile (muted surface + document glyph) - so a row NEVER shows the
-// ambiguous bare grey square that read as broken/loading (US media fix).
-export function CoverThumb({ media, image, className = '' }) {
+// the opaque object-cover media covers it once loaded. A media-less text post
+// with a non-empty `textPreview` renders its own words as a mini caption card
+// (see the previewText branch below); a genuine EMPTY post (no media, no text) or
+// a media LOAD ERROR resolves to an honest document-glyph tile - so a row NEVER
+// shows the ambiguous bare grey square that read as broken/loading (US media fix).
+export function CoverThumb({ media, image, textPreview = '', className = '' }) {
   const [errored, setErrored] = useState(false);
   const PLACEHOLDER = 'bg-zinc-200/70 dark:bg-zinc-800/60';
   // media.cover = the render's local cover JPEG; image = a remote thumbnail
@@ -343,8 +407,30 @@ export function CoverThumb({ media, image, className = '' }) {
       />
     );
   }
-  // Genuine text post (no media) or a media load failure: an intentional tile,
-  // not a broken/empty square. Decorative - the row's title/caption carries the text.
+  // Genuine text post (no media): show the post's OWN words as a mini caption card,
+  // so a media-less text post previews as itself instead of an anonymous document
+  // glyph. `textPreview` is line-clamped, tiny and muted; overflow-hidden + the
+  // caller's fixed box height guarantee it never spills, at any thumb size (the
+  // ~h-12 List thumb, the full-width Week cover, the h-24 Freigaben cover).
+  //
+  // A media LOAD ERROR is deliberately EXCLUDED (errored): there IS media, it just
+  // failed to paint - filling that box with caption text would claim the post is
+  // text-only, which is a lie. So a failed load keeps the honest FileText tile, and
+  // only a genuinely media-less post (errored === false) reaches the text card.
+  // Decorative either way (aria-hidden) - the row's real title/caption carries the
+  // text to a screen reader, so this never double-reads.
+  const previewText = !errored && typeof textPreview === 'string' ? textPreview.trim() : '';
+  if (previewText) {
+    return (
+      <div className={`overflow-hidden ${PLACEHOLDER} ${className}`} aria-hidden="true">
+        <p className="line-clamp-4 h-full w-full overflow-hidden p-1.5 text-[9px] font-medium leading-snug tracking-tight text-zinc-600 dark:text-zinc-300">
+          {previewText}
+        </p>
+      </div>
+    );
+  }
+  // No media AND no text (or a media load failure): an intentional tile, not a
+  // broken/empty square. Decorative - the row's title/caption carries the text.
   return (
     <div className={`grid place-items-center ${PLACEHOLDER} text-zinc-500 dark:text-zinc-400 ${className}`} aria-hidden="true">
       <FileText size={18} aria-hidden="true" />
@@ -457,6 +543,10 @@ export function PostPreview({ post, videoRef, onEdit }) {
   // The fullscreen viewer ({ kind, startAt }) and a fallback ref so the inline ->
   // fullscreen handoff works even where the parent passes no videoRef (Composer).
   const [lightbox, setLightbox] = useState(null);
+  // Reel vs Grid: the reel plays full 9:16, but the profile grid center-crops the
+  // cover. This lets the operator flip the preview to what the grid will actually
+  // show. Only surfaced when gridCropInfo says a target platform crops (below).
+  const [gridView, setGridView] = useState('reel');
   const localRef = useRef(null);
   const vRef = videoRef || localRef;
   if (post.type === 'text') {
@@ -521,10 +611,32 @@ export function PostPreview({ post, videoRef, onEdit }) {
       }
       setLightbox(null);
     };
+    // Grid-crop preview: the profile grid center-crops a tall cover to its tile
+    // ratio (format.js gridCropInfo). Offer a Reel/Grid toggle ONLY when a target
+    // platform actually crops, so a non-cropping post adds nothing.
+    const grid = gridCropInfo(post);
+    const showGrid = grid.cropped && gridView === 'grid';
+    const cropLabels = grid.platforms.map((p) => PLATFORM_META[p.platform]?.label || p.platform).join(', ');
+    const trimPct = Math.round((1 - grid.keptFraction) * 100);
     return (
       <div className="space-y-3">
+        {grid.cropped ? (
+          <div className="flex items-center justify-end">
+            <Segmented
+              label={t('ui.gridCrop.toggleAria')}
+              value={gridView}
+              onChange={setGridView}
+              options={[
+                { key: 'reel', label: t('ui.gridCrop.reel'), Icon: Smartphone },
+                { key: 'grid', label: t('ui.gridCrop.grid'), Icon: LayoutGrid },
+              ]}
+            />
+          </div>
+        ) : null}
         <div className="relative">
-          {isImage ? (
+          {showGrid ? (
+            <CoverThumb media={post.media} className={`w-full ${grid.tightest.aspect} rounded-xl bg-black/80 ring-1 ring-zinc-900/10 dark:ring-white/10`} />
+          ) : isImage ? (
             <button type="button" onClick={() => setLightbox({ kind: 'image' })} aria-label={t('ui.player.expand')} className="group relative block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
               <img src={post.media.url} alt="" loading="lazy" className={`w-full ${aspect} rounded-xl bg-black/80 object-contain ring-1 ring-zinc-900/10 dark:ring-white/10`} />
               <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-black/55 text-white opacity-0 backdrop-blur transition group-hover:opacity-100">
@@ -534,8 +646,14 @@ export function PostPreview({ post, videoRef, onEdit }) {
           ) : (
             <MediaPlayer src={post.media.url} poster={post.media.cover || null} aspect={aspect} videoRef={vRef} onExpand={onExpandVideo} />
           )}
-          {showStickers ? <StoryStickerLayer interactiveStory={post.interactiveStory} /> : null}
+          {showStickers && !showGrid ? <StoryStickerLayer interactiveStory={post.interactiveStory} /> : null}
         </div>
+        {showGrid ? (
+          <p className="text-[11px] leading-snug text-zinc-500 dark:text-zinc-400">
+            {t('ui.gridCrop.caption', { platforms: cropLabels, percent: trimPct })}
+            {grid.approximate ? <span>{' '}{t('ui.gridCrop.approx')}</span> : null}
+          </p>
+        ) : null}
         {isYt ? <YoutubeMeta title={post.title} description={post.description} tags={post.tags} /> : null}
         {lightbox ? (
           <MediaLightbox kind={lightbox.kind} src={post.media.url} poster={post.media.cover || null} startAt={lightbox.startAt || 0} onClose={onCloseLightbox} />
@@ -610,7 +728,7 @@ function BlockerRow({ severity, children }) {
   const Icon = isProblem ? AlertOctagon : AlertTriangle;
   const cls = isProblem
     ? 'text-red-600 dark:text-red-300'
-    : 'text-amber-600 dark:text-amber-300';
+    : 'text-amber-700 dark:text-amber-300';
   const word = isProblem ? t('blockers.problemLabel') : isAction ? t('blockers.actionLabel') : t('blockers.warningLabel');
   return (
     <li className={`flex items-start gap-2 text-[11px] ${cls}`}>
@@ -731,7 +849,7 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
         <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('blockers.awaitingApproval')}</p>
       ) : null}
       {needsReApproval ? (
-        <p className="text-[11px] font-bold text-amber-600 dark:text-amber-300">{t('blockers.editedSinceApproval')}</p>
+        <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">{t('blockers.editedSinceApproval')}</p>
       ) : null}
       {entries.map(([platform, v]) => {
         const problems = v.problems || [];
@@ -778,7 +896,7 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
                   <button
                     type="button"
                     onClick={onFix}
-                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-600 transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-700 transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300"
                   >
                     <Tag size={12} aria-hidden="true" />
                     {t('blockers.flairFix')}
@@ -793,7 +911,7 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
                   <button
                     type="button"
                     onClick={() => onNavigate('setup', platform)}
-                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-600 transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300"
+                    className="inline-flex items-center gap-1.5 text-[11px] font-bold text-amber-700 transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300"
                   >
                     <Wrench size={12} aria-hidden="true" />
                     {t('blockers.setupLink', { platform: label })}
@@ -881,7 +999,7 @@ export function Segmented({ label, value, options, onChange }) {
 // keeps working unchanged. It has to be an import + export pair, not a bare
 // `export ... from`: a re-export creates no local binding, so this file's own uses of
 // EYEBROW/INNER_SURFACE would throw at render time.
-export { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW };
+export { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW, FIELD, FIELD_ERR, FIELD_MULTILINE };
 
 // The single section-header shape shared across Settings and its Radar sub-sections:
 // a title, an optional discoverable "?" explainer (the house Tip, keyboard/SR
@@ -918,7 +1036,7 @@ export function SectionHeading({ title, tip, action }) {
 // attention), so its legend swatch is a quiet zinc; amber/red stay saturated.
 const LEGEND_TONE_CLS = {
   approved: 'text-zinc-500 dark:text-zinc-400',
-  'needs-approval': 'text-amber-600 dark:text-amber-400',
+  'needs-approval': 'text-amber-700 dark:text-amber-400',
   halted: 'text-red-600 dark:text-red-400',
 };
 const LEGEND_KEY = { approved: 'statusLegend.approved', 'needs-approval': 'statusLegend.needsApproval', halted: 'statusLegend.halted' };

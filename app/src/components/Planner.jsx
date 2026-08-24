@@ -1,54 +1,21 @@
 import { useMemo, useState } from 'react';
-import { CalendarDays, ChevronUp, ChevronDown, Plus, PauseCircle, CornerUpLeft } from 'lucide-react';
-import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, mediaAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread } from '../lib/format.js';
+import { CalendarDays, ChevronUp, ChevronDown, Plus, CornerUpLeft } from 'lucide-react';
+import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, postDot, campaignBaseLabel, TIME_CHIP_META, timeChipTone, gridDisplayAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
-import { unschedulePost } from '../lib/api.js';
-import { useQueryClient } from '@tanstack/react-query';
-import { useConfirm } from './ui/confirm.jsx';
+import { usePostActions } from '../lib/usePostActions.js';
 import { useT } from '../lib/i18n.js';
 import { PlatformIcons, PostStatusPill, CoverThumb, Skeleton } from './ui.jsx';
+import { HdBadge } from './ui/HdBadge.jsx';
+import { RowMenu } from './ui/RowMenu.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
+import { ClientAvatar } from './ClientSwitcher.jsx';
+import { PROJECT_CHIP } from './ui/recipes.js';
 
 // Single source for the "no time set" placeholder, defined once so the three List
 // readouts (published readout, picker placeholder, picker trigger fallback) and
 // any later tweak stay in lockstep instead of three hand-typed literals.
 const EMPTY_TIME = '--:--';
-
-// Park (unschedule) flow for the List row, mirroring useReschedule's sibling
-// pattern: take the post off the schedule, escalating native handoffs to an
-// explicit confirm, then refresh the plan. unschedulePost parks via
-// executionMode:parked server-side.
-function usePark() {
-  const queryClient = useQueryClient();
-  const confirm = useConfirm();
-  const t = useT();
-  return async (post) => {
-    try {
-      await unschedulePost(post.campaign, post.id);
-    } catch (err) {
-      if (err.code === 'needs_confirm') {
-        const ok = await confirm({
-          title: t('postDetail.confirm.title'),
-          body: err.message || t('postDetail.action.parkTip'),
-          confirmLabel: t('postDetail.confirm.continue'),
-          danger: true,
-        });
-        if (!ok) return;
-        await unschedulePost(post.campaign, post.id, true);
-      } else {
-        await confirm({
-          title: t('reschedule.failed.title'),
-          body: err.message || t('reschedule.failed.body'),
-          confirmLabel: t('reschedule.failed.confirmLabel'),
-          cancelLabel: t('app.action.close'),
-        });
-      }
-    } finally {
-      queryClient.invalidateQueries({ queryKey: ['plans'] });
-    }
-  };
-}
 
 // FR1: the scheduled-time chip, color-coded to the post's approval/breaker state
 // and paired with an icon + accessible name so meaning is never color-only
@@ -105,8 +72,9 @@ export function TimeChip({ post, lane, variant = 'overlay' }) {
 // Week cards are draggable onto another day column = reschedule, keeping the
 // post's time of day (Phase D drag-drop; the owner's machine runs in the
 // plan timezone, so local wall-clock == the viewer's timezone here).
-export function PostCard({ post, onSelect, draggable, onDragStart, lane }) {
+export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane }) {
   const t = useT();
+  const { items } = usePostActions(post, { onEdit });
   // Triage-first: ONE collapsed status drives the card. The only cards that recede
   // (dimmed) are the "set aside" ones - parked + rejected (postIsDimmed); every other
   // card renders at full, regular strength. An active card that needs action (draft /
@@ -120,6 +88,10 @@ export function PostCard({ post, onSelect, draggable, onDragStart, lane }) {
   const showBar = flag && accent === 'bar' && meta.bar;
   const showStrip = flag && accent === 'strip' && meta.strip;
   return (
+    // Wrapper (relative, NO overflow-hidden) so the ⋯ menu can escape the card's rounded
+    // clip; the card button keeps overflow-hidden for the cover. The ⋯ is a SIBLING of the
+    // open-detail button, never nested (interactive-nesting contract).
+    <div className="group relative">
     <button
       type="button"
       onClick={() => onSelect(post)}
@@ -130,11 +102,11 @@ export function PostCard({ post, onSelect, draggable, onDragStart, lane }) {
       // (post + type + time, like the Month/List views - the column header already
       // reads the day) so the control announces itself once.
       aria-label={`${postDisplayTitle(post, t('planner.list.untitled'))} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}`}
-      className={`group relative w-full overflow-hidden rounded-xl text-left bg-white/80 dark:bg-zinc-900/70 ring-1 ring-zinc-900/[0.06] dark:ring-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.05)] transition hover:-translate-y-1 motion-reduce:hover:translate-y-0 hover:shadow-xl hover:bg-white/90 dark:hover:bg-zinc-800/80 focus-visible:ring-2 focus-visible:ring-brand ${dim ? 'opacity-60 hover:opacity-100' : ''}`}
+      className={`relative w-full overflow-hidden rounded-xl text-left bg-white/80 dark:bg-zinc-900/70 ring-1 ring-zinc-900/[0.06] dark:ring-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.05)] transition hover:-translate-y-1 motion-reduce:hover:translate-y-0 hover:shadow-xl hover:bg-white/90 dark:hover:bg-zinc-800/80 focus-visible:ring-2 focus-visible:ring-brand ${dim ? 'opacity-60 hover:opacity-100' : ''}`}
     >
       {showBar ? <span aria-hidden="true" className={`pointer-events-none absolute left-0 top-0 bottom-0 z-10 w-1 ${meta.bar}`} /> : null}
       <div className="relative">
-        <CoverThumb media={post.media} image={post.image} className={`${mediaAspect(post)} w-full`} />
+        <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className={`${gridDisplayAspect(post)} w-full`} />
         <TimeChip post={post} lane={lane} variant="overlay" />
       </div>
       <div className="space-y-1.5 p-2">
@@ -143,15 +115,122 @@ export function PostCard({ post, onSelect, draggable, onDragStart, lane }) {
         </div>
         {/* Type + platforms collapse into one quiet meta line (was a separate type
             overlay badge + a standalone platform row competing at the same weight). */}
-        <div className="flex min-w-0 items-center gap-1.5 text-[10px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400">
+        <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400">
           <span className="truncate">{t(`type.${post.type}`)}</span>
           <span aria-hidden="true" className="h-1 w-1 shrink-0 rounded-full bg-current opacity-50" />
           <PlatformIcons platforms={post.platforms} size={12} />
+          <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} static />
+          {/* Issue 6: the same client chip, so a Week card is legible even without
+              opening it. */}
+          {post.clientName ? (
+            <span className={`${PROJECT_CHIP} max-w-[7rem]`}>
+              <ClientAvatar client={{ displayName: post.clientName, accent: post.accent, logo: null }} size={14} />
+              <span className="truncate">{post.clientName}</span>
+            </span>
+          ) : null}
         </div>
         <p className="line-clamp-2 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300">
           {post.caption.split('\n')[0]}
         </p>
       </div>
+    </button>
+      {/* ⋯ overlay: a light glyph on a dark scrim so it reads over any cover; top-left so it
+          never collides with the top-right time chip. Its menu escapes the card's clip via
+          the non-overflow wrapper. */}
+      <div className="absolute left-1.5 top-1.5 z-30">
+        <RowMenu
+          items={items}
+          align="left"
+          label={t('postDetail.more')}
+          triggerClassName="inline-flex items-center rounded-lg bg-black/45 p-1 text-white backdrop-blur transition hover:bg-black/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+        />
+      </div>
+    </div>
+  );
+}
+
+// The drag payload every planner card writes: campaign + id + current time, read
+// back by the day-column drop handler to reschedule. Defined once so the Week card,
+// the compact card, and (via them) both boards serialize an identical shape.
+function postDragStart(post) {
+  return (e) => {
+    e.dataTransfer.setData(
+      'application/json',
+      // clientId rides along (issue 6): a drag-drop reschedule in all-clients mode
+      // must reach the card's own client, not whatever is active. Undefined in
+      // single-client mode, so JSON.stringify simply omits the key there.
+      JSON.stringify({ campaign: post.campaign, id: post.id, scheduledAt: post.scheduledAt, clientId: post.clientId }),
+    );
+    e.dataTransfer.effectAllowed = 'move';
+  };
+}
+
+// Shared day-column drop target (Week columns + Month cells). Returns the current
+// drag-over key (for the highlight ring) and a props factory to spread onto each
+// day surface, so the drop-to-reschedule wiring lives in one place for both boards.
+function useDayDropTarget(onMoveToDay) {
+  const [dragOverKey, setDragOverKey] = useState(null);
+  const dropProps = (day, key) => ({
+    onDragOver: (e) => { e.preventDefault(); setDragOverKey(key); },
+    onDragLeave: () => setDragOverKey((prev) => (prev === key ? null : prev)),
+    onDrop: (e) => {
+      e.preventDefault();
+      setDragOverKey(null);
+      try {
+        onMoveToDay?.(JSON.parse(e.dataTransfer.getData('application/json')), day);
+      } catch { /* not one of our cards */ }
+    },
+  });
+  return { dragOverKey, dropProps };
+}
+
+// A dense, clickable, draggable post chip. Shared by the Month cells and the
+// compact Week view, so there is ONE small-card markup + drag source. `dayLabel`
+// (Month) prepends the day to the accessible name; the compact Week column header
+// already reads the day, so it omits it. `showTitle` gives the roomier Week column
+// a truncated title; Month stays title-less to fit the narrow cell.
+export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, showTitle = false }) {
+  const t = useT();
+  const title = postDisplayTitle(post, t('planner.list.untitled'));
+  // ONE clean accessible name (day? + post + type + time), matching the Week/List
+  // cards; the inner dot/chip/type/platforms stay aria-hidden so a SR hears the
+  // name once instead of a stuttering fragment pile.
+  const name = `${dayLabel ? `${dayLabel} - ` : ''}${title} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}${post.clientName ? ` - ${post.clientName}` : ''}`;
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(post)}
+      draggable={draggable}
+      onDragStart={draggable ? postDragStart(post) : undefined}
+      aria-label={name}
+      className="flex w-full items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-left text-[10px] ring-1 ring-zinc-900/10 transition hover:bg-white dark:bg-zinc-800/70 dark:ring-white/10 dark:hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-brand"
+    >
+      {/* Status dot so attention states read at compact zoom (UX-05); color is never
+          the sole signal - the button's aria-label carries the post identity. */}
+      <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${postDot(post)}`} />
+      {/* FR1: color-coded time chip (visual only inside the labeled button) */}
+      <span aria-hidden="true" className="contents">
+        <TimeChip post={post} lane={lane} variant="inline" />
+      </span>
+      {/* Roomy Week column: the title carries identity, so it takes the free space
+          and the type word is dropped (redundant next to the platform icon). The
+          narrow Month cell has no title, so it keeps the type word instead. */}
+      {showTitle ? (
+        <span aria-hidden="true" className="min-w-0 flex-1 truncate font-bold text-zinc-700 dark:text-zinc-200">{title}</span>
+      ) : (
+        <span aria-hidden="true" className="truncate text-zinc-500 dark:text-zinc-400">{t(`type.${post.type}`)}</span>
+      )}
+      <span aria-hidden="true" className="contents">
+        <PlatformIcons platforms={post.platforms} size={10} />
+      </span>
+      {/* Issue 6: in all-clients mode even the dense Month/compact cell carries the
+          project - a small monogram (accent + initials, never colour-only; the
+          button's aria-label names the project too). */}
+      {post.clientName ? (
+        <span aria-hidden="true" className="ml-auto shrink-0">
+          <ClientAvatar client={{ displayName: post.clientName, accent: post.accent, logo: null }} size={12} />
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -186,8 +265,9 @@ function EmptyPeriod({ onNew }) {
   );
 }
 
-export function WeekView({ posts, weekStart, onSelect, onMoveToDay, loading, lane, onNew }) {
-  const [dragOverKey, setDragOverKey] = useState(null);
+export function WeekView({ posts, weekStart, onSelect, onEdit, onMoveToDay, loading, lane, onNew, density = 'comfortable' }) {
+  const { dragOverKey, dropProps } = useDayDropTarget(onMoveToDay);
+  const compact = density === 'compact';
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
   const byDay = useMemo(() => {
     const map = new Map();
@@ -215,19 +295,7 @@ export function WeekView({ posts, weekStart, onSelect, onMoveToDay, loading, lan
             key={key}
             aria-label={fmtDayAria(day)}
             className={`min-w-0 rounded-xl transition ${dragOverKey === key ? 'bg-brand/5 ring-1 ring-brand/30' : ''} ${allEmpty ? 'hidden' : ''}`}
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOverKey(key);
-            }}
-            onDragLeave={() => setDragOverKey((prev) => (prev === key ? null : prev))}
-            onDrop={(e) => {
-              e.preventDefault();
-              setDragOverKey(null);
-              try {
-                const data = JSON.parse(e.dataTransfer.getData('application/json'));
-                onMoveToDay?.(data, day);
-              } catch { /* not one of our cards */ }
-            }}
+            {...dropProps(day, key)}
           >
             <header
               className={`mb-2 rounded-xl px-2 py-1.5 ${
@@ -244,32 +312,38 @@ export function WeekView({ posts, weekStart, onSelect, onMoveToDay, loading, lan
               </div>
               {isToday ? <div aria-hidden="true" className="mt-1 h-[3px] w-4 rounded-full bg-brand dark:bg-brand-light" /> : null}
             </header>
-            <div className="space-y-2">
+            <div className={compact ? 'space-y-1' : 'space-y-2'}>
               {loading ? (
                 <>
-                  <Skeleton className="h-16 w-full" />
-                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className={compact ? 'h-6 w-full' : 'h-16 w-full'} />
+                  <Skeleton className={compact ? 'h-6 w-full' : 'h-16 w-full'} />
                 </>
               ) : dayPosts.length ? (
-                dayPosts.map((post) => (
-                  <PostCard
-                    key={`${post.campaign}-${post.id}-${post.scheduledAt}`}
-                    post={post}
-                    onSelect={onSelect}
-                    lane={lane}
-                    draggable={post.derivedState !== 'posted'}
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData(
-                        'application/json',
-                        JSON.stringify({ campaign: post.campaign, id: post.id, scheduledAt: post.scheduledAt }),
-                      );
-                      e.dataTransfer.effectAllowed = 'move';
-                    }}
-                  />
-                ))
+                dayPosts.map((post) =>
+                  compact ? (
+                    <CompactPostCard
+                      key={`${post.campaign}-${post.id}-${post.scheduledAt}`}
+                      post={post}
+                      onSelect={onSelect}
+                      lane={lane}
+                      showTitle
+                      draggable={post.derivedState !== 'posted'}
+                    />
+                  ) : (
+                    <PostCard
+                      key={`${post.campaign}-${post.id}-${post.scheduledAt}`}
+                      post={post}
+                      onSelect={onSelect}
+                      onEdit={onEdit}
+                      lane={lane}
+                      draggable={post.derivedState !== 'posted'}
+                      onDragStart={postDragStart(post)}
+                    />
+                  ),
+                )
               ) : (
                 // Faint dashed slot: the column reads as a droppable surface.
-                <div aria-hidden="true" className="h-24 rounded-xl border border-dashed border-zinc-300/60 dark:border-zinc-700/60" />
+                <div aria-hidden="true" className={`${compact ? 'h-10' : 'h-24'} rounded-xl border border-dashed border-zinc-300/60 dark:border-zinc-700/60`} />
               )}
             </div>
           </section>
@@ -279,8 +353,9 @@ export function WeekView({ posts, weekStart, onSelect, onMoveToDay, loading, lan
   );
 }
 
-export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, onShowDay }) {
+export function MonthView({ posts, monthAnchor, onSelect, onMoveToDay, loading, lane, onNew, onShowDay }) {
   const t = useT();
+  const { dragOverKey, dropProps } = useDayDropTarget(onMoveToDay);
   const cells = useMemo(() => {
     const first = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth(), 1);
     const gridStart = addDays(first, -((first.getDay() + 6) % 7));
@@ -329,48 +404,32 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
             key={key}
             role="group"
             aria-label={fmtDayAria(day)}
-            className={`min-h-[92px] rounded-xl p-1.5 ${
-              isToday
+            className={`min-h-[92px] rounded-xl p-1.5 transition ${
+              dragOverKey === key
+                ? 'bg-brand/5 ring-1 ring-brand/30'
+                : isToday
                 ? 'bg-brand/10 ring-1 ring-zinc-900/5 dark:bg-brand-light/10 dark:ring-white/5'
                 : 'bg-white/50 ring-1 ring-zinc-900/5 dark:bg-zinc-900/35 dark:ring-white/5'
             } ${inMonth ? '' : 'opacity-40'} ${allEmpty ? 'hidden' : ''}`}
+            {...dropProps(day, key)}
           >
             <p className={`mb-0.5 text-[11px] font-bold ${isToday ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
               {fmtDayNum(day)}
             </p>
             {isToday ? <div aria-hidden="true" className="mb-1 h-[3px] w-4 rounded-full bg-brand dark:bg-brand-light" /> : null}
             <div className="space-y-1">
+              {/* Month cells share the Week's compact card, so a post is one drag
+                  source and one markup across both boards. dayLabel carries the day
+                  into the accessible name (the month cell has no column header). */}
               {dayPosts.slice(0, 3).map((post) => (
-                <button
+                <CompactPostCard
                   key={`${post.campaign}-${post.id}-${post.scheduledAt}`}
-                  type="button"
-                  onClick={() => onSelect(post)}
-                  // The cell's visual content (dot + chip + type + platforms) is a
-                  // dense glanceable summary; on its own a SR would hear an
-                  // identical, day-less, title-less string for every pending post.
-                  // So the button carries ONE clean accessible name (day + post +
-                  // time, like the List/Week views) and the inner pieces are
-                  // aria-hidden to avoid a stuttering double read-out.
-                  aria-label={`${fmtDayAria(day)} - ${postDisplayTitle(post, t('planner.list.untitled'))} - ${t(`type.${post.type}`)} - ${fmtTime(post.scheduledAt)}`}
-                  className="flex w-full items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-left text-[10px] ring-1 ring-zinc-900/10 transition hover:bg-white dark:bg-zinc-800/70 dark:ring-white/10 dark:hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-brand"
-                >
-                  {/* Status dot so attention states read at month zoom (UX-05). The
-                      color is never the sole signal because the button's aria-label
-                      carries the post identity; the dot/chip stay visual-only here
-                      (aria-hidden) so the name is read once, cleanly. */}
-                  <span
-                    aria-hidden="true"
-                    className={`h-2 w-2 shrink-0 rounded-full ${postDot(post)}`}
-                  />
-                  {/* FR1: color-coded time chip (visual only inside the labeled button) */}
-                  <span aria-hidden="true" className="contents">
-                    <TimeChip post={post} lane={lane} variant="inline" />
-                  </span>
-                  <span aria-hidden="true" className="truncate text-zinc-500 dark:text-zinc-400">{t(`type.${post.type}`)}</span>
-                  <span aria-hidden="true" className="contents">
-                    <PlatformIcons platforms={post.platforms} size={10} />
-                  </span>
-                </button>
+                  post={post}
+                  onSelect={onSelect}
+                  lane={lane}
+                  dayLabel={fmtDayAria(day)}
+                  draggable={post.derivedState !== 'posted'}
+                />
               ))}
               {dayPosts.length > 3 ? (
                 <button
@@ -381,7 +440,7 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
                   // first hidden post (index 3) so the control is never inert.
                   onClick={() => (onShowDay ? onShowDay(day) : onSelect(dayPosts[3]))}
                   aria-label={t('planner.month.moreAria', { count: dayPosts.length - 3 })}
-                  className="w-full rounded-md px-1 py-0.5 text-left text-[10px] text-zinc-500 transition hover:bg-white/70 hover:text-zinc-600 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                  className="w-full rounded-md px-1 py-0.5 text-left text-[10px] text-zinc-500 dark:text-zinc-400 transition hover:bg-white/70 hover:text-zinc-600 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                 >
                   {t('planner.month.more', { count: dayPosts.length - 3 })}
                 </button>
@@ -398,14 +457,13 @@ export function MonthView({ posts, monthAnchor, onSelect, loading, lane, onNew, 
 // surface): day-grouped, dense full-width rows, primary title/time over muted
 // meta. Two sibling affordances per row (no nested buttons): the time opens an
 // inline reschedule picker (non-published posts only), the rest opens the detail.
-function ListRow({ post, posts = [], onSelect, lane }) {
+function ListRow({ post, posts = [], onSelect, onEdit, lane }) {
   const t = useT();
   const reschedule = useReschedule();
-  const park = usePark();
+  // The overview action set (Freigeben / Ablehnen / Parken / Prüfen / Löschen, + Editor
+  // when onEdit is threaded), shared with the detail drawer via the same gate predicates.
+  const { items } = usePostActions(post, { onEdit });
   const published = post.derivedState === 'posted' || post.derivedState === 'fired-assumed';
-  // Park = take a scheduled post off the queue. Only meaningful for a non-published
-  // post that is still scheduled (has a time and is not already parked).
-  const canPark = !published && !!post.scheduledAt && post.derivedState !== 'parked';
   // X thread folding: a reply whose parent is also visible is indented under it;
   // a parent shows how many replies thread beneath it. Same-campaign only.
   const { parent: threadParent, replies: threadReplies } = deriveThread(post, posts);
@@ -433,42 +491,34 @@ function ListRow({ post, posts = [], onSelect, lane }) {
           )}
         />
       )}
-      {/* FR1: color-coded tone chip (icon + time + accessible name), a sibling of
-          the open-detail button so it never nests an interactive control. */}
-      <TimeChip post={post} lane={lane} variant="standalone" />
-      {/* Park: the inverse of scheduling, a sibling of the open-detail button (never
-          nested) so the owner can unschedule from the dense list without opening the
-          full detail panel. Color is paired with the PauseCircle icon + the parkTip
-          accessible name. */}
-      {canPark ? (
-        <Tip label={t('postDetail.action.parkTip')}>
-          <button
-            type="button"
-            aria-label={t('postDetail.action.parkTip')}
-            onClick={() => park(post)}
-            className="shrink-0 rounded-md p-1 text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
-          >
-            <PauseCircle size={15} aria-hidden="true" />
-          </button>
-        </Tip>
-      ) : null}
+      {/* ZONE 1 (preview) + ZONE 2 (information) share the open-detail button: clicking
+          anywhere here opens the full post. The standalone approval chip + inline Park
+          button that used to sit on the LEFT are gone - approval now reads in the single
+          status slot on the right (green when approved), and Park lives in the ⋯ menu. */}
       <button
         type="button"
         onClick={() => onSelect(post)}
         className="flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
       >
-        {/* A text post has no thumbnail, so this renders a generic file glyph: 48px plus a
-            gap of pure decoration. Harmless on a wide row, but at 390px it was taking the
-            width the TITLE needed, and once the attention pill also earns its place on
-            mobile the title collapses to a letter and an ellipsis. Real media still shows
-            at every width; only the placeholder yields, and only on the narrow layout. */}
-        <CoverThumb media={post.media} image={post.image} className={`h-12 w-12 shrink-0 rounded-lg ${post.media?.exists || post.image ? '' : 'hidden sm:block'}`} />
+        {/* A correct-ASPECT mini cover (a 9:16 Short reads as a mini Short, not a cropped
+            square) for visual guidance, matching the Week card. A media-less text post has
+            no thumbnail, so its placeholder yields on the narrow layout to protect the
+            title width; real media shows at every width. */}
+        <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className={`h-12 ${gridDisplayAspect(post)} shrink-0 rounded-lg ${post.media?.exists || post.image ? '' : 'hidden sm:block'}`} />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-bold">
             {postDisplayTitle(post, t('planner.list.untitled'))}
           </p>
-          <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
-            {campaignBaseLabel(post.campaign)} · {post.id} · {t(`type.${post.type}`)}
+          <p className="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span className="min-w-0 truncate">{campaignBaseLabel(post.campaign)} · {post.id} · {t(`type.${post.type}`)}</span>
+            {/* Issue 6: the same client chip Freigaben's cards carry, shown only
+                when all-clients mode stamped one. */}
+            {post.clientName ? (
+              <span className={`${PROJECT_CHIP} max-w-[8rem]`}>
+                <ClientAvatar client={{ displayName: post.clientName, accent: post.accent, logo: null }} size={14} />
+                <span className="truncate">{post.clientName}</span>
+              </span>
+            ) : null}
           </p>
         </div>
         {/* X thread glyph (xReplyTo): marks a chained post so it is never
@@ -489,20 +539,26 @@ function ListRow({ post, posts = [], onSelect, lane }) {
             {t('planner.list.threadCount', { count: collectThread(post, posts).length })}
           </span>
         ) : null}
+        {/* Information markers: platform glyphs + the HD/720p chip. Subordinate to the
+            status slot on the right - they say WHAT the post is, not its state. */}
         <PlatformIcons platforms={post.platforms} />
-        {/* The pill is desktop-only to keep a narrow row calm - but that hid the ONE state
-            a phone must not miss. A post needing attention (a refusal, a missed slot, an
-            unmade decision) shows its pill at every width; the settled buckets keep the
-            md: gate. needsAttention is the same predicate the card accent already uses. */}
-        <span className={`items-center ${needsAttention(post) ? 'flex' : 'hidden md:flex'}`}>
-          <PostStatusPill post={post} />
-        </span>
+        <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} static />
       </button>
+      {/* ZONE 3 (status + actions), siblings of the open-detail button so no interactive
+          control nests inside another. The ONE status slot leads (green "Freigegeben" when
+          approved and on track, an attention tone otherwise); the ⋯ menu carries every
+          action. The pill stays desktop-only for settled posts to keep a phone row calm,
+          but an attention state shows at every width (needsAttention, same predicate the
+          card accent uses). */}
+      <span className={`items-center ${needsAttention(post) ? 'flex' : 'hidden md:flex'}`}>
+        <PostStatusPill post={post} />
+      </span>
+      <RowMenu items={items} label={t('postDetail.more')} />
     </li>
   );
 }
 
-export function ListView({ posts, onSelect, loading, lane, showAllDays = false }) {
+export function ListView({ posts, onSelect, onEdit, loading, lane, showAllDays = false }) {
   const t = useT();
   const dated = useMemo(
     () => posts.filter((p) => p.scheduledAt).sort(comparePostDate),
@@ -566,7 +622,7 @@ export function ListView({ posts, onSelect, loading, lane, showAllDays = false }
     <section key={g.key}>
       <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{fmtDayAria(g.date)}</h3>
       <ul className="space-y-1">
-        {g.posts.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} lane={lane} />)}
+        {g.posts.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} onEdit={onEdit} lane={lane} />)}
       </ul>
     </section>
   );
@@ -591,7 +647,7 @@ export function ListView({ posts, onSelect, loading, lane, showAllDays = false }
         <section>
           <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{t('planner.list.noSchedule')}</h3>
           <ul className="space-y-1">
-            {undated.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} lane={lane} />)}
+            {undated.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} onEdit={onEdit} lane={lane} />)}
           </ul>
         </section>
       ) : null}

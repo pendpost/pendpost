@@ -1,7 +1,9 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { WeekView } from '../Planner.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 import { moveToDayTarget } from '../../lib/format.js';
 
 // B7: a Week-board drop onto a day strictly earlier than today must be refused
@@ -15,16 +17,20 @@ const FAKE_NOW = new Date('2026-06-16T12:00:00');
 
 function renderWeek(props = {}) {
   return render(
-    <TooltipProvider>
-      <WeekView
-        posts={props.posts || []}
-        weekStart={props.weekStart || new Date('2026-06-15T00:00:00')}
-        onSelect={() => {}}
-        onMoveToDay={props.onMoveToDay}
-        loading={false}
-        lane={{}}
-      />
-    </TooltipProvider>,
+    <QueryClientProvider client={new QueryClient()}>
+      <ConfirmProvider>
+        <TooltipProvider>
+          <WeekView
+            posts={props.posts || []}
+            weekStart={props.weekStart || new Date('2026-06-15T00:00:00')}
+            onSelect={() => {}}
+            onMoveToDay={props.onMoveToDay}
+            loading={false}
+            lane={{}}
+          />
+        </TooltipProvider>
+      </ConfirmProvider>
+    </QueryClientProvider>,
   );
 }
 

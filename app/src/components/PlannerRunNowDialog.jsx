@@ -21,7 +21,7 @@ import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Rocket, Inbox } from 'lucide-react';
 import { runPublishDue } from '../lib/api.js';
-import { fmtFull, campaignBaseLabel, isDueNow, isYouTubeReleaseDue, publishRunOutcome } from '../lib/format.js';
+import { fmtFull, campaignBaseLabel, isDueNow, isYouTubeReleaseDue, publishRunOutcome, postDisplayState } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
 import { useConfirm } from './ui/confirm.jsx';
 import { Modal, CloseButton, CoverThumb, StatusPill, PlatformIcons, INNER_SURFACE } from './ui.jsx';
@@ -80,7 +80,7 @@ function DueRow({ post, selected, onToggle }) {
                 {t('planner.runDialog.releaseHint')}
               </span>
             ) : null}
-            <StatusPill state={post.derivedState} short />
+            <StatusPill state={postDisplayState(post)} short />
           </span>
         </div>
         <span className="block text-xs font-bold text-zinc-600 dark:text-zinc-300">
@@ -156,10 +156,16 @@ export default function PlannerRunNowDialog({ campaigns, clientName = '', onClos
     // An HTTP 200 is NOT a publish: read the per-lane truth from `ran`. A post
     // whose lanes all refused (or are cloud-held) stays selected and reports
     // WHY, instead of flashing success and falling back to overdue.
-    const { fired, held, reason, rows } = publishRunOutcome(res, p.id);
+    const { fired, held, halted, reason, rows } = publishRunOutcome(res, p.id);
     if (fired) return;
     if (held) throw new Error(t('planner.runDialog.cloudHeld'));
-    throw new Error(reason || (rows.length ? t('planner.runDialog.laneRefused') : t('planner.runDialog.noneFired')));
+    // A genuine per-lane failure (reason) wins over the halt marker so its actionable
+    // message is never swallowed on a mixed post (a halted lane + another lane failing).
+    if (reason) throw new Error(reason);
+    // The lane is paused by an account-level breaker (X 402 credits) and was dropped
+    // before dispatch - not a refusal, and not "not due". Point at the resume control.
+    if (halted) throw new Error(t('planner.runDialog.laneHalted'));
+    throw new Error(rows.length ? t('planner.runDialog.laneRefused') : t('planner.runDialog.noneFired'));
   };
 
   // Refresh the live plan/activity and drop the succeeded keys from the selection.

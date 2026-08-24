@@ -56,7 +56,7 @@ export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckR
     return (
       <div className="flex items-center gap-2">
         <span className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300">
-          <AlertCircle size={13} className="shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
+          <AlertCircle size={13} className="shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
           <span className="sr-only">{t('planner.runNow.blockedAria')}</span>
           <span>{blocker368}</span>
         </span>

@@ -141,6 +141,18 @@ try {
     const goneRow = (goneRun.results || []).find((r) => r.platform === 'nostr');
     ok(goneRow && goneRow.ok === false && goneRow.errorCode === 'radar_target_gone', 'mock: a gone target degrades radar_target_gone (terminal), mirroring the live relay-resolve failure');
   }
+  // ===== (7) the target_gone stamp SURVIVES savePlan (ENGINE_OWNED_FIELDS) =====
+  // The live engine stamps post.radarReplyState = 'target_gone' when the parent event is
+  // unresolvable, then persists via savePlan's merge-only write - which copies ONLY the
+  // fields in ENGINE_OWNED_FIELDS onto the disk copy. Without 'radarReplyState' there, the
+  // stamp was written in memory and silently dropped on disk, so the scheduler re-fired the
+  // dead reply forever. Source-level pin (the const is module-private by design).
+  {
+    const src = fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'scripts', 'nostr-social.mjs'), 'utf8');
+    const m = src.match(/const ENGINE_OWNED_FIELDS = \[([^\]]*)\]/);
+    ok(m && m[1].includes("'radarReplyState'"),
+      "nostr-social.mjs ENGINE_OWNED_FIELDS carries 'radarReplyState' - the target_gone stamp survives the savePlan merge");
+  }
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

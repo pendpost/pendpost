@@ -69,6 +69,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
@@ -412,7 +413,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'pinId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'pinId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -477,8 +478,8 @@ function permalinkFor(post) {
 
 async function cmdAuth(args) {
   console.log(`[info] Connecting Pinterest - credentials will be written to ${ENV_PATH}`);
-  const appId = args['app-id'] || readEnv('PINTEREST_APP_ID');
-  const appSecret = args['app-secret'] || readEnv('PINTEREST_APP_SECRET');
+  const appId = await resolveCredential({ value: args['app-id'] || readEnv('PINTEREST_APP_ID'), hint: 'Paste your Pinterest App ID (Pinterest developer app): ' });
+  const appSecret = await resolveCredential({ value: args['app-secret'] || readEnv('PINTEREST_APP_SECRET'), secret: true, hint: 'Paste your Pinterest App secret (hidden): ' });
   if (!appId || !appSecret) {
     console.error('[err] Need --app-id and --app-secret (Pinterest developer portal -> your app) on first run, or set PINTEREST_APP_ID / PINTEREST_APP_SECRET in .env.');
     process.exit(2);

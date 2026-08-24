@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check, Upload } from 'lucide-react';
 import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, useRedditFlairs, usePinterestBoardSections, createPost, updatePost, lintText } from '../lib/api.js';
+import { useAssetUpload } from '../lib/useAssetUpload.js';
 import { useT, useLocale } from '../lib/i18n.js';
 import { splitTweetThread } from '../lib/thread.js';
 import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia } from '../lib/format.js';
-import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
+import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, FIELD, FIELD_MULTILINE, LinkCardPreview, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { useConfirm } from './ui/confirm.jsx';
-
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 // Content-driven textarea height (mirrors PostDetail's ContentField, punch-list
 // 2.5): grow from the content's newline count and a wrapped-line estimate
@@ -108,7 +107,7 @@ export function LintPanel({ lint }) {
         <li
           key={`${f.rule}-${f.index}-${i}`}
           className={`flex items-start gap-1.5 text-[11px] ${
-            f.severity === 'error' ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300'
+            f.severity === 'error' ? 'text-red-600 dark:text-red-300' : 'text-amber-700 dark:text-amber-300'
           }`}
         >
           <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
@@ -155,11 +154,50 @@ const CAROUSEL_LANE_NOMIX = { x: true, mastodon: true };
 // on a lawful album.
 const CAROUSEL_STRUCTURAL_MAX = 20;
 
+// The MIME allow-list every in-composer upload accepts, kept identical to the
+// Assets library input so a file that uploads there uploads here (video + the two
+// still formats the engine ingests). One const, so the picker and the carousel
+// can never drift apart.
+export const MEDIA_UPLOAD_ACCEPT = 'video/*,image/png,image/jpeg';
+
+// A compact per-file upload status line (uploading / done / error). Shared by the
+// VideoPicker popover and the CarouselPicker so both report progress the same way.
+// Errors arrive already localized from useAssetUpload; done rows are transient and
+// disappear when the asset list refreshes, so only errors carry a dismiss.
+export function UploadStatus({ uploads, onDismiss }) {
+  const t = useT();
+  if (!uploads.length) return null;
+  return (
+    <ul role="status" aria-live="polite" className="space-y-1">
+      {uploads.map((u) => (
+        <li key={u.name} className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] ${INNER_SURFACE}`}>
+          {u.state === 'uploading' ? <Loader2 size={12} className="animate-spin text-zinc-500" aria-hidden="true" /> : u.state === 'done' ? <CheckCircle2 size={12} className="text-emerald-500" aria-hidden="true" /> : <AlertTriangle size={12} className="text-red-500" aria-hidden="true" />}
+          <span className="flex-1 truncate font-bold">{u.name}</span>
+          <span className={u.state === 'error' ? 'text-red-600 dark:text-red-300' : 'text-zinc-500 dark:text-zinc-400'}>{u.state === 'uploading' ? t('assets.upload.statusUploading') : u.state === 'done' ? t('assets.upload.statusDone') : u.error}</span>
+          {u.state === 'error' && onDismiss ? (
+            <Tip label={t('assets.upload.dismissTip')}>
+              <button type="button" onClick={() => onDismiss(u.name)} aria-label={t('assets.upload.dismissAria', { name: u.name })} className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+                <X size={11} aria-hidden="true" />
+              </button>
+            </Tip>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function VideoPicker({ assets, assetsDir, value, onChange, placeholderKey = 'composer.video.choose', optionDisabledReason = null }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [folder, setFolder] = useState('all');
+  // US-MEDIA-UP: upload/drag-drop right at the picker, so a fresh file no longer
+  // needs a detour to the Assets page. A successful upload sets THIS field to the
+  // new asset and closes the popover; the shared engine invalidates ['assets'] so
+  // the grid below already lists it. Dropping onto the field works with the popover
+  // shut, so the fastest path is "drag a file onto the field".
+  const upload = useAssetUpload({ onUploaded: (name) => { onChange(`${assetsDir}/${name}`); setOpen(false); } });
   const selected = useMemo(() => assets.find((a) => `${assetsDir}/${a.file}` === value), [assets, assetsDir, value]);
   const shown = useMemo(
     () => assets.filter((a) => {
@@ -181,9 +219,26 @@ export function VideoPicker({ assets, assetsDir, value, onChange, placeholderKey
           - so the trigger stays a single interactive element (no nested-interactive
           a11y violation). pr-9 reserves room for it; the chevron shows only when
           there is nothing to clear. */}
-      <div className="relative">
+      <div className="relative" {...upload.dragHandlers}>
+        {/* The field itself is the drop target (works with the popover shut). The
+            dashed overlay is dragover-only and click-through, so it never competes
+            with the trigger at rest; the hidden input backs the popover's Upload
+            control. accept mirrors the Assets library exactly (MEDIA_UPLOAD_ACCEPT). */}
+        <input
+          ref={upload.inputRef}
+          type="file"
+          accept={MEDIA_UPLOAD_ACCEPT}
+          aria-label={t('composer.video.upload')}
+          className="hidden"
+          onChange={(e) => { upload.handleFiles(e.target.files); e.target.value = ''; }}
+        />
+        {upload.dragging ? (
+          <div role="region" aria-label={t('assets.drop.region')} className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-xl border-2 border-dashed border-brand bg-brand/5 text-[11px] font-bold text-brand backdrop-blur-sm dark:text-brand-light">
+            {t('composer.video.dropHint')}
+          </div>
+        ) : null}
         <PopoverTrigger asChild>
-          <button type="button" className={`flex w-full items-center gap-2.5 ${FIELD_CLS} ${value ? 'pr-9' : ''}`}>
+          <button type="button" className={`flex w-full items-center gap-2.5 ${FIELD} ${value ? 'pr-9' : ''}`}>
             {selected ? (
               // US-ASSET-13: a chosen video shows its cover, or its own first
               // frame when cover-less - never a bare icon. The clapperboard stays
@@ -198,17 +253,29 @@ export function VideoPicker({ assets, assetsDir, value, onChange, placeholderKey
         </PopoverTrigger>
         {value ? (
           <Tip label={t('composer.video.removeSelected')}>
-            <button type="button" aria-label={t('composer.video.removeSelected')} onClick={() => onChange('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 transition hover:bg-zinc-300/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-600/50">
+            <button type="button" aria-label={t('composer.video.removeSelected')} onClick={() => onChange('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded p-0.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-600/50">
               <X size={14} aria-hidden="true" />
             </button>
           </Tip>
         ) : null}
       </div>
       <PopoverContent className="w-[420px] max-w-[90vw] space-y-2 p-3" align="start">
+        {/* Upload sits ABOVE the library grid: the fresh-file path first, picking an
+            existing file second. Clicking it opens the same hidden input the field's
+            drag-drop feeds, so both routes share one transport. */}
+        <button
+          type="button"
+          onClick={upload.openPicker}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-zinc-300 px-3 py-2 text-[12px] font-bold text-zinc-600 transition hover:border-brand hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-zinc-600 dark:text-zinc-300 dark:hover:border-brand-light dark:hover:text-brand-light"
+        >
+          <Upload size={13} aria-hidden="true" />
+          {t('composer.video.upload')}
+        </button>
+        <UploadStatus uploads={upload.uploads} onDismiss={upload.dismissUpload} />
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <Search size={13} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" aria-hidden="true" />
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('composer.video.searchPlaceholder')} className={`${FIELD_CLS} pl-8`} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('composer.video.searchPlaceholder')} className={`${FIELD} w-full pl-8`} />
           </div>
         </div>
         <div className="flex flex-wrap gap-1">
@@ -250,13 +317,13 @@ export function VideoPicker({ assets, assetsDir, value, onChange, placeholderKey
                     <p className="truncate text-[10px] font-bold">{a.file}</p>
                     <div className="flex items-center gap-1">
                       {specBadges(a, t)}
-                      {a.probe?.durationSec ? <span className="text-[9px] text-zinc-500">{a.probe.durationSec}s</span> : null}
+                      {a.probe?.durationSec ? <span className="text-[9px] text-zinc-500 dark:text-zinc-400">{a.probe.durationSec}s</span> : null}
                     </div>
                   </div>
                 </button>
               </Tip>
             );
-          }) : <p className="col-span-3 py-6 text-center text-[11px] text-zinc-500">{t('composer.video.noMatches')}</p>}
+          }) : <p className="col-span-3 py-6 text-center text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.video.noMatches')}</p>}
         </div>
       </PopoverContent>
     </Popover>
@@ -278,8 +345,6 @@ const STICKER_KINDS = [
 ];
 const STICKER_META = Object.fromEntries(STICKER_KINDS.map((s) => [s.kind, s]));
 
-const STICKER_FIELD_CLS = `w-full rounded-lg border-0 px-2.5 py-1.5 text-xs ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-
 // The labeled, keyboard-operable fields for one sticker (the authoritative
 // content; the preview overlay is decoration). Each kind exposes its own inputs.
 function StickerFields({ sticker, onPatch }) {
@@ -288,39 +353,39 @@ function StickerFields({ sticker, onPatch }) {
   if (sticker.kind === 'poll') {
     return (
       <div role="group" aria-label={t('composer.sticker.poll.group')} className="space-y-1.5">
-        <input aria-label={t('composer.sticker.poll.question')} placeholder={t('composer.sticker.poll.questionPlaceholder')} value={sticker.question || ''} onChange={(e) => set({ question: e.target.value })} className={STICKER_FIELD_CLS} />
+        <input aria-label={t('composer.sticker.poll.question')} placeholder={t('composer.sticker.poll.questionPlaceholder')} value={sticker.question || ''} onChange={(e) => set({ question: e.target.value })} className={`${FIELD} w-full`} />
         <div className="grid grid-cols-2 gap-1.5">
-          <input aria-label={t('composer.sticker.poll.option1')} placeholder={t('composer.sticker.poll.option1Placeholder')} value={sticker.options?.[0] || ''} onChange={(e) => set({ options: [e.target.value, sticker.options?.[1] || ''] })} className={STICKER_FIELD_CLS} />
-          <input aria-label={t('composer.sticker.poll.option2')} placeholder={t('composer.sticker.poll.option2Placeholder')} value={sticker.options?.[1] || ''} onChange={(e) => set({ options: [sticker.options?.[0] || '', e.target.value] })} className={STICKER_FIELD_CLS} />
+          <input aria-label={t('composer.sticker.poll.option1')} placeholder={t('composer.sticker.poll.option1Placeholder')} value={sticker.options?.[0] || ''} onChange={(e) => set({ options: [e.target.value, sticker.options?.[1] || ''] })} className={`${FIELD} w-full`} />
+          <input aria-label={t('composer.sticker.poll.option2')} placeholder={t('composer.sticker.poll.option2Placeholder')} value={sticker.options?.[1] || ''} onChange={(e) => set({ options: [sticker.options?.[0] || '', e.target.value] })} className={`${FIELD} w-full`} />
         </div>
       </div>
     );
   }
   if (sticker.kind === 'question') {
-    return <input aria-label={t('composer.sticker.question.prompt')} placeholder={t('composer.sticker.question.promptPlaceholder')} value={sticker.prompt || ''} onChange={(e) => set({ prompt: e.target.value })} className={STICKER_FIELD_CLS} />;
+    return <input aria-label={t('composer.sticker.question.prompt')} placeholder={t('composer.sticker.question.promptPlaceholder')} value={sticker.prompt || ''} onChange={(e) => set({ prompt: e.target.value })} className={`${FIELD} w-full`} />;
   }
   if (sticker.kind === 'link') {
     return (
       <div className="space-y-1.5">
-        <input aria-label={t('composer.sticker.link.url')} placeholder="https://example.com" value={sticker.url || ''} onChange={(e) => set({ url: e.target.value })} className={STICKER_FIELD_CLS} />
-        <input aria-label={t('composer.sticker.link.labelField')} placeholder={t('composer.sticker.link.labelPlaceholder')} value={sticker.label || ''} onChange={(e) => set({ label: e.target.value })} className={STICKER_FIELD_CLS} />
+        <input aria-label={t('composer.sticker.link.url')} placeholder="https://example.com" value={sticker.url || ''} onChange={(e) => set({ url: e.target.value })} className={`${FIELD} w-full`} />
+        <input aria-label={t('composer.sticker.link.labelField')} placeholder={t('composer.sticker.link.labelPlaceholder')} value={sticker.label || ''} onChange={(e) => set({ label: e.target.value })} className={`${FIELD} w-full`} />
       </div>
     );
   }
   if (sticker.kind === 'mention') {
-    return <input aria-label={t('composer.sticker.mention.handle')} placeholder={t('composer.sticker.mention.handlePlaceholder')} value={sticker.handle || ''} onChange={(e) => set({ handle: e.target.value })} className={STICKER_FIELD_CLS} />;
+    return <input aria-label={t('composer.sticker.mention.handle')} placeholder={t('composer.sticker.mention.handlePlaceholder')} value={sticker.handle || ''} onChange={(e) => set({ handle: e.target.value })} className={`${FIELD} w-full`} />;
   }
   if (sticker.kind === 'location') {
-    return <input aria-label={t('composer.sticker.location.name')} placeholder={t('composer.sticker.location.namePlaceholder')} value={sticker.name || ''} onChange={(e) => set({ name: e.target.value })} className={STICKER_FIELD_CLS} />;
+    return <input aria-label={t('composer.sticker.location.name')} placeholder={t('composer.sticker.location.namePlaceholder')} value={sticker.name || ''} onChange={(e) => set({ name: e.target.value })} className={`${FIELD} w-full`} />;
   }
   if (sticker.kind === 'hashtag') {
-    return <input aria-label={t('composer.sticker.hashtag.tag')} placeholder={t('composer.sticker.hashtag.tagPlaceholder')} value={sticker.tag || ''} onChange={(e) => set({ tag: e.target.value })} className={STICKER_FIELD_CLS} />;
+    return <input aria-label={t('composer.sticker.hashtag.tag')} placeholder={t('composer.sticker.hashtag.tagPlaceholder')} value={sticker.tag || ''} onChange={(e) => set({ tag: e.target.value })} className={`${FIELD} w-full`} />;
   }
   if (sticker.kind === 'music') {
     return (
       <div className="grid grid-cols-2 gap-1.5">
-        <input aria-label={t('composer.sticker.music.title')} placeholder={t('composer.sticker.music.titlePlaceholder')} value={sticker.title || ''} onChange={(e) => set({ title: e.target.value })} className={STICKER_FIELD_CLS} />
-        <input aria-label={t('composer.sticker.music.artist')} placeholder={t('composer.sticker.music.artistPlaceholder')} value={sticker.artist || ''} onChange={(e) => set({ artist: e.target.value })} className={STICKER_FIELD_CLS} />
+        <input aria-label={t('composer.sticker.music.title')} placeholder={t('composer.sticker.music.titlePlaceholder')} value={sticker.title || ''} onChange={(e) => set({ title: e.target.value })} className={`${FIELD} w-full`} />
+        <input aria-label={t('composer.sticker.music.artist')} placeholder={t('composer.sticker.music.artistPlaceholder')} value={sticker.artist || ''} onChange={(e) => set({ artist: e.target.value })} className={`${FIELD} w-full`} />
       </div>
     );
   }
@@ -385,7 +450,7 @@ export function InteractiveFields({
                     label={meta.api === 'supported' ? t('composer.sticker.api.supportedHint') : t('composer.sticker.api.previewHint')}
                   />
                   <Tip label={t('composer.interactive.removeSticker')}>
-                    <button type="button" onClick={() => removeSticker(i)} aria-label={t('composer.interactive.removeStickerKind', { kind: t(`composer.sticker.${sticker.kind}.label`) })} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                    <button type="button" onClick={() => removeSticker(i)} aria-label={t('composer.interactive.removeStickerKind', { kind: t(`composer.sticker.${sticker.kind}.label`) })} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                       <Trash2 size={12} aria-hidden="true" />
                     </button>
                   </Tip>
@@ -419,7 +484,7 @@ export function InteractiveFields({
             placeholder={t('composer.hashtags.perPostPlaceholder')}
             value={hashtags}
             onChange={(e) => onHashtagsChange(e.target.value)}
-            className={STICKER_FIELD_CLS}
+            className={`${FIELD} w-full`}
           />
         )}
       </div>
@@ -466,10 +531,10 @@ export function TelegramCtaFields({ cta, onChange }) {
         <ul className="space-y-1.5">
           {cta.buttons.map((b, i) => (
             <li key={i} className="flex items-center gap-1.5">
-              <input aria-label={t('composer.tgcta.buttonLabel')} placeholder={t('composer.tgcta.buttonLabel')} value={b.label} onChange={(e) => patchButton(i, { label: e.target.value })} className={STICKER_FIELD_CLS} />
-              <input aria-label={t('composer.tgcta.buttonUrl')} placeholder="https://example.com" value={b.url} onChange={(e) => patchButton(i, { url: e.target.value })} className={STICKER_FIELD_CLS} />
+              <input aria-label={t('composer.tgcta.buttonLabel')} placeholder={t('composer.tgcta.buttonLabel')} value={b.label} onChange={(e) => patchButton(i, { label: e.target.value })} className={`${FIELD} w-full`} />
+              <input aria-label={t('composer.tgcta.buttonUrl')} placeholder="https://example.com" value={b.url} onChange={(e) => patchButton(i, { url: e.target.value })} className={`${FIELD} w-full`} />
               <Tip label={t('composer.tgcta.removeButton')}>
-                <button type="button" onClick={() => removeButton(i)} aria-label={t('composer.tgcta.removeButton')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <button type="button" onClick={() => removeButton(i)} aria-label={t('composer.tgcta.removeButton')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                   <Trash2 size={12} aria-hidden="true" />
                 </button>
               </Tip>
@@ -491,7 +556,7 @@ export function TelegramCtaFields({ cta, onChange }) {
         </label>
         <div className="flex items-center gap-1.5">
           <label className={EYEBROW} htmlFor="composer-tgcta-format">{t('composer.tgcta.format')}</label>
-          <select id="composer-tgcta-format" value={cta.format} onChange={(e) => set({ format: e.target.value })} className={FIELD_CLS}>
+          <select id="composer-tgcta-format" value={cta.format} onChange={(e) => set({ format: e.target.value })} className={`${FIELD} w-full`}>
             <option value="plain">{t('composer.tgcta.format.plain')}</option>
             <option value="html">{t('composer.tgcta.format.html')}</option>
           </select>
@@ -558,21 +623,21 @@ function DiscordEventFields({ dcEvent, onChange }) {
       <h4 className={EYEBROW}>{t('composer.dcevent.heading')}</h4>
       <div className="space-y-1.5">
         <label className={EYEBROW} htmlFor="composer-dcevent-name">{t('composer.dcevent.name')}</label>
-        <input id="composer-dcevent-name" value={dcEvent.name} onChange={(e) => set({ name: e.target.value })} className={FIELD_CLS} />
+        <input id="composer-dcevent-name" value={dcEvent.name} onChange={(e) => set({ name: e.target.value })} className={`${FIELD} w-full`} />
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
           <label className={EYEBROW} htmlFor="composer-dcevent-start">{t('composer.dcevent.start')}</label>
-          <input id="composer-dcevent-start" type="datetime-local" value={dcEvent.startTime} onChange={(e) => set({ startTime: e.target.value })} className={FIELD_CLS} />
+          <input id="composer-dcevent-start" type="datetime-local" value={dcEvent.startTime} onChange={(e) => set({ startTime: e.target.value })} className={`${FIELD} w-full`} />
         </div>
         <div className="space-y-1.5">
           <label className={EYEBROW} htmlFor="composer-dcevent-end">{t('composer.dcevent.end')}</label>
-          <input id="composer-dcevent-end" type="datetime-local" value={dcEvent.endTime} onChange={(e) => set({ endTime: e.target.value })} className={FIELD_CLS} />
+          <input id="composer-dcevent-end" type="datetime-local" value={dcEvent.endTime} onChange={(e) => set({ endTime: e.target.value })} className={`${FIELD} w-full`} />
         </div>
       </div>
       <div className="space-y-1.5">
         <label className={EYEBROW} htmlFor="composer-dcevent-location">{t('composer.dcevent.location')}</label>
-        <input id="composer-dcevent-location" value={dcEvent.location} onChange={(e) => set({ location: e.target.value })} placeholder={t('composer.dcevent.locationPlaceholder')} className={FIELD_CLS} />
+        <input id="composer-dcevent-location" value={dcEvent.location} onChange={(e) => set({ location: e.target.value })} placeholder={t('composer.dcevent.locationPlaceholder')} className={`${FIELD} w-full`} />
       </div>
     </div>
   );
@@ -610,20 +675,20 @@ export function DiscordEmbedFields({ embed, onChange, threadName, threadId, onTh
       <h3 className={EYEBROW}>{t('composer.dcembed.heading')}</h3>
       <div className="space-y-1.5">
         <label className={EYEBROW} htmlFor="composer-dcembed-title">{t('composer.dcembed.title')}</label>
-        <input id="composer-dcembed-title" value={embed.title} onChange={(e) => set({ title: e.target.value })} className={FIELD_CLS} />
+        <input id="composer-dcembed-title" value={embed.title} onChange={(e) => set({ title: e.target.value })} className={`${FIELD} w-full`} />
       </div>
       <div className="space-y-1.5">
         <label className={EYEBROW} htmlFor="composer-dcembed-description">{t('composer.dcembed.description')}</label>
-        <textarea id="composer-dcembed-description" value={embed.description} onChange={(e) => set({ description: e.target.value })} rows={2} className={`${FIELD_CLS} resize-y`} />
+        <textarea id="composer-dcembed-description" value={embed.description} onChange={(e) => set({ description: e.target.value })} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
           <label className={EYEBROW} htmlFor="composer-dcembed-url">{t('composer.dcembed.url')}</label>
-          <input id="composer-dcembed-url" value={embed.url} onChange={(e) => set({ url: e.target.value })} placeholder="https://example.com" className={FIELD_CLS} />
+          <input id="composer-dcembed-url" value={embed.url} onChange={(e) => set({ url: e.target.value })} placeholder="https://example.com" className={`${FIELD} w-full`} />
         </div>
         <div className="space-y-1.5">
           <label className={EYEBROW} htmlFor="composer-dcembed-color">{t('composer.dcembed.color')}</label>
-          <input id="composer-dcembed-color" value={embed.color} onChange={(e) => set({ color: e.target.value })} placeholder="#5865F2" className={FIELD_CLS} />
+          <input id="composer-dcembed-color" value={embed.color} onChange={(e) => set({ color: e.target.value })} placeholder="#5865F2" className={`${FIELD} w-full`} />
         </div>
       </div>
       <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.dcembed.buttonsGated')}</p>
@@ -633,11 +698,11 @@ export function DiscordEmbedFields({ embed, onChange, threadName, threadId, onTh
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-dc-thread-name">{t('composer.field.dcThreadName')}</label>
-              <input id="composer-dc-thread-name" value={threadName} onChange={(e) => onThreadNameChange(e.target.value)} placeholder={t('composer.field.dcThreadNamePlaceholder')} className={FIELD_CLS} />
+              <input id="composer-dc-thread-name" value={threadName} onChange={(e) => onThreadNameChange(e.target.value)} placeholder={t('composer.field.dcThreadNamePlaceholder')} className={`${FIELD} w-full`} />
             </div>
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-dc-thread-id">{t('composer.field.dcThreadId')}</label>
-              <input id="composer-dc-thread-id" value={threadId} onChange={(e) => onThreadIdChange(e.target.value)} placeholder="123456789012345678" className={FIELD_CLS} />
+              <input id="composer-dc-thread-id" value={threadId} onChange={(e) => onThreadIdChange(e.target.value)} placeholder="123456789012345678" className={`${FIELD} w-full`} />
             </div>
           </div>
           <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.hint.dcThreadExclusive')}</p>
@@ -716,7 +781,7 @@ function GbpFields({ gbp, onChange }) {
       <div className="grid grid-cols-2 gap-3">
         <div className="space-y-1.5">
           <label className={EYEBROW} htmlFor="composer-gbp-topic">{t('composer.gbp.topic')}</label>
-          <select id="composer-gbp-topic" value={gbp.topic} onChange={(e) => set({ topic: e.target.value })} className={FIELD_CLS}>
+          <select id="composer-gbp-topic" value={gbp.topic} onChange={(e) => set({ topic: e.target.value })} className={`${FIELD} w-full`}>
             {GBP_TOPICS.map((k) => (
               <option key={k} value={k}>{t(`composer.gbp.topic.${k}`)}</option>
             ))}
@@ -724,7 +789,7 @@ function GbpFields({ gbp, onChange }) {
         </div>
         <div className="space-y-1.5">
           <label className={EYEBROW} htmlFor="composer-gbp-cta">{t('composer.gbp.ctaType')}</label>
-          <select id="composer-gbp-cta" value={gbp.ctaType} onChange={(e) => set({ ctaType: e.target.value })} className={FIELD_CLS}>
+          <select id="composer-gbp-cta" value={gbp.ctaType} onChange={(e) => set({ ctaType: e.target.value })} className={`${FIELD} w-full`}>
             {Object.entries(GBP_CTA_KEYS).map(([value, key]) => (
               <option key={key} value={value}>{t(`composer.gbp.cta.${key}`)}</option>
             ))}
@@ -734,23 +799,23 @@ function GbpFields({ gbp, onChange }) {
       {showCtaUrl ? (
         <div className="space-y-1.5">
           <label className={EYEBROW} htmlFor="composer-gbp-cta-url">{t('composer.gbp.ctaUrl')}</label>
-          <input id="composer-gbp-cta-url" value={gbp.ctaUrl} onChange={(e) => set({ ctaUrl: e.target.value })} placeholder="https://example.com/book" className={FIELD_CLS} />
+          <input id="composer-gbp-cta-url" value={gbp.ctaUrl} onChange={(e) => set({ ctaUrl: e.target.value })} placeholder="https://example.com/book" className={`${FIELD} w-full`} />
         </div>
       ) : null}
       {gbp.topic === 'event' ? (
         <>
           <div className="space-y-1.5">
             <label className={EYEBROW} htmlFor="composer-gbp-event-title">{t('composer.gbp.eventTitle')}</label>
-            <input id="composer-gbp-event-title" value={gbp.eventTitle} onChange={(e) => set({ eventTitle: e.target.value })} className={FIELD_CLS} />
+            <input id="composer-gbp-event-title" value={gbp.eventTitle} onChange={(e) => set({ eventTitle: e.target.value })} className={`${FIELD} w-full`} />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-gbp-event-start">{t('composer.gbp.eventStart')}</label>
-              <input id="composer-gbp-event-start" type="date" value={gbp.eventStart} onChange={(e) => set({ eventStart: e.target.value })} className={FIELD_CLS} />
+              <input id="composer-gbp-event-start" type="date" value={gbp.eventStart} onChange={(e) => set({ eventStart: e.target.value })} className={`${FIELD} w-full`} />
             </div>
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-gbp-event-end">{t('composer.gbp.eventEnd')}</label>
-              <input id="composer-gbp-event-end" type="date" value={gbp.eventEnd} onChange={(e) => set({ eventEnd: e.target.value })} className={FIELD_CLS} />
+              <input id="composer-gbp-event-end" type="date" value={gbp.eventEnd} onChange={(e) => set({ eventEnd: e.target.value })} className={`${FIELD} w-full`} />
             </div>
           </div>
         </>
@@ -760,16 +825,16 @@ function GbpFields({ gbp, onChange }) {
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-gbp-coupon">{t('composer.gbp.couponCode')}</label>
-              <input id="composer-gbp-coupon" value={gbp.couponCode} onChange={(e) => set({ couponCode: e.target.value })} className={FIELD_CLS} />
+              <input id="composer-gbp-coupon" value={gbp.couponCode} onChange={(e) => set({ couponCode: e.target.value })} className={`${FIELD} w-full`} />
             </div>
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-gbp-redeem">{t('composer.gbp.redeemUrl')}</label>
-              <input id="composer-gbp-redeem" value={gbp.redeemUrl} onChange={(e) => set({ redeemUrl: e.target.value })} placeholder="https://example.com/offer" className={FIELD_CLS} />
+              <input id="composer-gbp-redeem" value={gbp.redeemUrl} onChange={(e) => set({ redeemUrl: e.target.value })} placeholder="https://example.com/offer" className={`${FIELD} w-full`} />
             </div>
           </div>
           <div className="space-y-1.5">
             <label className={EYEBROW} htmlFor="composer-gbp-terms">{t('composer.gbp.terms')}</label>
-            <textarea id="composer-gbp-terms" value={gbp.terms} onChange={(e) => set({ terms: e.target.value })} rows={2} className={`${FIELD_CLS} resize-y`} />
+            <textarea id="composer-gbp-terms" value={gbp.terms} onChange={(e) => set({ terms: e.target.value })} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
           </div>
         </>
       ) : null}
@@ -823,7 +888,7 @@ export function TiktokFields({ interaction, onChange }) {
       </div>
       <div className="space-y-1.5">
         <label className={EYEBROW} htmlFor="composer-tiktok-cover-ts">{t('composer.tiktok.coverTimestamp')}</label>
-        <input id="composer-tiktok-cover-ts" type="number" min="0" value={interaction.coverTimestampMs} onChange={(e) => set({ coverTimestampMs: e.target.value })} className={FIELD_CLS} />
+        <input id="composer-tiktok-cover-ts" type="number" min="0" value={interaction.coverTimestampMs} onChange={(e) => set({ coverTimestampMs: e.target.value })} className={`${FIELD} w-24`} />
       </div>
     </section>
   );
@@ -883,11 +948,11 @@ export function PollFields({ poll, onChange, max }) {
               placeholder={t('composer.poll.option', { n: i + 1 })}
               value={o}
               onChange={(e) => setOption(i, e.target.value)}
-              className={STICKER_FIELD_CLS}
+              className={`${FIELD} w-full`}
             />
             {poll.options.length > 2 ? (
               <Tip label={t('composer.poll.removeOption')}>
-                <button type="button" onClick={() => removeOption(i)} aria-label={t('composer.poll.removeOption')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <button type="button" onClick={() => removeOption(i)} aria-label={t('composer.poll.removeOption')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                   <Trash2 size={12} aria-hidden="true" />
                 </button>
               </Tip>
@@ -899,7 +964,7 @@ export function PollFields({ poll, onChange, max }) {
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-1.5">
           <label className={EYEBROW} htmlFor="composer-poll-duration">{t('composer.poll.duration')}</label>
-          <select id="composer-poll-duration" value={poll.durationMinutes} onChange={(e) => onChange({ ...poll, durationMinutes: Number(e.target.value) })} className={FIELD_CLS}>
+          <select id="composer-poll-duration" value={poll.durationMinutes} onChange={(e) => onChange({ ...poll, durationMinutes: Number(e.target.value) })} className={`${FIELD} w-full`}>
             {/* A non-preset (e.g. MCP-authored) durationMinutes isn't among the presets;
                 synthesize an option so the select shows + preserves it instead of
                 silently rendering the first preset (mirrors PostDetail's "<n> min"
@@ -971,23 +1036,63 @@ export function CarouselPicker({ assets, assetsDir, items, onChange, max, slideU
   // author cannot tell "at the cap" from "this build has no Add button".
   const atCap = rows.length >= max;
   const addReason = atCap ? t('composer.carousel.atCap', { max }) : null;
+  // US-MEDIA-UP: drop several files onto the album to upload them all and append
+  // each as a new slide (per-slot upload already comes free via the shared
+  // VideoPicker inside each row). itemsRef tracks the latest array so sequential
+  // uploads append rather than clobber, and the strictest-lane cap is honored so a
+  // bulk drop can never overflow it.
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const upload = useAssetUpload({ onUploaded: (name) => {
+    if (itemsRef.current.length >= max) return;
+    onChange([...itemsRef.current, `${assetsDir}/${name}`]);
+  } });
   return (
-    <section className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`}>
+    <section className={`relative space-y-3 rounded-xl p-3 ${INNER_SURFACE}`} {...upload.dragHandlers}>
+      <input
+        ref={upload.inputRef}
+        type="file"
+        accept={MEDIA_UPLOAD_ACCEPT}
+        multiple
+        aria-label={t('composer.carousel.upload')}
+        className="hidden"
+        onChange={(e) => { upload.handleFiles(e.target.files); e.target.value = ''; }}
+      />
+      {upload.dragging ? (
+        <div role="region" aria-label={t('assets.drop.region')} className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-xl border-2 border-dashed border-brand bg-brand/5 text-[11px] font-bold text-brand backdrop-blur-sm dark:text-brand-light">
+          {t('composer.carousel.dropHint')}
+        </div>
+      ) : null}
       <div className="flex items-center justify-between gap-2">
         <h3 className={EYEBROW}>{t('composer.carousel.heading')}</h3>
-        <Tip label={addReason || t('composer.carousel.add')}>
-          <button
-            type="button"
-            aria-disabled={atCap ? true : undefined}
-            aria-label={addReason ? `${t('composer.carousel.add')}: ${addReason}` : undefined}
-            onClick={atCap ? undefined : addSlot}
-            className={`flex items-center gap-1 rounded-lg bg-zinc-200/60 px-2 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 ${atCap ? 'cursor-not-allowed opacity-40' : 'hover:bg-zinc-300/60 dark:hover:bg-zinc-700/60'}`}
-          >
-            <Plus size={12} aria-hidden="true" />
-            {t('composer.carousel.add')}
-          </button>
-        </Tip>
+        <div className="flex items-center gap-1.5">
+          <Tip label={atCap ? addReason : t('composer.carousel.upload')}>
+            <button
+              type="button"
+              aria-disabled={atCap ? true : undefined}
+              aria-label={atCap ? `${t('composer.carousel.upload')}: ${addReason}` : t('composer.carousel.upload')}
+              onClick={atCap ? undefined : upload.openPicker}
+              className={`flex items-center gap-1 rounded-lg bg-zinc-200/60 px-2 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 ${atCap ? 'cursor-not-allowed opacity-40' : 'hover:bg-zinc-300/60 dark:hover:bg-zinc-700/60'}`}
+            >
+              <Upload size={12} aria-hidden="true" />
+              {t('composer.carousel.upload')}
+            </button>
+          </Tip>
+          <Tip label={addReason || t('composer.carousel.add')}>
+            <button
+              type="button"
+              aria-disabled={atCap ? true : undefined}
+              aria-label={addReason ? `${t('composer.carousel.add')}: ${addReason}` : undefined}
+              onClick={atCap ? undefined : addSlot}
+              className={`flex items-center gap-1 rounded-lg bg-zinc-200/60 px-2 py-1 text-[11px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-800/60 ${atCap ? 'cursor-not-allowed opacity-40' : 'hover:bg-zinc-300/60 dark:hover:bg-zinc-700/60'}`}
+            >
+              <Plus size={12} aria-hidden="true" />
+              {t('composer.carousel.add')}
+            </button>
+          </Tip>
+        </div>
       </div>
+      <UploadStatus uploads={upload.uploads} onDismiss={upload.dismissUpload} />
       <ul className="space-y-1.5">
         {rows.map((val, i) => (
           <li key={i} className="flex items-center gap-1.5">
@@ -1000,23 +1105,23 @@ export function CarouselPicker({ assets, assetsDir, items, onChange, max, slideU
                   onChange={(e) => onSlideUrlChange(val, e.target.value)}
                   placeholder="https://res.cloudinary.com/<your-cloud>/..."
                   aria-label={t('composer.carousel.slideUrl')}
-                  className={`${STICKER_FIELD_CLS}`}
+                  className={`${FIELD} w-full`}
                 />
               ) : null}
             </div>
             <Tip label={t('composer.carousel.moveUp')}>
-              <button type="button" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t('composer.carousel.moveUp')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+              <button type="button" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t('composer.carousel.moveUp')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                 <ChevronDown size={12} className="rotate-180" aria-hidden="true" />
               </button>
             </Tip>
             <Tip label={t('composer.carousel.moveDown')}>
-              <button type="button" onClick={() => move(i, 1)} disabled={i === rows.length - 1} aria-label={t('composer.carousel.moveDown')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+              <button type="button" onClick={() => move(i, 1)} disabled={i === rows.length - 1} aria-label={t('composer.carousel.moveDown')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                 <ChevronDown size={12} aria-hidden="true" />
               </button>
             </Tip>
             {rows.length > 2 ? (
               <Tip label={t('composer.carousel.remove')}>
-                <button type="button" onClick={() => removeSlot(i)} aria-label={t('composer.carousel.remove')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <button type="button" onClick={() => removeSlot(i)} aria-label={t('composer.carousel.remove')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                   <Trash2 size={12} aria-hidden="true" />
                 </button>
               </Tip>
@@ -1982,7 +2087,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-campaign">{t('composer.field.campaign')}</label>
-                <select id="composer-campaign" ref={campaignSelectRef} value={campaign} onChange={(e) => setCampaign(e.target.value)} className={FIELD_CLS}>
+                <select id="composer-campaign" ref={campaignSelectRef} value={campaign} onChange={(e) => setCampaign(e.target.value)} className={`${FIELD} w-full`}>
                   <option value="" disabled>{t('composer.campaignPlaceholder')}</option>
                   {campaigns.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -1996,7 +2101,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                   {t('composer.field.postId')}
                   {!idEdited ? <Tip label={t('composer.postIdHint')}><span className="inline-flex"><Wand2 size={11} className="text-brand dark:text-brand-light" aria-hidden="true" /></span></Tip> : null}
                 </label>
-                <input id="composer-id" ref={idRef} value={id} onChange={(e) => { setIdEdited(true); setId(e.target.value); }} placeholder={t('composer.postIdPlaceholder')} className={FIELD_CLS} />
+                <input id="composer-id" ref={idRef} value={id} onChange={(e) => { setIdEdited(true); setId(e.target.value); }} placeholder={t('composer.postIdPlaceholder')} className={`${FIELD} w-full`} />
               </div>
             </div>
           ) : null}
@@ -2004,13 +2109,13 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-type">{t('composer.field.format')}</label>
-              {/* Format + schedule share one explicit height and the same FIELD_CLS
+              {/* Format + schedule share one explicit height and the same FIELD
                   surface so the adjacent select and picker trigger read as one row.
                   A12: offer only the formats the chosen lane(s) can publish (union
                   across platforms; full list when none), keeping the current value
                   listed even if now invalid so a platform change never silently
                   rewrites the format. */}
-              <select id="composer-type" value={type} onChange={(e) => onTypeChange(e.target.value)} className={`${FIELD_CLS} h-10`}>
+              <select id="composer-type" value={type} onChange={(e) => onTypeChange(e.target.value)} className={`${FIELD} w-full h-10`}>
                 {TYPES.filter((ty) => ty === type || (platforms.length ? platforms.some((p) => formatsForPlatform(p).includes(ty)) : true)).map((ty) => (
                   <option key={ty} value={ty}>{typeOptionLabel(t, platforms, ty)}</option>
                 ))}
@@ -2018,7 +2123,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
             <div className="space-y-1.5" ref={scheduleFieldRef}>
               <label className={EYEBROW}>{t('composer.field.schedule')}</label>
-              <DateTimePicker value={scheduledIso} onChange={setScheduledIso} triggerClassName={`${FIELD_CLS} h-10`} />
+              <DateTimePicker value={scheduledIso} onChange={setScheduledIso} triggerClassName={`${FIELD} w-full h-10`} />
             </div>
           </div>
 
@@ -2041,7 +2146,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.caption ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-caption">{t('composer.field.caption')}</label>
-              <textarea id="composer-caption" value={caption} onChange={(e) => setCaption(e.target.value)} rows={growRows(caption, 4, 14)} className={`${FIELD_CLS} resize-y leading-relaxed`} />
+              <textarea id="composer-caption" value={caption} onChange={(e) => setCaption(e.target.value)} rows={growRows(caption, 4, 14)} className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`} />
               <div aria-live="polite">
                 <LintPanel lint={lint} />
               </div>
@@ -2058,7 +2163,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 rows={growRows(xCaption, 3, 12)}
                 placeholder={t('composer.field.xCaptionPlaceholder')}
                 aria-describedby="composer-x-counter"
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
               <CharCounter id="composer-x-counter" len={xLen} max={CAPTION_CAPS.x} over={xOver} />
               {/* r2-3: announce ONLY the over/under transition, not every keystroke. */}
@@ -2131,7 +2236,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setXReplyTo(e.target.value)}
                 list="composer-x-reply-to-posts"
                 placeholder={t('composer.field.xReplyToPlaceholder')}
-                className={FIELD_CLS}
+                className={`${FIELD} w-full`}
               />
               <datalist id="composer-x-reply-to-posts">
                 {campaignPosts
@@ -2149,7 +2254,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.xReplySettings ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-x-reply-settings">{t('composer.field.xReplySettings')}</label>
-              <select id="composer-x-reply-settings" value={xReplySettings} onChange={(e) => setXReplySettings(e.target.value)} className={FIELD_CLS}>
+              <select id="composer-x-reply-settings" value={xReplySettings} onChange={(e) => setXReplySettings(e.target.value)} className={`${FIELD} w-full`}>
                 <option value="">{t('composer.field.xReplySettings.default')}</option>
                 {X_REPLY_SETTINGS.map((v) => (
                   <option key={v} value={v}>{t(`composer.field.xReplySettings.${v}`)}</option>
@@ -2168,7 +2273,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 rows={growRows(mastodonCaption, 3, 12)}
                 placeholder={t('composer.field.mastodonCaptionPlaceholder')}
                 aria-describedby="composer-mastodon-counter"
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
               <CharCounter id="composer-mastodon-counter" len={mastodonLen} max={CAPTION_CAPS.mastodon} over={mastodonOver} />
               <p role="status" aria-live="polite" className="sr-only">{mastodonOverAnnounce}</p>
@@ -2180,7 +2285,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.spoilerText ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-spoiler-text">{t('composer.field.spoilerText')}</label>
-              <input id="composer-spoiler-text" value={spoilerText} onChange={(e) => setSpoilerText(e.target.value)} placeholder={t('composer.field.spoilerTextPlaceholder')} className={FIELD_CLS} />
+              <input id="composer-spoiler-text" value={spoilerText} onChange={(e) => setSpoilerText(e.target.value)} placeholder={t('composer.field.spoilerTextPlaceholder')} className={`${FIELD} w-full`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.spoilerTextHint')}</p>
             </div>
           ) : null}
@@ -2194,7 +2299,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setNostrCaption(e.target.value)}
                 rows={growRows(nostrCaption, 3, 12)}
                 placeholder={t('composer.field.nostrCaptionPlaceholder')}
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
             </div>
           ) : null}
@@ -2215,7 +2320,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setTgCaption(e.target.value)}
                 rows={growRows(tgCaption, 3, 12)}
                 placeholder={t('composer.field.tgCaptionPlaceholder')}
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
             </div>
           ) : null}
@@ -2229,7 +2334,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setDcCaption(e.target.value)}
                 rows={growRows(dcCaption, 3, 12)}
                 placeholder={t('composer.field.dcCaptionPlaceholder')}
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
             </div>
           ) : null}
@@ -2243,7 +2348,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setTtCaption(e.target.value)}
                 rows={growRows(ttCaption, 3, 12)}
                 placeholder={t('composer.field.ttCaptionPlaceholder')}
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
             </div>
           ) : null}
@@ -2257,7 +2362,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setRedditText(e.target.value)}
                 rows={growRows(redditText, 3, 12)}
                 placeholder={t('composer.field.redditTextPlaceholder')}
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
             </div>
           ) : null}
@@ -2273,7 +2378,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 value={pinTitle}
                 onChange={(e) => setPinTitle(e.target.value)}
                 placeholder={t('composer.field.pinTitlePlaceholder')}
-                className={FIELD_CLS}
+                className={`${FIELD} w-full`}
               />
             </div>
           ) : null}
@@ -2287,7 +2392,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 onChange={(e) => setPinDescription(e.target.value)}
                 rows={growRows(pinDescription, 3, 12)}
                 placeholder={t('composer.field.pinDescriptionPlaceholder')}
-                className={`${FIELD_CLS} resize-y leading-relaxed`}
+                className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
             </div>
           ) : null}
@@ -2295,7 +2400,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {showFirstComment ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-comment">{t('composer.field.firstComment')}</label>
-              <textarea id="composer-comment" value={firstComment} onChange={(e) => setFirstComment(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+              <textarea id="composer-comment" value={firstComment} onChange={(e) => setFirstComment(e.target.value)} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
               <LintPanel lint={commentLint} />
             </div>
           ) : null}
@@ -2306,7 +2411,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.altText ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-alt-text">{t('composer.field.altText')}</label>
-              <textarea id="composer-alt-text" value={altText} onChange={(e) => setAltText(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+              <textarea id="composer-alt-text" value={altText} onChange={(e) => setAltText(e.target.value)} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.altTextHint')}</p>
             </div>
           ) : null}
@@ -2326,7 +2431,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.title ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-title">{t('composer.field.title')}</label>
-              <input id="composer-title" value={title} onChange={(e) => setTitle(e.target.value)} className={FIELD_CLS} />
+              <input id="composer-title" value={title} onChange={(e) => setTitle(e.target.value)} className={`${FIELD} w-full`} />
               {isArticle ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.titleArticleHint')}</p> : null}
             </div>
           ) : null}
@@ -2337,17 +2442,17 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-body">{t('composer.field.body')}</label>
-                <textarea id="composer-body" value={body} onChange={(e) => setBody(e.target.value)} rows={10} className={`${FIELD_CLS} resize-y font-mono leading-relaxed`} />
+                <textarea id="composer-body" value={body} onChange={(e) => setBody(e.target.value)} rows={10} className={`${FIELD_MULTILINE} w-full resize-y font-mono leading-relaxed`} />
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.bodyHint')}</p>
                 {/* Spec 18: an article's content IS the body (no caption fallback on the
                     nostr lane), so an empty body is a publish blocker - surface it early. */}
                 {isNostrArticle && !body.trim() ? (
-                  <p role="status" className="text-[11px] text-amber-600 dark:text-amber-300">{t('composer.nostr.bodyRequired')}</p>
+                  <p role="status" className="text-[11px] text-amber-700 dark:text-amber-300">{t('composer.nostr.bodyRequired')}</p>
                 ) : null}
               </div>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-excerpt">{t('composer.field.excerpt')}</label>
-                <textarea id="composer-excerpt" value={excerpt} onChange={(e) => setExcerpt(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+                <textarea id="composer-excerpt" value={excerpt} onChange={(e) => setExcerpt(e.target.value)} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.excerptHint')}</p>
               </div>
             </>
@@ -2359,7 +2464,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.metaTitle ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-meta-title">{t('composer.field.metaTitle')}</label>
-              <input id="composer-meta-title" value={metaTitle} onChange={(e) => setMetaTitle(e.target.value)} className={FIELD_CLS} />
+              <input id="composer-meta-title" value={metaTitle} onChange={(e) => setMetaTitle(e.target.value)} className={`${FIELD} w-full`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.metaTitleHint')}</p>
             </div>
           ) : null}
@@ -2367,7 +2472,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.metaDescription ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-meta-description">{t('composer.field.metaDescription')}</label>
-              <textarea id="composer-meta-description" value={metaDescription} onChange={(e) => setMetaDescription(e.target.value)} rows={2} className={`${FIELD_CLS} resize-y`} />
+              <textarea id="composer-meta-description" value={metaDescription} onChange={(e) => setMetaDescription(e.target.value)} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.metaDescriptionHint')}</p>
             </div>
           ) : null}
@@ -2375,7 +2480,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.wpCategories ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-wp-categories">{t('composer.field.wpCategories')}</label>
-              <input id="composer-wp-categories" value={wpCategories} onChange={(e) => setWpCategories(e.target.value)} placeholder={t('composer.field.wpCategoriesPlaceholder')} className={FIELD_CLS} />
+              <input id="composer-wp-categories" value={wpCategories} onChange={(e) => setWpCategories(e.target.value)} placeholder={t('composer.field.wpCategoriesPlaceholder')} className={`${FIELD} w-full`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.wpCategoriesHint')}</p>
             </div>
           ) : null}
@@ -2383,7 +2488,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.featureImageAlt ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-feature-image-alt">{t('composer.field.featureImageAlt')}</label>
-              <input id="composer-feature-image-alt" value={featureImageAlt} onChange={(e) => setFeatureImageAlt(e.target.value)} className={FIELD_CLS} />
+              <input id="composer-feature-image-alt" value={featureImageAlt} onChange={(e) => setFeatureImageAlt(e.target.value)} className={`${FIELD} w-full`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.featureImageAltHint')}</p>
             </div>
           ) : null}
@@ -2409,7 +2514,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.link ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-link">{t('composer.field.link')}</label>
-              <input id="composer-link" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://example.com/blog/..." className={FIELD_CLS} />
+              <input id="composer-link" value={link} onChange={(e) => setLink(e.target.value)} placeholder="https://example.com/blog/..." className={`${FIELD} w-full`} />
             </div>
           ) : null}
 
@@ -2418,7 +2523,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.image ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-image">{isArticle ? t('composer.field.imageArticle') : t('composer.field.image')}</label>
-              <input id="composer-image" value={image} onChange={(e) => setImage(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={FIELD_CLS} />
+              <input id="composer-image" value={image} onChange={(e) => setImage(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={`${FIELD} w-full`} />
             </div>
           ) : null}
 
@@ -2429,7 +2534,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.imageUrl ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-image-url">{t('composer.field.imageUrl')}</label>
-              <input id="composer-image-url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={FIELD_CLS} />
+              <input id="composer-image-url" value={imageUrl} onChange={(e) => setImageUrl(e.target.value)} placeholder="https://res.cloudinary.com/<your-cloud>/..." className={`${FIELD} w-full`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.imageUrlHint')}</p>
             </div>
           ) : null}
@@ -2459,7 +2564,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.redditSubreddit ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-reddit-subreddit">{t('composer.field.redditSubreddit')}</label>
-              <input id="composer-reddit-subreddit" value={redditSubreddit} onChange={(e) => setRedditSubreddit(e.target.value)} placeholder={connectedSubreddit} className={FIELD_CLS} />
+              <input id="composer-reddit-subreddit" value={redditSubreddit} onChange={(e) => setRedditSubreddit(e.target.value)} placeholder={connectedSubreddit} className={`${FIELD} w-full`} />
             </div>
           ) : null}
 
@@ -2468,7 +2573,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.redditUrl ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-reddit-url">{t('composer.field.redditUrl')}</label>
-              <input id="composer-reddit-url" value={redditUrl} onChange={(e) => setRedditUrl(e.target.value)} placeholder="https://example.com/article" className={FIELD_CLS} />
+              <input id="composer-reddit-url" value={redditUrl} onChange={(e) => setRedditUrl(e.target.value)} placeholder="https://example.com/article" className={`${FIELD} w-full`} />
             </div>
           ) : null}
 
@@ -2486,7 +2591,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 // No connected subreddit yet - a neutral nudge, never a fake "r/reddit".
                 <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.reddit.flairNoSub')}</p>
               ) : redditFlairsLoading ? (
-                <select aria-label={t('composer.field.redditFlair')} disabled className={FIELD_CLS}>
+                <select aria-label={t('composer.field.redditFlair')} disabled className={`${FIELD} w-full`}>
                   <option>{t('composer.reddit.flairLoading')}</option>
                 </select>
               ) : redditFlairsUnavailable ? (
@@ -2501,7 +2606,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                     // flair_text only rides an EDITABLE template (Reddit ignores it otherwise).
                     setRedditFlairText(picked && picked.editable ? (picked.text || '') : '');
                   }}
-                  className={FIELD_CLS}
+                  className={`${FIELD} w-full`}
                 >
                   <option value="">{t('composer.reddit.flairNone')}</option>
                   {redditFlairs.map((f) => (
@@ -2523,7 +2628,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-pin-board-section">{t('composer.field.pinBoardSection')}</label>
               {pinterestSectionsLoading ? (
-                <select id="composer-pin-board-section" disabled className={FIELD_CLS}>
+                <select id="composer-pin-board-section" disabled className={`${FIELD} w-full`}>
                   <option>{t('composer.pinterest.sectionsLoading')}</option>
                 </select>
               ) : pinterestSectionsUnavailable ? (
@@ -2533,7 +2638,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                   id="composer-pin-board-section"
                   value={pinBoardSection}
                   onChange={(e) => setPinBoardSection(e.target.value)}
-                  className={FIELD_CLS}
+                  className={`${FIELD} w-full`}
                 >
                   <option value="">{t('composer.pinterest.sectionRoot')}</option>
                   {pinterestSections.map((s) => (
@@ -2552,7 +2657,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-canonical-url">{t('composer.field.canonicalUrl')}</label>
-                <input id="composer-canonical-url" value={canonicalUrl} onChange={(e) => setCanonicalUrl(e.target.value)} placeholder="https://example.com/original-post" className={FIELD_CLS} />
+                <input id="composer-canonical-url" value={canonicalUrl} onChange={(e) => setCanonicalUrl(e.target.value)} placeholder="https://example.com/original-post" className={`${FIELD} w-full`} />
               </div>
               <label className="flex items-center gap-2 text-xs font-bold">
                 <input
@@ -2569,12 +2674,12 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 <div className="space-y-3 pl-1">
                   <div className="space-y-1.5">
                     <label className={EYEBROW} htmlFor="composer-newsletter">{t('composer.field.newsletter')}</label>
-                    <input id="composer-newsletter" value={newsletter} onChange={(e) => setNewsletter(e.target.value)} placeholder={t('composer.field.newsletterPlaceholder')} className={FIELD_CLS} />
+                    <input id="composer-newsletter" value={newsletter} onChange={(e) => setNewsletter(e.target.value)} placeholder={t('composer.field.newsletterPlaceholder')} className={`${FIELD} w-full`} />
                     <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.newsletterHint')}</p>
                   </div>
                   <div className="space-y-1.5">
                     <label className={EYEBROW} htmlFor="composer-email-segment">{t('composer.field.emailSegment')}</label>
-                    <select id="composer-email-segment" value={emailSegment} onChange={(e) => setEmailSegment(e.target.value)} className={FIELD_CLS}>
+                    <select id="composer-email-segment" value={emailSegment} onChange={(e) => setEmailSegment(e.target.value)} className={`${FIELD} w-full`}>
                       <option value="">{t('composer.field.emailSegment.all')}</option>
                       <option value="free">{t('composer.field.emailSegment.free')}</option>
                       <option value="paid">{t('composer.field.emailSegment.paid')}</option>
@@ -2600,7 +2705,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.liDescription ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-li-description">{t('composer.field.liDescription')}</label>
-              <textarea id="composer-li-description" value={liDescription} onChange={(e) => setLiDescription(e.target.value)} rows={3} className={`${FIELD_CLS} resize-y leading-relaxed`} />
+              <textarea id="composer-li-description" value={liDescription} onChange={(e) => setLiDescription(e.target.value)} rows={3} className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`} />
             </div>
           ) : null}
 
@@ -2608,14 +2713,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-description">{t('composer.field.description')}</label>
-                <textarea id="composer-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={6} className={`${FIELD_CLS} resize-y leading-relaxed`} />
+                <textarea id="composer-description" value={description} onChange={(e) => setDescription(e.target.value)} rows={6} className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`} />
                 <div aria-live="polite">
                   <LintPanel lint={descLint} />
                 </div>
               </div>
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-blogslug">{t('composer.field.blogSlug')}</label>
-                <input id="composer-blogslug" value={blogSlug} onChange={(e) => setBlogSlug(e.target.value)} placeholder={t('composer.field.blogSlugPlaceholder')} className={FIELD_CLS} />
+                <input id="composer-blogslug" value={blogSlug} onChange={(e) => setBlogSlug(e.target.value)} placeholder={t('composer.field.blogSlugPlaceholder')} className={`${FIELD} w-full`} />
               </div>
             </>
           ) : null}
@@ -2624,7 +2729,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           {rel.tags ? (
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-tags">{t('composer.field.tags')}</label>
-              <input id="composer-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t('composer.field.tagsPlaceholder')} className={FIELD_CLS} />
+              <input id="composer-tags" value={tags} onChange={(e) => setTags(e.target.value)} placeholder={t('composer.field.tagsPlaceholder')} className={`${FIELD} w-full`} />
             </div>
           ) : null}
 

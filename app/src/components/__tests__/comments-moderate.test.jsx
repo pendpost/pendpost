@@ -94,7 +94,7 @@ describe('CommentsPanel moderation overflow (spec 06)', () => {
     await user.click(screen.getByRole('button', { name: /^unhide$/i }));
     await waitFor(() => expect(moderateMock).toHaveBeenCalledTimes(1));
     // (campaign, postId, commentId, action, platform, confirm)
-    expect(moderateMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'unhide', 'instagram', false);
+    expect(moderateMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'unhide', 'instagram', false, undefined);
     expect(spy).toHaveBeenCalledWith({ queryKey: ['plans'] });
     expect(refetchMock).toHaveBeenCalled();
   });
@@ -111,7 +111,7 @@ describe('CommentsPanel moderation overflow (spec 06)', () => {
     const confirmBtns = screen.getAllByRole('button', { name: /^delete$/i });
     await user.click(confirmBtns[confirmBtns.length - 1]);
     await waitFor(() => expect(moderateMock).toHaveBeenCalledTimes(1));
-    expect(moderateMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'delete', 'instagram', true);
+    expect(moderateMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'delete', 'instagram', true, undefined);
   });
 
   it('routes Hide (also content-suppressing) through the SAME confirm step -> confirm:true', async () => {
@@ -126,7 +126,7 @@ describe('CommentsPanel moderation overflow (spec 06)', () => {
     const confirmBtns = screen.getAllByRole('button', { name: /^hide$/i });
     await user.click(confirmBtns[confirmBtns.length - 1]);
     await waitFor(() => expect(moderateMock).toHaveBeenCalledTimes(1));
-    expect(moderateMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'hide', 'instagram', true);
+    expect(moderateMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'hide', 'instagram', true, undefined);
     // The applied row shows the resulting STATE (hidden), not the imperative verb (spec 06 §6).
     expect(await screen.findByText(/^hidden$/i)).toBeInTheDocument();
   });

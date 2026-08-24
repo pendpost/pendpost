@@ -7,12 +7,16 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { axeClean } from '../test-utils/axe.js';
 import { TooltipProvider } from '../components/ui/Tooltip.jsx';
 import { AssetCard } from '../components/Assets.jsx';
 import { VideoPicker } from '../components/Composer.jsx';
 
 const noop = () => {};
+// The VideoPicker now carries the shared useAssetUpload engine, which reads the
+// React Query client - so a bare render needs a provider around it.
+const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 // A cover-less video asset, as scanAssets() returns it when no <base>.jpg exists.
 const coverless = {
@@ -39,9 +43,11 @@ const renderCard = (asset) => render(
   </TooltipProvider>,
 );
 const renderPicker = (value) => render(
-  <TooltipProvider>
-    <VideoPicker assets={[coverless]} assetsDir="data/media" value={value} onChange={noop} />
-  </TooltipProvider>,
+  <QueryClientProvider client={qc}>
+    <TooltipProvider>
+      <VideoPicker assets={[coverless]} assetsDir="data/media" value={value} onChange={noop} />
+    </TooltipProvider>
+  </QueryClientProvider>,
 );
 const clapperboard = (root) => root.querySelector('.lucide-clapperboard');
 

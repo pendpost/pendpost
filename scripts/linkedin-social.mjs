@@ -40,12 +40,13 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
-import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
+import { avSyncBlocker, avSyncBlockRow, findCoverSibling } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -421,7 +422,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'liCommentId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'liCommentId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -504,13 +505,21 @@ function resolveMediaPath(plan, post) {
   return null;
 }
 
-// Cover override materialized by pendpost (lib/covers.mjs):
-// post.cover = { source: 'frame'|'file', offsetMs?, path } with a repo-relative
-// path to the JPEG. Engines only ever READ it - the field is pendpost-owned.
-function resolveCoverPath(post) {
-  if (!post.cover?.path) return null;
-  const abs = path.resolve(__dirname, '..', post.cover.path);
-  return fs.existsSync(abs) ? abs : null;
+// Cover for a post, in display-parity precedence (exported for the engine tests):
+//  1. The explicit post.cover override materialized by pendpost (lib/covers.mjs) -
+//     its path is CLIENT-ROOT-relative (covers.mjs writes it relative to
+//     activeRoot()), so it anchors at PENDPOST_ROOT exactly like resolveMediaPath.
+//  2. Else the render-sibling <base>.jpg next to the media - the SAME JPEG the app
+//     shows as the post's cover (plans.mjs findCover), so what pendpost displays is
+//     what publishes. A stale override pointer falls through to the sibling,
+//     mirroring the read model's overrideExists precedence.
+export function resolveCoverPath(post, mediaPath = null) {
+  if (post.cover?.path) {
+    const root = process.env.PENDPOST_ROOT ? path.resolve(process.env.PENDPOST_ROOT) : path.resolve(__dirname, '..');
+    const abs = path.resolve(root, post.cover.path);
+    if (fs.existsSync(abs)) return abs;
+  }
+  return findCoverSibling(mediaPath);
 }
 
 const isLinkedIn = (post) => (post.platforms || []).includes('linkedin');
@@ -519,8 +528,8 @@ const isLinkedIn = (post) => (post.platforms || []).includes('linkedin');
 
 async function cmdAuth(args) {
   console.log(`[info] Connecting LinkedIn - credentials will be written to ${ENV_PATH}`);
-  const clientId = args['client-id'] || readEnv('LINKEDIN_CLIENT_ID');
-  const clientSecret = args['client-secret'] || readEnv('LINKEDIN_CLIENT_SECRET');
+  const clientId = await resolveCredential({ value: args['client-id'] || readEnv('LINKEDIN_CLIENT_ID'), hint: 'Paste your LinkedIn OAuth Client ID (LinkedIn app > Auth tab): ' });
+  const clientSecret = await resolveCredential({ value: args['client-secret'] || readEnv('LINKEDIN_CLIENT_SECRET'), secret: true, hint: 'Paste your LinkedIn Client secret (hidden; Auth tab): ' });
   if (!clientId || !clientSecret) {
     console.error('[err] Need --client-id and --client-secret (LinkedIn app -> Auth tab) on first run, or set LINKEDIN_CLIENT_ID / LINKEDIN_CLIENT_SECRET in .env.');
     process.exit(2);
@@ -760,7 +769,7 @@ async function cmdPublishDue(args) {
           console.log(`[warn] ${post.id}: thumbnail upload failed (${thumbErr.message}) - posting article share without a thumbnail.`);
         }
       }
-      const videoUrn = (textPost || pollPost || carouselPost) ? null : await uploadVideo(mediaPath, token, resolveCoverPath(post));
+      const videoUrn = (textPost || pollPost || carouselPost) ? null : await uploadVideo(mediaPath, token, resolveCoverPath(post, mediaPath));
       // Spec 05: register each carousel slide IN ORDER; a slide failure throws -> the
       // catch below pushes a structured ok:false row and NO post is created (fail-closed).
       let imageUrns = null;
@@ -1172,8 +1181,12 @@ async function main() {
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
-main().catch(async (err) => {
-  console.error('[err]', err.message || err);
-  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
-  process.exit(1);
-});
+// Run the CLI only when invoked directly (same guard as meta-social/yt-social) -
+// an in-process test import must not execute main().
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(async (err) => {
+    console.error('[err]', err.message || err);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    process.exit(1);
+  });
+}

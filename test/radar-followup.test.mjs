@@ -137,4 +137,33 @@ const hnOnlyOld = { id: 1, author: 'buyer_jane', children: [
   ok(parseHackerNewsFollowup(hnOnlyOld, { author: 'buyer_jane', sinceTs: OUR_TS }) === null, 'hn: author only spoke before sinceTs -> null');
 }
 
+// ---------------------------------------------------------------- derived follow-up sets
+// (engagement engine, owner decision 4): the ENGINE set stays byte-identical - the agent
+// lanes join a NEW derived set with their own pure predicate, never the engine one.
+{
+  const { RADAR_CAPABILITIES, RADAR_FOLLOWUP_SOURCES, RADAR_AGENT_FOLLOWUP_SOURCES, needsFollowupCheck, needsAgentFollowupCheck } = await import('../lib/radar.mjs');
+  eq(JSON.stringify([...RADAR_FOLLOWUP_SOURCES].sort()), JSON.stringify(['bluesky', 'mastodon', 'reddit']),
+    'RADAR_FOLLOWUP_SOURCES is BYTE-UNCHANGED (reddit/mastodon/bluesky) - the engine verb path never widened');
+  eq(JSON.stringify([...RADAR_AGENT_FOLLOWUP_SOURCES].sort()), JSON.stringify(['nostr', 'x', 'youtube']),
+    "RADAR_AGENT_FOLLOWUP_SOURCES derives x/youtube/nostr from followup:'agent'");
+  ok(RADAR_AGENT_FOLLOWUP_SOURCES.every((s) => !RADAR_FOLLOWUP_SOURCES.includes(s)),
+    'the two sets are disjoint by construction (agent !== true)');
+  ok(RADAR_CAPABILITIES.hackernews.followup === 'thread' && !RADAR_AGENT_FOLLOWUP_SOURCES.includes('hackernews'),
+    "hacker-news stays followup:'thread' - watched in lib/, never an agent target");
+
+  // needsAgentFollowupCheck truth table (mirrors needsFollowupCheck, === 'agent'):
+  const yt = { status: 'posted', radarReplyTo: { source: 'youtube', externalId: 'vid1' } };
+  ok(needsAgentFollowupCheck(yt) === true, 'agent-due: a posted youtube reply is due');
+  ok(needsAgentFollowupCheck({ status: 'posted', radarReplyTo: { source: 'nostr', externalId: 'ev1' } }) === true, 'agent-due: a posted nostr reply is due');
+  ok(needsAgentFollowupCheck({ status: 'posted', radarReplyTo: { source: 'x', externalId: 'tw1' } }) === true, 'agent-due: a posted x reply (xEnterprise lane) is due');
+  ok(needsAgentFollowupCheck({ ...yt, status: 'planned' }) === false, 'agent-due: an unposted reply is not due');
+  ok(needsAgentFollowupCheck({ ...yt, radarReplyState: 'author_replied' }) === false, 'agent-due: author_replied is terminal - never re-checked');
+  ok(needsAgentFollowupCheck({ ...yt, radarReplyState: 'target_gone' }) === false, 'agent-due: target_gone is terminal - never re-checked');
+  ok(needsAgentFollowupCheck({ status: 'posted', radarReplyTo: { source: 'reddit', externalId: 't3_1' } }) === false, 'agent-due: an ENGINE-lane reply (reddit) is never an agent target');
+  ok(needsAgentFollowupCheck({ status: 'posted', radarReplyTo: { source: 'youtube' } }) === false, 'agent-due: no externalId -> not due');
+  ok(needsAgentFollowupCheck({ status: 'posted' }) === false, 'agent-due: a non-radar post is never due');
+  // and the engine predicate refuses the agent lanes (the disjointness, per-post):
+  ok(needsFollowupCheck(yt) === false, 'engine-due: a youtube reply is NOT an engine-verb target (agent lane)');
+}
+
 console.log(`\n${pass} assertions passed`);

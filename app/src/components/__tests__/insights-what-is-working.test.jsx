@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
 import Insights from '../Insights.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 
 // R8 / dim-3 M2 + M5: the "What is working" performance-memory strip and the
@@ -17,6 +18,10 @@ vi.mock('../../lib/api.js', () => ({
   useInsights: () => ({ data: insightsData, isLoading: false, isError: false, error: null }),
   useDigest: () => ({ data: digestData }),
   fetchInsights: vi.fn(),
+  useConfig: () => ({ data: null }),
+  usePendpostHealth: () => ({ data: null }),
+  usePlans: () => ({ data: { campaigns: [] } }),
+  saveConfig: vi.fn(),
 }));
 
 // Enough measured posts for summary.hasEnough, with a clear winner per dimension.
@@ -54,7 +59,9 @@ function renderInsights(props = {}, { locale = 'en' } = {}) {
     <I18nProvider locale={locale}>
       <QueryClientProvider client={qc}>
         <TooltipProvider>
-          <Insights active platformFilter={[]} campaignFilter="all" {...props} />
+          <ConfirmProvider>
+            <Insights active platformFilter={[]} campaignFilter="all" {...props} />
+          </ConfirmProvider>
         </TooltipProvider>
       </QueryClientProvider>
     </I18nProvider>,

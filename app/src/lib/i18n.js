@@ -68,6 +68,17 @@ export function resolveLocale() {
   return matchPack(nav);
 }
 
+// Whether the user has an explicit stored locale preference. The server-locale
+// adoption path (App.jsx) only applies posting.locale when this is false - an
+// explicit choice always outranks the server default.
+export function hasStoredLocale() {
+  try {
+    return isValidLocale(typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) : null);
+  } catch {
+    return false;
+  }
+}
+
 // Persist a chosen locale (or clear the override to fall back to the browser).
 export function setLocale(tag) {
   try {
@@ -118,7 +129,7 @@ export function getActiveLocale() { return _activeLocale; }
 // React context carrying { locale, t }. A default is provided so a component
 // rendered without the provider (e.g. an isolated test) still resolves English
 // rather than throwing.
-const I18nContext = createContext({ locale: DEFAULT_LOCALE, t: makeT(DEFAULT_LOCALE), setLocale: () => {} });
+const I18nContext = createContext({ locale: DEFAULT_LOCALE, t: makeT(DEFAULT_LOCALE), setLocale: () => {}, adoptLocale: () => {} });
 
 // Provider: seeds the active locale from an explicit `locale` prop (tests use it to
 // force a pack) or the resolved boot locale, holds it in STATE so the header toggle
@@ -129,12 +140,16 @@ export function I18nProvider({ locale, children }) {
   useEffect(() => { if (locale) setActive(matchPack(locale)); }, [locale]);
   // Live switch from the language toggle: persist the choice and re-render.
   const switchLocale = useCallback((tag) => { setLocale(tag); setActive(matchPack(tag)); }, []);
+  // Session-only switch WITHOUT persisting: the server posting.locale adoption
+  // (App.jsx, first health payload, no stored pref). Not writing the preference
+  // keeps the header toggle and future server locale changes fully in charge.
+  const adoptLocale = useCallback((tag) => { setActive(matchPack(tag)); }, []);
   // Keep the module-synced locale (for format.js date formatters) in step with the
   // active UI locale, before children render.
   const value = useMemo(() => {
     setActiveLocale(active);
-    return { locale: active, t: makeT(active), setLocale: switchLocale };
-  }, [active, switchLocale]);
+    return { locale: active, t: makeT(active), setLocale: switchLocale, adoptLocale };
+  }, [active, switchLocale, adoptLocale]);
   // Keep <html lang> in step with the active UI locale so screen readers announce
   // content in the right language and the document exposes its locale correctly.
   // Guarded for non-DOM environments (e.g. SSR). `active` is always a resolved
@@ -158,4 +173,9 @@ export function useLocale() {
 // Hook returning a setter that switches the active locale live (the header toggle).
 export function useSetLocale() {
   return useContext(I18nContext).setLocale;
+}
+
+// Hook returning the session-only setter (no persistence) for server-locale adoption.
+export function useAdoptLocale() {
+  return useContext(I18nContext).adoptLocale;
 }

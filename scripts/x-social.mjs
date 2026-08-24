@@ -64,7 +64,9 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
+import { measurableInsightsPosts } from '../lib/insights-window.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
@@ -89,7 +91,10 @@ const ACCOUNT_V11 = 'https://api.twitter.com/1.1/account';
 const AUTH_URL = 'https://twitter.com/i/oauth2/authorize';
 const TOKEN_URL = 'https://api.twitter.com/2/oauth2/token';
 // media.write is required for the v2 chunked media upload used by video posts.
-const SCOPES = 'tweet.read tweet.write users.read media.write offline.access';
+// dm.read/like.read/follows.read/dm.write widen the token for the inbound-reply
+// round-trip (spec 23): dm.write sends the operator's DM answer to a message event,
+// and the read scopes let the cloud webhook receiver see the events being answered.
+const SCOPES = 'tweet.read tweet.write users.read media.write offline.access dm.read like.read follows.read dm.write';
 const DEFAULT_PORT = 8087;
 const DEFAULT_REDIRECT = 'http://localhost:8087/callback';
 const TWEET_LIMIT = 280;
@@ -436,7 +441,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, xCaption, schedule, approval,
 // cover) belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'radarReplyState', 'radarFollowup'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -528,8 +533,8 @@ const tweetText = (post) => (post.xCaption || post.caption || '').trim();
 
 async function cmdAuth(args) {
   console.log(`[info] Connecting X - credentials will be written to ${ENV_PATH}`);
-  const clientId = args['client-id'] || readEnv('X_CLIENT_ID');
-  const clientSecret = args['client-secret'] || readEnv('X_CLIENT_SECRET');
+  const clientId = await resolveCredential({ value: args['client-id'] || readEnv('X_CLIENT_ID'), hint: 'Paste your X OAuth 2.0 Client ID (X developer app > Keys and tokens): ' });
+  const clientSecret = await resolveCredential({ value: args['client-secret'] || readEnv('X_CLIENT_SECRET'), secret: true, hint: 'Paste your X OAuth 2.0 Client secret (hidden; Keys and tokens): ' });
   if (!clientId || !clientSecret) {
     console.error('[err] Need --client-id and --client-secret (X developer app -> Keys and tokens -> OAuth 2.0 Client ID and Secret) on first run, or set X_CLIENT_ID / X_CLIENT_SECRET in .env. (Tip: OAuth 1.0a needs no browser - set X_API_KEY/X_API_SECRET/X_ACCESS_TOKEN/X_ACCESS_TOKEN_SECRET in .env instead and skip this ceremony.)');
     process.exit(2);
@@ -854,9 +859,14 @@ async function cmdPublishDue(args) {
       console.log(`[ok] ${post.id}: published on X (${tweetId}).`);
       published += 1;
     } catch (err) {
-      appendAttempt(post, { ts: new Date().toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
+      // HTTP 402 = the X API plan's paid credits are depleted - an ACCOUNT-level
+      // refusal, not a per-post fault. The distinct 'credits' code lets the
+      // scheduler arm a lane-wide block (lib/state.mjs recordLaneBlock) so ONE
+      // failure halts the lane instead of burning a retry per post.
+      const code = err.status === 402 || /HTTP 402/.test(String(err.message || '')) ? 'credits' : 'engine_failure';
+      appendAttempt(post, { ts: new Date().toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: code, errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
       await savePlan(abs, plan, [post.id]);
-      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: err.message.slice(0, 300) });
+      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: code, errorMessage: err.message.slice(0, 300) });
       console.error(`[err] ${post.id}: X publish failed - ${err.message}`);
       continue;
     }
@@ -909,12 +919,19 @@ async function cmdVerify(args) {
 }
 
 // Read-only metrics fetch: public_metrics per published tweet. Writes NOTHING.
+// Each GET here is a METERED X read (pay-per-call): the unbounded daily sweep used
+// to re-read every tweet ever posted, draining credits until a scheduled POST /tweets
+// hit a genuine HTTP 402. So the bulk sweep (no --only) is bounded to a recency window
+// + hard cap (lib/insights-window.mjs); an explicit single-post request (--only) is
+// always honored in full.
 async function cmdInsights(args) {
   const { plan } = loadPlan(args.plan);
   const token = await ensureFreshToken();
-  for (const post of plan.posts || []) {
-    if (args.only && post.id !== args.only) continue;
-    if (!isX(post) || !post.xPostId) continue;
+  const xPosts = (plan.posts || []).filter((p) => isX(p) && p.xPostId);
+  const targets = args.only
+    ? xPosts.filter((p) => p.id === args.only)
+    : measurableInsightsPosts(xPosts);
+  for (const post of targets) {
     try {
       const data = await api('GET', `/tweets/${encodeURIComponent(post.xPostId)}`, { token, query: { 'tweet.fields': 'public_metrics' } });
       const m = data?.data?.public_metrics;
@@ -1138,6 +1155,101 @@ async function cmdDiscover() {
   }
 }
 
+// ---------- inbound reply round-trip (spec 23) ----------
+//
+// The operator answers ONE inbound X Activity event from the Studio inbox. Routed by
+// the event's type in lib/writes.mjs#replyToInboundEvent (mention/comment -> `reply`,
+// message -> `dm`); this engine half just performs the write and maps the HTTP
+// status to a stable code the shared error envelope carries:
+//   403 -> needs_scope  (the token lacks tweet.write / dm.write)
+//   402 -> credits      (the X API plan's paid credits are depleted - surfaces the
+//                        top-up path, mirroring cmdPublishDue's 402 branch)
+//   404 -> target_gone  (the tweet/conversation is deleted or unavailable - terminal)
+//   else -> engine_failure
+// A mock run (PENDPOST_MODE=mock) short-circuits to a synthetic id with NO network,
+// so the routing loop + its tests run credential-free (main() excludes these verbs
+// from the generic mock-driver intercept, which owns the comment `reply` verb name).
+
+// Read the DM recipient / reply target off argv, falling back to a stdin JSON object
+// { replyTo, text } / { recipient, text } for a hand-run. stdin is read ONLY when the
+// primary flag is absent (writes.mjs always passes the flag), so an execFile spawn
+// with an empty stdin never blocks.
+function inboundArgs(args, primaryKey) {
+  let primary = args[primaryKey] ?? args[primaryKey.replace(/-([a-z])/g, (_, c) => c.toUpperCase())];
+  let text = typeof args.text === 'string' ? args.text : undefined;
+  if (primary === undefined || primary === true || text === undefined) {
+    try {
+      if (!process.stdin.isTTY) {
+        const raw = fs.readFileSync(0, 'utf8').trim();
+        if (raw) {
+          const j = JSON.parse(raw);
+          const key = primaryKey === 'reply-to' ? 'replyTo' : primaryKey;
+          if (primary === undefined || primary === true) primary = j[key];
+          if (text === undefined) text = j.text;
+        }
+      }
+    } catch { /* no stdin / not JSON - fall through to the validation below */ }
+  }
+  return { primary: typeof primary === 'string' ? primary : (primary != null ? String(primary) : ''), text: typeof text === 'string' ? text : '' };
+}
+
+// Map a thrown api()/createTweet error to the inbound envelope code.
+function inboundErrorCode(err) {
+  const status = err && err.status;
+  if (status === 403) return 'needs_scope';
+  if (status === 402 || /HTTP 402/.test(String(err && err.message || ''))) return 'credits';
+  if (status === 404) return 'target_gone';
+  return 'engine_failure';
+}
+
+// `reply` verb: post a tweet reply to the inbound event's tweet (X's mention-exemption
+// lets a reply reach the mentioner). Returns { ok:true, id } or a mapped error envelope.
+export async function xReply(args = {}) {
+  const { primary: replyTo, text } = inboundArgs(args, 'reply-to');
+  if (!replyTo) return { ok: false, error: 'reply requires --reply-to <tweetId>', code: 'invalid_input', platform: 'x', results: [] };
+  if (!text.trim()) return { ok: false, error: 'reply requires --text <str>', code: 'invalid_input', platform: 'x', results: [] };
+  if (resolveMode('x') === 'mock') {
+    const id = `mock-x-reply-${replyTo}`;
+    return { ok: true, id, platform: 'x', results: [{ platform: 'x', action: 'reply', ok: true, id }] };
+  }
+  const token = await ensureFreshToken();
+  try {
+    const id = await createTweet(text, null, token, String(replyTo));
+    return { ok: true, id, platform: 'x', results: [{ platform: 'x', action: 'reply', ok: true, id }] };
+  } catch (err) {
+    const code = inboundErrorCode(err);
+    return { ok: false, error: String(err.message || err).slice(0, 300), code, platform: 'x', results: [] };
+  }
+}
+
+// `dm` verb: send a direct message to the inbound message event's sender (the sender's
+// X user id is the recipient). POSTs the v2 DM endpoint. Returns { ok:true, id } or a
+// mapped error envelope. Greenfield (needs dm.write); kept defensive + testable.
+export async function xDm(args = {}) {
+  const { primary: recipient, text } = inboundArgs(args, 'recipient');
+  if (!recipient) return { ok: false, error: 'dm requires --recipient <userId>', code: 'invalid_input', platform: 'x', results: [] };
+  if (!text.trim()) return { ok: false, error: 'dm requires --text <str>', code: 'invalid_input', platform: 'x', results: [] };
+  if (resolveMode('x') === 'mock') {
+    const id = `mock-x-dm-${recipient}`;
+    return { ok: true, id, platform: 'x', results: [{ platform: 'x', action: 'dm', ok: true, id }] };
+  }
+  const token = await ensureFreshToken();
+  try {
+    // POST /2/dm_conversations/with/{participant_id}/messages { text } -> creates (or
+    // reuses) the 1:1 conversation and posts the message. The response carries
+    // { data: { dm_conversation_id, dm_event_id } }; dm_event_id identifies the message.
+    const data = await api('POST', `/dm_conversations/with/${encodeURIComponent(recipient)}/messages`, { body: { text }, token });
+    const id = data?.data?.dm_event_id || data?.data?.dm_conversation_id || null;
+    return { ok: true, id, platform: 'x', results: [{ platform: 'x', action: 'dm', ok: true, id }] };
+  } catch (err) {
+    const code = inboundErrorCode(err);
+    return { ok: false, error: String(err.message || err).slice(0, 300), code, platform: 'x', results: [] };
+  }
+}
+
+async function cmdReply(args) { Object.assign(RUN, await xReply(args)); }
+async function cmdDm(args) { Object.assign(RUN, await xDm(args)); }
+
 // ---------- main ----------
 
 function parseArgs(argv) {
@@ -1168,6 +1280,8 @@ const COMMANDS = {
   probe: cmdProbe,
   profile: cmdProfile,
   discover: cmdDiscover,
+  reply: cmdReply,
+  dm: cmdDm,
 };
 
 async function main() {
@@ -1181,7 +1295,12 @@ async function main() {
   const commandName = args._[0];
   // Mock mode: publish/read commands never touch X - delegate to the shared mock
   // driver. Credential commands (auth/refresh) still run for real.
-  if (resolveMode('x') === 'mock' && isMockableCommand(commandName)) {
+  // The inbound-reply verbs (spec 23) own their OWN mock short-circuit inside
+  // xReply/xDm (a synthetic id, no network), so they must NOT be handed to the
+  // shared mock driver - which owns the COMMENT `reply` verb name for the comment
+  // lanes and knows nothing of a tweet-reply/DM. Excluding them keeps cmdReply/cmdDm
+  // the single mock+live path for this lane.
+  if (resolveMode('x') === 'mock' && isMockableCommand(commandName) && commandName !== 'reply' && commandName !== 'dm') {
     const envelope = await runMockCommand({
       platform: 'x', command: commandName,
       planPath: typeof args.plan === 'string' ? path.resolve(String(args.plan)) : null,

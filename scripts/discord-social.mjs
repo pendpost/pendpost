@@ -35,6 +35,8 @@
  *   insights         --plan <p> [--only <id>]   no-op (a webhook exposes no metrics)
  *   probe                                        read-only health probe (GET the webhook)
  *   delete           --id <messageId>            delete a posted message (cleanup)
+ *   delete-event     --id <eventId>              delete a guild scheduled event (the
+ *                                                deletePost cascade; 404 counts as gone)
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -47,6 +49,7 @@ import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -60,6 +63,23 @@ function readEnvRaw() {
 function readEnv(name) {
   const m = readEnvRaw().match(new RegExp(`^${name}=(.+)$`, 'm'));
   return m ? m[1].trim() : null;
+}
+
+function writeEnv(vars) {
+  let raw = readEnvRaw();
+  for (const [k, v] of Object.entries(vars)) {
+    if (v == null) continue;
+    // function replacer: token values may contain '$' which is special in a string replacement.
+    if (new RegExp(`^${k}=`, 'm').test(raw)) {
+      raw = raw.replace(new RegExp(`^${k}=.*$`, 'm'), () => `${k}=${v}`);
+    } else {
+      raw += `${raw.endsWith('\n') || raw === '' ? '' : '\n'}${k}=${v}\n`;
+    }
+  }
+  // Atomic + 0600: a crash mid-write must never truncate the secret-bearing .env.
+  const tmp = `${ENV_PATH}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, raw, { mode: 0o600 });
+  fs.renameSync(tmp, ENV_PATH);
 }
 
 const webhookUrl = () => (readEnv('DISCORD_WEBHOOK_URL') || '').trim();
@@ -99,7 +119,7 @@ function loadPlan(planPath) {
 // Spec 26: dcEventId is the guild-scheduled-event id the `schedule-event` verb
 // mints - engine-owned like dcMessageId, so it survives the field-merge save
 // (savePlan below) under a concurrent edit.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'dcEventId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'dcEventId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -199,7 +219,17 @@ async function permalinkFor(post) {
 // ---------- commands ----------
 
 async function cmdAuth() {
-  if (!webhookUrl()) { console.error('[err] DISCORD_WEBHOOK_URL missing in .env (create an Incoming Webhook in the channel settings).'); process.exit(2); }
+  // .env still wins; otherwise, on an interactive terminal, prompt the operator to paste
+  // the webhook URL (hidden, never echoed, never in shell history) and persist it so the
+  // liveness probe below (and every later run) can read it. A non-interactive run
+  // (daemon/CI/mock) skips the prompt and fails closed at the guard.
+  const url = await resolveCredential({
+    value: webhookUrl(),
+    secret: true,
+    hint: 'Paste your Discord Incoming Webhook URL (channel settings > Integrations > Webhooks): ',
+  });
+  if (!url) { console.error('[err] DISCORD_WEBHOOK_URL missing in .env (create an Incoming Webhook in the channel settings).'); process.exit(2); }
+  writeEnv({ DISCORD_WEBHOOK_URL: url });
   const meta = await webhookMeta();
   console.log(`[ok] Webhook valid - "${meta.name}" in channel ${meta.channel_id}${meta.guild_id ? ` (guild ${meta.guild_id})` : ''}.`);
   RUN.results.push({ platform: 'discord', action: 'auth', ok: true, detail: `${meta.name} -> channel ${meta.channel_id}` });
@@ -592,6 +622,29 @@ async function cmdDelete(args) {
   console.log(`[ok] deleted Discord message ${args.id}.`);
 }
 
+// Guild scheduled event takedown (the "delete always works" cascade): dispatched
+// by lib/writes.mjs deletePost when the plan row being removed carries a
+// dcEventId - the row is the only cancel path pendpost holds for the event, so
+// it is cancelled BEFORE the row goes. Needs the same DISCORD_BOT_TOKEN +
+// MANAGE_EVENTS the schedule-event create verb needs. A 404 counts as success:
+// Discord auto-removes completed events, and an already-gone event is exactly
+// the state this verb wants to reach.
+async function cmdDeleteEvent(args) {
+  if (!args.id) { console.error('[err] delete-event requires --id <eventId>'); process.exit(2); }
+  const botToken = readEnv('DISCORD_BOT_TOKEN');
+  if (!botToken) throw new Error('DISCORD_BOT_TOKEN not set - cannot delete the guild scheduled event');
+  const meta = await webhookMeta();
+  if (!meta.guild_id) throw new Error('the webhook has no guild_id (a DM/group webhook cannot host a guild event)');
+  try {
+    await discord('DELETE', `https://discord.com/api/v10/guilds/${meta.guild_id}/scheduled-events/${encodeURIComponent(args.id)}`, { botAuth: botToken });
+    console.log(`[ok] deleted guild scheduled event ${args.id}.`);
+  } catch (err) {
+    if (!/HTTP 404/.test(String(err.message || ''))) throw err;
+    console.log(`[skip] guild event ${args.id} is already gone (404) - counting it cancelled.`);
+  }
+  RUN.results.push({ platform: 'discord', action: 'delete-event', ok: true, id: String(args.id) });
+}
+
 async function cmdProbe() {
   if (!webhookUrl()) {
     RUN.results.push({ platform: 'discord', action: 'probe', ok: false, detail: 'not configured (DISCORD_WEBHOOK_URL missing)' });
@@ -703,6 +756,7 @@ const COMMANDS = {
   'schedule-event': cmdScheduleEvent,
   insights: cmdInsights,
   delete: cmdDelete,
+  'delete-event': cmdDeleteEvent,
   probe: cmdProbe,
   discover: cmdDiscover,
 };

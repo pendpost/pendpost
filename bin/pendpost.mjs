@@ -130,12 +130,14 @@ if (STDIO) {
 const PORT = Number(process.env.PENDPOST_PORT || 8090);
 const HOST = process.env.PENDPOST_HOST || '127.0.0.1';
 const URL_BASE = `http://${HOST}:${PORT}`;
-const MODE = String(process.env.PENDPOST_MODE || '').trim().toLowerCase();
-const modeNote = MODE === 'live'
-  ? 'Mode: live (forced) - lanes with a credential in .env publish for real.'
-  : MODE === 'mock'
-    ? 'Mode: mock (forced) - every lane is simulated; no real API calls.'
-    : 'Mode: auto - a lane goes live only where its credential is present in .env, else mock.';
+// The SAME derivation as lib/mode.mjs resolveMode(): mock is an explicit
+// opt-in (PENDPOST_MODE=mock); everything else is live. There is no auto
+// fallback - a lane with no credential is live-but-unauthenticated and fails
+// honestly at use.
+const MODE = String(process.env.PENDPOST_MODE || '').trim().toLowerCase() === 'mock' ? 'mock' : 'live';
+const modeNote = MODE === 'mock'
+  ? 'Mode: mock - every lane is simulated; no real API calls.'
+  : 'Mode: live - lanes publish for real where a credential is connected (mock is opt-in via PENDPOST_MODE=mock).';
 
 async function waitListening() {
   const deadline = Date.now() + 6000;

@@ -77,7 +77,21 @@ try {
   ok(/bondigoo/.test(b.stderr || ''), 'refusal surfaces the active client it would have hit (bondigoo)');
   ok(!fs.existsSync(clientEnv('bondigoo')), 'still nothing written to bondigoo/.env after the refusal');
 
-  console.log(`[cli-client-target] OK - hand-run ceremonies target the explicit client, or refuse (${pass} assertions).`);
+  // ===== C. NON-ceremony verbs: an explicit --client is honored, never ignored =====
+  // The 2026-08-20 footgun: `set-thumbnail --client bondigoo` silently ran against
+  // the repo-root workspace because only CEREMONY_VERBS re-rooted. An explicit
+  // target on ANY verb must now re-root (visible via the [info] targeting line)...
+  const c = run(['status', '--client', 'pendpost']);
+  ok(/targeting client 'pendpost'/.test(c.stderr || ''), `non-ceremony --client pendpost re-roots (stderr carries the targeting line; got: ${(c.stderr || '').trim().slice(0, 120)})`);
+  // ...an UNKNOWN client must refuse instead of silently proceeding...
+  const d = run(['status', '--client', 'nope']);
+  ok(d.status === 2, `non-ceremony --client with an unknown id refuses with exit 2 (got ${d.status})`);
+  ok(/Unknown client 'nope'/.test(d.stderr || ''), 'the refusal names the unknown client');
+  // ...and WITHOUT a flag the verb is untouched (no re-root, no targeting line).
+  const e = run(['status']);
+  ok(!/targeting client/.test(e.stderr || ''), 'a bare non-ceremony verb keeps its existing resolution (no re-root)');
+
+  console.log(`[cli-client-target] OK - hand-run ceremonies target the explicit client, or refuse; non-ceremony verbs honor --client (${pass} assertions).`);
 } catch (err) {
   console.error(`[cli-client-target] FAIL - ${err && err.message}`);
   process.exitCode = 1;

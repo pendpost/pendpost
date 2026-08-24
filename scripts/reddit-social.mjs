@@ -63,6 +63,7 @@ import { envPath } from '../lib/util.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { laneReadiness } from '../lib/lane-readiness.mjs';
 import { classifySubRules } from '../lib/reddit-norms.mjs';
+import { measurableInsightsPosts } from '../lib/insights-window.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -176,7 +177,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'redditPermalink', 'redditSubmitted', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState', 'radarFollowup'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'redditPermalink', 'redditSubmitted', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'radarReplyState', 'radarFollowup'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -1027,14 +1028,20 @@ async function cmdVerify(args) {
 
 // Reddit exposes only coarse public counters to a bot - honest, minimal metrics
 // (score + comment count) pulled from /api/info, never engagement breakdowns.
+// Reddit's API is free (no per-call credit like X), so this is request-volume /
+// rate-limit hygiene, not a cost bug - but the daily sweep still bounds the bulk
+// path to a recency window + hard cap (lib/insights-window.mjs) exactly like X,
+// so it stops re-reading every reddit post ever submitted on every 24h run. An
+// explicit single-post request (--only) is always honored in full.
 async function cmdInsights(args) {
   const { plan } = loadPlan(args.plan);
   let token = null;
   try { token = await mintToken(); } catch { console.log('[info] Reddit insights: could not authenticate - skipping.'); return; }
-  for (const post of (plan.posts || []).filter(isReddit)) {
-    if (args.only && post.id !== args.only) continue;
-    if (!post.redditPostId) continue;
-    if (isSentinelReddit(post.redditPostId)) continue; // no real id to query metrics for yet
+  const eligible = (plan.posts || []).filter((p) => isReddit(p) && p.redditPostId && !isSentinelReddit(p.redditPostId));
+  const targets = args.only
+    ? eligible.filter((p) => p.id === args.only)
+    : measurableInsightsPosts(eligible);
+  for (const post of targets) {
     try {
       const data = await reddit(token, 'GET', `/api/info?id=${encodeURIComponent(post.redditPostId)}`);
       const child = data?.data?.children?.[0]?.data;

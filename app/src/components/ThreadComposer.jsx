@@ -4,14 +4,13 @@ import { ArrowLeft, Loader2, Plus, Trash2, ChevronUp, ChevronDown, CornerUpLeft,
 import { useAssets, useActiveClient, createPost } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { prettyCampaign, fmtFull } from '../lib/format.js';
-import { INNER_SURFACE, EYEBROW, PLATFORM_META, DISABLED_PRIMARY } from './ui.jsx';
+import { INNER_SURFACE, EYEBROW, PLATFORM_META, DISABLED_PRIMARY, FIELD, FIELD_MULTILINE } from './ui.jsx';
 import { CharCounter, useLint, LintPanel, VideoPicker } from './Composer.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 const X_LIMIT = 280;
 const DEFAULT_GAP_MIN = 2; // "2 scheduler ticks of headroom" so the fail-closed reply chain can thread.
 
@@ -95,7 +94,7 @@ function TweetRow({
         disabled={disabled}
         rows={isOpener ? 4 : 3}
         placeholder={t('threadComposer.tweetPlaceholder')}
-        className={`${FIELD_CLS} resize-y leading-relaxed`}
+        className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
         aria-label={isOpener ? t('threadComposer.opener', { n: index + 1 }) : t('threadComposer.reply', { n: index + 1 })}
       />
       <div className="flex items-center justify-between gap-3">
@@ -114,7 +113,7 @@ function TweetRow({
             value={tweet.gapMin}
             onChange={(e) => onGap(e.target.value)}
             disabled={disabled}
-            className={`w-16 rounded-lg border-0 px-2 py-1 text-sm tabular-nums ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
+            className={`${FIELD} w-24 tabular-nums`}
           />
           {time ? <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{fmtFull(time)}</span> : null}
         </div>
@@ -291,7 +290,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved,
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div className="space-y-1.5">
             <label className={EYEBROW} htmlFor="thread-campaign">{t('composer.field.campaign')}</label>
-            <select id="thread-campaign" value={campaign} onChange={(e) => setCampaign(e.target.value)} disabled={Boolean(runState)} className={FIELD_CLS}>
+            <select id="thread-campaign" value={campaign} onChange={(e) => setCampaign(e.target.value)} disabled={Boolean(runState)} className={`${FIELD} w-full`}>
               <option value="" disabled>{t('composer.campaignPlaceholder')}</option>
               {campaigns.map((c) => (
                 <option key={c.id} value={c.id}>{prettyCampaign(c.id)}{c.active ? '' : t('composer.campaignArchivedSuffix')}</option>
@@ -300,7 +299,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved,
           </div>
           <div className="space-y-1.5">
             <label className={EYEBROW}>{t('threadComposer.openerSchedule')}</label>
-            <DateTimePicker value={openerAt} onChange={setOpenerAt} disablePast placeholder={t('threadComposer.schedulePlaceholder')} triggerClassName={FIELD_CLS} />
+            <DateTimePicker value={openerAt} onChange={setOpenerAt} disablePast placeholder={t('threadComposer.schedulePlaceholder')} triggerClassName={`${FIELD} w-full`} />
           </div>
           <div className="space-y-1.5">
             <span className={EYEBROW}>{t('threadComposer.lane')}</span>

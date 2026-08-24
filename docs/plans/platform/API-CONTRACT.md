@@ -175,6 +175,14 @@ minimalism bar rejects, matching the agent-side, model-free posture of its sibli
 `radar_footprint_log` / `radar_ingest`. The owner invokes it through their agent (or headless)
 when the pollution is diagnosed; the normal path never needs it.
 
+`radar_followup_report` (engagement engine, owner decision 4 2026-08-17) is the spawned
+follow-up child's OWN reporting tool and deliberately has no REST twin: it is inert outside the
+follow-up fence a followup-scope agent job arms (fail-closed - a chat agent, the Studio, or an
+injected tool call all get a refusal), so a REST route would be a door to a verb that refuses
+every caller who could reach it. The operator's equivalent of "the author answered" is the card
+badge the stamp produces, and the operator-facing on-demand check is `radar_followup_check` /
+POST /api/radar/followup, which spawns the fenced job rather than stamping claims directly.
+
 Relationship memory (spec 49 R12) ships five MCP verbs with matching REST twins:
 `list_engagers` -> `GET /api/engagers` (a read; the ONLY tool gated behind the owner opt-in
 `posting.relationshipMemory.agentRead`, refused when off, S8d - the REST read is never gated),
@@ -218,7 +226,8 @@ the feature - no cloud parity).
   ],
   "tools": [
     "connect_discover",
-    "radar_geo_reset"
+    "radar_geo_reset",
+    "radar_followup_report"
   ],
   "uiOnly": [
     "/api/engagers/dismiss-link"

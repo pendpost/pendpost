@@ -157,7 +157,116 @@ try {
   const diag = classifyMediaProbe({ status: 404, contentType: 'text/html; charset=utf-8' }, 'https://x/a-mono.png');
   ok(typeof diag === 'string' && diag.includes('https://x/a-mono.png') && diag.includes('404'), 'a 404 HTML probe names the URL and what it returned');
 
-  console.log(`[publish-hold] OK - cap stamps terminal hold, held post stops firing, reschedule re-arms, tail capped, diagnosis pure (${pass} assertions).`);
+  // ===== (h) TRANSIENT failures ride out with backoff - they do NOT park at 3 ===
+  // 2026-08-16: Instagram's rupload returned ProcessingFailedError (debug_info.
+  // retriable=FALSE) on a VALID reel across a ~3h Meta bad spell - it failed all of
+  // the scheduler's attempts, then published UNCHANGED on the next try. The generic
+  // 3-strike cap had permanently parked a healthy post. Transient failures now
+  // schedule a backoff retry instead, so a bad spell is ridden out and the tick is
+  // NOT hammered (the same storm invariant as the permanent cap, from the other side).
+  const { isTransientFailure, transientBackoffMs, TRANSIENT_RETRY_WINDOW_MS } = await import('../lib/publish-hold.mjs');
+  const { lanesFor } = await import('../lib/scheduler.mjs');
+
+  // classifier
+  ok(isTransientFailure({ ok: false, errorCode: 'engine_failure', errorMessage: 'rupload X: HTTP 400 {"debug_info":{"retriable":false,"type":"ProcessingFailedError"}}' }) === true, 'ProcessingFailedError is classified transient (Meta mislabels it retriable:false)');
+  ok(isTransientFailure({ ok: false, errorCode: 'engine_failure', errorMessage: 'getaddrinfo ENOTFOUND graph.facebook.com' }) === true, 'a network/offline failure is classified transient');
+  ok(isTransientFailure({ ok: false, errorCode: 9004, errorMessage: 'Only photo or video can be accepted as media type.' }) === false, 'a genuine 9004 refusal is NOT transient (still parks fast)');
+  ok(isTransientFailure({ ok: false, errorCode: 368, errorMessage: 'blocked ProcessingFailedError' }) === false, 'a 368 action-block is never transient even if the message matches');
+
+  // backoff schedule: increases, then caps at 30 min
+  ok(transientBackoffMs(1) === 60000, 'the first transient retry waits 1 minute');
+  ok(transientBackoffMs(99) === 30 * 60000, 'the transient backoff caps at 30 minutes (never hammers)');
+
+  // four transient failures do NOT park - old cap would have at 3
+  const T0 = Date.parse('2026-08-16T10:00:00Z');
+  const igFail = (ts) => ({ ts: new Date(ts).toISOString(), platform: 'instagram', action: 'publish-reel', ok: false, errorCode: 'engine_failure', errorMessage: 'rupload: HTTP 400 ProcessingFailedError retriable false' });
+  const tp = { attempts: [] };
+  recordAttempt(tp, igFail(T0));
+  recordAttempt(tp, igFail(T0 + 2 * 60000));
+  recordAttempt(tp, igFail(T0 + 7 * 60000));
+  recordAttempt(tp, igFail(T0 + 17 * 60000));
+  ok(!tp.publishHold, 'four consecutive transient failures do NOT park the post (the old 3-strike cap would have)');
+  ok(tp.publishRetry && tp.publishRetry.lane === 'instagram' && tp.publishRetry.attempts === 4, `publishRetry tracks the backoff (${JSON.stringify(tp.publishRetry)})`);
+  ok(Date.parse(tp.publishRetry.nextAt) > T0 + 17 * 60000, 'publishRetry.nextAt schedules a FUTURE retry (backoff paces the tick)');
+
+  // lanesFor defers inside the backoff window, fires once it elapses
+  const norm = { platforms: ['instagram'], scheduledAt: '2020-01-01T00:00:00Z', ids: {}, publishRetry: { lane: 'instagram', action: 'publish-reel', attempts: 2, firstAt: new Date(T0).toISOString(), nextAt: new Date(T0 + 100 * 60000).toISOString() } };
+  ok(lanesFor(norm, T0 + 50 * 60000).length === 0, 'lanesFor defers a post still inside its backoff - no re-fire, no hammering');
+  ok(lanesFor(norm, T0 + 150 * 60000).includes('meta'), 'lanesFor fires the post once the backoff has elapsed');
+
+  // past the ride-out window a transient failure finally parks (operator takes over)
+  recordAttempt(tp, igFail(T0 + TRANSIENT_RETRY_WINDOW_MS + 60000));
+  ok(Boolean(tp.publishHold), 'a transient failure past the ~3h ride-out window finally parks the post');
+  ok(!tp.publishRetry, 'parking after the window clears the transient retry schedule');
+
+  // a success clears an in-flight retry schedule
+  const sp = { attempts: [] };
+  recordAttempt(sp, igFail(T0));
+  ok(sp.publishRetry, 'setup: a transient failure set publishRetry');
+  recordAttempt(sp, { ts: new Date(T0 + 60000).toISOString(), platform: 'instagram', action: 'publish-reel', ok: true, errorCode: null, errorMessage: null });
+  ok(!sp.publishRetry && !sp.publishHold, 'a real success clears BOTH publishRetry and publishHold');
+
+  // ===== (i) integration: a transient mock failure rides out, never hammers ======
+  // Contrast with (a): three back-to-back ticks on a PERMANENT 9004 = 3 attempts +
+  // park; three back-to-back ticks on a TRANSIENT failure = ONE attempt (the backoff
+  // defers the rest) and NO hold - proof the storm cannot recur from the retry side.
+  const cc4 = await createCampaign({ id: 'transient', note: 'transient', timezone: 'UTC', actor: 'owner' });
+  assert.ok(cc4.ok, `createCampaign(transient): ${JSON.stringify(cc4)}`);
+  const cp4 = await createPost({
+    campaign: 'transient',
+    post: { id: 't1', type: 'reel', platforms: ['instagram'], scheduledAt: '2020-01-01T00:00:00Z', path: 'data/media/clip.mp4', caption: 'a quiet third clip for the retry path' },
+    actor: 'agent:claude',
+  });
+  assert.ok(cp4.ok, `createPost(transient/t1): ${JSON.stringify(cp4)}`);
+  const ap4 = await approvePost({ campaign: 'transient', postId: 't1', actor: 'owner' });
+  assert.ok(ap4.ok, `approvePost(transient/t1): ${JSON.stringify(ap4)}`);
+  process.env.PENDPOST_MOCK_FAIL = 'instagram:engine_failure:rupload HTTP 400 ProcessingFailedError retriable false';
+  for (let t = 1; t <= MAX_PUBLISH_ATTEMPTS + 1; t++) await runDueExclusive('owner', { campaign: 'transient', postId: 't1' });
+  const t1 = getPost('transient', 't1');
+  ok(!t1.publishHold, 'a transient (ProcessingFailedError) failure is NOT parked, even after 4 ticks');
+  ok(Boolean(t1.publishRetry), 'the transient failure scheduled a backoff retry instead');
+  ok(rawAttempts('transient', 't1').length === 1, `the backoff deferred the extra ticks - only 1 attempt recorded, not 4 (got ${rawAttempts('transient', 't1').length}) - no hammering`);
+  delete process.env.PENDPOST_MOCK_FAIL;
+
+  // ===== (j) TERMINAL refusals park on the FIRST strike (not after 3) ==========
+  // The 2026-07 X storm burned the 3-strike cap PER post on refusals that will fail
+  // identically forever: 722 "duplicate content" 403s and 723 "you can only reply to
+  // or quote posts where you are mentioned or are the author" 403s - each retried to
+  // the cap, each retry a METERED X POST. Retrying a permanent refusal buys nothing,
+  // so it parks on the first strike. This is PER-POST (publishHold), never a lane halt
+  // - a duplicate tweet is one post's problem, not an account outage (only the 402
+  // credits breaker halts the whole lane).
+  const { isTerminalRefusal } = await import('../lib/publish-hold.mjs');
+  const xDup = (ts) => ({ ts: new Date(ts).toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: 'X POST /tweets: HTTP 403 - You are not allowed to create a Tweet with duplicate content.' });
+  const xReply = (ts) => ({ ts: new Date(ts).toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: 'X POST /tweets: HTTP 403 - You can only reply to or quote posts where you are mentioned or are the author.' });
+
+  // classifier
+  ok(isTerminalRefusal(xDup(Date.now())) === true, 'a duplicate-content 403 is classified a terminal refusal');
+  ok(isTerminalRefusal(xReply(Date.now())) === true, 'a reply-to-stranger 403 is classified a terminal refusal');
+  ok(isTerminalRefusal({ ok: false, errorCode: 'engine_failure', errorMessage: 'X POST /tweets: HTTP 503 - over capacity' }) === false, 'a generic engine failure is NOT terminal (still retries to the cap)');
+  ok(isTerminalRefusal({ ok: true, errorCode: null, errorMessage: null }) === false, 'a success is never a terminal refusal');
+
+  // park on the FIRST strike - one attempt, immediate hold
+  const dp = { attempts: [] };
+  recordAttempt(dp, xDup(Date.now()));
+  ok(dp.attempts.length === 1 && Boolean(dp.publishHold), 'a single duplicate-content 403 parks the post immediately (no 3-strike burn)');
+  ok(dp.publishHold?.lane === 'x' && /duplicate content/i.test(dp.publishHold?.message || ''), `the hold names the lane + the X refusal (${JSON.stringify(dp.publishHold)})`);
+  ok(!dp.publishRetry, 'a terminal refusal leaves no transient retry schedule');
+
+  const rp2 = { attempts: [] };
+  recordAttempt(rp2, xReply(Date.now()));
+  ok(rp2.attempts.length === 1 && Boolean(rp2.publishHold), 'a single reply-to-stranger 403 parks the post immediately');
+
+  // contrast: a generic refusal still needs the full 3 strikes to park
+  const gp = { attempts: [] };
+  const gFail = (ts) => ({ ts: new Date(ts).toISOString(), platform: 'x', action: 'publish', ok: false, errorCode: 'engine_failure', errorMessage: 'X POST /tweets: HTTP 503 - over capacity' });
+  recordAttempt(gp, gFail(Date.now()));
+  ok(!gp.publishHold, 'a generic refusal does NOT park on the first strike');
+  recordAttempt(gp, gFail(Date.now() + 1000));
+  recordAttempt(gp, gFail(Date.now() + 2000));
+  ok(Boolean(gp.publishHold), 'a generic refusal parks only after the full 3-strike cap (unchanged behaviour)');
+
+  console.log(`[publish-hold] OK - cap stamps terminal hold, held post stops firing, reschedule re-arms, tail capped, transient failures ride out with backoff, terminal refusals park on the first strike, diagnosis pure (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

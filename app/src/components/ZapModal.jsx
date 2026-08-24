@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Zap, AlertCircle, CheckCircle2, ShieldAlert } from 'lucide-react';
 import { sendZap } from '../lib/api.js';
-import { Modal, INNER_SURFACE, EYEBROW, PLATFORM_META, DISABLED_PRIMARY } from './ui.jsx';
+import { Modal, INNER_SURFACE, EYEBROW, PLATFORM_META, DISABLED_PRIMARY, FIELD } from './ui.jsx';
 import { useT } from '../lib/i18n.js';
 
 // Nostr zaps (spec 20, the MONEY path). A lightweight modal opened from the ⋯ menu
@@ -11,7 +11,6 @@ import { useT } from '../lib/i18n.js';
 // (the human clicking Send IS the confirmation). Degrades honestly (P9): no NWC
 // wallet -> the "connect a Lightning wallet" hint, never a dead-end error. On success
 // it invalidates ['plans'] + ['insights'] so the next sweep shows the sats increment.
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 export default function ZapModal({ campaign, postId, onClose }) {
   const t = useT();
@@ -62,7 +61,7 @@ export default function ZapModal({ campaign, postId, onClose }) {
         </p>
       ) : notConfigured ? (
         <div className={`space-y-1 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
-          <p className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-300">
+          <p className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
             <ShieldAlert size={13} aria-hidden="true" /> {t('zap.notConfigured')}
           </p>
         </div>
@@ -78,7 +77,7 @@ export default function ZapModal({ campaign, postId, onClose }) {
               inputMode="numeric"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              className={`${FIELD_CLS} h-9`}
+              className={`${FIELD} w-24`}
             />
           </div>
           <div className="space-y-1">
@@ -89,7 +88,7 @@ export default function ZapModal({ campaign, postId, onClose }) {
               maxLength={280}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              className={`${FIELD_CLS} h-9`}
+              className={`${FIELD} w-full`}
             />
           </div>
           {error ? (

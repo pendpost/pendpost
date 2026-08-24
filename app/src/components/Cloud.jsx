@@ -809,7 +809,7 @@ function OrderSummary({ plan, interval, brandsBilled, busy, error, onBack, onCon
   return (
     <div className="space-y-3 rounded-2xl border border-black/10 p-3 dark:border-white/10">
       <div className="flex items-center gap-2">
-        <button type="button" onClick={onBack} disabled={busy} aria-label={t('cloud.summary.back')} className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+        <button type="button" onClick={onBack} disabled={busy} aria-label={t('cloud.summary.back')} className="flex h-7 w-7 items-center justify-center rounded-lg text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
           <ChevronLeft size={16} aria-hidden="true" />
         </button>
         <h4 className="text-sm font-bold tracking-tight text-zinc-800 dark:text-zinc-100">{t('cloud.summary.title', { plan: t(`cloud.tier.${plan}`) })}</h4>
@@ -1112,7 +1112,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
 
       {/* Spend-cap alerts stay visible even though the control is in Details - a money path
           must never be hidden. */}
-      {capReached ? <p role="alert" className="text-xs text-red-600 dark:text-red-300">{t('cloud.cap.reached')}</p> : nearCap ? <p className="text-xs text-amber-600 dark:text-amber-400">{t('cloud.cap.near')}</p> : null}
+      {capReached ? <p role="alert" className="text-xs text-red-600 dark:text-red-300">{t('cloud.cap.reached')}</p> : nearCap ? <p className="text-xs text-amber-700 dark:text-amber-400">{t('cloud.cap.near')}</p> : null}
 
       {/* The trial hard-stop banner: prominent, ABOVE the purchase flow. It is now copy only -
           the actual buy is the one CheckoutFlow below (no competing second picker). */}

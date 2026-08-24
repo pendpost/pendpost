@@ -20,11 +20,16 @@ const GLYPH_META = {
   x: PLATFORM_META.x,
   youtube: PLATFORM_META.youtube,
   nostr: PLATFORM_META.nostr,
+  linkedin: PLATFORM_META.linkedin,
+  instagram: PLATFORM_META.instagram,
   web: { Icon: Globe, color: 'text-sky-500' },
 };
 // Sources with an in-Studio Setup card to deep-link to. Bluesky creds are .env-only and HN
 // is keyless - a "connect" affordance there would be a dead end.
-const SETUP_CONNECTABLE = new Set(['reddit', 'mastodon', 'x', 'youtube', 'nostr']);
+const SETUP_CONNECTABLE = new Set(['reddit', 'mastodon', 'x', 'youtube', 'nostr', 'linkedin', 'instagram']);
+// Instagram has no Setup lane of its own - it is connected under the `meta` card. Deep-link
+// the connect glyph to `meta` so it lands where Instagram is actually authorized.
+const SETUP_LANE_FOR = (id) => (id === 'instagram' ? 'meta' : id);
 
 // The per-glyph state. `capabilities` is the server's own table (feed.capabilities) so the
 // client can never drift from lib/radar.mjs; while it has not arrived yet the dot is
@@ -54,8 +59,8 @@ function glyphState(id, { capabilities, accounts, sourceStatus }) {
 const STATE_ICON = { ready: Check, connect: Plus, copy: Copy };
 const STATE_FG = {
   ready: 'text-emerald-600 dark:text-emerald-400',
-  connect: 'text-amber-600 dark:text-amber-500',
-  copy: 'text-amber-600 dark:text-amber-500',
+  connect: 'text-amber-700 dark:text-amber-500',
+  copy: 'text-amber-700 dark:text-amber-500',
 };
 
 export default function RadarSourceGlyphs({ sources = [], capabilities, accounts, sourceStatus, onNavigate, size = 15, className = '' }) {
@@ -89,7 +94,7 @@ export default function RadarSourceGlyphs({ sources = [], capabilities, accounts
               {state === 'connect' && SETUP_CONNECTABLE.has(id) && onNavigate ? (
                 <button
                   type="button"
-                  onClick={() => onNavigate('setup', id)}
+                  onClick={() => onNavigate('setup', SETUP_LANE_FOR(id))}
                   aria-label={label}
                   className="rounded p-0.5 transition hover:bg-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-white/5"
                 >

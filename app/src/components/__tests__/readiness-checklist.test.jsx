@@ -13,9 +13,12 @@ import { I18nProvider } from '../../lib/i18n.js';
 const setScheduler = vi.fn(() => Promise.resolve({ ok: true }));
 let healthState;
 
+const resumeLaneMock = vi.fn(() => Promise.resolve({ ok: true }));
+
 vi.mock('../../lib/api.js', () => ({
   usePendpostHealth: () => ({ data: healthState, isLoading: false, isError: false }),
   setSchedulerRunning: (...args) => setScheduler(...args),
+  resumeLane: (...args) => resumeLaneMock(...args),
 }));
 
 function renderChecklist(props = {}, locale = 'en') {
@@ -138,5 +141,80 @@ describe('ReadinessChecklist - localized blocker codes (de-CH)', () => {
     };
     renderChecklist({}, 'de-CH');
     expect(screen.getByText('Meta credentials not configured')).toBeInTheDocument();
+  });
+});
+
+// Per-post blocker.overdueUnpublished (an approved, past-due post the publisher could
+// not land, params {campaign, postId, reason}) renders localized WITH its reason and
+// deep-links to the affected POST via onOpenPost - not to Setup, which cannot fix a
+// platform rejection. It used to be filtered out entirely, hiding the one failure
+// reason the server surfaces.
+describe('ReadinessChecklist - per-post overdueUnpublished row', () => {
+  it('renders the failure with its reason and opens the post on click', async () => {
+    const user = userEvent.setup();
+    const onOpenPost = vi.fn();
+    healthState = {
+      ok: true, ready: false, schedulerRunning: true,
+      blockers: ['acme-launch/reel-01: approved and overdue but unpublished (video not found)'],
+      blockerCodes: [
+        { code: 'blocker.overdueUnpublished', params: { campaign: 'acme-launch', postId: 'reel-01', reason: 'video not found' } },
+      ],
+      nextDue: [],
+    };
+    renderChecklist({ onOpenPost });
+    const row = screen.getByRole('button', { name: /reel-01.*video not found/i });
+    expect(row).toBeInTheDocument();
+    await user.click(row);
+    expect(onOpenPost).toHaveBeenCalledWith({ campaign: 'acme-launch', id: 'reel-01' });
+  });
+
+  it('without onOpenPost the failure still renders, as a non-clickable row', () => {
+    healthState = {
+      ok: true, ready: false, schedulerRunning: true,
+      blockers: ['x'],
+      blockerCodes: [
+        { code: 'blocker.overdueUnpublished', params: { campaign: 'acme-launch', postId: 'reel-01', reason: 'video not found' } },
+      ],
+      nextDue: [],
+    };
+    renderChecklist();
+    expect(screen.getByText(/reel-01.*video not found/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /reel-01/i })).not.toBeInTheDocument();
+  });
+});
+
+// A halted lane (blocker.laneBlocked, e.g. the X credits breaker) renders with its
+// reason and carries the recovery IN the row: a Resume lane button that clears the
+// block server-side. It is neither a Setup link nor a post link.
+describe('ReadinessChecklist - halted lane row', () => {
+  it('renders the halt reason and resumes the lane on click', async () => {
+    const user = userEvent.setup();
+    resumeLaneMock.mockClear();
+    healthState = {
+      ok: true, ready: false, schedulerRunning: true,
+      blockers: ['X refused to publish: API credits depleted'],
+      blockerCodes: [
+        { code: 'blocker.laneBlocked', params: { platform: 'x', reason: 'X POST /tweets: HTTP 402 - credits depleted' } },
+      ],
+      nextDue: [],
+    };
+    renderChecklist();
+    expect(screen.getByText(/Publishing to X is halted: .*HTTP 402/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /resume lane/i }));
+    expect(resumeLaneMock).toHaveBeenCalledWith('x');
+  });
+
+  it('falls back to the reason-less variant when the server recorded no message', () => {
+    healthState = {
+      ok: true, ready: false, schedulerRunning: true,
+      blockers: ['x lane is halted'],
+      blockerCodes: [
+        { code: 'blocker.laneBlocked', params: { platform: 'x', reason: null } },
+      ],
+      nextDue: [],
+    };
+    renderChecklist();
+    expect(screen.getByText(/Publishing to X is halted after a terminal refusal/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /resume lane/i })).toBeInTheDocument();
   });
 });

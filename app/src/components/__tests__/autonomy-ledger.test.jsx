@@ -7,10 +7,12 @@ import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 
-// The autonomy ledger (ux-audit R7 = AU1 + AU5 + AU4): ONE surface, four rows, each showing
+// The autonomy ledger (ux-audit R7 = AU1 + AU5 + AU4): ONE surface, three rows, each showing
 // what pendpost may do without the owner, with the control inline. This suite proves the
-// absorption (the auto-approve fieldset, the R6a gate knobs, the Radar auto-reply select and
-// the daily-research knobs all live HERE now), the AU5 dry-run line, and the AU4 unwind.
+// absorption (the auto-approve fieldset, the R6a gate knobs and the Radar auto-reply select
+// all live HERE now), the AU5 dry-run line, and the AU4 unwind. The former fourth row (daily
+// research fire-time + budget) moved to RadarSearches.jsx (UX issue 4, own coverage there):
+// it is Radar cadence config, not an autonomy policy.
 const CONFIG_REV = 'rev-1';
 const saveConfigMock = vi.fn(() => Promise.resolve({ ok: true }));
 const setSchedulerRunningMock = vi.fn(() => Promise.resolve({ ok: true }));
@@ -28,6 +30,11 @@ vi.mock('../../lib/api.js', () => ({
   saveConfig: (...a) => saveConfigMock(...a),
   setSchedulerRunning: (...a) => setSchedulerRunningMock(...a),
   revokeAutonomy: (...a) => revokeAutonomyMock(...a),
+  // Issue 7: the real humanize-by-code helper, mirrored here since this suite mocks the
+  // whole module - matches app/src/lib/api.js's own implementation exactly.
+  errText: (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
+    : err instanceof TypeError ? t('error.network')
+      : (err?.message || t(fallbackKey))),
 }));
 
 function renderLedger(props = {}) {
@@ -51,7 +58,9 @@ beforeEach(() => {
   saveConfigMock.mockClear();
   setSchedulerRunningMock.mockClear();
   revokeAutonomyMock.mockClear();
-  accountsData = { scheduler: { running: true } };
+  // Connected lanes: meta (=Instagram, since facebook ships off by policy) + X. Reddit is
+  // connected too, to prove the manual lane is never offered for auto-approve (issue 1).
+  accountsData = { scheduler: { running: true }, meta: { configured: true }, x: { authenticated: true }, reddit: { authenticated: true } };
   healthData = { ready: true };
   autonomyData = { dryRun: { matched: 0, total: 0, limit: 20 }, revocable: 0 };
   posting = {
@@ -62,13 +71,14 @@ beforeEach(() => {
   };
 });
 
-describe('autonomy ledger: the four lanes at a glance', () => {
+describe('autonomy ledger: the three lanes at a glance', () => {
   it('renders one row per autonomy lane, each with a plain-language summary', () => {
     renderLedger();
     expect(screen.getByRole('heading', { name: /what pendpost may do without you/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /draft approval/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /radar replies/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /overnight research/i })).toBeInTheDocument();
+    // UX issue 4: the former "overnight research" row moved to RadarSearches.jsx.
+    expect(screen.queryByRole('button', { name: /overnight research/i })).not.toBeInTheDocument();
     // Draft approval off by default -> "you approve every post" summary.
     expect(screen.getByText(/you approve every post before it publishes/i)).toBeInTheDocument();
     // Scheduler running -> the 60-second cycle summary.
@@ -77,34 +87,48 @@ describe('autonomy ledger: the four lanes at a glance', () => {
 });
 
 describe('draft-approval row absorbs the auto-approve policy + the R6a gate knobs', () => {
-  it('expanding + enabling shows the platform fieldset (Instagram offered, Reddit never)', async () => {
+  it('enabling defaults to every CONNECTED lane checked, never Reddit, never builds from zero (issue 1)', async () => {
     const user = userEvent.setup();
     renderLedger();
     await openRow(user, /draft approval/i);
     await user.click(screen.getByRole('switch', { name: 'Auto-approve agent drafts' }));
-    expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { autoApprove: expect.objectContaining({ enabled: true }) } });
+    // Enabling trusts the connected lanes (instagram + x); the manual reddit lane is never included.
+    await waitFor(() => {
+      const call = saveConfigMock.mock.calls.find((c) => c[1]?.posting?.autoApprove?.enabled === true);
+      expect(call[1].posting.autoApprove.platforms).toEqual(expect.arrayContaining(['instagram', 'x']));
+      expect(call[1].posting.autoApprove.platforms).not.toContain('reddit');
+    });
     posting.autoApprove.enabled = true; // reflect the write so the fieldset renders on re-render
   });
 
-  it('with the policy on and zero platforms, the fail-closed hint shows; Reddit is never offered', async () => {
+  it('the fieldset offers only connected lanes; Reddit is never offered (issue 1)', async () => {
     const user = userEvent.setup();
     posting.autoApprove.enabled = true;
     renderLedger();
     await openRow(user, /draft approval/i);
     expect(screen.getByRole('checkbox', { name: 'Instagram' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'X' })).toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: 'Reddit' })).not.toBeInTheDocument();
-    expect(screen.getByText(/no platform is selected, so this approves nothing yet/i)).toBeInTheDocument();
+    // A lane that is NOT connected is not offered at all (no irrelevant fields).
+    expect(screen.queryByRole('checkbox', { name: 'TikTok' })).not.toBeInTheDocument();
   });
 
-  it('the R6a gate knobs (approval expiry + slot slip) live in this row and persist as integers', async () => {
+  it('with no lane connected, the fieldset points to Setup instead of an empty checkbox grid (issue 1)', async () => {
+    const user = userEvent.setup();
+    accountsData = { scheduler: { running: true } }; // nothing connected
+    posting.autoApprove.enabled = true;
+    renderLedger();
+    await openRow(user, /draft approval/i);
+    expect(screen.queryByRole('checkbox', { name: 'Instagram' })).not.toBeInTheDocument();
+    expect(screen.getByText(/no platform connected yet/i)).toBeInTheDocument();
+  });
+
+  it('the expiry / slot-slip number fields are gone from the GUI (issue 2)', async () => {
     const user = userEvent.setup();
     renderLedger();
     await openRow(user, /draft approval/i);
-    const expiry = screen.getByLabelText('Approval expiry');
-    expect(expiry).toHaveValue(null); // empty = off
-    await user.type(expiry, '48');
-    await user.tab();
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { approvalExpiryHours: 48 } }));
+    expect(screen.queryByLabelText('Approval expiry')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Slot slip')).not.toBeInTheDocument();
   });
 });
 
@@ -133,13 +157,52 @@ describe('AU4 revoke-that-unwinds', () => {
   });
 });
 
-describe('overnight-research row surfaces the daily budget (dim-5 P5)', () => {
-  it('persists posting.radar.agent.dailyBudget when the picker changes', async () => {
+// S7 (radar engagement engine, F1): the drafting policy's GUI face - the DRAFT
+// threshold + per-scan cap join the Radar-replies row, with the pinned relationship
+// sentence separating the draft threshold from the auto-POST threshold.
+describe('S7 drafting rows on the Radar-replies row', () => {
+  it('renders both drafting rows prefilled with the shipped defaults (30 / 20)', async () => {
     const user = userEvent.setup();
     renderLedger();
-    await openRow(user, /overnight research/i);
-    await user.selectOptions(screen.getByRole('combobox', { name: /paid jobs per day/i }), '3');
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { agent: expect.objectContaining({ dailyBudget: 3 }) } } }));
+    await openRow(user, /radar replies/i);
+    expect(screen.getByRole('combobox', { name: /drafts from score/i })).toHaveValue('30');
+    expect(screen.getByRole('spinbutton', { name: /drafts per scan/i })).toHaveValue(20);
+    // The pinned relationship sentence defines the two-threshold middle state.
+    expect(screen.getByText(/only what the auto-reply score clears is published automatically/i)).toBeInTheDocument();
+  });
+
+  it('persists drafting.minScore via read-modify-write of the WHOLE drafting object', async () => {
+    const user = userEvent.setup();
+    posting.radar.drafting = { minScore: 30, maxPerRun: 20 };
+    renderLedger();
+    await openRow(user, /radar replies/i);
+    await user.selectOptions(screen.getByRole('combobox', { name: /drafts from score/i }), '40');
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { minScore: 40, maxPerRun: 20 } } } }));
+  });
+
+  it('persists drafting.maxPerRun on blur, carrying the sibling minScore untouched', async () => {
+    const user = userEvent.setup();
+    posting.radar.drafting = { minScore: 40, maxPerRun: 20 };
+    renderLedger();
+    await openRow(user, /radar replies/i);
+    const field = screen.getByRole('spinbutton', { name: /drafts per scan/i });
+    await user.clear(field);
+    await user.type(field, '35');
+    await user.tab();
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { minScore: 40, maxPerRun: 35 } } } }));
+  });
+
+  it('an out-of-range maxPerRun keeps the typed value and shows the inline error (A4)', async () => {
+    const user = userEvent.setup();
+    renderLedger();
+    await openRow(user, /radar replies/i);
+    const field = screen.getByRole('spinbutton', { name: /drafts per scan/i });
+    await user.clear(field);
+    await user.type(field, '99');
+    await user.tab();
+    expect(await screen.findByRole('alert')).toHaveTextContent(/between 1 and 50/i);
+    expect(field).toHaveValue(99);
+    expect(saveConfigMock).not.toHaveBeenCalled();
   });
 });
 

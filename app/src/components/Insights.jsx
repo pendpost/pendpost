@@ -1,11 +1,133 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { RefreshCw, BarChart3, ChevronDown, ChevronRight, ArrowUp, ArrowDown, AlertTriangle, Copy, Download, MapPin } from 'lucide-react';
-import { useInsights, useDigest, fetchInsights } from '../lib/api.js';
+import { RefreshCw, BarChart3, ChevronDown, ChevronRight, ArrowUp, ArrowDown, AlertTriangle, Copy, Download, MapPin, SlidersHorizontal, ExternalLink } from 'lucide-react';
+import { useInsights, useDigest, fetchInsights, useConfig, usePendpostHealth, usePlans, saveConfig } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { prettyCampaign, dateLocale, fmtInt } from '../lib/format.js';
+import { prettyCampaign, dateLocale, fmtInt, X_PORTAL_URL } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, Skeleton, EYEBROW } from './ui.jsx';
 import ActionButton from './ui/ActionButton.jsx';
+import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
+import { Switch } from './ui/Switch.jsx';
+import { useConfirm } from './ui/confirm.jsx';
+import { PROJECT_CHIP } from './ui/recipes.js';
+import { ClientAvatar } from './ClientSwitcher.jsx';
+
+// The metered-read lane: X bills per metric read (METERED_READ_LANES, lib/insights.mjs),
+// so it is never swept in the background unless opted in, and a manual "everything" read
+// costs credits. Every other lane is free. Mirrors the engine constant (kept a literal
+// here rather than fetched - one lane, and the server is the real gate).
+const METERED_LANE = 'x';
+// The X read window caps a single sweep at the recent 30 posts (lib/insights-window.mjs),
+// so the cost estimate is an honest upper bound, never an overstatement.
+const X_READ_WINDOW = 30;
+
+// Read an X row out of a fetch response into the muted state it should render. The X
+// insights verb emits engine_failure with the raw HTTP text (scripts/x-social.mjs
+// cmdInsights), so 402 (credits) and 401/403 (scope) are classified off the message.
+function classifyXFetch(results) {
+  const row = (results || []).find((r) => (r.platform === METERED_LANE || r.lane === METERED_LANE) && r.ok === false);
+  if (!row) return null;
+  const msg = `${row.error || ''} ${row.errorMessage || ''}`;
+  if (/\b402\b|credit|depleted|guthaben/i.test(msg)) return 'credits';
+  if (/needs_scope|\b401\b|\b403\b|scope|unauthor|not authenticated|token|expired/i.test(msg)) return 'needs_scope';
+  return 'error';
+}
+
+// The scope split control: the primary button refreshes the FREE lanes (no X, no cost);
+// its caret - its own >=44px tap target - opens the two-scope menu, where "everything"
+// carries the cost warning and reads X. Reuses ActionButton (idle->loading->success) for
+// the free default and Popover for the scope choice; no new split-button primitive.
+function RefreshControl({ fetchFresh, busy, onFree, onEverything, t }) {
+  return (
+    <div className="inline-flex shrink-0 items-stretch">
+      <ActionButton
+        icon={RefreshCw}
+        className="rounded-r-none"
+        variant={fetchFresh ? 'success' : 'subtle'}
+        disabled={busy}
+        ariaLabel={fetchFresh ? t('insights.refresh.freshLabel') : undefined}
+        labels={{ idle: t('insights.refresh.idle'), loading: t('insights.refresh.loading'), success: t('insights.refresh.success'), error: t('insights.refresh.error') }}
+        onAction={onFree}
+      />
+      <Popover>
+        <PopoverTrigger asChild>
+          <button
+            type="button"
+            aria-label={t('insights.refresh.moreLabel')}
+            disabled={busy}
+            className="grid min-h-[44px] min-w-[44px] place-items-center rounded-r-xl border-l border-white/25 bg-zinc-200/60 text-zinc-700 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:border-white/10 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60"
+          >
+            <ChevronDown size={15} aria-hidden="true" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="end" className="w-72">
+          <div role="menu" className="space-y-0.5">
+            <div className="px-2.5 pb-1 pt-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+              {t('insights.refresh.scopeTitle')}
+            </div>
+            <PopoverClose asChild>
+              <button type="button" role="menuitem" onClick={onFree} className="w-full rounded-xl px-2.5 py-1.5 text-left transition hover:bg-zinc-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+                <span className="block text-sm font-bold">{t('insights.refresh.free')}</span>
+                <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{t('insights.refresh.freeHint')}</span>
+              </button>
+            </PopoverClose>
+            <PopoverClose asChild>
+              <button type="button" role="menuitem" onClick={onEverything} className="w-full rounded-xl px-2.5 py-1.5 text-left transition hover:bg-zinc-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
+                <span className="block text-sm font-bold">{t('insights.refresh.all')}</span>
+                <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{t('insights.refresh.allHint')}</span>
+              </button>
+            </PopoverClose>
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
+}
+
+// The X metric-read status line: never a silent stale figure or a fake 0. Shows the
+// post-refresh failure (402 credits with a top-up link, or an expired scope with a
+// "connect X" control that lands on Setup) OR, at rest, the un-opted-in marker that
+// names X as a paid lane and points at the settings toggle. Muted by design - it is a
+// status, and the metrics still lead the page.
+function XStatusNote({ state, xConnected, xOptedIn, portalUrl, onNavigate, t }) {
+  if (state === 'in_flight') {
+    return <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('insights.refresh.running')}</p>;
+  }
+  if (state === 'credits') {
+    return (
+      <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <AlertTriangle size={12} className="text-amber-500" aria-hidden="true" />
+        <span>{t('insights.x.error.credits')}</span>
+        {portalUrl ? (
+          <a href={portalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+            <ExternalLink size={11} aria-hidden="true" /> {t('action.topUpCredits')}
+          </a>
+        ) : null}
+      </p>
+    );
+  }
+  if (state === 'needs_scope') {
+    return (
+      <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <AlertTriangle size={12} className="text-amber-500" aria-hidden="true" />
+        <span>{t('insights.x.error.needsScope')}</span>
+        {typeof onNavigate === 'function' ? (
+          <button type="button" onClick={() => onNavigate('setup', METERED_LANE)} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+            {t('insights.x.error.connect')}
+          </button>
+        ) : null}
+      </p>
+    );
+  }
+  if (state === 'error') {
+    return <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('insights.x.error.generic')}</p>;
+  }
+  // Resting: X is connected but not opted into the daily read - the common default.
+  if (xConnected && !xOptedIn) {
+    return <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('insights.x.notActivated')}</p>;
+  }
+  return null;
+}
 
 // Delta of the latest value vs the previous history snapshot for one metric.
 function metricDelta(history, key) {
@@ -478,11 +600,99 @@ function MetricsAccountBlock({ lane, block, t, metricLabel }) {
 // is skipped.
 const ACCOUNT_BLOCKS = { gbp: GbpAccountBlock, meta: DemographicsBlock, youtube: DemographicsBlock, linkedin: DemographicsBlock, pinterest: DemographicsBlock, telegram: MetricsAccountBlock };
 
-export default function Insights({ active, platformFilter = [], campaignFilter = 'all', onOpenPost }) {
+export default function Insights({ active, platformFilter = [], campaignFilter = 'all', allClients = false, allItems = null, allFailed = [], allLoading = false, onOpenPost, onNavigate }) {
   const t = useT();
   const queryClient = useQueryClient();
-  const { data, isLoading, isError, error } = useInsights(active);
+  const confirm = useConfirm();
+  const { data, isLoading: singleLoading, isError, error } = useInsights(active);
   const { data: digestData } = useDigest(active);
+  // Cost-aware refresh state. `config` holds the paid-lane opt-in (posting.insights
+  // .meteredAuto); `health` proves X is live enough to opt in; `plans` gives the X
+  // post count for the cost estimate. All are app-wide cached reads (react-query dedupes).
+  const { data: config } = useConfig(active);
+  const { data: health } = usePendpostHealth(active);
+  const { data: plans } = usePlans();
+  const [xFetchState, setXFetchState] = useState(null); // credits | needs_scope | error | in_flight | null
+  const [allBusy, setAllBusy] = useState(false);
+  const [xToggleBusy, setXToggleBusy] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsError, setSettingsError] = useState(null);
+  const meteredAuto = Array.isArray(config?.posting?.insights?.meteredAuto) ? config.posting.insights.meteredAuto : [];
+  const xOptedIn = meteredAuto.includes(METERED_LANE);
+  // X readiness from the SAME setup payload Setup + PostDetail read: opt-in is only
+  // offered once X is validated-live (a connected lane past its liveness probe).
+  const xRow = health?.setup?.platforms?.find((r) => r.platform === METERED_LANE) || null;
+  const xConnected = xRow?.status === 'connected';
+  const xLive = xConnected && xRow?.validation?.state !== 'unproven' && xRow?.validation?.state !== 'failed';
+  // The top-up portal, single-sourced from the setup payload (PostDetail's derivation),
+  // with the shared X_PORTAL_URL fallback so the credits link never renders bare.
+  const xPortalUrl = xRow?.playbook?.portalUrl || X_PORTAL_URL;
+  // Cost estimate: published X posts (those carrying an xPostId), capped at the read
+  // window so "ca. N" is an honest per-fetch upper bound, not an overstatement.
+  const xPostCount = Math.min(
+    (plans?.campaigns || []).reduce((n, c) => n + (c.posts || []).filter((p) => p?.ids?.xPostId).length, 0),
+    X_READ_WINDOW,
+  );
+
+  // One fetch path for both scopes. `free` never spends; `all` reads X (post-confirm at
+  // the call site) and its X outcome drives the muted status line. A server-busy sweep
+  // (in_flight, HTTP 423) is surfaced as its own transient note, not a false success.
+  const runFetch = async (scope) => {
+    setXFetchState(null);
+    setSettingsError(null);
+    try {
+      const res = await fetchInsights({ scope });
+      queryClient.invalidateQueries({ queryKey: ['insights'] });
+      queryClient.invalidateQueries({ queryKey: ['digest'] });
+      if (scope === 'all') setXFetchState(classifyXFetch(res?.results));
+    } catch (err) {
+      if (err?.code === 'in_flight') { setXFetchState('in_flight'); throw { canceled: true }; }
+      throw err;
+    }
+  };
+  const refreshFree = () => runFetch('free');
+  const refreshEverything = async () => {
+    const ok = await confirm({
+      title: t('insights.cost.title'),
+      body: t('insights.cost.allBody', { n: xPostCount, posts: t(xPostCount === 1 ? 'insights.cost.postOne' : 'insights.cost.postMany') }),
+      confirmLabel: t('insights.cost.allConfirm'),
+      danger: true,
+    });
+    if (!ok) return;
+    setAllBusy(true);
+    try { await runFetch('all'); } catch { /* in_flight already noted; nothing to flash here */ }
+    finally { setAllBusy(false); }
+  };
+  // The X daily-read opt-in. Enabling states the recurrence + estimated read count in a
+  // cost confirm BEFORE it persists; the write goes through config_set as the owner
+  // (saveConfig actor='owner') and shallow-merges posting.insights (config.mjs).
+  const toggleXAuto = async (next) => {
+    if (next) {
+      const ok = await confirm({
+        title: t('insights.cost.enableTitle'),
+        body: t('insights.cost.enableBody', { n: xPostCount, posts: t(xPostCount === 1 ? 'insights.cost.postOne' : 'insights.cost.postMany') }),
+        confirmLabel: t('insights.cost.enableConfirm'),
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    setSettingsError(null);
+    setXToggleBusy(true);
+    try {
+      await saveConfig(config?.rev, { posting: { insights: { meteredAuto: next ? [METERED_LANE] : [] } } });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+    } catch (err) {
+      setSettingsError(err?.message || t('insights.settings.saveError'));
+    } finally {
+      setXToggleBusy(false);
+    }
+  };
+  // All-projects overview: the merged, project-stamped items from App replace the single
+  // active client's feed. Feed-only (mirrors Radar) - the server-computed
+  // summary/account/metricLabels are per-client, so the "What is working" + account
+  // strips hide in this mode. A per-client read failure rides the inline notice below,
+  // never the page-level error.
+  const isLoading = allClients ? allLoading : singleLoading;
   const [digestOpen, setDigestOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   // metricLabels travels in the envelope as a stable English reference. Display
@@ -501,8 +711,11 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
   // sentinel views ('active' = the active campaign view, 'all' = everything).
   const campaignScope = campaignFilter && campaignFilter !== 'active' && campaignFilter !== 'all' ? campaignFilter : null;
   // Freshest first: what changed most recently is what the operator came to
-  // read. Stable within one sweep (equal fetchedAt), so no jumpy reorders.
-  const items = (data?.items || [])
+  // read. Stable within one sweep (equal fetchedAt), so no jumpy reorders. In the
+  // all-projects overview the source is App's merged, project-stamped items (already
+  // fetchedAt-desc); the filter/sort pipeline below is reused unchanged.
+  const baseItems = allClients && Array.isArray(allItems) ? allItems : (data?.items || []);
+  const items = baseItems
     .filter(
       (e) =>
         (!platformFilter.length || platformFilter.includes(e.platform)) &&
@@ -523,11 +736,46 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
     let bucket = platformTotals.find((b) => b.platform === e.platform);
     if (!bucket) {
       bucket = { platform: e.platform, metrics: {} };
+      // All-projects only: accumulators for the weighted-average rate metrics. Left
+      // absent in single-client mode so its totals strip stays byte-identical.
+      if (allClients) { bucket.rateNum = {}; bucket.rateDen = {}; }
       platformTotals.push(bucket);
     }
+    // All-projects only: the item's PRIMARY count metric is the weight for its rates,
+    // reusing primaryKeysFor (no new metric map). The first present primary key that is
+    // itself a count (not a rate) is the weight; absent, the item weighs 1 -> a simple
+    // mean, so an all-missing-weight platform yields the plain average.
+    const weight = allClients
+      ? (() => {
+        const wk = primaryKeysFor(e.platform, e.metrics).find((k) => !RATE_METRIC_KEYS.has(k) && typeof e.metrics?.[k] === 'number');
+        const w = wk ? e.metrics[wk] : 1;
+        return typeof w === 'number' && w > 0 ? w : 1;
+      })()
+      : 0;
     for (const [k, v] of Object.entries(e.metrics || {})) {
-      if (typeof v !== 'number' || RATE_METRIC_KEYS.has(k)) continue;
+      if (typeof v !== 'number') continue;
+      if (RATE_METRIC_KEYS.has(k)) {
+        // Single-client: rates are excluded from the strip (summing rates is
+        // meaningless). All-projects: a cross-project weighted mean Σ(rate·w)/Σ(w) -
+        // a rate aggregate only means something across projects (owner call).
+        if (allClients) {
+          bucket.rateNum[k] = (bucket.rateNum[k] || 0) + v * weight;
+          bucket.rateDen[k] = (bucket.rateDen[k] || 0) + weight;
+        }
+        continue;
+      }
       bucket.metrics[k] = (bucket.metrics[k] || 0) + v;
+    }
+  }
+  // All-projects only: resolve each rate accumulator into its weighted mean, folded
+  // back into bucket.metrics so the render (which filters by primaryKeysFor) shows it.
+  if (allClients) {
+    for (const b of platformTotals) {
+      for (const k of Object.keys(b.rateNum || {})) {
+        if (b.rateDen[k] > 0) b.metrics[k] = b.rateNum[k] / b.rateDen[k];
+      }
+      delete b.rateNum;
+      delete b.rateDen;
     }
   }
 
@@ -546,21 +794,36 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
           {' · '}{t('insights.schedulerNote')}
         </p>
         <span className="flex-1" />
-        <ActionButton
-          icon={RefreshCw}
-          className="shrink-0"
-          variant={fetchFresh ? 'success' : 'subtle'}
-          ariaLabel={fetchFresh ? t('insights.fetch.freshLabel') : undefined}
-          labels={{ idle: t('insights.fetch.idle'), loading: t('insights.fetch.loading'), success: t('insights.fetch.success'), error: t('insights.fetch.error') }}
-          onAction={async () => {
-            await fetchInsights();
-            queryClient.invalidateQueries({ queryKey: ['insights'] });
-            queryClient.invalidateQueries({ queryKey: ['digest'] });
-          }}
-        />
+        {!allClients ? (
+          <RefreshControl fetchFresh={fetchFresh} busy={allBusy} onFree={refreshFree} onEverything={refreshEverything} t={t} />
+        ) : null}
       </div>
 
-      {isError ? (
+      {/* X metric-read status: the post-refresh failure (402 / expired scope) or, at
+          rest, the un-opted-in marker. Muted, single line - the metrics still lead. In
+          the all-projects overview the metered opt-in is per-client, so it hides here. */}
+      {!allClients ? (
+        <XStatusNote state={xFetchState} xConnected={xConnected} xOptedIn={xOptedIn} portalUrl={xPortalUrl} onNavigate={onNavigate} t={t} />
+      ) : null}
+
+      {/* All-projects overview: one quiet inline notice per project whose insights read
+          failed - never blocks the rest of the merged feed (mirrors Radar's notice). */}
+      {allClients && allFailed.length ? (
+        <div className="glass-panel space-y-1 rounded-2xl px-4 py-2.5">
+          {allFailed.map(({ q, client }) => (
+            <p key={client.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              <span>{t('clientSwitcher.loadFailed', { name: client.displayName })}</span>
+              <button type="button" onClick={() => q.refetch()} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                {t('clientSwitcher.retry')}
+              </button>
+            </p>
+          ))}
+        </div>
+      ) : null}
+
+      {/* A per-client read failure in the overview rides the inline notice above, never
+          this page-level error (mirrors App's isError = allClients ? false : plansIsError). */}
+      {!allClients && isError ? (
         <div className="grid place-items-center py-12">
           <div className="max-w-xs space-y-3 text-center">
             <AlertTriangle size={26} className="mx-auto text-red-500" aria-hidden="true" />
@@ -587,7 +850,10 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
         </div>
       ) : items.length ? (
         <>
-        <WhatIsWorking summary={data?.summary} t={t} />
+        {/* Feed-only in the all-projects overview: "What is working" is a per-client,
+            server-computed summary (not merged across projects), so it hides in mode -
+            exactly as Radar hides its per-client strips. */}
+        {!allClients ? <WhatIsWorking summary={data?.summary} t={t} /> : null}
         {platformTotals.length ? (
           <section
             role="region"
@@ -656,6 +922,15 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
                         {typeLabel}
                       </span>
                     ) : null}
+                    {/* All-projects overview: which project this metrics row belongs to.
+                        Stamped by App only in that mode (single-client never stamps, so
+                        nothing renders) - matches the Planner/Freigaben/Radar chip. */}
+                    {e.clientName ? (
+                      <span className={`${PROJECT_CHIP} max-w-[8rem]`}>
+                        <ClientAvatar client={{ displayName: e.clientName, accent: e.accent, logo: null }} size={14} />
+                        <span className="truncate">{e.clientName}</span>
+                      </span>
+                    ) : null}
                     <span className="truncate">{primary || prettyCampaign(e.campaign)}</span>
                   </p>
                   <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -666,11 +941,11 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
               </>
             );
             return (
-              <li key={`${e.campaign}-${e.postId}-${e.platform}`} className={`flex items-center gap-2.5 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
+              <li key={`${e.clientId || ''}-${e.campaign}-${e.postId}-${e.platform}`} className={`flex items-center gap-2.5 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
                 {onOpenPost ? (
                   <button
                     type="button"
-                    onClick={() => onOpenPost({ campaign: e.campaign, id: e.postId })}
+                    onClick={() => onOpenPost({ campaign: e.campaign, id: e.postId, clientId: e.clientId })}
                     aria-label={t('insights.row.open', { postId: e.postId, campaign: prettyCampaign(e.campaign) })}
                     className="-m-1 flex min-w-0 flex-1 items-center gap-2.5 rounded-lg p-1 text-left transition hover:bg-zinc-500/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
                   >
@@ -697,19 +972,18 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
             <div className="flex justify-center pt-1">
               <ActionButton
                 icon={RefreshCw}
-                labels={{ idle: t('insights.fetch.idle'), loading: t('insights.fetch.loading'), success: t('insights.fetch.success'), error: t('insights.fetch.error') }}
-                onAction={async () => {
-                  await fetchInsights();
-                  queryClient.invalidateQueries({ queryKey: ['insights'] });
-                  queryClient.invalidateQueries({ queryKey: ['digest'] });
-                }}
+                labels={{ idle: t('insights.refresh.idle'), loading: t('insights.refresh.loading'), success: t('insights.refresh.success'), error: t('insights.refresh.error') }}
+                onAction={refreshFree}
               />
             </div>
           </div>
         </div>
       )}
 
-      {hasAccount ? (
+      {/* Feed-only in the all-projects overview: the account/demographics store is
+          per-client (server-computed, not merged), so it hides in mode like Radar's
+          per-client strips. */}
+      {!allClients && hasAccount ? (
         <section className="space-y-1.5">
           <button
             type="button"
@@ -784,6 +1058,53 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
               className={`max-w-4xl space-y-2 rounded-xl p-4 font-body text-xs leading-relaxed ${INNER_SURFACE}`}
             >
               <DigestMarkdown source={digestData.digest} />
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+
+      {/* Auswertung-Einstellungen: the paid-lane opt-in, behind a quiet disclosure BELOW
+          the metrics (config never stacks above content). Holds the single X daily-read
+          toggle, disabled with a reason until X is validated-live. Hidden in the
+          all-projects overview (the opt-in is per-client, written on the active client). */}
+      {!allClients ? (
+        <section className="space-y-1.5">
+          <button
+            type="button"
+            onClick={() => setSettingsOpen((o) => !o)}
+            aria-expanded={settingsOpen}
+            aria-controls="insights-settings-content"
+            className={`${EYEBROW} flex items-center gap-1 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:text-zinc-300`}
+          >
+            {settingsOpen ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />}
+            <SlidersHorizontal size={12} aria-hidden="true" />
+            {t('insights.settings.title')}
+          </button>
+          {settingsOpen ? (
+            <div
+              id="insights-settings-content"
+              role="region"
+              aria-label={t('insights.settings.title')}
+              className={`max-w-4xl space-y-2 rounded-xl p-4 ${INNER_SURFACE}`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold">{t('insights.settings.xLabel')}</p>
+                  <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {xLive ? t('insights.settings.xHint') : t('insights.settings.xDisabled')}
+                  </p>
+                </div>
+                <Switch
+                  checked={xOptedIn}
+                  onChange={toggleXAuto}
+                  disabled={!xLive || xToggleBusy}
+                  busy={xToggleBusy}
+                  ariaLabel={t('insights.settings.xLabel')}
+                />
+              </div>
+              {settingsError ? (
+                <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{settingsError}</p>
+              ) : null}
             </div>
           ) : null}
         </section>

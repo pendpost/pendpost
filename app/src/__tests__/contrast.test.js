@@ -35,6 +35,7 @@ export const contrastRatio = (fg, bg) => {
 };
 
 const ZINC = { 300: '#d4d4d8', 400: '#a1a1aa', 500: '#71717a', 600: '#52525b' };
+const AMBER = { 600: '#d97706', 700: '#b45309' };
 const LIGHT_BG = '#f8fafc'; // index.css: body { @apply bg-slate-50 ... }
 const DARK_BG = '#09090b';  // index.css: ... dark:bg-zinc-950 }
 const AA = 4.5;
@@ -104,6 +105,46 @@ describe('muted text contrast (canon Tier 1, brand/DESIGN.md standing bar: WCAG 
       });
     }
     expect(bad, `dark:text-zinc-600 is 2.57:1 on #09090b. If this is a disabled or decorative element pair it with text-zinc-300; if it is text, use dark:text-zinc-400.\n${bad.join('\n')}`).toEqual([]);
+  });
+
+  // The amber attention tone. amber-600 measures 3.04:1 on the light app background -
+  // it LOOKS like a warning colour and fails as one; amber-700 passes at 4.80. This was
+  // swept once by hand (chip 4, 2026-08-17); the ban keeps it swept. No carve-out: the
+  // amber tokens only ever mark warnings the operator must read, never decoration.
+  it('the amber maths behind the rule - if the tokens change, this is what tells you', () => {
+    expect(contrastRatio(AMBER[600], LIGHT_BG)).toBeLessThan(AA); // 3.04 - why text-amber-600 is banned
+    expect(contrastRatio(AMBER[700], LIGHT_BG)).toBeGreaterThan(AA); // 4.80 - the replacement passes
+  });
+
+  it('no light-mode text-amber-600: it measures 3.04:1 on the app background', () => {
+    const bad = [];
+    for (const f of sources()) {
+      const src = fs.readFileSync(f, 'utf8');
+      src.split('\n').forEach((line, i) => {
+        if (/(?<![\w:-])text-amber-600\b/.test(line)) bad.push(`${path.relative(process.cwd(), f)}:${i + 1}`);
+      });
+    }
+    expect(bad, `text-amber-600 is 3.04:1 on #f8fafc (AA needs 4.5). Use text-amber-700.\n${bad.join('\n')}`).toEqual([]);
+  });
+
+  // A bare `text-zinc-500` with no dark companion stays zinc-500 in dark mode, where it
+  // measures 4.12:1 - a silent dark-mode-only failure. The carve-out encodes WHY, not a
+  // path list (the dark:text-zinc-600 discriminator style above): WCAG 1.4.3 is about
+  // TEXT someone must read; an aria-hidden="true" element is by definition not exposed
+  // as text, and as a non-text mark it answers to 1.4.11's 3:1 bar, which zinc-500
+  // clears in both themes (4.62 light, 4.12 dark).
+  it('no bare text-zinc-500 without a dark companion, unless the line is decorative (aria-hidden)', () => {
+    const bad = [];
+    for (const f of sources()) {
+      const src = fs.readFileSync(f, 'utf8');
+      src.split('\n').forEach((line, i) => {
+        if (!/(?<![\w:-])text-zinc-500\b/.test(line)) return;
+        if (/\bdark:text-zinc-(400|300)\b/.test(line)) return;
+        if (/aria-hidden="true"/.test(line)) return; // not text (WCAG 1.4.3 vs 1.4.11)
+        bad.push(`${path.relative(process.cwd(), f)}:${i + 1}`);
+      });
+    }
+    expect(bad, `text-zinc-500 without a dark companion is 4.12:1 in dark mode. Pair it: text-zinc-500 dark:text-zinc-400.\n${bad.join('\n')}`).toEqual([]);
   });
 });
 

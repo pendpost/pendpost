@@ -21,7 +21,7 @@ function StickerChip({ sticker }) {
           <BarChart3 size={11} aria-hidden="true" />
           <span className="flex flex-col">
             <span>{sticker.question || t('ui.story.sticker.poll')}</span>
-            <span className="font-medium text-zinc-500">
+            <span className="font-medium text-zinc-500 dark:text-zinc-400">
               {(sticker.options?.[0] || t('ui.story.sticker.pollYes'))} | {(sticker.options?.[1] || t('ui.story.sticker.pollNo'))}
             </span>
           </span>

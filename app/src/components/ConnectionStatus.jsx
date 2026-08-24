@@ -113,7 +113,7 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
           </p>
           <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{status}</p>
           {syncReason ? (
-            <p className={`text-[11px] leading-relaxed ${isBroken ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'}`}>{syncReason}</p>
+            <p className={`text-[11px] leading-relaxed ${isBroken ? 'text-red-600 dark:text-red-400' : 'text-amber-700 dark:text-amber-400'}`}>{syncReason}</p>
           ) : null}
           {isBroken && missedCount > 0 ? (
             <p className="text-[11px] font-bold text-red-600 dark:text-red-400">{t('connection.sync.missedCount', { n: missedCount })}</p>
@@ -123,7 +123,7 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
               <span className="font-bold text-zinc-600 dark:text-zinc-300">{sub.tier ? t(`cloud.tier.${sub.tier}`) : t('cloud.tier.trial')}</span>
               {' · '}
               {t('connection.usage', { used: sub.postsUsed, included: sub.postsIncluded })}
-              {sub.checkoutEligible ? <span className="ml-1.5 font-bold text-amber-600 dark:text-amber-400">{t('connection.needsPayment')}</span> : null}
+              {sub.checkoutEligible ? <span className="ml-1.5 font-bold text-amber-700 dark:text-amber-400">{t('connection.needsPayment')}</span> : null}
             </p>
           ) : null}
           {/* Coverage, once on: the ONE short honest-limit line (which lanes still
@@ -139,7 +139,13 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
           </div>
         ) : null}
         <div className="flex flex-col gap-1.5 pt-0.5">
-          {isBroken && missedCount > 0 && onShowAtRisk ? (
+          {/* Every red (broken) state names the planner as where the fix lives: the
+              overdue post, the failed post, or the unreadable plan's error banner. So
+              the planner CTA is gated on isBroken alone, NOT on a missed-count -
+              manifest_error carries zero counts by construction (the reason ladder puts
+              overdue/failed first), and gating on the count stranded exactly that state
+              with only a "Manage cloud" button that routes to the wrong page. */}
+          {isBroken && onShowAtRisk ? (
             <button
               type="button"
               onClick={() => { onShowAtRisk(); setOpen(false); }}
@@ -152,7 +158,7 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk }) 
           <button
             type="button"
             onClick={() => { onNavigate?.('cloud'); setOpen(false); }}
-            className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${isBroken && missedCount > 0 && onShowAtRisk ? 'bg-zinc-200/60 text-zinc-700 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60' : 'bg-brand text-white hover:opacity-90 dark:bg-brand-light dark:text-zinc-900'}`}
+            className={`flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${isBroken && onShowAtRisk ? 'bg-zinc-200/60 text-zinc-700 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60' : 'bg-brand text-white hover:opacity-90 dark:bg-brand-light dark:text-zinc-900'}`}
           >
             {cloudConnected ? t('connection.manage') : t('connection.setup')}
             <ArrowRight size={13} aria-hidden="true" />

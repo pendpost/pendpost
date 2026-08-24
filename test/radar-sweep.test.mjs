@@ -33,7 +33,7 @@ const statePath = path.join(WS, 'state.json');
 
 try {
   const { comparisonBacklog, footprintMentionRate } = await import('../lib/radar.mjs');
-  const { dailyRadarScan } = await import('../lib/radar-sweep.mjs');
+  const { dailyRadarScan, reconcileAuthorReplies } = await import('../lib/radar-sweep.mjs');
   const { listRadar, logRadarFootprint, runRadarScan } = await import('../lib/writes.mjs');
   const { setConfig, getConfig } = await import('../lib/config.mjs');
   const { loadState } = await import('../lib/state.mjs');
@@ -136,8 +136,18 @@ try {
   const g = getConfig().posting.radar.geo;
   ok(Array.isArray(g.buyingQuestions) && g.buyingQuestions.includes('what scheduler should I use?') && g.provider === 'openai', 'review #1: two sequential partial geo writes preserve each other (buyingQuestions + provider BOTH present - no wipe)');
 
+  // ---- (UX issue 4) reconcileAuthorReplies gates on the dailyAt clock, not a rolling 24h
+  // window - dailyAt pinned to 00:00 so the suite passes at any wall-clock time (same
+  // precedent as the dailyRadarScan section above). ----------------------------
+  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, dailyAt: '00:00', queries: [] } }));
+  const firstReconcile = await reconcileAuthorReplies({});
+  ok(firstReconcile && firstReconcile.checked === 0 && firstReconcile.replied === 0, 'reconcileAuthorReplies() fires on the first tick at/after dailyAt (no prior stamp)');
+  const stReconciled = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  ok(typeof stReconciled.radar.lastAuthorReplyReconcile === 'string', 'a due reconcile stamps state.radar.lastAuthorReplyReconcile (the cadence clock)');
+  ok((await reconcileAuthorReplies({})) === null, 'a SECOND reconcileAuthorReplies() the same local day is a no-op (once per day, aligned to dailyAt)');
+
   assert.ok(failures === 0, `${failures} assertion(s) failed`);
-  console.log(`[radar-sweep] OK - daily scan gate/run/local-day clock, comparison backlog cluster+dedupe, footprint rate + log, geo read (${pass} assertions).`);
+  console.log(`[radar-sweep] OK - daily scan gate/run/local-day clock, comparison backlog cluster+dedupe, footprint rate + log, geo read, author-reply reconcile aligned to dailyAt (${pass} assertions).`);
 } catch (err) {
   console.error(`[radar-sweep] FAIL - ${err.stack || err.message}`);
   process.exitCode = 1;

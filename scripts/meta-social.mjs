@@ -37,6 +37,7 @@
  * META_IG_USER_ID.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand, platformEnabled } from '../lib/mode.mjs';
@@ -44,10 +45,11 @@ import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
-import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
+import { avSyncBlocker, avSyncBlockRow, probeMedia, findCoverSibling } from '../lib/assets.mjs';
 import { effectivePublicUrl, effectiveSlideUrl, classifyMediaProbe } from '../lib/public-media.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { envPath } from '../lib/util.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -242,13 +244,21 @@ async function setFbReelThumbnail(videoId, jpgPath, pageToken) {
   await graph('POST', `/${videoId}/thumbnails`, { access_token: pageToken }, { form });
 }
 
-// Cover override materialized by pendpost (lib/covers.mjs):
-// post.cover = { source: 'frame'|'file', offsetMs?, path } with a repo-relative
-// path to the JPEG. Engines only ever READ it - the field is pendpost-owned.
-function resolveCoverPath(post) {
-  if (!post.cover?.path) return null;
-  const abs = path.resolve(__dirname, '..', post.cover.path);
-  return fs.existsSync(abs) ? abs : null;
+// Cover for a post, in display-parity precedence (exported for the engine tests):
+//  1. The explicit post.cover override materialized by pendpost (lib/covers.mjs) -
+//     its path is CLIENT-ROOT-relative (covers.mjs writes it relative to
+//     activeRoot()), so it anchors at PENDPOST_ROOT exactly like resolveMediaPath.
+//  2. Else the render-sibling <base>.jpg next to the media - the SAME JPEG the app
+//     shows as the post's cover (plans.mjs findCover), so what pendpost displays is
+//     what publishes. A stale override pointer falls through to the sibling,
+//     mirroring the read model's overrideExists precedence.
+export function resolveCoverPath(post, mediaPath = null) {
+  if (post.cover?.path) {
+    const root = process.env.PENDPOST_ROOT ? path.resolve(process.env.PENDPOST_ROOT) : path.resolve(__dirname, '..');
+    const abs = path.resolve(root, post.cover.path);
+    if (fs.existsSync(abs)) return abs;
+  }
+  return findCoverSibling(mediaPath);
 }
 
 async function pollVideoReady(videoId, pageToken, timeoutMs = 5 * 60 * 1000) {
@@ -274,7 +284,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -554,7 +564,14 @@ async function cmdSetup(args) {
 // while that assignment stands.
 async function cmdSetupSystemUser(args) {
   console.log(`[info] Connecting Meta (Facebook + Instagram) - credentials will be written to ${ENV_PATH}`);
-  const token = args['system-user-token'] || args.token;
+  // Flag wins; otherwise, on an interactive terminal, prompt the operator to paste the
+  // System User token (hidden, never echoed, never in shell history). A non-interactive
+  // run (daemon/CI/mock) skips the prompt and falls through to the Usage error below.
+  const token = await resolveCredential({
+    value: args['system-user-token'] || args.token,
+    secret: true,
+    hint: 'Paste your Meta System User token (Business Settings > Users > System users > Generate new token): ',
+  });
   if (!token) {
     console.error('Usage: node scripts/meta-social.mjs setup-system-user --system-user-token <SYSTEM_USER_TOKEN> [--page-id P] [--app-id X --app-secret Y]');
     console.error('  Mint it in Business Settings > Users > System users > (an ADMIN system user) > Generate new token,');
@@ -924,8 +941,9 @@ async function cmdPublishDue(args) {
         await savePlan(abs, plan, [post.id]);
         RUN.results.push({ postId: post.id, platform: 'facebook', action: 'publish-reel', ok: true, id: vid });
         console.log(`[ok] ${post.id}: published on Facebook (reel ${vid}).`);
-        // Cover override: cosmetic + non-fatal - the publish stands either way.
-        const fbCover = resolveCoverPath(post);
+        // Cover (override or render-sibling title card): cosmetic + non-fatal - the
+        // publish stands either way.
+        const fbCover = resolveCoverPath(post, mediaPath);
         if (fbCover) {
           try {
             await setFbReelThumbnail(vid, fbCover, pageToken);
@@ -1010,23 +1028,46 @@ async function cmdPublishDue(args) {
         if (!isStory) {
           containerParams.caption = post.caption || '';
           containerParams.share_to_feed = 'true';
-          // IG cover control exists ONLY at container creation and ONLY as a
-          // frame offset (thumb_offset, milliseconds) - cover_url needs public
-          // hosting (none in this pipeline), and stories have no cover at all.
-          if (post.cover?.source === 'frame' && Number.isFinite(post.cover.offsetMs)) {
+          // IG cover control exists ONLY at container creation. Two forms:
+          //  - cover_url: a PUBLIC image URL (set_cover coverUrl mode) - lets a
+          //    calling-app-designed GRID-SAFE title card survive the profile-grid
+          //    centre-crop. Preferred when present; the retry below drops it if IG
+          //    rejects the param so a publish can never fail over a cover.
+          //  - thumb_offset: a frame offset (milliseconds) - the fallback.
+          if (post.cover?.source === 'url' && /^https:\/\/\S+$/i.test(post.cover.url || '')) {
+            containerParams.cover_url = post.cover.url.trim();
+            console.log(`[info] ${post.id}: IG cover via cover_url (grid-safe title card).`);
+          } else if (post.cover?.source === 'frame' && Number.isFinite(post.cover.offsetMs)) {
             containerParams.thumb_offset = String(Math.max(0, Math.round(post.cover.offsetMs)));
             console.log(`[info] ${post.id}: IG cover frame at ${containerParams.thumb_offset} ms (thumb_offset).`);
           } else if (post.cover) {
-            console.log(`[warn] ${post.id}: IG accepts only FRAME covers (thumb_offset) - the file cover is not applied on IG.`);
+            containerParams.thumb_offset = '0';
+            console.log(`[warn] ${post.id}: IG takes a frame offset or a public cover_url - a local file cover is not applied; used the frame-0 title card instead.`);
           } else {
-            // No explicit cover: default the reel thumbnail ~1s in so IG never
-            // falls back to frame 0 (often a black/blank first frame). Reels are
-            // >= 3s, so 1000 ms is always within bounds - no probe needed.
-            containerParams.thumb_offset = '1000';
-            console.log(`[info] ${post.id}: IG cover defaulted to 1000 ms (no explicit cover; avoids a blank first-frame cover).`);
+            // No explicit cover: frame 0. The render pipeline BAKES the designed
+            // title card into the video's first frame (a short hold), so frame 0
+            // IS the cover the app displays. A client whose video fades in from
+            // black sets an explicit frame/url cover via set_cover instead.
+            // (The old 1000 ms default skipped exactly past the baked card.)
+            containerParams.thumb_offset = '0';
+            console.log(`[info] ${post.id}: IG cover = frame 0 (no explicit cover; the render pipeline bakes the title card there).`);
           }
         }
-        const container = await graph('POST', `/${igUserId}/media`, containerParams);
+        let container;
+        try {
+          container = await graph('POST', `/${igUserId}/media`, containerParams);
+        } catch (coverErr) {
+          // A rejected cover_url must never sink a publish: drop it, fall back to a
+          // frame, and retry once. Any non-cover error rethrows unchanged.
+          if (containerParams.cover_url) {
+            console.log(`[warn] ${post.id}: IG rejected cover_url (${coverErr.message}) - retrying with a frame cover.`);
+            delete containerParams.cover_url;
+            containerParams.thumb_offset = containerParams.thumb_offset || '0';
+            container = await graph('POST', `/${igUserId}/media`, containerParams);
+          } else {
+            throw coverErr;
+          }
+        }
         console.log(`[info] ${post.id}: uploading ${(fs.statSync(mediaPath).size / 1e6).toFixed(1)} MB from ${mediaPath}...`);
         await igResumableUpload(container.id, mediaPath, pageToken);
         await pollContainer(container.id, pageToken);
@@ -1104,14 +1145,29 @@ async function cmdStatus(args) {
   }
 }
 
+// Delete/cancel a natively-scheduled FB post. Graph API's signature for "the
+// object is already gone" on a DELETE is error code 100 (GraphMethodException)
+// with error_subcode 33 ("Unsupported delete request... Object with ID ...
+// does not exist"). That is precisely the end state a delete wants, so we
+// swallow it as an idempotent success rather than raising engine_failure and
+// stranding the plan row (mirrors yt-social.mjs cmdDelete / discord-social.mjs
+// cmdDeleteEvent). Any OTHER error still throws.
 async function cmdDelete(args) {
   if (!args.id) {
     console.error('Usage: node scripts/meta-social.mjs delete --id <fbPostId>');
     process.exit(2);
   }
   const pageToken = requireEnv('META_PAGE_TOKEN');
-  await graph('DELETE', `/${args.id}`, { access_token: pageToken });
-  console.log(`[ok] Deleted FB post ${args.id}.`);
+  try {
+    await graph('DELETE', `/${args.id}`, { access_token: pageToken });
+    console.log(`[ok] Deleted FB post ${args.id}.`);
+  } catch (err) {
+    if (err?.fbCode !== 100 || err?.fbSubcode !== 33) throw err;
+    console.log(`[skip] FB post ${args.id} is already gone (code 100/33) - counting it cancelled.`);
+    RUN.results.push({ platform: 'facebook', action: 'delete', ok: true, id: String(args.id), alreadyGone: true });
+    return;
+  }
+  RUN.results.push({ platform: 'facebook', action: 'delete', ok: true, id: String(args.id) });
 }
 
 async function cmdFbReel(args) {
@@ -1177,9 +1233,9 @@ async function cmdSetThumbnail(args) {
   let applied = 0;
   for (const post of plan.posts || []) {
     if (args.only && post.id !== args.only) continue;
-    const coverPath = resolveCoverPath(post);
+    const coverPath = resolveCoverPath(post, resolveMediaPath(plan, post));
     if (!coverPath) {
-      if (args.only) console.log(`[skip] ${post.id}: no materialized cover override (set one via pendpost first).`);
+      if (args.only) console.log(`[skip] ${post.id}: no cover override and no <render>.jpg sibling (set one via pendpost first).`);
       continue;
     }
     if (!post.fbReelId) {
@@ -1342,6 +1398,35 @@ async function cmdDemographics() {
   }
 }
 
+// Download a served media_url to an OS temp file, ffprobe it for the actual
+// width/height/bitrate, then always clean up. Fully fail-soft: any error (mock
+// mode, timeout, non-200, unreadable mp4) returns null so the caller records no
+// `served` block and the live/missing verdict is untouched.
+async function probeServedRendition(mediaUrl) {
+  if (resolveMode('meta') === 'mock') return null; // no real CDN in mock
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-verify-'));
+  const tmp = path.join(dir, 'served.mp4');
+  try {
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 30_000);
+    let res;
+    try {
+      res = await fetch(mediaUrl, { signal: ctrl.signal });
+    } finally {
+      clearTimeout(to);
+    }
+    if (!res.ok) return null;
+    fs.writeFileSync(tmp, Buffer.from(await res.arrayBuffer()));
+    const p = await probeMedia(tmp);
+    if (!p || p.error || !p.width || !p.height) return null;
+    return { width: p.width, height: p.height, bitrate: p.bitrate ?? null, probedAt: new Date().toISOString() };
+  } catch {
+    return null;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 // Read-only verification (read-back): confirm whether a handed-off post is
 // actually live on Facebook/Instagram. Pure GET - NOT a write, so it is
 // deliberately NOT in META_WRITE_COMMANDS and never gated by the lane-pause kill
@@ -1379,8 +1464,23 @@ async function cmdVerify(args) {
         // why the 25.07.2026 wrong-account publish had to be caught by eye four days
         // later. This is a platform-confirmed fact, strictly better than echoing back
         // the account id we already believed we used, and it costs no extra call.
-        const v = await graph('GET', `/${post.igMediaId}`, { fields: 'permalink,username', access_token: pageToken });
-        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'verify', ok: true, id: post.igMediaId, live: true, state: 'published', permalink: v.permalink || null, account: v.username || null });
+        const v = await graph('GET', `/${post.igMediaId}`, { fields: 'permalink,username,media_url', access_token: pageToken });
+        const row = { postId: post.id, platform: 'instagram', action: 'verify', ok: true, id: post.igMediaId, live: true, state: 'published', permalink: v.permalink || null, account: v.username || null };
+        // Post-publish quality read-back: measure the rendition IG ACTUALLY serves for a
+        // reel/video. A thin master (<8 Mbps) gets transcoded down to a pixelated 720p
+        // (RCA 13.08.2026); this proves it after the fact. media_url is a MID-LADDER mp4
+        // that under-measures the top rendition, so it is a floor (>=1080p = HD proof,
+        // 720p = likely downscaled), never a ceiling. Fully fail-soft - a probe failure
+        // returns null and never touches the live/state result above.
+        const isVideo = post.type && post.type !== 'image' && post.type !== 'story';
+        if (isVideo && v.media_url) {
+          const served = await probeServedRendition(v.media_url);
+          if (served) {
+            row.served = served;
+            console.log(`[ok] ${post.id}: IG served ${Math.min(served.width, served.height)}p @ ${served.bitrate ? (served.bitrate / 1e6).toFixed(1) : '?'} Mbps`);
+          }
+        }
+        RUN.results.push(row);
         console.log(`[ok] ${post.id}: IG verify live=true${v.username ? ` account=@${v.username}` : ''}`);
       } catch (err) {
         if (missingRe.test(err.message || '')) {
@@ -1517,8 +1617,23 @@ async function main() {
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
-main().catch(async (err) => {
-  console.error('[err]', err.message || err);
-  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
-  process.exit(1);
-});
+// Run only when executed directly (node scripts/meta-social.mjs ...), not when
+// imported for a unit test of an exported command (cmdDelete) - mirrors the guard
+// discord-social.mjs/mastodon-social.mjs/telegram-social.mjs/nostr-social.mjs use.
+// The daemon invokes this as a subprocess, so argv[1] is this script and main()
+// still runs in production. Unconditional invocation here would run main() against
+// the TEST RUNNER's own argv on import, printing the usage line and calling
+// process.exit(2), killing the test process itself (spec 12's discord-social.mjs
+// review lesson, applied here for meta-delete-idempotent.test.mjs).
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(async (err) => {
+    console.error('[err]', err.message || err);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    process.exit(1);
+  });
+}
+
+// Test-only export: cmdDelete + RUN are exported so a delete-idempotency test can
+// drive the real 100/33-swallow logic in-process against a stubbed global.fetch,
+// with no network/credentials/subprocess - mirrors yt-social.mjs's cmdDelete export.
+export { cmdDelete, RUN };

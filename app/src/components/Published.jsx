@@ -6,6 +6,7 @@ import { useT } from '../lib/i18n.js';
 import { StatusPill, CoverThumb, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton, Segmented } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
+import LiveLaneLinks from './ui/LiveLaneLinks.jsx';
 import { MonthView } from './Planner.jsx';
 import { dayKey, fmtTime, fmtMonthYear, dateLocale, PLATFORMS, postDisplayTitle } from '../lib/format.js';
 
@@ -28,17 +29,6 @@ const RANGES = [
   { key: '7d', days: 7 },
   { key: '30d', days: 30 },
 ];
-
-// Best public link for one platform: the verify read-back permalink (most
-// authoritative) > the id-derived permalink > a manual externalUrl (IG has no
-// derivable public slug). null = no public link.
-function viewLink(post, platform) {
-  const v = post.verify?.platforms?.[platform];
-  if (v?.permalink) return v.permalink;
-  if (post.permalinks?.[platform]) return post.permalinks[platform];
-  if (platform === 'instagram' && post.externalUrl) return post.externalUrl;
-  return null;
-}
 
 // Top strip: one "Open <platform>" link per account that exposes a public
 // profile URL (accounts.publicUrls, env-derived; absent platforms are skipped).
@@ -85,13 +75,13 @@ function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
   // icon-only tooltip hunt. Every other state keeps the quiet icon-only button.
   const recheck = post.derivedState === 'verify-failed';
   const onVerify = async () => {
-    await verifyPost(post.campaign, post.id);
+    const res = await verifyPost(post.campaign, post.id);
     queryClient.invalidateQueries({ queryKey: ['plans'] });
+    // Only a real live read-back is a success. verify_post returns ok:true even
+    // when the post reads back NOT live (liveCount 0) - throw so the ActionButton
+    // shows the honest "Still not live" state instead of a false green "Verified".
+    if (!res?.liveCount) throw new Error(t('published.verify.notLive'));
   };
-  // US-PUB-11: only show a platform link where we actually have a public link to
-  // open - never a greyed-out placeholder for a platform with no link, which read
-  // as "links to platforms we did not post to".
-  const links = (post.platforms || []).map((p) => ({ p, href: viewLink(post, p) })).filter((x) => x.href && PLATFORM_META[x.p]);
   return (
     <div className={`flex items-center gap-3 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
       <button
@@ -99,7 +89,7 @@ function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
         onClick={() => onOpen(post)}
         className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
       >
-        <CoverThumb media={post.media} image={post.image} className="h-12 w-12 shrink-0 rounded-lg" />
+        <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-bold">{postDisplayTitle(post)}</p>
           <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -129,23 +119,16 @@ function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
             </button>
           </Tip>
         ) : null}
-        {links.map(({ p, href }) => {
-          const meta = PLATFORM_META[p];
-          const { Icon } = meta;
-          return (
-            <Tip key={p} label={t('published.viewOn', { platform: meta.label })}>
-              <a href={href} target="_blank" rel="noopener noreferrer" aria-label={t('published.viewOn', { platform: meta.label })} className="rounded-lg p-1.5 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
-                <Icon size={14} className={meta.color} aria-hidden="true" />
-              </a>
-            </Tip>
-          );
-        })}
+        {/* US-PUB-11: one quiet open-live link per lane where a link actually resolves
+            (resolveLivePermalink), capped at 5 inline with a "+n" overflow (S6) - the
+            shared LiveLaneLinks strip, identical on the Freigaben posted cards. */}
+        <LiveLaneLinks post={post} />
         {canVerify ? (
           <Tip label={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}>
             <ActionButton
               icon={ShieldCheck}
               ariaLabel={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}
-              labels={{ idle: recheck ? t('published.verify.recheck') : '', loading: t('published.verify.loading'), success: t('published.verify.success'), error: t('published.verify.error') }}
+              labels={{ idle: recheck ? t('published.verify.recheck') : '', loading: t('published.verify.loading'), success: t('published.verify.success'), error: t('published.verify.notLive') }}
               onAction={onVerify}
             />
           </Tip>

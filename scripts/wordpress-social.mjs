@@ -114,6 +114,7 @@ import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath } from '../lib/util.mjs';
 import { mdToHtml } from '../lib/markdown.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -122,6 +123,22 @@ const ENV_PATH = envPath();
 
 function readEnvRaw() {
   return fs.existsSync(ENV_PATH) ? fs.readFileSync(ENV_PATH, 'utf8') : '';
+}
+function writeEnv(vars) {
+  let raw = readEnvRaw();
+  for (const [k, v] of Object.entries(vars)) {
+    if (v == null) continue;
+    // function replacer: token values may contain '$' which is special in a string replacement.
+    if (new RegExp(`^${k}=`, 'm').test(raw)) {
+      raw = raw.replace(new RegExp(`^${k}=.*$`, 'm'), () => `${k}=${v}`);
+    } else {
+      raw += `${raw.endsWith('\n') || raw === '' ? '' : '\n'}${k}=${v}\n`;
+    }
+  }
+  // Atomic + 0600: a crash mid-write must never truncate the secret-bearing .env.
+  const tmp = `${ENV_PATH}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, raw, { mode: 0o600 });
+  fs.renameSync(tmp, ENV_PATH);
 }
 function readEnv(name) {
   const m = readEnvRaw().match(new RegExp(`^${name}=(.+)$`, 'm'));
@@ -187,7 +204,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -404,11 +421,29 @@ function publishableContent(plan, post) {
 // ---------- commands ----------
 
 async function cmdAuth() {
+  // .env still wins; otherwise, on an interactive terminal, prompt the operator to paste
+  // what they copied (the application password hidden, never echoed, never in shell
+  // history) and persist it so the /users/me probe below (and every later run) can read
+  // it. A non-interactive run (daemon/CI/mock) skips the prompt and fails closed below.
+  const site = await resolveCredential({
+    value: siteUrl(),
+    hint: 'Paste your WordPress site URL (e.g. https://blog.example.com): ',
+  });
+  const username = await resolveCredential({
+    value: readEnv('WORDPRESS_USERNAME'),
+    hint: 'Paste your WordPress username: ',
+  });
+  const appPassword = await resolveCredential({
+    value: readEnv('WORDPRESS_APP_PASSWORD'),
+    secret: true,
+    hint: 'Paste your WordPress application password (Users > Profile > Application Passwords): ',
+  });
   const missing = [];
-  if (!siteUrl()) missing.push('WORDPRESS_SITE_URL');
-  if (!readEnv('WORDPRESS_USERNAME')) missing.push('WORDPRESS_USERNAME');
-  if (!readEnv('WORDPRESS_APP_PASSWORD')) missing.push('WORDPRESS_APP_PASSWORD');
+  if (!site) missing.push('WORDPRESS_SITE_URL');
+  if (!username) missing.push('WORDPRESS_USERNAME');
+  if (!appPassword) missing.push('WORDPRESS_APP_PASSWORD');
   if (missing.length) { console.error(`[err] WordPress credentials missing in .env: ${missing.join(', ')}`); process.exit(2); }
+  writeEnv({ WORDPRESS_SITE_URL: site, WORDPRESS_USERNAME: username, WORDPRESS_APP_PASSWORD: appPassword });
   const me = await wp('GET', '/users/me?context=edit');
   console.log(`[ok] authenticated as ${me.name} (${me.slug}) on ${siteUrl()}`);
   if (!me?.capabilities?.publish_posts) console.log('[warn] this user cannot publish_posts - publish-due will fail (needs an Author/Editor/Administrator role).');
@@ -702,11 +737,24 @@ async function cmdInsights(args) {
   console.log('[info] WordPress core exposes no post metrics - insights is a no-op.');
 }
 
+// A 404 (rest_post_invalid_id) means the post is ALREADY GONE (deleted in the
+// dashboard, previously cancelled, or never resolvable) - exactly the end
+// state a delete wants, so it is swallowed as an idempotent success rather
+// than raising engine_failure and stranding the plan row (mirrors
+// yt-social.mjs cmdDelete / discord-social.mjs cmdDeleteEvent). Any OTHER
+// error still throws.
 async function cmdDelete(args) {
   if (!args.id) { console.error('[err] delete requires --id <postId>'); process.exit(2); }
-  await wp('DELETE', `/posts/${encodeURIComponent(String(args.id))}?force=true`);
+  try {
+    await wp('DELETE', `/posts/${encodeURIComponent(String(args.id))}?force=true`);
+    console.log(`[ok] deleted WordPress post ${args.id} (permanently - force=true).`);
+  } catch (err) {
+    if (err?.status !== 404) throw err;
+    console.log(`[skip] WordPress post ${args.id} is already gone (404) - counting it deleted.`);
+    RUN.results.push({ platform: 'wordpress', action: 'delete', ok: true, id: String(args.id), alreadyGone: true });
+    return;
+  }
   RUN.results.push({ platform: 'wordpress', action: 'delete', ok: true, id: String(args.id) });
-  console.log(`[ok] deleted WordPress post ${args.id} (permanently - force=true).`);
 }
 
 async function cmdProbe() {
@@ -831,8 +879,23 @@ async function main() {
   if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: true, ...RUN })}\n`);
 }
 
-main().catch(async (err) => {
-  console.error('[err]', err.message || err);
-  if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
-  process.exit(1);
-});
+// Run only when executed directly (node scripts/wordpress-social.mjs ...), not
+// when imported for a unit test of an exported command (cmdDelete) - mirrors the
+// guard discord-social.mjs/mastodon-social.mjs/telegram-social.mjs/nostr-social.mjs
+// use. The daemon invokes this as a subprocess, so argv[1] is this script and
+// main() still runs in production. Unconditional invocation here would run main()
+// against the TEST RUNNER's own argv on import, printing the usage line and calling
+// process.exit(2), killing the test process itself (spec 12's discord-social.mjs
+// review lesson, applied here for wordpress-delete-idempotent.test.mjs).
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(async (err) => {
+    console.error('[err]', err.message || err);
+    if (JSON_MODE) process.stdout.write(`${JSON.stringify({ ok: false, error: String(err.message || err).slice(0, 300), ...RUN })}\n`);
+    process.exit(1);
+  });
+}
+
+// Test-only export: cmdDelete + RUN are exported so a delete-idempotency test can
+// drive the real 404-swallow logic in-process against a stubbed global.fetch, with
+// no network/credentials/subprocess - mirrors yt-social.mjs's cmdDelete export.
+export { cmdDelete, RUN };

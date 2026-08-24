@@ -5,6 +5,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
 import Insights from '../Insights.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 
 // Insights shows the fabricated metrics the mock driver produces. When any lane
@@ -26,6 +27,10 @@ vi.mock('../../lib/api.js', () => ({
   }),
   useDigest: () => ({ data: digestData }),
   fetchInsights: vi.fn(),
+  useConfig: () => ({ data: null }),
+  usePendpostHealth: () => ({ data: null }),
+  usePlans: () => ({ data: { campaigns: [] } }),
+  saveConfig: vi.fn(),
 }));
 
 const SINGLE_ITEM = {
@@ -86,7 +91,9 @@ function renderInsights(props = {}, { locale = 'en' } = {}) {
     <I18nProvider locale={locale}>
       <QueryClientProvider client={qc}>
         <TooltipProvider>
-          <Insights active platformFilter={[]} campaignFilter="all" {...props} />
+          <ConfirmProvider>
+            <Insights active platformFilter={[]} campaignFilter="all" {...props} />
+          </ConfirmProvider>
         </TooltipProvider>
       </QueryClientProvider>
     </I18nProvider>,

@@ -18,12 +18,13 @@ let inboxResult = { data: undefined, isLoading: false, refetch: vi.fn() };
 const saveConfig = vi.fn(() => Promise.resolve({ ok: true }));
 const refreshCommentInbox = vi.fn(() => Promise.resolve({ ok: true, posts: [] }));
 const reactToPost = vi.fn(() => Promise.resolve({ ok: true }));
+const resolveInboxComment = vi.fn(() => Promise.resolve({ ok: true }));
 
 vi.mock('../../lib/api.js', () => ({
   useConfig: () => configResult,
   useCommentInbox: () => inboxResult,
   refreshCommentInbox: (...a) => refreshCommentInbox(...a),
-  resolveInboxComment: vi.fn(() => Promise.resolve({ ok: true })),
+  resolveInboxComment: (...a) => resolveInboxComment(...a),
   saveConfig: (...a) => saveConfig(...a),
   reactToPost: (...a) => reactToPost(...a),
   // CommentsPanel (rendered only when a row is expanded) imports these at module load.
@@ -36,7 +37,7 @@ const group = (over = {}) => ({
   campaign: 'c1', postId: 'p1', platform: 'mastodon', caption: 'my post',
   permalink: 'https://site/post', reactActions: ['favourite', 'boost'], unanswered: 1,
   lastCommentTs: '2026-08-09T10:00:00Z',
-  comments: [{ commentId: 'x1', lane: 'mastodon', author: 'someone@else', text: 'nice one', ts: '2026-08-09T10:00:00Z', permalink: 'https://else/comment/1' }],
+  comments: [{ key: 'x1', commentId: 'x1', lane: 'mastodon', author: 'someone@else', text: 'nice one', ts: '2026-08-09T10:00:00Z', permalink: 'https://else/comment/1' }],
   ...over,
 });
 
@@ -56,6 +57,7 @@ beforeEach(() => {
   saveConfig.mockImplementation(() => Promise.resolve({ ok: true }));
   refreshCommentInbox.mockClear();
   reactToPost.mockClear();
+  resolveInboxComment.mockClear();
   reactToPost.mockImplementation(() => Promise.resolve({ ok: true }));
   configResult = { data: { rev: 'rev-1', posting: { commentWatch: { enabled: false } } } };
   inboxResult = { data: undefined, isLoading: false, refetch: vi.fn() };
@@ -121,7 +123,7 @@ describe('CommentInbox row: like + open-on-platform', () => {
     renderInbox();
     const like = screen.getByRole('button', { name: 'Like' });
     await user.click(like);
-    await waitFor(() => expect(reactToPost).toHaveBeenCalledWith('c1', 'p1', 'x1', 'favourite', 'mastodon', undefined, false, 'someone@else'));
+    await waitFor(() => expect(reactToPost).toHaveBeenCalledWith('c1', 'p1', 'x1', 'favourite', 'mastodon', undefined, false, 'someone@else', undefined));
     // pressed after a successful like
     await waitFor(() => expect(screen.getByRole('button', { name: 'Undo like' })).toBeInTheDocument());
 
@@ -130,6 +132,34 @@ describe('CommentInbox row: like + open-on-platform', () => {
     await user.click(screen.getByRole('button', { name: 'Undo like' }));
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: 'Undo like' })).toBeInTheDocument();
+  });
+
+  // Owner-requested: "Mark handled" is ONE click - no confirm step in the way. A single tap
+  // resolves every unanswered comment (scoped to the post) and the row leaves the view.
+  it('Mark handled resolves in a single click, with no confirm step', async () => {
+    configResult = ENABLED;
+    inboxResult = { data: { posts: [group()], lastSweep: 'x' }, isLoading: false, refetch: vi.fn() };
+    const user = userEvent.setup();
+    renderInbox();
+    await user.click(screen.getByRole('button', { name: 'Mark handled' }));
+    // No confirm affordance appears; the resolve write fires straight away.
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
+    await waitFor(() => expect(resolveInboxComment).toHaveBeenCalledWith('x1', 'dismissed', undefined));
+  });
+
+  // Non-happy path: a fast double-click must not dispatch the resolve twice. While the write is
+  // in flight the button is disabled, so the second click is a no-op.
+  it('Mark handled is guarded against double-fire while the resolve is in flight', async () => {
+    configResult = ENABLED;
+    inboxResult = { data: { posts: [group()], lastSweep: 'x' }, isLoading: false, refetch: vi.fn() };
+    resolveInboxComment.mockReturnValueOnce(new Promise(() => {})); // never resolves -> stays in flight
+    const user = userEvent.setup();
+    renderInbox();
+    const btn = screen.getByRole('button', { name: 'Mark handled' });
+    await user.click(btn);
+    expect(btn).toBeDisabled();
+    await user.click(btn); // second click while in flight
+    expect(resolveInboxComment).toHaveBeenCalledTimes(1);
   });
 
   it('an unsupported lane (Meta) shows no like control', () => {

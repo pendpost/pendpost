@@ -92,13 +92,20 @@ Per-lane native quirks and their recovery lanes (all local-only, modeled on
 
 The cover map mirrors `coverApplicability()` in `lib/covers.mjs`.
 
+Default when a post has NO explicit `post.cover`: the engines publish the
+render-sibling `<base>.jpg` (the same JPEG the app displays as the cover) on
+Facebook, LinkedIn and YouTube, and frame 0 on Instagram - the render pipeline
+bakes the designed title card into the video's first frame, so frame 0 IS that
+card. An explicit `post.cover` always wins.
+
 - **Facebook.** Applied after publish via `POST /{video-id}/thumbnails`
   (`is_preferred`). Works for both frame covers and file covers. The
   `set-thumbnail` command re-applies it post-hoc.
-- **Instagram.** Only a frame offset (`thumb_offset`, in milliseconds) at
-  publish; there is no post-hoc change via the API. File covers cannot reach
-  Instagram because there is no public hosting layer in this pipeline, so pick
-  a frame instead. Stories have no cover concept.
+- **Instagram.** Only a frame offset (`thumb_offset`, in milliseconds) or a
+  public `cover_url` at publish; there is no post-hoc change via the API. File
+  covers cannot reach Instagram because there is no public hosting layer in
+  this pipeline, so the engine falls back to frame 0 (the baked title card).
+  Stories have no cover concept.
 - **LinkedIn.** Uploaded via the thumbnail step during the video upload
   ceremony, before finalize. It applies only to a not-yet-published post; there
   is no post-hoc change via the API.

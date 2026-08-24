@@ -96,7 +96,7 @@ describe('CommentsPanel (spec 02 inbox seam)', () => {
     // The replied-to comment's author (mock_reader) is threaded through so the reply accretes as a
     // 'me'-direction relationship-memory exchange (spec 49 R12); without it the "Nth exchange" chip
     // never lights on the read+reply loop (BU-9 regression).
-    expect(replyMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'thanks for reading!', 'telegram', 'mock_reader');
+    expect(replyMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'thanks for reading!', 'telegram', 'mock_reader', undefined);
     // The shared mutation path: invalidateQueries(['plans']) + a panel refetch.
     expect(spy).toHaveBeenCalledWith({ queryKey: ['plans'] });
     expect(refetchMock).toHaveBeenCalled();

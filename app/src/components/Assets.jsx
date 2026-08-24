@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Upload, Search, Play, FileVideo, Zap, Loader2, CheckCircle2, AlertTriangle, Clapperboard, Captions, X, Plus, Trash2, Pencil, LayoutGrid, List, Image as ImageIcon, Film, ArrowDownUp } from 'lucide-react';
-import { useAssets, uploadAssetFile, deleteAsset, renameAsset } from '../lib/api.js';
+import { useAssets, deleteAsset, renameAsset } from '../lib/api.js';
+import { useAssetUpload } from '../lib/useAssetUpload.js';
 import { useT } from '../lib/i18n.js';
 import { fmtBytes, prettyCampaign, fmtFull, RES_ASPECT } from '../lib/format.js';
 import { Skeleton, INNER_SURFACE, CoverThumb, FilterChip, SelectAllControl } from './ui.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
+import { HdBadge } from './ui/HdBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm, usePrompt } from './ui/confirm.jsx';
 
@@ -40,21 +42,6 @@ const RES_TIP_KEY = {
   'feed-4x5': 'assets.spec.res.feed',
   'square-1x1': 'assets.spec.res.square',
 };
-
-// Upload errors arrive as raw server strings (lib/api.js wraps the server
-// message). Map the known fragments to a stable i18n key; everything else falls
-// back to a generic key so the owner never sees a raw server string. This is a
-// plain function (not a component), so it returns the key and the caller, which
-// has the t() hook in scope, renders the localized copy.
-function uploadErrorKey(raw) {
-  const msg = String(raw || '').toLowerCase();
-  if (msg.includes('too large') || msg.includes('413') || msg.includes('exceed')) return 'assets.upload.errorTooLarge';
-  if (msg.includes('unsupported') || msg.includes('content-type') || msg.includes('type')) return 'assets.upload.errorFormat';
-  if (msg.includes('filename') || msg.includes('invalid_input') || msg.includes('invalid')) return 'assets.upload.errorFilename';
-  if (msg.includes('exists') || msg.includes('already')) return 'assets.upload.errorExists';
-  if (msg.includes('failed to fetch') || msg.includes('network') || msg.includes('econnrefused')) return 'assets.upload.errorUnreachable';
-  return 'assets.upload.errorGeneric';
-}
 
 // Technical specs follow the secondary-label rule: short + meaningful resolution
 // stays as text; the jargon flags (codec, faststart) become icon + color + tooltip.
@@ -104,6 +91,10 @@ function SpecRow({ asset }) {
             tone={c.faststart ? 'neutral' : 'warn'}
             label={c.faststart ? t('assets.spec.faststartOk') : t('assets.spec.faststartBad')}
           />
+          {/* The quality Instagram will serve this at: green HD when the master clears
+              the 8 Mbps floor, amber 720p (bitrate in the tooltip) when it is too thin.
+              Self-hides on unprobed videos. */}
+          <HdBadge hdReady={c.hdReady} bitrate={asset.probe?.bitrate} />
         </>
       )}
     </div>
@@ -320,30 +311,11 @@ export default function Assets({ onAttach }) {
   const [view, setView] = useState(() => {
     try { return localStorage.getItem('pendpost-assets-view') === 'list' ? 'list' : 'grid'; } catch { return 'grid'; }
   });
-  const [dragging, setDragging] = useState(false);
-  const [uploads, setUploads] = useState([]); // [{name, state:'uploading'|'done'|'error', error?}]
-  const inputRef = useRef(null);
-  // A9: the dashed drop target is dragover-only, so it never competes with the grid
-  // at rest. Handlers live on the persistent panel root (a hidden overlay can't hear
-  // its own dragover); a depth counter tracks nested dragenter/dragleave so moving
-  // across child elements never flickers the overlay off mid-drag.
-  const dragDepth = useRef(0);
-  const onDragEnter = (e) => {
-    if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
-    e.preventDefault();
-    dragDepth.current += 1;
-    setDragging(true);
-  };
-  const onDragLeave = () => {
-    dragDepth.current = Math.max(0, dragDepth.current - 1);
-    if (dragDepth.current === 0) setDragging(false);
-  };
-  const onDrop = (e) => {
-    e.preventDefault();
-    dragDepth.current = 0;
-    setDragging(false);
-    handleFiles(e.dataTransfer.files);
-  };
+  // A9: drag/drop + upload is the shared useAssetUpload engine (lib/useAssetUpload)
+  // - the same one the Composer picker and the post detail reuse, so all upload
+  // surfaces behave identically. The dashed overlay is dragover-only (dragging),
+  // handlers live on the persistent panel root, and errors come back localized.
+  const { dragging, uploads, dragHandlers, handleFiles, openPicker, inputRef, dismissUpload } = useAssetUpload();
 
   useEffect(() => {
     try { localStorage.setItem('pendpost-assets-view', view); } catch { /* private mode - ignore */ }
@@ -415,23 +387,6 @@ export default function Assets({ onAttach }) {
     clearSelection();
   };
 
-  const handleFiles = async (fileList) => {
-    const files = Array.from(fileList || []);
-    for (const file of files) {
-      setUploads((u) => [...u.filter((x) => x.name !== file.name), { name: file.name, state: 'uploading' }]);
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await uploadAssetFile(file);
-        setUploads((u) => u.map((x) => (x.name === file.name ? { ...x, state: 'done' } : x)));
-        queryClient.invalidateQueries({ queryKey: ['assets'] });
-      } catch (err) {
-        setUploads((u) => u.map((x) => (x.name === file.name ? { ...x, state: 'error', error: t(uploadErrorKey(err.message)) } : x)));
-      }
-    }
-  };
-
-  const dismissUpload = (name) => setUploads((u) => u.filter((x) => x.name !== name));
-
   // A readable list of the posts that reference an asset, for the destructive
   // confirm body (C2): "r07 · Launch 2026 / r08 · Other". usedBy is the same
   // join scanAssets surfaces (campaign/postId).
@@ -499,16 +454,6 @@ export default function Assets({ onAttach }) {
     }
   };
 
-  // Auto-clear finished rows after ~2s so the status list does not linger; error
-  // rows persist (the owner dismisses them via the per-row X).
-  useEffect(() => {
-    if (!uploads.some((u) => u.state === 'done')) return undefined;
-    const t = setTimeout(() => {
-      setUploads((u) => u.filter((x) => x.state !== 'done'));
-    }, 2000);
-    return () => clearTimeout(t);
-  }, [uploads]);
-
   const folders = [
     ['all', t('assets.filter.all')],
     ['unused', t('assets.filter.unused')],
@@ -521,10 +466,7 @@ export default function Assets({ onAttach }) {
   return (
     <div
       className="relative flex h-full flex-col gap-3"
-      onDragEnter={onDragEnter}
-      onDragOver={(e) => e.preventDefault()}
-      onDragLeave={onDragLeave}
-      onDrop={onDrop}
+      {...dragHandlers}
     >
       <header className="flex flex-wrap items-center gap-2">
         <div>
@@ -565,7 +507,7 @@ export default function Assets({ onAttach }) {
             </button>
           </Tip>
         </div>
-        <button type="button" onClick={() => inputRef.current?.click()} className="flex items-center gap-1.5 rounded-xl bg-brand px-3 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900">
+        <button type="button" onClick={openPicker} className="flex items-center gap-1.5 rounded-xl bg-brand px-3 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900">
           <Upload size={14} aria-hidden="true" />
           {t('assets.upload.button')}
         </button>
@@ -599,7 +541,7 @@ export default function Assets({ onAttach }) {
                     type="button"
                     onClick={() => dismissUpload(u.name)}
                     aria-label={t('assets.upload.dismissAria', { name: u.name })}
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
                   >
                     <X size={11} aria-hidden="true" />
                   </button>
@@ -670,7 +612,7 @@ export default function Assets({ onAttach }) {
           </span>
           <div className="ml-auto flex items-center gap-1.5">
             {overCap ? (
-              <span className="text-[11px] text-amber-600 dark:text-amber-300">
+              <span className="text-[11px] text-amber-700 dark:text-amber-300">
                 {t('assets.select.overCap', { max: CAROUSEL_STRUCTURAL_MAX, over: visibleSelected.length - CAROUSEL_STRUCTURAL_MAX })}
               </span>
             ) : null}

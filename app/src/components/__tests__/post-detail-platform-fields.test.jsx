@@ -24,6 +24,7 @@ vi.mock('../../lib/api.js', () => ({
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),
   usePresubmitCheck: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
+  useAssets: () => ({ data: { dir: 'data/media', assets: [] } }),
   approvePost: vi.fn(), rejectPost: vi.fn(), deletePost: vi.fn(), unschedulePost: vi.fn(),
   reschedulePost: vi.fn(), markPosted: vi.fn(), verifyPost: vi.fn(), runPublishDue: vi.fn(),
   setCoverFrame: vi.fn(), uploadCover: vi.fn(), clearCover: vi.fn(), updatePost: vi.fn(),

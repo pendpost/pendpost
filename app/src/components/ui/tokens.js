@@ -31,3 +31,15 @@ export const DISABLED_PRIMARY = 'disabled:bg-zinc-200 disabled:text-zinc-600 dis
 // all-caps eyebrow class (roadmap.md DS-1; brand-guide.md "No all-caps
 // labels"). Every eyebrow across the dashboard resolves to this.
 export const EYEBROW = 'text-[11px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400';
+
+// UX issue 3 (2026-08-18): the ONE field recipe, replacing four competing ones
+// (a duplicated FIELD_CLS in Settings/RadarSearches/RadarFeed, AutonomyLedger's
+// NUM_CLS/PICK_CLS, two inline select recipes, and the time input's own class
+// string). Fixed height so inputs, selects and time pickers align on a row.
+// Width is the ONLY per-use modifier: `w-full` text, `w-24` numeric, `w-auto`
+// select/time.
+export const FIELD = `h-9 rounded-xl border-0 px-3 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+export const FIELD_ERR = `${FIELD} ring-red-500/60 focus-visible:ring-red-500`;
+// Textareas: FIELD minus the fixed height (a textarea's height comes from `rows`
+// or `resize-y`, not h-9).
+export const FIELD_MULTILINE = `rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;

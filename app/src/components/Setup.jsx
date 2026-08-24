@@ -22,16 +22,15 @@ import { useCapabilities } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
 import { fmtFull, fmtInt, platformEnabled, WARMTH_MIN_AGE_DAYS, WARMTH_MIN_KARMA } from '../lib/format.js';
 import { AGENT_CONNECT, AGENT_CONNECT_JSON } from '../lib/agent-connect.js';
-import { INNER_SURFACE, FIELD_SURFACE, Skeleton, EYEBROW, PLATFORM_META } from './ui.jsx';
+import { INNER_SURFACE, FIELD_SURFACE, FIELD, Skeleton, EYEBROW, PLATFORM_META } from './ui.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { Select } from './ui/Select.jsx';
 import { Switch } from './ui/Switch.jsx';
+import Field from './ui/Field.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { usePrompt, useConfirm } from './ui/confirm.jsx';
 
-const FIELD = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-const FIELD_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} ring-1 ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
 const BTN = 'rounded-xl px-3 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
 const BTN_BRAND = `${BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`;
 const BTN_GHOST = `${BTN} text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60`;
@@ -500,7 +499,7 @@ function SecretRow({ label, action }) {
           type="button"
           onClick={copy}
           aria-label={t('setup.secret.copy')}
-          className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+          className="shrink-0 rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
         >
           {copied ? <Check size={14} className="text-emerald-600 dark:text-emerald-300" aria-hidden="true" /> : <ClipboardCopy size={14} aria-hidden="true" />}
         </button>
@@ -536,7 +535,7 @@ function ConnectRow({ label, hint, value }) {
           type="button"
           onClick={copy}
           aria-label={t('setup.agent.copy', { what: label })}
-          className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+          className="shrink-0 rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
         >
           {copied ? <Check size={14} className="text-emerald-600 dark:text-emerald-300" aria-hidden="true" /> : <ClipboardCopy size={14} aria-hidden="true" />}
         </button>
@@ -586,7 +585,7 @@ function AgentTokenPanel({ provider, onStored }) {
           spellCheck={false}
           placeholder={t('setup.agent.token.placeholder')}
           disabled={busy}
-          className={FIELD}
+          className={`${FIELD} flex-1`}
         />
         <button type="submit" disabled={busy || !token.trim()} className={`${BTN_GHOST} shrink-0`}>
           {busy ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
@@ -727,7 +726,7 @@ function AgentDetail({ agent, onNavigate = () => {} }) {
               {providers.length > 1 ? (
                 <div className="space-y-1">
                   <label htmlFor="agent-provider" className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-300">{t('setup.agent.provider')}</label>
-                  <Select id="agent-provider" value={chosen?.id || ''} onChange={(e) => setChosenId(e.target.value)} className={FIELD}>
+                  <Select id="agent-provider" value={chosen?.id || ''} onChange={(e) => setChosenId(e.target.value)} className={`${FIELD} w-full`}>
                     {providers.map((p) => (
                       <option key={p.id} value={p.id} disabled={!p.supported}>
                         {p.supported ? p.label : t('setup.agent.provider.unverifiedOption', { label: p.label })}
@@ -909,26 +908,21 @@ function ConnectPanel({ platform, fields, interactive }) {
 
   const busy = state === 'connecting' || state === 'waiting';
   return (
-    <div className={`space-y-2 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`} aria-busy={busy}>
-      {fields.map((f) => {
-        const id = `setup-connect-${platform}-${f.key}`;
-        return (
-          <div key={f.key} className="space-y-1">
-            <label htmlFor={id} className="text-[11px] text-zinc-500 dark:text-zinc-400">{t(f.labelKey)}</label>
-            <input
-              id={id}
-              type={f.secret ? 'password' : 'text'}
-              autoComplete="off"
-              spellCheck={false}
-              value={values[f.key] || ''}
-              onChange={(e) => set(f.key, e.target.value)}
-              placeholder={f.placeholderKey ? t(f.placeholderKey) : t(`${f.labelKey}.placeholder`)}
-              disabled={busy}
-              className={FIELD}
-            />
-          </div>
-        );
-      })}
+    <div className={`space-y-3 rounded-xl p-3 ${INNER_SURFACE}`} aria-busy={busy}>
+      {fields.map((f) => (
+        <Field
+          key={f.key}
+          id={`setup-connect-${platform}-${f.key}`}
+          label={t(f.labelKey)}
+          secret={f.secret}
+          autoComplete="off"
+          spellCheck={false}
+          value={values[f.key] || ''}
+          onChange={(e) => set(f.key, e.target.value)}
+          placeholder={f.placeholderKey ? t(f.placeholderKey) : t(`${f.labelKey}.placeholder`)}
+          disabled={busy}
+        />
+      ))}
       <p className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
         <Lock size={11} aria-hidden="true" />
         {t('connect.localNote')}
@@ -976,8 +970,8 @@ function ConnectPanel({ platform, fields, interactive }) {
           <button type="button" onClick={connect} disabled={!ready} className={BTN_BRAND}>{t('connect.retry')}</button>
         </div>
       ) : (
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={connect} disabled={busy || !ready} aria-busy={busy} className={BTN_BRAND}>
+        <div className="flex items-center justify-end gap-2">
+          <button type="button" onClick={connect} disabled={busy || !ready} aria-busy={busy} className={`${BTN_BRAND} min-h-11`}>
             {state === 'connecting' ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
             {state === 'connecting' ? t('connect.connecting') : t('connect.button')}
           </button>
@@ -1001,7 +995,7 @@ function TerminalAlternative({ secrets }) {
   if (!secrets.length) return null;
   return (
     <div className={`rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-center gap-1.5 text-left text-[11px] text-zinc-500 dark:text-zinc-400">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-center gap-1.5 text-left text-[11px] font-bold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-zinc-50">
         <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${open ? 'rotate-180' : ''}`} />
         {t('connect.terminalAlt')}
       </button>
@@ -1065,38 +1059,33 @@ function IdentifierRow({ field, savedValue, configRev, hint, dimmed }) {
   };
 
   const inputId = `setup-idf-${field.key}`;
-  const hintId = hint ? `${inputId}-hint` : undefined;
   return (
-    <div className={`space-y-1 ${dimmed ? 'opacity-50' : ''}`}>
-      <div className="flex items-center gap-1.5">
-        <label htmlFor={inputId} className="text-[11px] text-zinc-500 dark:text-zinc-400">{label}</label>
-        <Tip label={t(`setup.${field.tipKey}`)}>
-          <button type="button" aria-label={t('setup.fieldHelp', { field: label })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
-            <HelpCircle size={12} aria-hidden="true" />
-          </button>
-        </Tip>
-      </div>
-      <span className="relative block">
-        <input
-          id={inputId}
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onBlur={onBlur}
-          onKeyDown={onKeyDown}
-          placeholder={t(`setup.${field.placeholderKey}`)}
-          className={`pr-9 font-mono text-[13px] ${state === 'error' ? FIELD_ERR : FIELD}`}
-          aria-invalid={state === 'error' ? 'true' : undefined}
-          aria-describedby={hintId}
-        />
-        <span className="absolute right-3 top-1/2 -translate-y-1/2" aria-hidden="true">
-          {state === 'saving' ? <Loader2 size={15} className="animate-spin text-zinc-500 dark:text-zinc-400" />
-            : state === 'saved' ? <Check size={15} className="text-emerald-600 dark:text-emerald-300" />
-            : state === 'error' ? <AlertCircle size={15} className="text-red-600 dark:text-red-300" />
-            : null}
-        </span>
-      </span>
-      {hint ? <p id={hintId} className="text-[11px] text-zinc-500 dark:text-zinc-400">{hint}</p> : null}
-      {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
+    <div className="space-y-1">
+      <Field
+        id={inputId}
+        label={label}
+        help={t(`setup.${field.tipKey}`)}
+        helpLabel={t('setup.fieldHelp', { field: label })}
+        mono
+        dimmed={dimmed}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onBlur={onBlur}
+        onKeyDown={onKeyDown}
+        placeholder={t(`setup.${field.placeholderKey}`)}
+        hint={hint}
+        error={state === 'error' ? error : null}
+        // A fragment (always truthy) keeps pr-9 reserved so the layout never jumps
+        // when the save glyph appears - only the glyph itself changes, not the box.
+        adornment={(
+          <>
+            {state === 'saving' ? <Loader2 size={15} className="animate-spin text-zinc-500 dark:text-zinc-400" />
+              : state === 'saved' ? <Check size={15} className="text-emerald-600 dark:text-emerald-300" />
+              : state === 'error' ? <AlertCircle size={15} className="text-red-600 dark:text-red-300" />
+              : null}
+          </>
+        )}
+      />
       <span className="sr-only" role="status" aria-live="polite">{state === 'saved' ? t('setup.identifier.saved', { label }) : ''}</span>
     </div>
   );
@@ -1115,25 +1104,34 @@ function IdentifierRow({ field, savedValue, configRev, hint, dimmed }) {
 // the INCOMPLETE Pinterest card still shows it (BoardManager needs a connected
 // token to fetch boards, so it is the only way in before first connect).
 const GRID = 'grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3';
-function IdentifierFields({ platformId, identifiers, configRev, showOptional = true, hideKeys }) {
+// `zone` splits the render so the incomplete card can lead with what a connection
+// REQUIRES and defer the public-profile niceties AFTER the credential panel (so the
+// "Optional · public profile" divider never sits above the required secret, reading
+// as if the secret were optional too): 'required' | 'optional' | 'all' (default, the
+// connected card shows both in one call). showOptional stays for the callers that
+// suppress the optional block wholesale.
+function IdentifierFields({ platformId, identifiers, configRev, showOptional = true, hideKeys, zone = 'all' }) {
   const t = useT();
   const fields = (PLATFORM_IDENTIFIERS[platformId] || []).filter((f) => !hideKeys?.includes(f.key));
   if (!fields.length) return null;
   const required = fields.filter((f) => REQUIRED_KEYS.has(f.key));
   const optional = fields.filter((f) => !REQUIRED_KEYS.has(f.key));
   const ids = identifiers || {};
+  const showRequired = zone !== 'optional' && required.length > 0;
+  const showOptionalBlock = zone !== 'required' && showOptional && optional.length > 0;
+  if (!showRequired && !showOptionalBlock) return null;
   return (
     <div className="space-y-3">
-      {required.length ? (
+      {showRequired ? (
         <div className={GRID}>
           {required.map((field) => (
             <IdentifierRow key={field.key} field={field} savedValue={ids[field.key] ?? ''} configRev={configRev} />
           ))}
         </div>
       ) : null}
-      {showOptional && optional.length ? (
+      {showOptionalBlock ? (
         <>
-          <p className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{t('setup.zone.optional')}</p>
+          <p className="text-[11px] font-bold text-zinc-600 dark:text-zinc-400">{t('setup.zone.optional')}</p>
           <div className={GRID}>
             {optional.map((field) => {
               const dimmed = field.key in FALLBACK && Boolean(ids[FALLBACK[field.key]]);
@@ -1211,7 +1209,7 @@ export function DiscoveryBlock({ platformId, configRev, hideAssetPicker = false 
   // are the recovery path.
   if (error || !identity) {
     return (
-      <p className="flex items-center gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+      <p className="flex items-center gap-1.5 text-[11px] text-amber-700 dark:text-amber-400">
         <AlertCircle size={12} aria-hidden="true" />
         <span>{t('setup.discover.error')} &mdash; {t('setup.discover.reconnect')}</span>
       </p>
@@ -1297,10 +1295,11 @@ export function DiscoveryBlock({ platformId, configRev, hideAssetPicker = false 
 // The vendor onboarding prose for an incomplete lane: the playbook passthrough
 // (lib/setup.mjs -> lib/playbooks.mjs). It lives INSIDE the ManualSetup expert
 // disclosure, rendered `inline` (heading, no second collapse - one disclosure is
-// enough). The standalone collapsed mode survives for any caller outside that
-// disclosure. The portal opens as a plain single-tone text link (NOT a branded
-// button); the prose body is authoritative English vendor data, never routed
-// through t().
+// enough, and opening manual must surface the steps AND the fields together so the
+// manual path never reads as instructions with no inputs to fill). The standalone
+// collapsed mode survives for any caller outside that disclosure. The portal opens
+// as a plain single-tone text link (NOT a branded button); the prose body is
+// authoritative English vendor data, never routed through t().
 function HowToConnect({ playbook, inline = false }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -1568,7 +1567,7 @@ function MetaLaneControls() {
             value={cadence.maxPer24h}
             onChange={(e) => setCadence((p) => ({ ...p, maxPer24h: e.target.value }))}
             aria-invalid={cadenceErr ? 'true' : undefined}
-            className={`w-28 rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
+            className={`${FIELD} w-28`}
           />
         </label>
         <label className="space-y-1">
@@ -1578,7 +1577,7 @@ function MetaLaneControls() {
             value={cadence.minGapMinutes}
             onChange={(e) => setCadence((p) => ({ ...p, minGapMinutes: e.target.value }))}
             aria-invalid={cadenceErr ? 'true' : undefined}
-            className={`w-28 rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
+            className={`${FIELD} w-28`}
           />
         </label>
         <ActionButton
@@ -1621,7 +1620,7 @@ function MetaLaneControls() {
       </div>
       {cadenceErr ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{cadenceErr}</p> : null}
       {usage ? (
-        <p className={`text-[11px] ${usageWarn ? 'font-bold text-amber-600 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
+        <p className={`text-[11px] ${usageWarn ? 'font-bold text-amber-700 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'}`}>
           {usageWarn ? <Clock size={11} className="-mt-0.5 mr-1 inline" aria-hidden="true" /> : null}
           {t('settings.lane.usage', { used: usage.used, limit: usage.limit })}
           {usageWarn ? ` · ${t('settings.lane.usageWarn')}` : ''}
@@ -1668,7 +1667,7 @@ function PinterestVideoScopeNote({ t }) {
           copy; it survives as the tooltip (title=) for cross-referencing. */}
       {needsVideoScope ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          <p title={PINTEREST_VIDEO_SCOPE} className="text-[11px] text-amber-600 dark:text-amber-400">{t('setup.pinterest.reconnectVideo')}</p>
+          <p title={PINTEREST_VIDEO_SCOPE} className="text-[11px] text-amber-700 dark:text-amber-400">{t('setup.pinterest.reconnectVideo')}</p>
           <DisconnectButton platform="pinterest" label={PLATFORM_META.pinterest?.label || 'Pinterest'} buttonLabel={t('setup.boards.reconnect')} />
         </div>
       ) : null}
@@ -1846,7 +1845,7 @@ function BoardManager({ configRev }) {
         </p>
       ) : null}
       {createNeedsScope ? (
-        <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-600 dark:text-amber-300">
+        <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 dark:text-amber-300">
           <ShieldAlert size={12} aria-hidden="true" /> {t('setup.boards.needsScope')}
         </p>
       ) : null}
@@ -1858,7 +1857,7 @@ function BoardManager({ configRev }) {
       {/* Spec 29 review (MAJOR-1): "Set as destination"'s own inline error - never a
           silent spinner-clear on a stale rev / racing write / network blip. */}
       {destNeedsScope ? (
-        <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-600 dark:text-amber-300">
+        <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 dark:text-amber-300">
           <ShieldAlert size={12} aria-hidden="true" /> {t('setup.boards.needsScope')}
         </p>
       ) : null}
@@ -1938,7 +1937,7 @@ function BoardSections({ boardId, t }) {
         </div>
       )}
       {needsScope ? (
-        <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-600 dark:text-amber-300">
+        <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 dark:text-amber-300">
           <ShieldAlert size={12} aria-hidden="true" /> {t('setup.boards.needsScope')}
         </p>
       ) : null}
@@ -1972,12 +1971,12 @@ const gbpCategoryLabel = (t, category) => {
   return label === key ? humanizeGbpId(category) : label;
 };
 const GBP_SELECT_CLS = `rounded-xl border-0 px-2.5 py-2 text-xs ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-const GBP_INPUT_CLS = `w-48 rounded-xl border-0 px-2.5 py-2 text-xs ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+const GBP_INPUT_CLS = `w-48 rounded-xl border-0 px-2.5 py-2 text-xs ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 function GbpScopePending({ t }) {
   return (
     <div className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[11px] ${INNER_SURFACE}`}>
-      <span className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-300">
+      <span className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
         <ShieldAlert size={12} aria-hidden="true" /> {t('setup.gbp.scope.pending')}
       </span>
     </div>
@@ -2285,7 +2284,7 @@ function GhostAudienceBlock({ live = true }) {
   return (
     <div className="space-y-3 border-t border-zinc-200/60 pt-3 dark:border-zinc-700/60">
       {!live && cachedAt ? (
-        <p className="text-[11px] font-bold text-amber-600 dark:text-amber-300">{t('setup.ghost.cachedAsOf', { time: fmtFull(new Date(cachedAt).toISOString()) })}</p>
+        <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">{t('setup.ghost.cachedAsOf', { time: fmtFull(new Date(cachedAt).toISOString()) })}</p>
       ) : null}
       <div className={live ? undefined : 'opacity-60'}>{audienceBody}</div>
       <div className="space-y-2">
@@ -2391,14 +2390,14 @@ function ProfileEdit({ platformId }) {
                     value={draft[f.key] ?? ''}
                     onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
                     maxLength={f.maxLength}
-                    className={FIELD}
+                    className={`${FIELD} h-auto w-full py-2`}
                   />
                 ) : (
                   <input
                     value={draft[f.key] ?? ''}
                     onChange={(e) => setDraft((p) => ({ ...p, [f.key]: e.target.value }))}
                     maxLength={f.maxLength}
-                    className={FIELD}
+                    className={`${FIELD} w-full`}
                   />
                 )}
               </label>
@@ -2535,7 +2534,10 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
                   No playbook -> no hero, so the disclosure opens by default. */}
               <PromptHero label={label} ns="setup.aiPrompt" text={setupPrompt} />
               <ManualSetup defaultOpen={!playbook}>
-                <IdentifierFields platformId={id} identifiers={identifiers} configRev={configRev} />
+                {/* Required-first: the identifiers a connection NEEDS lead, then the
+                    credential panel, then the public-profile niceties (zone="optional"
+                    below) - so the "Optional" divider never sits above the secret. */}
+                <IdentifierFields platformId={id} identifiers={identifiers} configRev={configRev} zone="required" />
                 {/* GUI connect when a secret is still missing; the terminal path is
                     kept but demoted. A lane missing only an identifier shows neither. */}
                 {secrets.length && CONNECT_FIELDS[id] ? (
@@ -2546,6 +2548,8 @@ function PlatformDetail({ platform, capability, configRev, identifiers, posting,
                 ) : (
                   secrets.map((item, i) => <SecretRow key={`secret-${i}`} label={item.label} action={item.action} />)
                 )}
+                {/* Public-profile niceties last: they never block a connection. */}
+                <IdentifierFields platformId={id} identifiers={identifiers} configRev={configRev} zone="optional" />
                 <HowToConnect playbook={playbook} inline />
               </ManualSetup>
             </div>

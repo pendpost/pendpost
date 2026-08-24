@@ -141,10 +141,23 @@ try {
   let r = await asClient(() => radarAgentScan({ actor: 'owner' }));
   ok(r.ok === true && r.enabled === false && r.job === null, 'Radar OFF => inert: no job, no spawn, no spend');
 
+  // PIN A SINGLE SEARCHABLE SOURCE. A manual scan runs PER-SOURCE ISOLATION (acb6915): one child
+  // spawn per effective source, each with its own budget slice, signals ingesting onto the same
+  // running row as each lane runs. Every stub below models ONE spawn per scan (it ingests a fixed
+  // signal set unconditionally), so with the four default searchable lanes (reddit/mastodon/bluesky/
+  // hackernews) the SAME signals would ingest four times - deduped in the feed, but the tally counts
+  // fresh.length per call, so `accepted` read 8 not 2. Isolation's SUM-across-lanes is correct in
+  // production (a real per-source agent finds DISTINCT signals per source); it just breaks the stubs'
+  // one-spawn assumption. Pinning one source (a supported operator config via posting.radar.sources)
+  // restores one-spawn-per-scan so this file can prove the JOB LIFECYCLE deterministically.
   await asClient(() => setConfig({
     ifRev: getConfig().rev,
     actor: 'owner',
-    set: { posting: { radar: { enabled: true, queries: [{ id: 'q1', label: 'Scheduling', enabled: true, keywords: ['scheduling'] }] } } },
+    set: { posting: { radar: {
+      enabled: true,
+      queries: [{ id: 'q1', label: 'Scheduling', enabled: true, keywords: ['scheduling'] }],
+      sources: { reddit: { scan: true }, mastodon: { scan: false }, bluesky: { scan: false }, hackernews: { scan: false } },
+    } } },
   }));
 
   // ===== (f) no provider => an honest refusal naming the fix =====

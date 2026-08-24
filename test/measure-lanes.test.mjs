@@ -93,10 +93,16 @@ try {
   }
 
   // ---- 2. the REAL sweep spawns + stores all three lanes ----------------------
-  const sw = await fetchInsights();
+  // X is a METERED read lane (cost-aware refresh, 2026-08): the automatic sweep skips it
+  // unless the owner opts it in via posting.insights.meteredAuto. Prove BOTH halves of
+  // that contract - the free sweep leaves X alone, and an opted-in sweep still measures it.
+  const free = await fetchInsights();
+  ok(free.ok, 'free sweep returns ok');
+  ok(!loadState().insights?.data?.['local/x1/x'], 'free sweep skips the metered x lane (opt-in only)');
+  const sw = await fetchInsights({ includeMetered: ['x'] });
   ok(sw.ok, 'sweep returns ok');
   const state = loadState();
-  ok(Boolean(state.insights?.data?.['local/x1/x']), 'sweep stores the x per-post row (newly swept lane)');
+  ok(Boolean(state.insights?.data?.['local/x1/x']), 'opted-in sweep stores the x per-post row (newly swept lane)');
   ok(Boolean(state.insights?.data?.['local/r1/reddit']), 'sweep stores the reddit per-post row (newly swept lane)');
   ok(Boolean(state.insights?.data?.['local/m1/mastodon']), 'sweep stores the mastodon per-post row (newly swept lane)');
   ok(typeof state.insights.data['local/x1/x'].metrics.bookmarks === 'number', 'the stored x row keeps the bookmarks field');

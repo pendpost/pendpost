@@ -79,6 +79,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath } from '../lib/util.mjs';
@@ -311,7 +312,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -421,8 +422,8 @@ function buildLocalPost(post) {
 
 async function cmdAuth(args) {
   console.log(`[info] Connecting Google Business Profile - credentials will be written to ${ENV_PATH}`);
-  const clientId = args['client-id'] || readEnv('GBP_CLIENT_ID');
-  const clientSecret = args['client-secret'] || readEnv('GBP_CLIENT_SECRET');
+  const clientId = await resolveCredential({ value: args['client-id'] || readEnv('GBP_CLIENT_ID'), hint: 'Paste your Google OAuth Client ID (Google Cloud console > APIs & Services > Credentials): ' });
+  const clientSecret = await resolveCredential({ value: args['client-secret'] || readEnv('GBP_CLIENT_SECRET'), secret: true, hint: 'Paste your Google Client secret (hidden; same OAuth client): ' });
   if (!clientId || !clientSecret) {
     console.error('[err] Need --client-id and --client-secret (Google Cloud console -> APIs & Services -> Credentials) on first run, or set GBP_CLIENT_ID / GBP_CLIENT_SECRET in .env.');
     process.exit(2);

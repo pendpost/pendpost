@@ -123,6 +123,33 @@ try {
   ok(probeMedia('data/../../etc/passwd') === 403, 'media rejects a nested ".." traversal (403)');
   ok(probeMedia('/etc/passwd') === 403, 'media rejects an absolute path (403)');
 
+  // ---- client-scoped /media: a NON-active client's cover resolves via clientId ----
+  // The all-clients List fix: mediaUrl stamps the OWNING client (lib/plans.mjs) so a
+  // row whose post is NOT the globally-active client still serves its cover instead of
+  // 404-ing. Same relative path, different clientId scope -> different (sealed) root.
+  {
+    const { Writable } = await import('node:stream');
+    const defMediaDir = path.join(clientRoot('default'), 'data', 'media');
+    fs.mkdirSync(defMediaDir, { recursive: true });
+    fs.writeFileSync(path.join(defMediaDir, 'probe.jpg'), Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+    const probeScoped = (p, clientId) => {
+      let status = null;
+      const res = new Writable({ write(_c, _e, cb) { cb(); } });
+      res.writeHead = (s) => { status = s; };
+      res.setHeader = () => {};
+      const qs = clientId ? `&clientId=${encodeURIComponent(clientId)}` : '';
+      serveMedia({ headers: {} }, res, new URL(`http://127.0.0.1/media?p=${encodeURIComponent(p)}${qs}`));
+      return status;
+    };
+    ok(activeClientId() === 'acme', 'precondition: active client is acme; the probe file lives only under default');
+    ok(probeScoped('data/media/probe.jpg') === 404, 'unscoped /media resolves against the ACTIVE client (acme) and 404s on default-only media');
+    ok(probeScoped('data/media/probe.jpg', 'default') === 200, 'clientId-scoped /media resolves the NON-active client (default) and serves it (200)');
+    ok(probeScoped('data/media/probe.jpg', '../evil') === 403, 'a malformed clientId slug is rejected (403) before any resolution');
+    // The 200 above kicks off an async createReadStream().pipe(); let the 4-byte read
+    // settle so it can't race the temp-workspace cleanup in finally (ENOENT on close).
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
   // ---- invalid client slug is rejected by clientRoot ----
   for (const bad of ['../evil', 'UPPER', 'has space', '-leadinghyphen', '']) {
     let threw = false;

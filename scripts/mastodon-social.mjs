@@ -76,6 +76,8 @@ import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath } from '../lib/util.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
+import { measurableInsightsPosts } from '../lib/insights-window.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -170,7 +172,7 @@ function loadPlan(planPath) {
 // engine-owned field (post.ids.mastodonPinned in the client DTO, lib/plans.mjs) -
 // the optional echo cmdPin/cmdUnpin write so PostDetail's "Pin to profile"/"Unpin"
 // toggle renders the current state without a re-fetch.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'mastodonScheduledId', 'mastodonPinned', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState', 'radarFollowup'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'mastodonScheduledId', 'mastodonPinned', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'radarReplyState', 'radarFollowup', 'externalUrl'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -335,8 +337,22 @@ const matchKey = (s) => statusPlainText(s).slice(0, 80);
 // ---------- commands ----------
 
 async function cmdAuth() {
-  if (!instanceUrl()) { console.error('[err] MASTODON_INSTANCE_URL missing in .env (your home instance, e.g. https://mastodon.social).'); process.exit(2); }
-  if (!accessToken()) { console.error('[err] MASTODON_ACCESS_TOKEN missing in .env (Preferences -> Development -> New application; scopes read write:statuses write:media).'); process.exit(2); }
+  // .env still wins; otherwise, on an interactive terminal, prompt the operator to paste
+  // what they copied (the access token hidden, never echoed, never in shell history) and
+  // persist it so the verify_credentials probe below (and every later run) can read it.
+  // A non-interactive run (daemon/CI/mock) skips the prompt and fails closed at the guard.
+  const instance = await resolveCredential({
+    value: instanceUrl(),
+    hint: 'Paste your Mastodon instance URL (your home instance, e.g. https://mastodon.social): ',
+  });
+  if (!instance) { console.error('[err] MASTODON_INSTANCE_URL missing in .env (your home instance, e.g. https://mastodon.social).'); process.exit(2); }
+  const token = await resolveCredential({
+    value: accessToken(),
+    secret: true,
+    hint: 'Paste your Mastodon access token (Preferences > Development > New application): ',
+  });
+  if (!token) { console.error('[err] MASTODON_ACCESS_TOKEN missing in .env (Preferences -> Development -> New application; scopes read write:statuses write:media).'); process.exit(2); }
+  writeEnv({ MASTODON_INSTANCE_URL: instance, MASTODON_ACCESS_TOKEN: token });
   const { data: me } = await masto('GET', '/api/v1/accounts/verify_credentials');
   writeEnv({ MASTODON_HANDLE: me.acct });
   console.log(`[ok] authenticated as @${me.acct} on ${instanceUrl()}`);
@@ -537,6 +553,9 @@ async function cmdSchedule(args) {
         continue;
       }
       post.mastodonStatusId = String(json.id);
+      // The status-create response carries the reply's own public URL - persist it
+      // so the Radar card's "Beantwortet" links the ANSWER, not the question.
+      if (json.url) post.externalUrl = String(json.url);
       post.status = 'posted';
       post.postedAt = new Date().toISOString();
       await savePlan(abs, plan, [post.id]);
@@ -740,11 +759,24 @@ async function cmdResolve(args) {
   console.log('[done] resolve complete.');
 }
 
+// Cancel a natively-scheduled status. A 404 means the scheduled entry is
+// ALREADY GONE (fired natively, cancelled elsewhere, or never resolvable) -
+// exactly the end state a cancel wants, so it is swallowed as an idempotent
+// success rather than raising engine_failure and stranding the plan row
+// (mirrors yt-social.mjs cmdDelete / discord-social.mjs cmdDeleteEvent). Any
+// OTHER error still throws.
 async function cmdUnschedule(args) {
   if (!args.id) { console.error('[err] unschedule requires --id <scheduledId>'); process.exit(2); }
-  await masto('DELETE', `/api/v1/scheduled_statuses/${encodeURIComponent(args.id)}`);
+  try {
+    await masto('DELETE', `/api/v1/scheduled_statuses/${encodeURIComponent(args.id)}`);
+    console.log(`[ok] cancelled Mastodon scheduled status ${args.id}.`);
+  } catch (err) {
+    if (err?.status !== 404) throw err;
+    console.log(`[skip] Mastodon scheduled status ${args.id} is already gone (404) - counting it cancelled.`);
+    RUN.results.push({ platform: 'mastodon', action: 'unschedule', ok: true, id: String(args.id), alreadyGone: true });
+    return;
+  }
   RUN.results.push({ platform: 'mastodon', action: 'unschedule', ok: true, id: String(args.id) });
-  console.log(`[ok] cancelled Mastodon scheduled status ${args.id}.`);
 }
 
 async function cmdStatus(args) {
@@ -786,11 +818,18 @@ async function cmdVerify(args) {
 }
 
 // Real metrics (unlike telegram/discord): the status object carries its own counts.
+// Mastodon's API is free (no per-call credit like X), so this is request-volume /
+// rate-limit hygiene, not a cost bug - but the daily sweep still bounds the bulk
+// path to a recency window + hard cap (lib/insights-window.mjs) exactly like X, so
+// it stops re-reading every status ever posted on every 24h run. An explicit
+// single-post request (--only) is always honored in full.
 async function cmdInsights(args) {
   const { plan } = loadPlan(args.plan);
-  for (const post of plan.posts || []) {
-    if (args.only && post.id !== args.only) continue;
-    if (!isMastodon(post) || !post.mastodonStatusId) continue;
+  const eligible = (plan.posts || []).filter((p) => isMastodon(p) && p.mastodonStatusId);
+  const targets = args.only
+    ? eligible.filter((p) => p.id === args.only)
+    : measurableInsightsPosts(eligible);
+  for (const post of targets) {
     try {
       const { data } = await masto('GET', `/api/v1/statuses/${encodeURIComponent(post.mastodonStatusId)}`);
       const metrics = {
@@ -1309,4 +1348,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 // cmdFollow/cmdUnfollow are exported the SAME way so test/social-graph.test.mjs
 // drives the real GET-before-write pin/unpin idempotency + accounts/search follow
 // resolution against a stubbed global.fetch, with no live credentials/subprocess.
-export { cmdProfile, RUN, cmdPin, cmdUnpin, cmdFollow, cmdUnfollow };
+// cmdUnschedule is exported the SAME way so a delete-idempotency test can drive
+// the real 404-swallow logic in-process against a stubbed global.fetch, with no
+// network/credentials/subprocess - mirrors yt-social.mjs's cmdDelete export.
+export { cmdProfile, RUN, cmdPin, cmdUnpin, cmdFollow, cmdUnfollow, cmdUnschedule };

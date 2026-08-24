@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 
 async function getJson(path) {
   const res = await fetch(path);
@@ -11,6 +11,79 @@ export function usePlans() {
     queryKey: ['plans'],
     queryFn: () => getJson('/api/plans'),
     refetchInterval: 30_000,
+  });
+}
+
+// Issue 6 (cross-client Freigaben/Planner): one plans read PER CLIENT, keyed
+// ['plans', clientId] - a sibling namespace to the single-client ['plans'] key
+// above (usePlans stays the source when the all-clients mode is off; switching
+// modes never leaves a stale mix behind). `clients` is the caller's active,
+// non-archived client list; `enabled` gates every query at once (the mode's
+// on/off switch). A per-client fetch failure only fails ITS OWN query - the
+// caller (App.jsx) reads isError per entry and renders the rest regardless.
+export function usePlansAll(clients, enabled) {
+  return useQueries({
+    queries: (clients || []).map((c) => ({
+      queryKey: ['plans', c.id],
+      queryFn: () => getJson(`/api/plans?clientId=${encodeURIComponent(c.id)}`),
+      enabled,
+      refetchInterval: 30_000,
+    })),
+  });
+}
+
+// The all-projects twin of useSignals (radar overview, "all projects" mode). One
+// ['radar', clientId] query per client - a sibling namespace to the single-client
+// ['radar'] key, so a client switch never mixes feeds. `enabled` gates the whole
+// fan-out at once; a per-client fetch failure fails only ITS OWN query and the
+// caller renders the rest, exactly like usePlansAll. GET /api/radar is scoped by
+// ?clientId= server-side (resolveClientId), so no backend change is needed.
+export function useSignalsAll(clients, enabled) {
+  return useQueries({
+    queries: (clients || []).map((c) => ({
+      queryKey: ['radar', c.id],
+      queryFn: () => getJson(`/api/radar?clientId=${encodeURIComponent(c.id)}`),
+      enabled,
+      staleTime: 15_000,
+    })),
+  });
+}
+
+// The all-projects twin of useActivity (Activity page, "all projects" mode). One
+// ['activity', clientId] query per client - a sibling namespace to the single-client
+// ['activity'] key, so a client switch never mixes event logs. `enabled` gates the
+// whole fan-out at once; a per-client fetch failure fails only ITS OWN query and the
+// caller renders the rest, exactly like usePlansAll/useSignalsAll. GET /api/activity is
+// scoped by ?clientId= server-side (resolveClientId), so no backend change is needed.
+// The per-client limit:500 makes this "recent per project", not a strict global last-500
+// (acceptable for the current client count - the caller re-sorts the merge by ts desc).
+export function useActivityAll(clients, enabled) {
+  return useQueries({
+    queries: (clients || []).map((c) => ({
+      queryKey: ['activity', c.id],
+      queryFn: () => getJson(`/api/activity?clientId=${encodeURIComponent(c.id)}&limit=500`),
+      enabled,
+      refetchInterval: 15_000,
+    })),
+  });
+}
+
+// The all-projects twin of useInsights (Insights page, "all projects" mode). One
+// ['insights', clientId] query per client - a sibling namespace to the single-client
+// ['insights'] key, so a client switch never mixes metrics feeds. `enabled` gates the
+// whole fan-out at once; a per-client fetch failure fails only ITS OWN query and the
+// caller renders the rest, exactly like usePlansAll/useActivityAll. Only the per-post
+// `items` merge across projects; the server-computed summary/account/metricLabels stay
+// single-client (the caller drops them in the overview). GET /api/insights is scoped by
+// ?clientId= server-side (resolveClientId), so no backend change is needed.
+export function useInsightsAll(clients, enabled) {
+  return useQueries({
+    queries: (clients || []).map((c) => ({
+      queryKey: ['insights', c.id],
+      queryFn: () => getJson(`/api/insights?clientId=${encodeURIComponent(c.id)}`),
+      enabled,
+      refetchInterval: 60_000,
+    })),
   });
 }
 
@@ -156,10 +229,15 @@ export function usePresubmitCheck(campaign, postId, enabled = true, rev = null) 
 // / empty / needs-scope / error) rather than a thrown query error. Keyed per
 // campaign+postId so it refetches per post; a client switch invalidates ['comments'].
 // enabled-gated so it only fetches once the panel is opened on a posted post.
-export function useComments(campaign, postId, enabled = true) {
+// `clientId` (optional): in the all-projects comment inbox a thread may belong to a
+// project that is not the active one, so the read must be scoped to ITS client - the
+// server reads ?clientId= for GETs. Folded into the query key so two projects' identical
+// campaign/postId never share a cache entry. Single-client callers pass undefined: the
+// key gains a trailing null and the URL is byte-identical, so nothing changes.
+export function useComments(campaign, postId, enabled = true, clientId) {
   return useQuery({
-    queryKey: ['comments', campaign, postId],
-    queryFn: () => getJson(`/api/comments?campaign=${encodeURIComponent(campaign)}&postId=${encodeURIComponent(postId)}`),
+    queryKey: ['comments', campaign, postId, clientId || null],
+    queryFn: () => getJson(`/api/comments?campaign=${encodeURIComponent(campaign)}&postId=${encodeURIComponent(postId)}${clientId ? `&clientId=${encodeURIComponent(clientId)}` : ''}`),
     enabled: enabled && Boolean(campaign) && Boolean(postId),
     staleTime: 15_000,
   });
@@ -181,6 +259,26 @@ export function useCommentInbox(enabled = true) {
     enabled,
     staleTime: 15_000,
     refetchInterval: enabled ? 30_000 : false,
+  });
+}
+
+// The all-projects twin of useCommentInbox (Radar "On your posts", "all projects" mode).
+// One ['commentInbox', clientId] query per client - a sibling namespace to the
+// single-client ['commentInbox'] key, so a client switch never mixes inboxes. `enabled`
+// gates the whole fan-out at once; a per-client fetch failure fails only ITS OWN query
+// and the caller renders the rest, exactly like usePlansAll/useSignalsAll. GET
+// /api/comments/inbox is scoped by ?clientId= server-side, so no backend change is
+// needed. A light background poll like the single-client read, since a server-side
+// sweep lands new comments on its own cadence.
+export function useCommentInboxAll(clients, enabled) {
+  return useQueries({
+    queries: (clients || []).map((c) => ({
+      queryKey: ['commentInbox', c.id],
+      queryFn: () => getJson(`/api/comments/inbox?clientId=${encodeURIComponent(c.id)}`),
+      enabled,
+      staleTime: 15_000,
+      refetchInterval: enabled ? 30_000 : false,
+    })),
   });
 }
 
@@ -520,6 +618,14 @@ async function sendJson(method, path, body) {
 
 const postJson = (path, body) => sendJson('POST', path, body);
 
+// Humanize an agent-path error BY CODE, never by raw prose (issue 7): the one-job-per-client
+// lock's 409 ('in_flight') and a browser network TypeError (Safari's own message is literally
+// "Load failed") both used to land verbatim on a German-capable surface. Any other error keeps
+// the server's message when present, else the caller's own localized fallback.
+export const errText = (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
+  : err instanceof TypeError ? t('error.network')
+    : (err?.message || t(fallbackKey)));
+
 // The pendpost UI always acts as the owner - they are its only user. Agents use
 // the MCP face with their own actor strings.
 const ACTOR = 'owner';
@@ -560,17 +666,23 @@ export const createCampaign = (body) => postJson('/api/campaigns', { ...body, ac
 // Operator-only "hide from views" flag; maps to campaign_set_internal.
 export const setCampaignInternal = (id, internal) => postJson(`/api/campaigns/${id}/internal`, { internal, actor: ACTOR });
 export const createPost = (campaign, post) => postJson(`/api/plans/${campaign}/posts`, { post, actor: ACTOR });
-export const updatePost = (campaign, postId, ifRev, fields) => sendJson('PATCH', `/api/plans/${campaign}/posts/${postId}`, { ifRev, fields, actor: ACTOR });
-export const deletePost = (campaign, postId, force = false) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}`, { force, actor: ACTOR });
-export const approvePost = (campaign, postId, note) => postJson(`/api/plans/${campaign}/posts/${postId}/approve`, { actor: ACTOR, note });
-export const rejectPost = (campaign, postId, note) => postJson(`/api/plans/${campaign}/posts/${postId}/reject`, { actor: ACTOR, note });
-export const unschedulePost = (campaign, postId, confirm = false) => postJson(`/api/plans/${campaign}/posts/${postId}/unschedule`, { confirm, actor: ACTOR });
-export const reschedulePost = (campaign, postId, scheduledAt, confirm = false) => postJson(`/api/plans/${campaign}/posts/${postId}/reschedule`, { scheduledAt, confirm, actor: ACTOR });
+// Issue 6: every write below takes an OPTIONAL trailing clientId. It rides in the
+// JSON body only (JSON.stringify drops an undefined-valued key), never the query
+// string - the server's resolveClientId (lib/api.mjs) already reads it from a POST/
+// PATCH/DELETE body per call, so a write from an all-clients-mode card reaches the
+// RIGHT client even though the active client (the server's default scope) is some
+// other one. Single-client callers omit it and nothing changes.
+export const updatePost = (campaign, postId, ifRev, fields, clientId) => sendJson('PATCH', `/api/plans/${campaign}/posts/${postId}`, { ifRev, fields, actor: ACTOR, clientId });
+export const deletePost = (campaign, postId, force = false, clientId) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}`, { force, actor: ACTOR, clientId });
+export const approvePost = (campaign, postId, note, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/approve`, { actor: ACTOR, note, clientId });
+export const rejectPost = (campaign, postId, note, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/reject`, { actor: ACTOR, note, clientId });
+export const unschedulePost = (campaign, postId, confirm = false, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/unschedule`, { confirm, actor: ACTOR, clientId });
+export const reschedulePost = (campaign, postId, scheduledAt, confirm = false, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/reschedule`, { scheduledAt, confirm, actor: ACTOR, clientId });
 // Mark a post the owner published natively outside pendpost as posted, so it
 // leaves the publish-due queue. Never publishes; externalUrl is optional. An
 // optional platform records manual completion for THAT lane only (a mixed
 // multi-lane post keeps owing its other lanes) - R5 lane-scoped completion.
-export const markPosted = (campaign, postId, externalUrl, platform) => postJson(`/api/plans/${campaign}/posts/${postId}/mark-posted`, { externalUrl, platform, actor: ACTOR });
+export const markPosted = (campaign, postId, externalUrl, platform, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/mark-posted`, { externalUrl, platform, actor: ACTOR, clientId });
 // Read a handed-off post back from its platforms to confirm it is live (writes a
 // non-destructive verify block; never publishes). The caller invalidates ['plans'].
 export const verifyPost = (campaign, postId) => postJson(`/api/plans/${campaign}/posts/${postId}/verify`, { actor: ACTOR });
@@ -601,7 +713,15 @@ export const adoptAgent = (fromClient, provider) => postJson('/api/agent/adopt',
 // the owner confirms out of band (Meta Business Suite) that it lifted, then
 // clears it here. blockedUntil:null records "cleared".
 export const clearMetaBlock = () => postJson('/api/state/meta-block', { blockedUntil: null, source: ACTOR, actor: ACTOR, reason: 'owner confirmed Meta lifted the block' });
-export const fetchInsights = (campaign) => postJson('/api/insights/fetch', campaign ? { campaign } : {});
+// Generic lane breaker resume (non-Meta lanes, e.g. the X credits halt): clears the
+// lane block AND releases the publishHolds its failure streak parked server-side.
+export const resumeLane = (platform) => postJson('/api/state/lane-resume', { platform, actor: ACTOR });
+// Metric refresh. `scope` gates the metered lanes (X, which bills per API read):
+// 'free' (the default) reads only the free lanes and spends nothing; 'all' also
+// reads X and costs credits, so its call site pairs it with a cost confirm. The
+// engine maps scope -> includeMetered (includeMeteredForScope), so the browser
+// never has to know which lanes are metered.
+export const fetchInsights = ({ campaign, scope } = {}) => postJson('/api/insights/fetch', { ...(campaign ? { campaign } : {}), ...(scope ? { scope } : {}) });
 // NOTE: there is deliberately no radar_scan (keyword engine) helper here any more. Spec 41
 // made Studio scanning AGENT-ONLY: pressing Scan now spawns the operator's own agent, and a
 // scan that cannot use an agent does not run rather than quietly falling back to a regex.
@@ -614,14 +734,17 @@ export const fetchInsights = (campaign) => postJson('/api/insights/fetch', campa
 // resolves only when the child finishes (minutes; bounded at 10), so the panel never depends
 // on this promise to render progress: the job row reads state.radar.jobs from useSignals,
 // which is the same thing an agent or a second tab would see.
-// Accepts an options object { queryId?, scope? }. scope:'geo' runs the standalone KI-Sichtbarkeit
-// recheck (the per-card "Jetzt pruefen"); omitted, it is the normal signal scan. A bare string arg
-// still works as a queryId for older call sites.
+// Accepts an options object { queryId?, scope?, target? }. scope:'geo' runs the standalone
+// KI-Sichtbarkeit recheck (the per-card "Jetzt pruefen"); scope:'draft-one' + target
+// {source, externalId} drafts a held-pending reply for exactly that signal (the auto-post
+// badge's tap); omitted, it is the normal signal scan. A bare string arg still works as a
+// queryId for older call sites.
 export const radarAgentScan = (opts = {}) => {
-  const { queryId, scope } = typeof opts === 'string' ? { queryId: opts } : (opts || {});
+  const { queryId, scope, target } = typeof opts === 'string' ? { queryId: opts } : (opts || {});
   const body = { actor: ACTOR };
   if (queryId) body.queryId = queryId;
   if (scope) body.scope = scope;
+  if (target) body.target = target;
   return postJson('/api/radar/agent-scan', body);
 };
 // Spec 44: check now whether the authors of the threads we replied into have replied back.
@@ -638,7 +761,11 @@ export const radarDraftComparison = (backlogKey) => postJson('/api/radar/compari
 // (dismiss never re-surfaces) + US7 (watch stays pinned) DURABLE across page/client
 // changes. Idempotent; the UI always acts as the owner. Resolves { ok, source,
 // externalId, action, watched } or throws. The caller invalidates ['radar'].
-export const radarTriage = (source, externalId, action) => postJson('/api/radar/triage', { source, externalId, action, actor: ACTOR });
+// `clientId` (optional trailing arg) scopes the write to a signal's own project in
+// the all-projects overview - resolveClientId reads it from the POST body, so an
+// action on a foreign-project signal lands in ITS workspace, never the active one.
+// Single-client mode passes undefined and the write binds the active client.
+export const radarTriage = (source, externalId, action, clientId) => postJson('/api/radar/triage', { source, externalId, action, actor: ACTOR, clientId });
 // G8 (ux-audit 2026-08-04): the SAME triage route also declines one GEO comparison-backlog
 // entry, identified by backlogKey instead of source+externalId. dismiss = drop it durably
 // (the dismissedBacklog ledger; a re-scan never re-mints it), clear = undo. The caller
@@ -649,7 +776,7 @@ export const radarBacklogTriage = (backlogKey, action) => postJson('/api/radar/t
 // and so no repliedUrl - this durable { postedUrl?, ts } marker is the only proof it went
 // out, and it is what lets the feed count the copy draft as answered. postedUrl optional.
 // Resolves { ok, source, externalId, postedUrl, at } or throws. The caller invalidates ['radar'].
-export const radarMarkCopyPosted = (source, externalId, postedUrl) => postJson('/api/radar/mark-copy-posted', { source, externalId, postedUrl, actor: ACTOR });
+export const radarMarkCopyPosted = (source, externalId, postedUrl, clientId) => postJson('/api/radar/mark-copy-posted', { source, externalId, postedUrl, actor: ACTOR, clientId });
 // NOTE: there is deliberately no radar ingest helper here. That capability is agent-only -
 // an agent submits what it found through its MCP tool, with no Studio round-trip. The old
 // helper backed a copy-the-prompt/paste-the-JSON surface that has been removed; the
@@ -666,8 +793,8 @@ export const radarMarkCopyPosted = (source, externalId, postedUrl) => postJson('
 // { ok, campaign, postId, approval:"pending" } or throws. The caller invalidates ['plans'].
 // R11: parentExternalId (optional) threads the reply UNDER the thread author's follow-up
 // comment (the signal's authorReplied.commentId) instead of the root - "reply to their reply".
-export const radarQueueReply = ({ campaign, signalUrl, source, externalId, parentExternalId, text, executionMode } = {}) =>
-  postJson('/api/radar/reply', { campaign, signalUrl, source, externalId, parentExternalId, text, executionMode, confirm: true, actor: ACTOR });
+export const radarQueueReply = ({ campaign, signalUrl, source, externalId, parentExternalId, text, executionMode, clientId } = {}) =>
+  postJson('/api/radar/reply', { campaign, signalUrl, source, externalId, parentExternalId, text, executionMode, confirm: true, actor: ACTOR, clientId });
 // The inbox seam WRITE (spec 02): reply to one comment on a posted post (POST
 // /api/comments/reply -> lib/writes.mjs replyToComment). Operator-triggered; the UI
 // always acts as the owner. Resolves { ok, id, platform } or throws (sendJson
@@ -676,7 +803,10 @@ export const radarQueueReply = ({ campaign, signalUrl, source, externalId, paren
 // author is the replied-TO comment's author: it threads the reply into the relationship-memory
 // 'me'-direction accretion (spec 49 R12), so replying to a returning commenter records the 2nd
 // exchange that lights the "Nth exchange" chip. Optional - a reply with no author still sends.
-export const replyToComment = (campaign, postId, commentId, text, platform, author) => postJson('/api/comments/reply', { campaign, postId, commentId, text, platform, author, actor: ACTOR });
+// `clientId` (optional trailing arg): the all-projects comment inbox threads it so a
+// reply to a foreign-project post lands in ITS workspace (resolveClientId reads it from
+// the POST body); single-client callers omit it and nothing changes.
+export const replyToComment = (campaign, postId, commentId, text, platform, author, clientId) => postJson('/api/comments/reply', { campaign, postId, commentId, text, platform, author, actor: ACTOR, clientId });
 // The inbox seam WRITE (spec 06): moderate one comment (POST /api/comments/moderate ->
 // lib/writes.mjs moderateComment). action is one of the lane's supported moderate
 // actions (from the read's moderateActions). Operator-triggered; the UI supplies an
@@ -686,7 +816,10 @@ export const replyToComment = (campaign, postId, commentId, text, platform, auth
 // { ok, id, action } or throws (sendJson surfaces the server message + code, e.g.
 // not_configured on a missing scope / paused lane, unsupported_action when the lane
 // cannot do it). The caller invalidates ['plans'] + refetches the panel on success.
-export const moderateComment = (campaign, postId, commentId, action, platform, confirm) => postJson('/api/comments/moderate', { campaign, postId, commentId, action, platform, actor: ACTOR, confirm: confirm === true });
+// `clientId` (optional trailing arg): all-projects inbox scopes the moderation to the
+// comment's own project (resolveClientId reads it from the POST body); single-client
+// callers omit it and nothing changes.
+export const moderateComment = (campaign, postId, commentId, action, platform, confirm, clientId) => postJson('/api/comments/moderate', { campaign, postId, commentId, action, platform, actor: ACTOR, confirm: confirm === true, clientId });
 // The inbox seam WRITE (spec 24): react to one comment/mention (POST /api/comments/react
 // -> lib/writes.mjs reactToPost). reaction is one of the lane's supported reactions (from
 // the read's reactActions). Operator-triggered; NOT destructive and NOT confirm-gated
@@ -697,14 +830,20 @@ export const moderateComment = (campaign, postId, commentId, action, platform, c
 // throws (sendJson surfaces the server message + code, e.g. not_configured on a missing
 // scope, unsupported_reaction when the lane cannot do it). The caller invalidates
 // ['plans'] + refetches the panel on success.
-export const reactToPost = (campaign, postId, commentId, reaction, platform, emoji, remove, authorPubkey) => postJson('/api/comments/react', { campaign, postId, commentId, reaction, platform, actor: ACTOR, emoji, remove: remove === true, authorPubkey });
+// `clientId` (optional trailing arg): all-projects inbox scopes the reaction to the
+// comment's own project (resolveClientId reads it from the POST body); single-client
+// callers omit it and nothing changes.
+export const reactToPost = (campaign, postId, commentId, reaction, platform, emoji, remove, authorPubkey, clientId) => postJson('/api/comments/react', { campaign, postId, commentId, reaction, platform, actor: ACTOR, emoji, remove: remove === true, authorPubkey, clientId });
 
 // Own-post comment monitor (own-post comment inbox) writes. refresh forces a check-now sweep
 // and returns the fresh inbox (POST /api/comments/inbox/refresh); resolve marks one comment
 // handled so it leaves the unanswered set and the next sweep never re-surfaces it (POST
 // /api/comments/inbox/resolve). The actual reply still goes through replyToComment above.
 export const refreshCommentInbox = () => postJson('/api/comments/inbox/refresh', {});
-export const resolveInboxComment = (key, reason) => postJson('/api/comments/inbox/resolve', { key, reason, actor: ACTOR });
+// `clientId` (optional trailing arg): all-projects inbox scopes the resolve to the
+// comment's own project (resolveClientId reads it from the POST body); single-client
+// callers omit it and nothing changes.
+export const resolveInboxComment = (key, reason, clientId) => postJson('/api/comments/inbox/resolve', { key, reason, actor: ACTOR, clientId });
 // GBP reviews WRITE (spec 03): upsert/remove the owner reply on one review (POST
 // /api/reviews/reply -> lib/writes.mjs replyToReview). reviewId is the full resource
 // name (from useReviews items[].commentId); an empty text REMOVES the reply. Operator-
@@ -713,6 +852,19 @@ export const resolveInboxComment = (key, reason) => postJson('/api/comments/inbo
 // e.g. not_configured when the Business Profile API is pending approval). The caller
 // invalidates ['activity'] + ['reviews'] on success.
 export const replyToReview = (reviewId, text) => postJson('/api/reviews/reply', { reviewId, text, actor: ACTOR });
+// Inbound-event reply WRITE (spec 23 close-the-loop): answer one normalized inbound
+// event - an X mention/reply or a DM - straight from the Activity inbox (POST
+// /api/inbound/reply -> the engine posts a native reply on the source thread). eventId
+// is the feed row's eventId (from useInboundEvents). Operator-triggered; the UI always
+// acts as the owner. Resolves { ok, id, platform, eventId } or throws (sendJson surfaces
+// the server message + code): needs_scope (403, the lane lacks the write permission),
+// credits (402, the paid lane is halted), target_gone (410, the post is deleted),
+// not_repliable (422), not_found (404), invalid_input. The caller invalidates the
+// inbound-events feed (['cloud','events']) + ['engager'] on success.
+// `clientId` (optional): the all-projects inbox threads it so a reply to a foreign-project
+// event lands in ITS workspace; single-client callers omit it and nothing changes.
+export const replyToInboundEvent = ({ actor = ACTOR, eventId, text, confirm, clientId } = {}) =>
+  postJson('/api/inbound/reply', { actor, eventId, text, confirm, clientId });
 // GBP location media gallery WRITE (spec 19): add one photo/video (POST /api/gbp/media
 // -> lib/writes.mjs gbpMediaAdd). Pass EXACTLY ONE of sourceUrl (a public http(s) URL)
 // or filePath (a client-root-relative local path); category is required. Low-risk +

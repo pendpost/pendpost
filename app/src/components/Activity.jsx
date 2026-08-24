@@ -1,13 +1,15 @@
 import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench, Star, Send, CornerDownRight, AlertCircle, ShieldAlert, Info } from 'lucide-react';
-import { useActivity, useReviews, replyToReview } from '../lib/api.js';
+import { useActivity, useReviews, replyToReview, replyToInboundEvent } from '../lib/api.js';
 import { useInboundEvents } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
-import { Skeleton, PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY } from './ui.jsx';
+import { Skeleton, PLATFORM_META, INNER_SURFACE, FIELD_MULTILINE, DISABLED_PRIMARY } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
-import { dayKey, fmtTime, dateLocale } from '../lib/format.js';
+import { PROJECT_CHIP } from './ui/recipes.js';
+import { ClientAvatar } from './ClientSwitcher.jsx';
+import { dayKey, fmtTime, dateLocale, X_PORTAL_URL } from '../lib/format.js';
 
 // Map a FAILED activity entry to a one-click fix (data, not UI - like ACTION_LABEL
 // above). The source of truth for the setup-class strings is platformValidate()'s
@@ -23,6 +25,11 @@ function resolveRemediation(entry) {
   // Meta action-block / rate-limit -> the Meta lane cadence + pause controls.
   if (code === 'blocked_368' || /action block|\b368\b|rate.?limit/i.test(msg)) {
     return { kind: 'metaCadence', ctaKey: 'activity.fix.metaCadence' };
+  }
+  // Credits depleted (X HTTP 402): the whole lane is halted and nothing auto-retries
+  // until the operator tops up the account. The one actionable fix is the top-up portal.
+  if (code === 'credits' || /HTTP 402/.test(msg)) {
+    return { kind: 'credits', ctaKey: 'action.topUpCredits' };
   }
   // needsSetup class: a missing credential/identifier or an unconnected lane.
   if (/not connected|not authenticated|not configured|credentials not configured|is not set|not set \(|no signing key|nicht verbunden|nicht eingerichtet/i.test(msg)) {
@@ -56,6 +63,10 @@ const ACTION_LABEL = {
   'post-delete': 'activity.action.postDelete',
   'meta-block': 'activity.action.metaBlock',
   'meta-unblock': 'activity.action.metaUnblock',
+  // The generic lane breaker's resume (lib/writes.mjs resumeLane): the owner
+  // topped up and lifted a halted lane (e.g. X HTTP 402 credits), so parked
+  // posts re-enter the fire loop. The visible counterpart to circuit-breaker.
+  'lane-resumed': 'activity.action.laneResumed',
   'asset-upload': 'activity.action.assetUpload',
   reschedule: 'activity.action.reschedule',
   unschedule: 'activity.action.unschedule',
@@ -140,6 +151,11 @@ const ACTION_LABEL = {
   // is dynamic and load-bearing (the platform + the specific problem), so NO
   // ACTION_NOTE - the raw message renders.
   'preflight-blocked': 'activity.action.preflightBlocked',
+  // A due post carried a mock publish id from a test run; the scheduler cleared
+  // it so the post can really publish (lib/scheduler.mjs). A publish-lifecycle
+  // correction on THIS post - the errorMessage carries the "press Try again"
+  // guidance, so NO ACTION_NOTE (the raw message renders).
+  'mock-id-cleared': 'activity.action.mockIdCleared',
 };
 
 // Maps an action id to the i18n key for its NOTE body (data, not UI text), so a
@@ -165,7 +181,10 @@ export const ACTION_GROUPS = [
   // 'preflight-blocked' files under publish (like media-missing-defer): it is
   // about THIS post's publish lifecycle on a lane and must ride the default feed -
   // the operator has to SEE why the due post did not fire.
-  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'media-missing-defer', 'preflight-blocked', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
+  // 'mock-id-cleared' files under publish (like preflight-blocked): it is about
+  // THIS post's publish lifecycle and must ride the default feed so the operator
+  // sees the id was cleared and the post needs a re-run.
+  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'media-missing-defer', 'preflight-blocked', 'mock-id-cleared', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
   // 'slot-slip' (R6a) is a machine-initiated reschedule of an unapproved post, so
   // it files with the schedule moves and rides the default feed - the operator must
   // see that the slot moved (and can approve earlier to publish earlier).
@@ -181,7 +200,9 @@ export const ACTION_GROUPS = [
   { key: 'system', label: 'activity.action.group.system', actions: ['scheduler-start', 'scheduler-stop', 'run', 'engine-run', 'probe', 'token-refresh', 'insights', 'insights-fetch', 'cloud-reconcile', 'cloud-backstop', 'client-activate', 'client-create', 'client-update', 'client-archive', 'client-unarchive'] },
   // 'cadence-defer' (Meta lane throttle) belongs with the Meta blocks, not with
   // real publishes - so one chip isolates/hides the throttle noise.
-  { key: 'meta-block', label: 'activity.action.group.metaBlock', actions: ['circuit-breaker', 'meta-block', 'meta-unblock', 'cadence-defer'] },
+  // 'lane-resumed' is the generic lane breaker's resume - it files with the
+  // block/unblock actions (the same lane-halt lifecycle) and stays in the feed.
+  { key: 'meta-block', label: 'activity.action.group.metaBlock', actions: ['circuit-breaker', 'meta-block', 'meta-unblock', 'lane-resumed', 'cadence-defer'] },
   { key: 'campaign', label: 'activity.action.group.campaign', actions: ['campaign-create', 'campaign-activate', 'campaign-deactivate'] },
   // The inbound-engagement (inbox) bucket (spec 02, Pattern P6): the cross-post reply
   // feed. Specs 06 (moderation) + 24 (reactions) file their actions into THIS group;
@@ -210,8 +231,10 @@ export function actionGroupOf(action) {
 
 // Identity of an entry for run-collapsing: same action, post, outcome and
 // message => the same standing event. Two adjacent matches fold into one row.
+// clientId is part of the identity so two projects' identical actions never fold
+// into one ×N row in the all-projects overview (undefined single-client, a no-op).
 function collapseKey(e) {
-  return `${e.action}|${e.campaign ?? ''}|${e.postId ?? ''}|${e.ok ? 1 : 0}|${e.errorMessage ?? ''}`;
+  return `${e.clientId ?? ''}|${e.action}|${e.campaign ?? ''}|${e.postId ?? ''}|${e.ok ? 1 : 0}|${e.errorMessage ?? ''}`;
 }
 
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -245,7 +268,12 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
   // whole-row-opens-the-post behavior below (US-ACT-10, no dead ends).
   const remediation = resolveRemediation(entry);
   const doFix = () => {
-    if (remediation?.kind === 'edit') onOpenPost?.({ campaign: entry.campaign, id: entry.postId });
+    // clientId re-scopes a foreign-project row to its own client before opening it
+    // (openPost re-scopes on post.clientId); undefined single-client, a no-op.
+    if (remediation?.kind === 'edit') onOpenPost?.({ campaign: entry.campaign, id: entry.postId, clientId: entry.clientId });
+    // Credits halt: open the X top-up portal (a new tab, same as the PostDetail link).
+    // The lane resumes from the readiness strip / PostDetail once the balance is back.
+    else if (remediation?.kind === 'credits') window.open(X_PORTAL_URL, '_blank', 'noopener,noreferrer');
     else onNavigate?.('setup', remediation?.kind === 'metaCadence' ? 'facebook' : entry.platform);
   };
   // US-ACT-10: an entry that carries a post is a clickable row that opens it (no
@@ -277,6 +305,17 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
       <div className="min-w-0 flex-1">
         <p className="text-xs font-bold">
           {ACTION_LABEL[entry.action] ? t(ACTION_LABEL[entry.action]) : entry.action}
+          {/* All-projects overview: which project this row belongs to. Stamped by App
+              only in that mode (single-client mode never sets clientName, so nothing
+              renders - the row is byte-identical). The avatar carries the accent, the
+              name carries the meaning - never colour-only - matching the Planner/
+              Freigaben/Radar chip exactly. */}
+          {entry.clientName ? (
+            <span className={`${PROJECT_CHIP} ml-1.5 max-w-[8rem] align-middle`}>
+              <ClientAvatar client={{ displayName: entry.clientName, accent: entry.accent, logo: null }} size={14} />
+              <span className="truncate">{entry.clientName}</span>
+            </span>
+          ) : null}
           {entry.postId ? (
             // Humanize the reference: the post's own headline when the plan still
             // carries it (what the operator recognises), the raw campaign/post ids
@@ -296,7 +335,7 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
           // (entry.ok === false). Amber only for a real defer (the post stays due).
           // A note riding on a SUCCESS (e.g. a backstop/cloud-miss under a green
           // check) is neutral zinc - a local backstop publish is not degraded.
-          <p title={noteText} className={`max-w-full truncate text-[11px] ${entry.ok === false ? 'text-red-600/90 dark:text-red-300/90' : isDefer ? 'text-amber-600/90 dark:text-amber-300/90' : 'text-zinc-500 dark:text-zinc-400'}`}>{noteText}</p>
+          <p title={noteText} className={`max-w-full truncate text-[11px] ${entry.ok === false ? 'text-red-600/90 dark:text-red-300/90' : isDefer ? 'text-amber-700/90 dark:text-amber-300/90' : 'text-zinc-500 dark:text-zinc-400'}`}>{noteText}</p>
         ) : null}
       </div>
       <p className="shrink-0 whitespace-nowrap text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -333,7 +372,7 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
       <button
         type="button"
         aria-label={t('activity.row.open', { campaign: entry.campaign, postId: entry.postId })}
-        onClick={() => onOpenPost({ campaign: entry.campaign, id: entry.postId })}
+        onClick={() => onOpenPost({ campaign: entry.campaign, id: entry.postId, clientId: entry.clientId })}
         className={cls}
       >
         {inner}
@@ -349,7 +388,6 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
 // one-tone text; a review that already carries an owner reply - or one just replied to -
 // renders a neutral "replied" note with an Edit affordance instead of the box. The reply
 // upserts idempotently (PUT), so editing re-sends and an empty send removes.
-const REPLY_FIELD_CLS = `w-full resize-y rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 function ReviewRow({ review, onReply, t }) {
   const [draft, setDraft] = useState('');
@@ -401,7 +439,7 @@ function ReviewRow({ review, onReply, t }) {
             aria-label={t('reviews.reply.placeholder')}
             placeholder={t('reviews.reply.placeholder')}
             rows={2}
-            className={REPLY_FIELD_CLS}
+            className={`${FIELD_MULTILINE} w-full resize-y`}
           />
           {error ? (
             <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
@@ -464,33 +502,193 @@ function ReviewRow({ review, onReply, t }) {
 }
 
 // The webhook/realtime ingestion seam (spec 23, Pattern P8 -> feeds P6): one row per
-// normalized inbound event (comment/mention/message/reaction). Display/attribution
-// only - no reply affordance here (that is specs 02/06/24's PostDetail thread panel,
-// unchanged by this item); it just shows WHAT arrived, per platform, newest first.
-const EVENT_TYPE_KEY = { comment: 'inbox.event.comment', mention: 'inbox.event.mention', message: 'inbox.event.message', reaction: 'inbox.event.reaction' };
-function InboundEventRow({ event, t }) {
+// normalized inbound event (comment/mention/message/reaction/follow). It shows WHAT
+// arrived, per platform, newest first - and, for the events that carry a thread
+// (mention/comment/message), an inline reply box so the operator can answer without
+// leaving the Activity page. A reaction/follow carries no thread, so it gets NO reply
+// control at all.
+const EVENT_TYPE_KEY = { comment: 'inbox.event.comment', mention: 'inbox.event.mention', message: 'inbox.event.message', reaction: 'inbox.event.reaction', follow: 'inbox.event.follow' };
+// Only these three inbound-event types are repliable (they name a thread the reply lands
+// on). A reaction/follow has no target thread, so no reply affordance ever renders for it.
+const REPLIABLE_EVENT_TYPES = new Set(['mention', 'comment', 'message']);
+// A tweet reply (mention/comment) is hard-capped at 280 by X - the counter turns red and
+// Send disables past it, so the operator never hands the engine a doomed >280 draft. A DM
+// (message) is not 280-bound; a generous soft cap keeps a runaway paste in check without
+// blocking a normal long reply.
+const TWEET_REPLY_LIMIT = 280;
+const DM_REPLY_SOFT_LIMIT = 4000;
+
+// The inline reply control on a repliable inbound-event row (a sibling of ReviewRow,
+// modelled on it + CommentsPanel's CommentRow box). States: idle = a "Reply" text button
+// (CornerDownRight); open = textarea + live counter + Send/Cancel; sending = disabled/
+// busy; success = collapse + a neutral "replied" marker; error = the server code mapped
+// to a remediation (needs_scope -> authorize X in Setup, credits -> top-up, target_gone
+// -> an inline "gone" note, anything else -> a generic red row).
+function InboundReplyBox({ event, onReply, onNavigate, t }) {
+  const [draft, setDraft] = useState('');
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [replied, setReplied] = useState(false);
+  const [error, setError] = useState(null); // null | { code, message }
+  const isDM = event.type === 'message';
+  const limit = isDM ? DM_REPLY_SOFT_LIMIT : TWEET_REPLY_LIMIT;
+  const len = draft.length;
+  const over = len > limit;
+  const submit = async () => {
+    const text = draft.trim();
+    if (!text || over || busy) return;
+    setError(null);
+    setBusy(true);
+    try {
+      await onReply(event, text);
+      setReplied(true);
+      setDraft('');
+      setOpen(false);
+    } catch (err) {
+      const code = err?.code;
+      setError({ code, message: err?.message });
+      // needs_scope / credits / target_gone are terminal for this send: collapse the box
+      // and let the mapped remediation stand in its place (retrying the same draft would
+      // fail the same way). A generic error keeps the box open so the operator can retry.
+      if (code === 'needs_scope' || code === 'credits' || code === 'target_gone') setOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  // Success marker: the reply landed, so the box collapses to a quiet neutral note
+  // (append-only feed - the source thread won't refresh until the next pull).
+  if (replied) {
+    return (
+      <p className="flex items-center gap-1.5 text-[11px] text-emerald-600 dark:text-emerald-300">
+        <CornerDownRight size={11} aria-hidden="true" /> {t('inbox.reply.replied')}
+      </p>
+    );
+  }
+  // Error remediations that stand IN PLACE of the box (terminal - the collapse above ran).
+  if (error?.code === 'needs_scope') {
+    return (
+      <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
+        <span className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
+          <ShieldAlert size={13} aria-hidden="true" /> {t('inbox.reply.needsScope')}
+        </span>
+        <button
+          type="button"
+          onClick={() => onNavigate?.('setup', 'x')}
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 transition hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300 dark:ring-amber-400/30"
+        >
+          <Wrench size={12} aria-hidden="true" /> {t('inbox.reply.authorize')}
+        </button>
+      </div>
+    );
+  }
+  if (error?.code === 'credits') {
+    return (
+      <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
+        <span className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
+          <AlertCircle size={13} aria-hidden="true" /> {t('inbox.reply.credits')}
+        </span>
+        <button
+          type="button"
+          onClick={() => window.open(X_PORTAL_URL, '_blank', 'noopener,noreferrer')}
+          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 transition hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300 dark:ring-amber-400/30"
+        >
+          <Wrench size={12} aria-hidden="true" /> {t('action.topUpCredits')}
+        </button>
+      </div>
+    );
+  }
+  if (error?.code === 'target_gone') {
+    return (
+      <p className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+        <AlertCircle size={11} aria-hidden="true" /> {t('inbox.reply.targetGone')}
+      </p>
+    );
+  }
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1.5 text-xs font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+      >
+        <CornerDownRight size={12} aria-hidden="true" /> {t('inbox.reply.open')}
+      </button>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        aria-label={t('inbox.reply.placeholder')}
+        placeholder={t('inbox.reply.placeholder')}
+        rows={2}
+        className={`${FIELD_MULTILINE} w-full resize-y`}
+      />
+      <div className="flex items-center justify-between gap-2">
+        {/* Live counter: only the tweet lanes are hard-bound, so only they turn the count
+            red. The DM soft cap is enforced (Send disables) but not paraded as a limit. */}
+        {isDM ? <span /> : (
+          <span className={`text-[11px] tabular-nums ${over ? 'font-bold text-red-600 dark:text-red-300' : 'text-zinc-500 dark:text-zinc-400'}`}>
+            {t('inbox.reply.charCount', { n: len, max: limit })}
+          </span>
+        )}
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={submit}
+            disabled={busy || !draft.trim() || over}
+            className={`inline-flex items-center gap-1.5 rounded-xl bg-brand px-2.5 py-1.5 text-xs font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${DISABLED_PRIMARY}`}
+          >
+            <Send size={13} aria-hidden="true" /> {busy ? t('inbox.reply.sending') : t('inbox.reply.send')}
+          </button>
+          <button
+            type="button"
+            onClick={() => { setOpen(false); setDraft(''); setError(null); }}
+            className="rounded-xl px-2.5 py-1.5 text-xs font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
+          >
+            {t('inbox.reply.cancel')}
+          </button>
+        </div>
+      </div>
+      {/* A generic (non-mapped) failure keeps the box open with an inline red row so the
+          operator can adjust and retry. */}
+      {error && error.code !== 'needs_scope' && error.code !== 'credits' && error.code !== 'target_gone' ? (
+        <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
+          <AlertCircle size={11} aria-hidden="true" /> {error.message || t('inbox.reply.error')}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+function InboundEventRow({ event, onReply, onNavigate, t }) {
   const meta = event.platform ? PLATFORM_META[event.platform] : null;
   const author = event.author?.displayName || event.author?.handle || t('reviews.unknownAuthor');
+  const repliable = onReply && REPLIABLE_EVENT_TYPES.has(event.type);
   return (
-    <li className={`flex items-start gap-3 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
-      {meta?.Icon ? <meta.Icon size={13} className={`mt-0.5 shrink-0 ${meta.color}`} aria-hidden="true" /> : null}
-      <div className="min-w-0 flex-1">
-        <p className="text-xs font-bold">
-          {EVENT_TYPE_KEY[event.type] ? t(EVENT_TYPE_KEY[event.type]) : event.type}
-          <span className="ml-1.5 font-normal text-zinc-500 dark:text-zinc-400">{author}</span>
+    <li className={`space-y-2 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
+      <div className="flex items-start gap-3">
+        {meta?.Icon ? <meta.Icon size={13} className={`mt-0.5 shrink-0 ${meta.color}`} aria-hidden="true" /> : null}
+        <div className="min-w-0 flex-1">
+          <p className="text-xs font-bold">
+            {EVENT_TYPE_KEY[event.type] ? t(EVENT_TYPE_KEY[event.type]) : event.type}
+            <span className="ml-1.5 font-normal text-zinc-500 dark:text-zinc-400">{author}</span>
+          </p>
+          {event.text ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{event.text}</p> : null}
+          {/* NIT-6 (spec 23 review): the reaction glyph must carry its own accessible
+              value - aria-hidden left a screen reader announcing "Reaction · author ·
+              time" with no indication of WHICH reaction. Not aria-hidden, so the emoji's
+              own accessible name (e.g. "thumbs up") is read exactly like the reaction
+              row it mirrors in postDetail's comment thread. */}
+          {event.reaction ? <p className="text-sm">{event.reaction}</p> : null}
+        </div>
+        <p className="shrink-0 whitespace-nowrap text-[11px] text-zinc-500 dark:text-zinc-400">
+          {fmtTime(event.ts)}
+          {meta ? ` · ${meta.label}` : ''}
         </p>
-        {event.text ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{event.text}</p> : null}
-        {/* NIT-6 (spec 23 review): the reaction glyph must carry its own accessible
-            value - aria-hidden left a screen reader announcing "Reaction · author ·
-            time" with no indication of WHICH reaction. Not aria-hidden, so the emoji's
-            own accessible name (e.g. "thumbs up") is read exactly like the reaction
-            row it mirrors in postDetail's comment thread. */}
-        {event.reaction ? <p className="text-sm">{event.reaction}</p> : null}
       </div>
-      <p className="shrink-0 whitespace-nowrap text-[11px] text-zinc-500 dark:text-zinc-400">
-        {fmtTime(event.ts)}
-        {meta ? ` · ${meta.label}` : ''}
-      </p>
+      {repliable ? <InboundReplyBox event={event} onReply={onReply} onNavigate={onNavigate} t={t} /> : null}
     </li>
   );
 }
@@ -503,8 +701,18 @@ function InboundEventRow({ event, t }) {
 // neutral empty note below - never a fake feed. A background-fetch failure keeps
 // react-query's last-known `data` (fails open server-side, so there is no distinct error
 // state to render - the header cloud dot already reflects a degraded connection).
-function InboundEventsInbox({ active, platformFilter, t }) {
+function InboundEventsInbox({ active, platformFilter, onNavigate, t }) {
   const { data, isLoading } = useInboundEvents(active);
+  const queryClient = useQueryClient();
+  // Send one inbound-event reply, then invalidate the feed it rode in on (so a fresh pull
+  // reflects the landed reply) + the engager relationship cache (the reply is a 'me'-
+  // direction exchange). clientId threads the reply to a foreign-project event's workspace
+  // in the all-projects inbox; undefined single-client, a no-op.
+  const onReply = async (event, text) => {
+    await replyToInboundEvent({ eventId: event.eventId, text, clientId: event.clientId });
+    queryClient.invalidateQueries({ queryKey: ['cloud', 'events'] });
+    queryClient.invalidateQueries({ queryKey: ['engager'] });
+  };
   const items = Array.isArray(data?.events) ? data.events : [];
   const filtered = items.filter((e) => !platformFilter.length || platformFilter.includes(e.platform));
   if (isLoading && !data) {
@@ -513,7 +721,7 @@ function InboundEventsInbox({ active, platformFilter, t }) {
   if (filtered.length === 0) {
     return <p className="px-1 text-xs text-zinc-500 dark:text-zinc-400">{t('inbox.empty')}</p>;
   }
-  return <ul className="space-y-1.5">{filtered.map((e) => <InboundEventRow key={e.eventId} event={e} t={t} />)}</ul>;
+  return <ul className="space-y-1.5">{filtered.map((e) => <InboundEventRow key={e.eventId} event={e} onReply={onReply} onNavigate={onNavigate} t={t} />)}</ul>;
 }
 
 // The GBP reviews inbox (spec 03): reviews ride the SAME Activity inbox chip as comments
@@ -553,7 +761,7 @@ function ReviewsInbox({ active, onNavigate }) {
   } else if (data?.needsScope) {
     body = (
       <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
-        <span className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-300">
+        <span className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
           <ShieldAlert size={13} aria-hidden="true" /> {t('reviews.scope.pending')}
         </span>
         <button
@@ -603,10 +811,34 @@ function SystemRevealLine({ count, onShowSystem, t, center = false }) {
   );
 }
 
-export default function ActivityView({ active, platformFilter = [], failuresOnly = false, actionGroups = [], campaigns = [], onOpenPost, onNavigate, onShowSystem, onClearFilters }) {
-  const { data, isLoading, isError } = useActivity(active);
+export default function ActivityView({ active, platformFilter = [], failuresOnly = false, actionGroups = [], campaigns = [], allClients = false, allRows = null, allFailed = [], allLoading = false, onOpenPost, onNavigate, onShowSystem, onClearFilters }) {
+  const { data, isLoading: singleLoading, isError } = useActivity(active);
   const queryClient = useQueryClient();
   const t = useT();
+  // All-projects overview: the merged, project-stamped rows from App replace the single
+  // active client's log. Everything downstream (filters, day-grouping, run-collapse)
+  // derives from `rows`, so the whole pipeline is reused unchanged; a per-client read
+  // failure rides the inline notice below, never the page-level error (mirrors Radar).
+  const rows = useMemo(
+    () => (allClients && Array.isArray(allRows) ? allRows : (data?.activity || [])),
+    [allClients, allRows, data],
+  );
+  const isLoading = allClients ? allLoading : singleLoading;
+  // One quiet inline notice per project whose activity read failed - never blocks the
+  // rest of the merged feed (mirrors Radar's allFailed notice markup).
+  const failNotice = allClients && allFailed.length ? (
+    <div className="glass-panel space-y-1 rounded-2xl px-4 py-2.5">
+      {allFailed.map(({ q, client }) => (
+        <p key={client.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+          <span>{t('clientSwitcher.loadFailed', { name: client.displayName })}</span>
+          <button type="button" onClick={() => q.refetch()} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+            {t('clientSwitcher.retry')}
+          </button>
+        </p>
+      ))}
+    </div>
+  ) : null;
+  const withNotice = (body) => (failNotice ? <div className="space-y-4">{failNotice}{body}</div> : body);
   // Filter across three independent dimensions, ANDed together (C7). Each empty
   // selection is "no constraint", matching the platformFilter convention.
   // - Platform (3g): keep platform-agnostic events (campaign actions, scheduler
@@ -637,13 +869,13 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
   // the reveal line at the feed foot is the one-click path there.
   const baseFiltered = useMemo(
     () =>
-      (data?.activity || []).filter(
+      rows.filter(
         (e) =>
           (!showReviews || e.action !== 'review-received') &&
           (!platformFilter.length || e.platform == null || platformFilter.includes(e.platform)) &&
           (!failuresOnly || e.ok === false),
       ),
-    [data, platformFilter, failuresOnly, showReviews],
+    [rows, platformFilter, failuresOnly, showReviews],
   );
   const activity = useMemo(
     () =>
@@ -676,7 +908,7 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
   const withInboxExtras = (feed) => ((showInbound || showReviews)
     ? (
       <div className="space-y-5">
-        {showInbound ? <InboundEventsInbox active={active} platformFilter={platformFilter} t={t} /> : null}
+        {showInbound ? <InboundEventsInbox active={active} platformFilter={platformFilter} onNavigate={onNavigate} t={t} /> : null}
         {showReviews ? <ReviewsInbox active={active} onNavigate={onNavigate} /> : null}
         {feed}
       </div>
@@ -709,9 +941,12 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
   }, [activity, t]);
 
   if (isLoading) {
-    return withInboxExtras(<div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>);
+    return withNotice(withInboxExtras(<div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>));
   }
-  if (isError) {
+  // A per-client read failure in the overview rides the inline notice above, never this
+  // page-level error - one dead project never blanks the merged feed (mirrors App's
+  // isError = allClients ? false : plansIsError).
+  if (!allClients && isError) {
     return withInboxExtras(
       <div className="grid h-full min-h-48 place-items-center">
         <div className="max-w-sm space-y-3 text-center">
@@ -735,7 +970,7 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
     // (the opposite of the truth) - mirror the sibling surfaces (planner, assets,
     // published) and point at the filter bar above when any filter is active.
     const filtered = Boolean(platformFilter.length || failuresOnly || actionGroups.length);
-    return withInboxExtras(
+    return withNotice(withInboxExtras(
       <div className="grid h-full min-h-48 place-items-center">
         <div className="max-w-sm space-y-2 text-center">
           <ActivityIcon className="mx-auto text-zinc-500" size={26} aria-hidden="true" />
@@ -754,9 +989,9 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
           <SystemRevealLine count={hiddenSystemCount} onShowSystem={onShowSystem} t={t} center />
         </div>
       </div>,
-    );
+    ));
   }
-  return withInboxExtras(
+  return withNotice(withInboxExtras(
     <div className="space-y-5">
       {/* #48: the platform chips above scope the feed to entries TOUCHING the
           selected platform. The short scoped cue stays inline; the fuller
@@ -789,5 +1024,5 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
       </div>
       <SystemRevealLine count={hiddenSystemCount} onShowSystem={onShowSystem} t={t} />
     </div>,
-  );
+  ));
 }

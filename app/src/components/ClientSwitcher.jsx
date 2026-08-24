@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronsUpDown, Check, Settings2, Archive, Ban, Loader2, AlertTriangle, Plus } from 'lucide-react';
+import { ChevronsUpDown, Check, Settings2, Archive, Ban, Loader2, AlertTriangle, Plus, LayoutGrid } from 'lucide-react';
 import { useActiveClient, useSetActiveClient } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { clientAccent, monogram, DEFAULT_ACCENT } from '../lib/theme.js';
@@ -19,8 +19,8 @@ function ClientAvatar({ client, size = 28 }) {
   return (
     <span
       aria-hidden="true"
-      className="grid shrink-0 place-items-center rounded-lg text-[11px] font-bold text-white"
-      style={{ ...style, backgroundColor: accent }}
+      className="grid shrink-0 place-items-center rounded-lg font-bold text-white"
+      style={{ ...style, backgroundColor: accent, fontSize: Math.round(size * 0.4), letterSpacing: '-0.02em', lineHeight: 1 }}
     >
       {monogram(client?.displayName)}
     </span>
@@ -44,7 +44,7 @@ function ClientHealthDot({ client, t }) {
 // the operator never acts on the wrong client. Three redundant non-color signals
 // (name + logo, "active client" sublabel, browser title set in App.jsx) plus a
 // supplementary 4px accent rail.
-export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
+export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch, allClients = false, onAllClientsChange }) {
   const t = useT();
   const { activeClient, data, isLoading, isError, error } = useActiveClient();
   const setActive = useSetActiveClient();
@@ -90,7 +90,7 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
   const tucked = clients.filter((c) => c.status === 'archived' || isHiddenDefault(c));
 
   const pick = async (id) => {
-    if (id === data?.activeClientId) {
+    if (id === data?.activeClientId && !allClients) {
       setOpen(false);
       return;
     }
@@ -98,6 +98,14 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
     // draft must be explicitly discarded before the app re-scopes. A refusal
     // means the operator cancelled - stay put, popover open, nothing switched.
     if (onBeforeSwitch && !(await onBeforeSwitch())) return;
+    // Picking any single client always CLEARS the all-clients mode (issue 6),
+    // even when it is already the active client (the mode was showing every
+    // project's cards; a direct pick is the unambiguous "just this one" intent).
+    onAllClientsChange?.(false);
+    if (id === data?.activeClientId) {
+      setOpen(false);
+      return;
+    }
     const target = clients.find((c) => c.id === id);
     setSwitching(id);
     setStatus(null);
@@ -130,18 +138,27 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
       <PopoverTrigger asChild>
         <button
           type="button"
-          aria-label={t('clientSwitcher.aria.switch', { name: active?.displayName || t('clientSwitcher.noClient') })}
+          aria-label={allClients ? t('clientSwitcher.all') : t('clientSwitcher.aria.switch', { name: active?.displayName || t('clientSwitcher.noClient') })}
           className={`relative flex w-full shrink-0 items-center gap-2.5 overflow-hidden rounded-xl py-2 pl-3 pr-2 text-left transition hover:bg-zinc-200/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-800/50 ${INNER_SURFACE}`}
         >
-          {/* 4px accent rail: the supplementary, color-only signal. */}
-          <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: activeAccent }} />
-          <ClientAvatar client={active} />
+          {/* 4px accent rail: the supplementary, color-only signal. Neutral (no
+              single client's accent) while every project is in view. */}
+          <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1" style={{ backgroundColor: allClients ? undefined : activeAccent }} />
+          {allClients ? (
+            <span aria-hidden="true" className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-zinc-500/15 text-zinc-600 dark:text-zinc-300">
+              <LayoutGrid size={15} aria-hidden="true" />
+            </span>
+          ) : (
+            <ClientAvatar client={active} />
+          )}
           <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5">
-              <span className="truncate text-sm font-bold leading-tight">{active?.displayName || t('clientSwitcher.noClient')}</span>
-              <ClientHealthDot client={active} t={t} />
+              <span className="truncate text-sm font-bold leading-tight">{allClients ? t('clientSwitcher.all') : (active?.displayName || t('clientSwitcher.noClient'))}</span>
+              {allClients ? null : <ClientHealthDot client={active} t={t} />}
             </span>
-            <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{t('clientSwitcher.activeSublabel')}</span>
+            <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">
+              {allClients ? t('clientSwitcher.allSub', { n: listed.length }) : t('clientSwitcher.activeSublabel')}
+            </span>
           </span>
           <ChevronsUpDown size={15} className="shrink-0 text-zinc-500" aria-hidden="true" />
         </button>
@@ -154,9 +171,28 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
             <span>{status.msg}</span>
           </p>
         ) : null}
+        {/* Issue 6: the "All projects" mode row, styled like a client row but with
+            a LayoutGrid glyph instead of an avatar. Selecting it is PURELY a UI mode
+            switch - the active client stays what it was, so no server call, no
+            switching spinner, no guard (nothing dirty is at risk). */}
+        <button
+          type="button"
+          onClick={() => { onAllClientsChange?.(true); setOpen(false); }}
+          aria-current={allClients ? 'true' : undefined}
+          className="mb-0.5 flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+        >
+          <span aria-hidden="true" className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-lg bg-zinc-500/15 text-zinc-600 dark:text-zinc-300">
+            <LayoutGrid size={13} aria-hidden="true" />
+          </span>
+          <span className="min-w-0 flex-1 truncate text-sm font-bold">{t('clientSwitcher.all')}</span>
+          {allClients ? <Check size={15} className="shrink-0 text-brand dark:text-brand-light" aria-label={t('clientSwitcher.active')} /> : null}
+        </button>
+        <div className="my-1 h-px bg-zinc-200/70 dark:bg-zinc-700/70" aria-hidden="true" />
         <ul className="space-y-0.5" role="list">
           {listed.map((c) => {
-            const isActive = c.id === data?.activeClientId;
+            // No single client reads as "the" active one while all-clients mode is
+            // on - mode legibility must never leave an ambiguous middle state.
+            const isActive = !allClients && c.id === data?.activeClientId;
             const isBusy = c.id === switching;
             return (
               <li key={c.id}>
@@ -172,7 +208,7 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
                   <span className="min-w-0 flex-1 truncate text-sm font-bold">{c.displayName}</span>
                   <ClientHealthDot client={c} t={t} />
                   {isBusy ? (
-                    <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500" aria-label={t('clientSwitcher.switching')} />
+                    <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500 dark:text-zinc-400" aria-label={t('clientSwitcher.switching')} />
                   ) : isActive ? (
                     <Check size={15} className="shrink-0 text-brand dark:text-brand-light" aria-label={t('clientSwitcher.active')} />
                   ) : null}
@@ -217,9 +253,9 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch }) {
                         <span className="min-w-0 flex-1 truncate text-sm">{c.displayName}</span>
                         <ClientHealthDot client={c} t={t} />
                         {isBusy ? (
-                          <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500" aria-label={t('clientSwitcher.switching')} />
+                          <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500 dark:text-zinc-400" aria-label={t('clientSwitcher.switching')} />
                         ) : (
-                          <span className="shrink-0 text-[10px] font-bold tracking-tight text-zinc-500">
+                          <span className="shrink-0 text-[10px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400">
                             {dormant ? t('clientSwitcher.defaultHint') : t('clientSwitcher.archived')}
                           </span>
                         )}

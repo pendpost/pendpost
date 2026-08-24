@@ -130,7 +130,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
     <form onSubmit={submit} className={`space-y-3 rounded-2xl p-4 ${INNER_SURFACE}`} aria-label={editing ? t('clientForm.ariaEdit') : t('clientForm.ariaNew')}>
       <div className="flex items-center justify-between">
         <h3 className="font-display text-sm font-bold">{editing ? t('clientForm.titleEdit', { name: initial.displayName }) : t('clientForm.titleNew')}</h3>
-        <button type="button" onClick={onCancel} aria-label={t('clientForm.cancel')} className="rounded-full p-1.5 text-zinc-500 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+        <button type="button" onClick={onCancel} aria-label={t('clientForm.cancel')} className="rounded-full p-1.5 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
           <X size={16} aria-hidden="true" />
         </button>
       </div>
@@ -230,7 +230,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
                 type="button"
                 onClick={() => { setField('logo', null); setLogoError(null); }}
                 aria-label={t('clientForm.field.logoClear')}
-                className="shrink-0 rounded-full p-1 text-zinc-500 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+                className="shrink-0 rounded-full p-1 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
               >
                 <X size={14} aria-hidden="true" />
               </button>
@@ -557,12 +557,12 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
                           </button>
                         ) : null}
                         <Tip label={t('clients.action.edit', { name: c.displayName })}>
-                          <button type="button" onClick={() => setForm({ mode: 'edit', client: c })} aria-label={t('clients.action.edit', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+                          <button type="button" onClick={() => setForm({ mode: 'edit', client: c })} aria-label={t('clients.action.edit', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
                             <Pencil size={14} aria-hidden="true" />
                           </button>
                         </Tip>
                         <Tip label={archived ? t('clients.action.restore', { name: c.displayName }) : t('clients.action.archive', { name: c.displayName })}>
-                          <button type="button" onClick={() => toggleArchive(c)} disabled={busy} aria-label={archived ? t('clients.action.restore', { name: c.displayName }) : t('clients.action.archive', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:hover:bg-zinc-700/60">
+                          <button type="button" onClick={() => toggleArchive(c)} disabled={busy} aria-label={archived ? t('clients.action.restore', { name: c.displayName }) : t('clients.action.archive', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:hover:bg-zinc-700/60">
                             {archived ? <ArchiveRestore size={14} aria-hidden="true" /> : <Archive size={14} aria-hidden="true" />}
                           </button>
                         </Tip>

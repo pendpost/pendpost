@@ -64,7 +64,10 @@ For each platform that is not validated-live or skipped:
 3. A missing IDENTIFIER (`kind:"identifier"`): ask the owner and write it with
    `config_set` (`set.identifiers`). A missing SECRET (`kind:"secret"`): give the
    owner the exact CLI to run (the step's `cli` / the `connectAction`); the owner
-   runs it and the localhost callback writes `.env`.
+   runs it and the localhost callback writes `.env`. On a multi-client workspace the
+   command must carry `--client <client-id>` so the ceremony targets the right client
+   - `connectAction` from `pendpost_health` already fills it in; the playbook prose
+   shows it as a `<client-id>` placeholder (single-client installs omit the flag).
 4. Call `health_recheck{platform}` to VALIDATE - a read-only liveness probe that
    surfaces the REAL pass/fail (`validation.ok` + `.detail`). On failure, relay
    `validation.fix` and re-probe.
@@ -94,7 +97,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Link the Page to the Instagram account** - In the Page settings, link the Facebook Page to the Instagram professional account that will publish. Record the Page ID and the Instagram User ID the app will post as. _(sets identifier `metaPageId, metaIgUserId`)_
 4. **Mint a long-lived System User token** - In Business Settings -> System Users, create a System User, assign it the Page with full control, and generate a token granting the scopes above. Then exchange it for a long-lived Page token via the CLI below - the token never touches this dashboard. _(sets env `META_PAGE_ID, META_IG_USER_ID, META_SYSTEM_USER_TOKEN`)_
    ```bash
-   node scripts/meta-social.mjs setup-system-user --system-user-token <SYSTEM_USER_TOKEN> --page-id <ID> --app-id <ID> --app-secret <S>
+   node scripts/meta-social.mjs setup-system-user --system-user-token <SYSTEM_USER_TOKEN> --page-id <ID> --app-id <ID> --app-secret <S> --client <client-id>
    ```
 
 **Common failures**
@@ -117,7 +120,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Record the organization URN** - Find the Company Page ID and form its URN as urn:li:organization:<digits>. This is the target the engine posts to. _(sets identifier `linkedinOrgUrn`)_
 4. **Run the OAuth flow** - Run the CLI below to complete the OAuth authorization in the browser and store the access + refresh tokens. The token exchange happens in the CLI - this dashboard never sees the raw token.
    ```bash
-   node scripts/linkedin-social.mjs auth
+   node scripts/linkedin-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -131,7 +134,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - **Portal:** https://developer.x.com/en/portal/dashboard
 - **App to create:** a Project, then an App inside it
 - **Products to add:** User authentication settings: OAuth 1.0a (Read and Write)
-- **Scopes to request:** `tweet.read tweet.write users.read media.write offline.access`
+- **Scopes to request:** `tweet.read tweet.write users.read media.write offline.access dm.read like.read follows.read dm.write`
 
 **Steps**
 
@@ -140,7 +143,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Generate OAuth 1.0a keys and tokens (recommended)** - OAuth 1.0a is the recommended path. Generate BOTH the API Key/Secret (consumer keys) AND the Access Token/Secret. Order matters: if you regenerate the API Key/Secret, regenerate the Access Token/Secret AFTERWARD, or the old access token is invalidated. _(sets env `X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET`)_
 4. **OAuth 2.0 PKCE alternative** - If you prefer OAuth 2.0 with PKCE, request the scopes above and set the callback URL to http://localhost:8087/callback, then run the CLI below to authorize in the browser. The CLI handles the token exchange. _(sets identifier `xHandle`)_
    ```bash
-   node scripts/x-social.mjs auth
+   node scripts/x-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -163,7 +166,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Create the OAuth client** - Create an OAuth 2.0 client (Desktop or Web application). For a Web client, add the redirect URI http://localhost:8088/callback. Record the client ID and client secret. _(sets env `YT_CLIENT_ID, YT_CLIENT_SECRET`)_
 4. **Run the OAuth flow to mint a refresh token** - Run the CLI below to authorize in the browser and store the refresh token. The token exchange happens in the CLI - this dashboard never sees the raw token. Expect a one-time "Google hasn't verified this app" screen - that is normal for your own bring-your-own app: click Advanced -> Go to pendpost (unsafe) to continue. No Google verification is needed. _(sets env `YT_REFRESH_TOKEN`)_
    ```bash
-   node scripts/yt-social.mjs auth
+   node scripts/yt-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -186,7 +189,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Add the bot as a channel admin** - In the channel, add the bot as an administrator and grant it "Post Messages". Without admin rights the bot cannot publish.
 4. **Confirm the connection** - Run the CLI below to verify the token authenticates and the bot can reach the channel. There is no token exchange - the bot token is static.
    ```bash
-   node scripts/telegram-social.mjs auth
+   node scripts/telegram-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -207,7 +210,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 2. **Copy the full webhook URL** - Click "Copy Webhook URL" and copy the ENTIRE value - it ends in a long token. A truncated URL fails with "Invalid Webhook Token". _(sets env `DISCORD_WEBHOOK_URL`)_
 3. **Confirm the connection** - Run the CLI below to verify the webhook resolves. There is no OAuth and no token to mint - the URL is the credential.
    ```bash
-   node scripts/discord-social.mjs auth
+   node scripts/discord-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -230,7 +233,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 4. **Pick the target subreddit** - Set the subreddit you publish to (without the r/ prefix). The account must have permission to post there, and the subreddit rules must allow the kind of content you send. _(sets env `REDDIT_SUBREDDIT`)_
 5. **Confirm the connection** - Run the CLI below. It mints a short-lived token with the password grant and reads your identity back. Note the API free tier is non-commercial and rate limited; high-volume or commercial use needs an approved plan.
    ```bash
-   node scripts/reddit-social.mjs auth
+   node scripts/reddit-social.mjs auth --client <client-id>
    ```
 6. **Radar search (beta)** - The SAME script app also powers Radar (beta) social listening: its `radar` verb searches Reddit for your saved buyer-intent queries. No extra credentials are needed - the four keys above (REDDIT_CLIENT_ID / REDDIT_CLIENT_SECRET / REDDIT_USERNAME / REDDIT_PASSWORD) are enough. Reddit Data API Terms restrict large-scale/commercial data use, so keep it BYO-key and rate-limited; single-project self-hosted search is in-bounds.
    ```bash
@@ -258,7 +261,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 4. **Pick the target board** - Choose the board pins are published to and record its id. The auth command can list your boards after you connect. _(sets env `PINTEREST_BOARD_ID`)_
 5. **Authorize** - Run the CLI below. It opens the consent screen, exchanges the code for an access + refresh token, and stores the expiry. The access token is short-lived and is refreshed automatically before it expires.
    ```bash
-   node scripts/pinterest-social.mjs auth
+   node scripts/pinterest-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -282,7 +285,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Add the redirect uri** - In the app settings, register the redirect uri exactly: http://127.0.0.1:8088/oauth/tiktok/callback . The auth command runs a local loopback server there to receive the authorization code. _(sets env `TIKTOK_REDIRECT_URI`)_
 4. **Authorize** - Run the CLI below. It opens the consent screen for the user.info.basic, video.upload, and video.publish scopes, exchanges the code, and stores the access + refresh tokens with their expiry. The access token is refreshed automatically.
    ```bash
-   node scripts/tiktok-social.mjs auth
+   node scripts/tiktok-social.mjs auth --client <client-id>
    ```
 5. **Note the audit gate** - Until your app passes TikTok content-posting audit, posts are restricted to SELF_ONLY (visible only to the posting account). Submit the app for audit to publish publicly.
 
@@ -306,7 +309,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Copy the access token** - Open the application you just created and copy "Your access token" - a static token that never expires unless you regenerate it. _(sets env `MASTODON_ACCESS_TOKEN`)_
 4. **Validate** - Run the CLI below. It calls verify_credentials, confirms the token authenticates, and records your @handle for the account link.
    ```bash
-   node scripts/mastodon-social.mjs auth
+   node scripts/mastodon-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -330,7 +333,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 3. **Create an application password** - In wp-admin open Users > Profile > Application Passwords, name it (e.g. pendpost) and create it. Copy the generated password immediately - WordPress shows it once. Spaces in it are fine (they are part of the display format and accepted verbatim). _(sets env `WORDPRESS_APP_PASSWORD`)_
 4. **Validate** - Run the CLI below. It calls /users/me and confirms the account can publish posts.
    ```bash
-   node scripts/wordpress-social.mjs auth
+   node scripts/wordpress-social.mjs auth --client <client-id>
    ```
 
 **Common failures**
@@ -352,7 +355,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 2. **Create a custom integration** - In Ghost admin open Settings > Integrations > Add custom integration, name it (e.g. pendpost) and save. Copy the ADMIN API key - the long id:secret pair (the Content API key is read-only and not enough). _(sets env `GHOST_ADMIN_API_KEY`)_
 3. **Validate** - Run the CLI below. It mints a short-lived JWT from the key and reads the site record.
    ```bash
-   node scripts/ghost-social.mjs auth
+   node scripts/ghost-social.mjs auth --client <client-id>
    ```
 4. **Newsletter opt-in (optional)** - A post with "also send as newsletter" enabled emails your members on publish, via the first ACTIVE newsletter. Ghost only sends that email on the draft-to-published transition - the engine handles this, but the flag cannot be re-fired later.
 
@@ -377,7 +380,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 2. **Choose relays** - Posts are published to every relay in the comma-separated list; one acceptance counts as published. Public defaults like wss://relay.damus.io,wss://nos.lol work; a private relay works too. _(sets env `NOSTR_RELAYS`)_
 3. **Validate** - Run the CLI below. It derives your npub and proves at least one relay is reachable.
    ```bash
-   node scripts/nostr-social.mjs auth
+   node scripts/nostr-social.mjs auth --client <client-id>
    ```
 4. **Know the lane's shape** - Two shapes: kind-1 short notes and, via type=nostr-longform, NIP-23 long-form articles (kind 30023) that edit in place on re-publish. Media rides an optional NIP-96 file server (set NOSTR_MEDIA_SERVER): an article carries a header image and a short note embeds an attached image via a NIP-92 imeta tag; without a media server a media post publishes its text only. Deletion is a request (NIP-09) that relays may ignore.
 
@@ -399,7 +402,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 2. **Create the OAuth client** - In the Cloud console create OAuth credentials, enable the Business Profile APIs above, and register the loopback redirect http://127.0.0.1:8088/oauth/gbp/callback . Copy the client id and secret. _(sets env `GBP_CLIENT_ID, GBP_CLIENT_SECRET`)_
 3. **Authorize** - Run the CLI below. It opens the consent screen for business.manage, exchanges the code, stores the tokens, and - once the API access is approved - prints your account and location ids as candidates for the two identifier fields.
    ```bash
-   node scripts/gbp-social.mjs auth
+   node scripts/gbp-social.mjs auth --client <client-id>
    ```
 4. **Set the target location** - Set GBP_ACCOUNT_ID and GBP_LOCATION_ID to the numeric ids of the verified business location posts should appear on. _(sets env `GBP_ACCOUNT_ID, GBP_LOCATION_ID`)_
 

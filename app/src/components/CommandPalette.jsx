@@ -52,7 +52,7 @@ const PAGE_COMMANDS = [
   { key: 'setup', labelKey: 'nav.setup', icon: Wrench },
 ];
 
-export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, onToggleTheme, onRecheckHealth, onOpenPost, dark, clients, activeClientId, onSwitchClient }) {
+export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, onToggleTheme, onRecheckHealth, onOpenPost, dark, clients, activeClientId, onSwitchClient, allClients = false }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -112,12 +112,18 @@ export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, 
     }));
     return [
       ...pages,
-      { id: 'new', label: t('composer.newPost'), hint: t('palette.hintAction'), icon: Plus, run: () => onNew() },
-      { id: 'new-thread', label: t('threadComposer.new'), hint: t('palette.hintAction'), icon: CornerUpLeft, run: () => onNewThread?.() },
+      // Issue 6 step 5: a new post needs one client, so both create actions drop
+      // out of the palette entirely while all-clients mode is on (the Sidebar
+      // primary they mirror is disabled the same way) - "unreachable", not merely
+      // greyed out, since Cmd-K has no disabled-row affordance to explain why.
+      ...(allClients ? [] : [
+        { id: 'new', label: t('composer.newPost'), hint: t('palette.hintAction'), icon: Plus, run: () => onNew() },
+        { id: 'new-thread', label: t('threadComposer.new'), hint: t('palette.hintAction'), icon: CornerUpLeft, run: () => onNewThread?.() },
+      ]),
       { id: 'theme', label: dark ? t('palette.lightTheme') : t('palette.darkTheme'), hint: t('palette.hintAction'), icon: dark ? Sun : Moon, run: () => onToggleTheme() },
       { id: 'health', label: t('palette.recheckStatus'), hint: t('palette.hintAction'), icon: RefreshCw, run: () => { onRecheckHealth().catch(() => {}); } },
     ];
-  }, [dark, onNavigate, onNew, onNewThread, onToggleTheme, onRecheckHealth, t]);
+  }, [dark, onNavigate, onNew, onNewThread, onToggleTheme, onRecheckHealth, allClients, t]);
 
   // Post commands: open the post detail; searchable on id + first caption line +
   // title + campaign via a precomputed haystack string.

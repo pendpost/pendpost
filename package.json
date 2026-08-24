@@ -1,7 +1,7 @@
 {
   "name": "pendpost",
-  "version": "2.1.0",
-  "description": "pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr, WordPress, and Ghost behind a human approval gate you control.",
+  "version": "2.2.0",
+  "description": "pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, and Nostr, plus long-form blogs on WordPress and Ghost, with Reddit, Pinterest, TikTok, and Google Business Profile in beta, all behind a human approval gate you control.",
   "type": "module",
   "license": "MIT",
   "author": "Nomadik GmbH",

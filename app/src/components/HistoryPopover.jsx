@@ -113,7 +113,7 @@ function ExchangeRow({ ex, fallbackLane, t }) {
       <span className="min-w-0 flex-1">
         <span className="break-words">{ex.excerpt || ''}</span>
         {ex.rating != null ? (
-          <span className="ml-1.5 inline-flex items-center gap-0.5 text-amber-600 dark:text-amber-300" aria-label={t('engager.popover.rating', { n: ex.rating })}>
+          <span className="ml-1.5 inline-flex items-center gap-0.5 text-amber-700 dark:text-amber-300" aria-label={t('engager.popover.rating', { n: ex.rating })}>
             <Star size={11} aria-hidden="true" /> {ex.rating}
           </span>
         ) : null}

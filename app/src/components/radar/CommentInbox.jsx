@@ -2,11 +2,13 @@ import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   MessageSquare, RefreshCw, Settings as SettingsIcon, CornerDownRight, ExternalLink,
-  AlertCircle, ShieldAlert, Check, Inbox, Heart, HelpCircle,
+  AlertCircle, ShieldAlert, Check, Inbox, Heart, HelpCircle, Loader2,
 } from 'lucide-react';
 import { useConfig, useCommentInbox, refreshCommentInbox, resolveInboxComment, saveConfig, reactToPost } from '../../lib/api.js';
 import { fmtRelative } from '../../lib/format.js';
 import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY, PLATFORM_META, Skeleton } from '../ui.jsx';
+import { PROJECT_CHIP } from '../ui/recipes.js';
+import { ClientAvatar } from '../ClientSwitcher.jsx';
 import { Tip } from '../ui/Tooltip.jsx';
 import CommentsPanel from '../CommentsPanel.jsx';
 import { useT } from '../../lib/i18n.js';
@@ -29,7 +31,7 @@ const LANE_LABEL = {
 // comment preview, a primary Reply (expands the thread) and a quiet "Mark handled" overflow.
 function PostRow({ group, isNew, onResolveAll, onReplied, t }) {
   const [open, setOpen] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  const [resolving, setResolving] = useState(false);
   const [liked, setLiked] = useState(false);
   const [liking, setLiking] = useState(false);
   const [likeError, setLikeError] = useState(null);
@@ -52,7 +54,9 @@ function PostRow({ group, isNew, onResolveAll, onReplied, t }) {
     setLiking(true);
     setLikeError(null);
     try {
-      await reactToPost(group.campaign, group.postId, latest.commentId, likeVerb, group.platform, undefined, !next, latest.author);
+      // group.clientId is stamped only in the all-projects overview - it scopes the
+      // like to the comment's own project; undefined single-client, a no-op.
+      await reactToPost(group.campaign, group.postId, latest.commentId, likeVerb, group.platform, undefined, !next, latest.author, group.clientId);
     } catch (e) {
       setLiked(!next);
       setLikeError(e?.message || t('comments.inbox.error'));
@@ -70,6 +74,15 @@ function PostRow({ group, isNew, onResolveAll, onReplied, t }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="truncate text-sm font-bold">{group.caption || t('comments.inbox.untitledPost')}</span>
+            {/* All-projects overview: which project this post belongs to. Stamped by App
+                only in that mode (single-client never stamps, so nothing renders) -
+                matches the Planner/Freigaben/Radar chip exactly. */}
+            {group.clientName ? (
+              <span className={`${PROJECT_CHIP} max-w-[8rem]`}>
+                <ClientAvatar client={{ displayName: group.clientName, accent: group.accent, logo: null }} size={14} />
+                <span className="truncate">{group.clientName}</span>
+              </span>
+            ) : null}
             {newCount > 0 ? (
               <span className="rounded-full bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold text-brand dark:text-brand-light">{t('comments.inbox.newCount', { n: newCount })}</span>
             ) : (
@@ -96,28 +109,23 @@ function PostRow({ group, isNew, onResolveAll, onReplied, t }) {
         ) : null}
       </div>
       <div className="flex items-center gap-x-3">
-        {/* Quiet secondary (left of the primary, canon): dismiss the post's remaining comments.
-            Dismiss is bulk and has no one-click undo, so it takes a deliberate confirm step
-            (canon: forgiveness), mirroring the CommentsPanel destructive-moderation pattern. */}
-        {confirming ? (
-          <span className="inline-flex items-center gap-1.5">
-            <span className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">{t('comments.inbox.markHandledConfirm', { n: group.unanswered })}</span>
-            <button type="button" onClick={() => { setConfirming(false); onResolveAll(group); }} className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-2 py-0.5 text-[11px] font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-200 dark:text-zinc-900">
-              <Check size={11} aria-hidden="true" /> {t('comments.inbox.markHandledYes')}
-            </button>
-            <button type="button" onClick={() => setConfirming(false)} className="rounded-lg px-2 py-0.5 text-[11px] font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100">
-              {t('comments.inbox.cancel')}
-            </button>
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setConfirming(true)}
-            className="inline-flex items-center gap-1 text-xs font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            <Check size={12} aria-hidden="true" /> {t('comments.inbox.markHandled')}
-          </button>
-        )}
+        {/* Quiet secondary (left of the primary, canon): mark the post's remaining comments
+            handled. Owner-requested ONE-CLICK - a single tap resolves and the row leaves the
+            view immediately (the mutation invalidates the inbox); no confirm step in the way.
+            Guarded against double-fire: disabled + spinner while the resolve is in flight, so a
+            fast second click cannot dispatch a second write. On success the row unmounts. */}
+        <button
+          type="button"
+          disabled={resolving}
+          onClick={async () => {
+            if (resolving) return;
+            setResolving(true);
+            try { await onResolveAll(group); } finally { setResolving(false); }
+          }}
+          className="inline-flex items-center gap-1 text-xs font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
+        >
+          {resolving ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Check size={12} aria-hidden="true" />} {t('comments.inbox.markHandled')}
+        </button>
         {/* One-click like on the latest comment, glyph-only (like the open-post link above),
             only where the lane supports it. Meta/YouTube/Reddit show nothing (honest absence). */}
         {likeVerb ? (
@@ -149,20 +157,25 @@ function PostRow({ group, isNew, onResolveAll, onReplied, t }) {
       ) : null}
       {open ? (
         <div className="border-t border-zinc-900/5 pt-2 dark:border-white/10">
-          <CommentsPanel campaign={group.campaign} postId={group.postId} onReplied={onReplied(group)} />
+          <CommentsPanel campaign={group.campaign} postId={group.postId} clientId={group.clientId} onReplied={onReplied(group)} />
         </div>
       ) : null}
     </li>
   );
 }
 
-export default function CommentInbox({ onNavigate }) {
+export default function CommentInbox({ onNavigate, allClients = false, allPosts = null, allFailed = [], allLoading = false }) {
   const t = useT();
   const qc = useQueryClient();
   const { data: config } = useConfig(true);
   const cw = config?.posting?.commentWatch || { enabled: false, intervalHours: 4, windowDays: 14 };
   const enabled = cw.enabled === true;
-  const { data, isLoading, refetch } = useCommentInbox(enabled);
+  // In the all-projects overview the merged inbox comes from App (useCommentInboxAll),
+  // so the single-client read is off; the enable/settings/refresh chrome (per-client)
+  // is skipped and only the merged post list renders (mirrors how Radar hides its
+  // per-client control strips). commentWatch's per-client on/off no longer gates the
+  // overview - it aggregates whatever inbox every project already has.
+  const { data, isLoading, refetch } = useCommentInbox(enabled && !allClients);
   const [busy, setBusy] = useState(false);
   const [writing, setWriting] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -216,9 +229,59 @@ export default function CommentInbox({ onNavigate }) {
   // the right lane's key is used even on a multi-lane post), then refresh the inbox count.
   const onReplied = (group) => (commentId) => {
     const it = group.comments.find((c) => c.commentId === commentId);
-    if (it?.key) resolveInboxComment(it.key, 'replied').then(invalidateInbox).catch(surfaceError);
+    // group.clientId is stamped only in the all-projects overview - it scopes the
+    // resolve to the comment's own project; undefined single-client, a no-op.
+    if (it?.key) resolveInboxComment(it.key, 'replied', group.clientId).then(invalidateInbox).catch(surfaceError);
   };
-  const onResolveAll = (group) => Promise.all(group.comments.map((c) => resolveInboxComment(c.key, 'dismissed'))).then(invalidateInbox).catch(surfaceError);
+  const onResolveAll = (group) => Promise.all(group.comments.map((c) => resolveInboxComment(c.key, 'dismissed', group.clientId))).then(invalidateInbox).catch(surfaceError);
+
+  // All-projects overview: render the merged, project-stamped inbox App fans out. The
+  // per-client enable/settings/refresh chrome and the degraded/blocked strips are
+  // per-client, so they are skipped here (like Radar's hidden control strips); only the
+  // failure notice, loading skeletons, the post list and the empty state remain.
+  if (allClients) {
+    const merged = allPosts || [];
+    return (
+      <div className="space-y-3">
+        {/* One quiet inline notice per project whose inbox read failed - never blocks the
+            rest of the merged feed (mirrors Radar's signal-feed notice). */}
+        {allFailed.length ? (
+          <div className="glass-panel space-y-1 rounded-2xl px-4 py-2.5">
+            {allFailed.map(({ q, client }) => (
+              <p key={client.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                <span>{t('clientSwitcher.loadFailed', { name: client.displayName })}</span>
+                <button type="button" onClick={() => q.refetch()} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                  {t('clientSwitcher.retry')}
+                </button>
+              </p>
+            ))}
+          </div>
+        ) : null}
+        {error ? (
+          <p role="alert" className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs text-red-600 dark:text-red-300">
+            <AlertCircle size={13} aria-hidden="true" /> {error}
+          </p>
+        ) : null}
+        {allLoading ? (
+          <div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-16 rounded-xl" />)}</div>
+        ) : merged.length ? (
+          <ul className="space-y-2">
+            {merged.map((g) => (
+              <PostRow key={`${g.clientId || ''}:${g.campaign}:${g.postId}`} group={g} isNew={isNew} onResolveAll={onResolveAll} onReplied={onReplied} t={t} />
+            ))}
+          </ul>
+        ) : (
+          <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
+            <div className="max-w-sm space-y-1.5">
+              <MessageSquare size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+              <p className="text-sm font-bold">{t('comments.inbox.empty.title')}</p>
+              <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('comments.inbox.empty.body')}</p>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Monitoring OFF: the honest opt-in empty state with the enable CTA. Own-post comments are
   // still readable per-post in the post detail; this segment is the aggregated WATCH layer.
@@ -233,7 +296,7 @@ export default function CommentInbox({ onNavigate }) {
             type="button"
             onClick={enableWatch}
             disabled={!config?.rev || writing}
-            className="mt-1 inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-3 text-sm font-bold text-white transition hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:bg-brand-light dark:text-zinc-900"
+            className={`mt-1 inline-flex items-center gap-1.5 rounded-xl bg-brand px-4 py-3 text-sm font-bold text-white transition hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}
           >
             {writing ? <RefreshCw size={14} className="animate-spin" aria-hidden="true" /> : null}
             {t('comments.inbox.off.enable')}
@@ -318,10 +381,10 @@ export default function CommentInbox({ onNavigate }) {
                   const LGlyph = lmeta?.Icon || MessageSquare;
                   const why = blockedReason(c.readBlocked);
                   return (
-                    <span key={lane} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-400 opacity-70 ring-1 ring-zinc-900/10 dark:text-zinc-500 dark:ring-white/10">
+                    <span key={lane} className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 opacity-70 ring-1 ring-zinc-900/10 dark:text-zinc-400 dark:ring-white/10">
                       <LGlyph size={12} aria-hidden="true" /> {LANE_LABEL[lane] || lane}
                       <Tip label={why}>
-                        <button type="button" aria-label={why} className="text-zinc-400 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-300">
+                        <button type="button" aria-label={why} className="text-zinc-500 transition hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
                           <HelpCircle size={12} aria-hidden="true" />
                         </button>
                       </Tip>
@@ -345,10 +408,10 @@ export default function CommentInbox({ onNavigate }) {
         const why = isScope ? t('comments.inbox.degrade.scope.why', { lane: label }) : t('comments.inbox.degrade.transient.why', { lane: label });
         return (
           <div key={lane} className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs ${INNER_SURFACE}`}>
-            <ShieldAlert size={13} className="text-amber-600 dark:text-amber-300" aria-hidden="true" />
+            <ShieldAlert size={13} className="text-amber-700 dark:text-amber-300" aria-hidden="true" />
             <span className="font-bold">{msg}</span>
             <Tip label={why}>
-              <button type="button" aria-label={why} className="text-zinc-400 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-500 dark:hover:text-zinc-300">
+              <button type="button" aria-label={why} className="text-zinc-500 transition hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
                 <HelpCircle size={13} aria-hidden="true" />
               </button>
             </Tip>

@@ -257,6 +257,17 @@ try {
   ok(direct.cursor === 'cur_direct', 'getInboundEvents surfaces the raw opaque cursor from the response too');
   ok(lastUrl.includes('/v1/sync/events?since=') && lastUrl.includes(encodeURIComponent('cur_before_direct')), 'getInboundEvents calls GET /v1/sync/events with an optional since query param, mirroring getCloudResults');
 
+  // --- (12) `follow` is a RECOGNIZED type (X Activity API: post.mention/follow/like/...
+  //          - a follow has no post and no reaction, only an author). It must round-trip
+  //          the normalized schema like any other type, NOT be dropped as forward-compat.
+  //          (The store is capped at CAP from step 9; a follow with a newer ts survives.)
+  eventsPayload = [goodEvent({ eventId: 'evt_follow', type: 'follow', platform: 'x', postId: null, externalPostId: null, text: null, reaction: null, ts: '2026-07-11T10:00:00.000Z' })];
+  cursorPayload = 'cur_follow';
+  const r12 = await cloud.reconcileInboundEvents();
+  const followEv = r12.events.find((e) => e.eventId === 'evt_follow');
+  ok(followEv && followEv.type === 'follow', 'a `follow` event (X Activity) is a recognized type and merges into the store, never dropped as an unknown type');
+  ok(followEv && followEv.platform === 'x' && followEv.postId === null && followEv.reaction === null, 'a follow round-trips with its author but no post/reaction');
+
   console.log(`[inbound-events] OK - idempotent eventId-keyed merge store (accumulate/dedupe/empty-delta-keeps-store/cap), opaque server cursor persisted verbatim, clientId defense filter at merge+read, unknown-type/malformed-row drop, fail-open store-preserving on not_configured/network/http error with no log spam when unconfigured (${pass} assertions).`);
 } finally {
   delete global.fetch;

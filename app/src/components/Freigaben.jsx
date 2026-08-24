@@ -1,16 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, Sparkles, LayoutGrid, List, Info, CornerUpLeft, PlugZap, ExternalLink, Wrench, ArrowDown, ArrowUp, Send } from 'lucide-react';
-import { approvePost, rejectPost, useAccounts, usePendpostHealth, useConfig } from '../lib/api.js';
-import { fmtFull, fmtStampShort, campaignBaseLabel, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, isActionable } from '../lib/format.js';
-import { CoverThumb, LinkCardPreview, PlatformIcons, ApprovalPill, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl } from './ui.jsx';
+import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, LayoutGrid, List, Info, CornerUpLeft, ExternalLink, Wrench, ArrowDown, ArrowUp, Send, Bot, Copy, Check, Link2 } from 'lucide-react';
+import { approvePost, rejectPost, markPosted, useAccounts, usePendpostHealth, useConfig } from '../lib/api.js';
+import { fmtFull, fmtStampShort, campaignBaseLabel, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, isActionable, nextActorOf, effectiveLaneText, handOffTarget, isAbsoluteHttpUrl } from '../lib/format.js';
+import { CoverThumb, LinkCardPreview, PlatformIcons, NextActorChip, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl } from './ui.jsx';
+import { ClientAvatar } from './ClientSwitcher.jsx';
+import { PROJECT_CHIP } from './ui/recipes.js';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { GateMark } from './ui/GateMark.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
+import { HdBadge } from './ui/HdBadge.jsx';
+import { RowMenu } from './ui/RowMenu.jsx';
+import { usePostActions } from '../lib/usePostActions.js';
 import { Tip } from './ui/Tooltip.jsx';
 import BrandLintBadge from './ui/BrandLintBadge.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import ActionButton from './ui/ActionButton.jsx';
+import LinkCaptureRow from './ui/LinkCaptureRow.jsx';
+import LiveLaneLinks from './ui/LiveLaneLinks.jsx';
 import DestinationStrip from './ui/DestinationStrip.jsx';
 import { usePrompt } from './ui/confirm.jsx';
 import { ReviewStatusChip } from './ReviewLink.jsx';
@@ -48,7 +55,7 @@ const prefersReduced = () =>
 // button group bottom-right - never interleaved.
 //
 // What may sit INSIDE the open-detail button is decided by ONE question: is it
-// interactive? StatusPill/ApprovalPill are plain <span>s, so they read top-right
+// interactive? StatusPill/NextActorChip are plain <span>s, so they read top-right
 // inside it. An IconBadge WITH a label is NOT: Tip wraps it in RT.Trigger asChild,
 // so it renders a real <button>. Every one of those (archived / auto-approved /
 // warmth advisory) therefore lives in the badge row at the bottom, beside
@@ -58,10 +65,16 @@ const prefersReduced = () =>
 // (it would also fire open-detail). freigaben-approval-card.test.jsx pins this with
 // a reddit-advisory fixture; an instagram/pending fixture renders no badges and
 // would let the regression back in unnoticed.
-function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed, setup = null, onNavigate = null, reviewRequired = false }) {
+function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed, setup = null, accounts = null, onNavigate = null, reviewRequired = false }) {
   const queryClient = useQueryClient();
   const prompt = usePrompt();
   const t = useT();
+  // The overview action menu: the SAME actions the detail drawer offers, minus approve/
+  // reject (kept as prominent inline buttons on this page - approving IS its job). So the ⋯
+  // carries the secondary actions (Editor / Parken / Prüfen / Löschen) so a reviewer can act
+  // without leaving the queue.
+  const { items: postActionItems } = usePostActions(post, { onEdit });
+  const menuItems = postActionItems.filter((i) => i.key !== 'approve' && i.key !== 'reject');
   const [error, setError] = useState(null);
   // X thread membership: the whole chain this post belongs to. When it is part of
   // a thread, the card offers "select whole thread" so every tweet can be approved
@@ -104,7 +117,11 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
   // the plans query exactly like the reject path.
   const doApprove = async () => {
     setError(null);
-    await approvePost(post.campaign, post.id);
+    // Issue 6: a card in all-clients mode carries clientId (stamped by App.jsx's
+    // merge) - thread it so the write lands on ITS client, not whatever the
+    // active client happens to be. Single-client mode never sets it, so the call
+    // stays exactly the 2-arg shape it always was.
+    await (post.clientId ? approvePost(post.campaign, post.id, undefined, post.clientId) : approvePost(post.campaign, post.id));
     queryClient.invalidateQueries({ queryKey: ['plans'] });
   };
   // The reject write always opens the multiline note prompt; cancel (null) is a
@@ -118,7 +135,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
       rememberKey: 'approvals.reject',
     });
     if (note === null) throw { canceled: true };
-    await rejectPost(post.campaign, post.id, note || undefined);
+    await (post.clientId ? rejectPost(post.campaign, post.id, note || undefined, post.clientId) : rejectPost(post.campaign, post.id, note || undefined));
     queryClient.invalidateQueries({ queryKey: ['plans'] });
   };
 
@@ -192,23 +209,101 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
   // a post it could not send - on the very surface the operator works from.
   const offlineLanes = unconnectedLanes(post, setup);
 
+  // The copy-lane hand-off, right on the card (B2). "Selbst posten" only opened the
+  // detail - one more hop before the operator could act. The card now does the whole
+  // move itself: copy the lane's EFFECTIVE text, open the destination, then reveal
+  // the link-capture row so "manually post" is ONE flow ending with evidence.
+  // Copy FIRST, and a clipboard refusal shows the error instead of opening a tab
+  // and claiming a success it did not have (the PostDetail rule).
+  const [handedOff, setHandedOff] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [handOffUrl, setHandOffUrl] = useState('');
+  const [handOffSaving, setHandOffSaving] = useState(false);
+  const [handOffError, setHandOffError] = useState(null);
+  const copiedTimerRef = useRef(null);
+  useEffect(() => () => clearTimeout(copiedTimerRef.current), []);
+  const onCardHandOff = async () => {
+    setError(null);
+    // The lane's effective text (same override precedence the engines publish);
+    // several offline lanes falling back to the shared caption (PostDetail's rule).
+    const texts = [...new Set(offlineLanes.map((p) => effectiveLaneText(post, p)))];
+    const text = texts.length === 1 ? texts[0] : (post.caption || '').trim();
+    try {
+      if (text) await navigator.clipboard.writeText(text);
+    } catch {
+      setError(t('approvals.action.error'));
+      return;
+    }
+    setCopied(true);
+    clearTimeout(copiedTimerRef.current);
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 2500);
+    // Where the text goes: the thread being answered, the recorded external target,
+    // or the SINGLE openable hand-off destination - two candidates would mean
+    // silently picking a network, so the button then opens none (PostDetail's rule,
+    // same handOffTarget helper).
+    const openable = offlineLanes.map((p) => handOffTarget(post, p, accounts)).filter((tgt) => tgt?.url);
+    const target = post.radarReplyTo?.url || post.externalUrl || (openable.length === 1 ? openable[0].url : null);
+    if (target) window.open(target, '_blank', 'noopener,noreferrer');
+    setHandedOff(true);
+  };
+  const saveHandOffLink = async () => {
+    // Client-side gate (F3): the same absolute-http(s) rule the server enforces,
+    // refused with the localized message BEFORE the send - the raw English engine
+    // string never leads on this surface. The typed value survives, resubmittable.
+    if (!isAbsoluteHttpUrl(handOffUrl)) { setHandOffError(t('radar.copyPosted.linkInvalid')); return; }
+    setHandOffSaving(true);
+    setHandOffError(null);
+    try {
+      // The same one-legal-re-entry write the answered-without-proof repair uses.
+      await (post.clientId ? markPosted(post.campaign, post.id, handOffUrl.trim(), undefined, post.clientId) : markPosted(post.campaign, post.id, handOffUrl.trim()));
+      queryClient.invalidateQueries({ queryKey: ['plans'] });
+      // Close the row on success: on "Alle Beitraege" the card stays mounted
+      // (unlike the pending tab, where it leaves the list), so a row left open
+      // with a spinning save would sit there forever.
+      setHandedOff(false);
+      setHandOffUrl('');
+      setHandOffSaving(false);
+    } catch (e) {
+      setHandOffError(e?.message || t('radar.copyPosted.failed'));
+      setHandOffSaving(false);
+    }
+  };
+  // The link-capture row revealed after a successful copy: paste where it went,
+  // mark it posted - the card carries the evidence contract to its end.
+  const handOffCapture = handedOff ? (
+    <div className={compact ? 'flex justify-end' : 'flex justify-end pt-1'}>
+      <LinkCaptureRow
+        value={handOffUrl}
+        onChange={setHandOffUrl}
+        onSave={saveHandOffLink}
+        saving={handOffSaving}
+        error={handOffError}
+        placeholder={t('radar.copyPosted.linkPlaceholder')}
+        inputLabel={t('radar.copyPosted.linkLabel')}
+        label={t('radar.copyPosted.mark')}
+        requireValue
+      />
+    </div>
+  ) : null;
+
   // The Freigeben (approve) button. Same label, variant, icon and position always: approval is a
   // single distinct-human action that always leads to auto-publish. The warmth advisory badge
   // below is informational only - it never changes the approve path.
   //
   // The ONE exception is connectivity, and it is not a variation on approval, it is the absence
   // of it: with the lane unconnected, approving publishes nothing, so the card offers the action
-  // that works - open the post and take it from there. Same slot, same size, one button.
+  // that works - copy the text and open the destination. Same slot, same size, one button.
   const approveButton = offlineLanes.length ? (
     <>
-      <Tip label={t('approvals.card.notConnectedTip', { platforms: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}>
+      <Tip label={t('approvals.card.copyOpenTip', { platform: offlineLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })}>
         <button
           type="button"
-          onClick={() => onOpen?.(post)}
+          onClick={onCardHandOff}
+          aria-live="polite"
           className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-sky-500/15 px-2.5 py-1.5 text-xs font-bold text-sky-700 transition hover:bg-sky-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-sky-300"
         >
-          <PlugZap size={14} aria-hidden="true" />
-          {t('approvals.card.postYourself')}
+          {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+          {copied ? t('radar.reply.copied') : t('radar.reply.copyOpen')}
         </button>
       </Tip>
       {/* The no-dead-end escape hatch beside the hand-off: a quiet wrench (the same
@@ -229,7 +324,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
     </>
   ) : (
     <ActionButton
-      variant="success"
+      variant="primary"
       icon={reviewRequired ? Send : CheckCircle2}
       labels={reviewRequired
         // O2: with review.required on, the operator's approve RELABELS to send for
@@ -246,6 +341,35 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
       }}
     />
   );
+  // Posted = linked (chip 3): a posted-family card in the "Alle Beitraege" view
+  // renders the same icon-only open-live-post links Published's rows use, in the
+  // slot the (now moot) actions occupied - the SHARED LiveLaneLinks strip (capped
+  // at 5 inline, "+n" overflow, S6). resolveLivePermalink returning null for
+  // every lane renders NOTHING - never a dead control, never a fabricated link.
+  const postedFamily = !actionable && ['posted', 'verified-live', 'fired-assumed', 'verify-failed'].includes(post.derivedState);
+  // Wrong-pasted-link repair (S4 posted state, fresh-eyes finding 9): a hand-marked
+  // post's captured URL stays correctable - markPosted allows a legal re-entry, so
+  // this quiet affordance re-opens the SAME capture row prefilled with the saved
+  // link and overwrites it. Mirrors Radar's AttachAnswerLink; only on a manual mark
+  // (an engine-minted link is evidence, not a claim, and has nothing to repair).
+  const canFixLink = postedFamily && post.publishedVia === 'manual';
+  const liveLinks = postedFamily ? (
+    <span className="flex shrink-0 items-center gap-1.5">
+      <LiveLaneLinks post={post} />
+      {canFixLink && !handedOff ? (
+        <Tip label={t('approvals.card.fixLink.tip')}>
+          <button
+            type="button"
+            onClick={() => { setHandOffUrl(post.externalUrl || ''); setHandedOff(true); }}
+            className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 transition hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            <Link2 size={13} aria-hidden="true" />{t('approvals.card.fixLink')}
+          </button>
+        </Tip>
+      ) : null}
+    </span>
+  ) : null;
+
   const actions = actionable ? (
     <span className="flex shrink-0 items-center gap-1.5">
       <ActionButton
@@ -262,6 +386,10 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
     </span>
   ) : null;
 
+  // The ⋯ overflow: the secondary post actions, a sibling of the inline Approve/Reject
+  // (or the live-links strip on a posted card). Always carries at least Delete.
+  const menu = menuItems.length ? <RowMenu items={menuItems} label={t('postDetail.more')} /> : null;
+
   // Selection checkbox - only on actionable cards. A sibling control, never
   // nested in the open-detail button. Aligns to the top of the comfortable card,
   // centred on the single-row compact card.
@@ -275,40 +403,44 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
     </span>
   ) : null;
 
-  // Contextual icon-badges (archived / auto-approved) - rare signals worth
-  // keeping in BOTH layouts. The schedule/approval STATE pills below are extra in
-  // comfortable but redundant in compact (the "To review" tab already implies an
-  // unapproved post), so compact shows only these.
+  // Contextual icon-badges (archived / warmth advisory) - rare signals worth
+  // keeping in BOTH layouts. The old "Automatisch freigegeben" badge is gone: the
+  // auto-approve PROVENANCE now rides the scheduled chip's tooltip (NextActorChip),
+  // so the card states one next-actor truth instead of stacking a third badge.
   const contextBadges = (
     <>
       {archived ? <IconBadge icon={Archive} tone="neutral" text={t('approvals.card.archived')} label={t('approvals.card.archivedLabel')} /> : null}
-      {post.approval === 'approved' && post.approvalBy === 'policy:auto-approve'
-        ? <IconBadge icon={Sparkles} tone="ok" text={t('approvals.card.autoApproved')} label={t('approvals.card.autoApprovedLabel')} />
-        : null}
       {/* Spec 37 (reversed): a display-only account-warmth advisory on a reddit post. Approving
           still auto-publishes; the tooltip carries the concerns (promotional / cold account /
           subreddit requirements). */}
       {hasAdvisory ? <IconBadge icon={Info} tone="warn" text={t('readiness.advisoryBadge')} label={advisoryText} /> : null}
     </>
   );
-  // Quiet ring-badges: status (a state) reads top-right, never interleaved with
-  // the action group (things you do). Comfortable layout only. STATE PILLS ONLY -
-  // these are plain <span>s, which is what lets them live INSIDE the open-detail
-  // button. contextBadges are deliberately NOT here: an IconBadge with a label is a
-  // real <button> (Tip -> RT.Trigger asChild), so it renders in the badge row below,
-  // beside BrandLintBadge, as a sibling of the button.
-  // V6: a post awaiting client sign-off must NEVER read as overdue-red (the clock
-  // rule, spec 48 section 4.6). The engine already keeps a reviewPending post out of
-  // the overdue state, but the GUI clamps defensively too, and the awaiting chip
-  // carries the honest state instead.
-  const pillState = post.reviewPending && (post.derivedState === 'overdue' || post.derivedState === 'publish-failed')
-    ? null
-    : post.derivedState;
+  // ONE truthful next-actor state per card (nextActorOf): the old three-badge
+  // stack (StatusPill + ApprovalPill + auto-approved) could contradict itself
+  // ("Geplant" + "Du postest selbst" + "Automatisch freigegeben" on one card).
+  // Status still reads top-right as quiet ring-badges, all plain <span>s (which is
+  // what lets them live INSIDE the open-detail button); the RED alarm states
+  // (overdue / publish-failed) KEEP today's StatusPill treatment, and the V6
+  // clamp (a reviewPending post never reads overdue-red) is folded into
+  // nextActorOf itself.
+  const nextActor = nextActorOf(post, setup);
+  // Issue 6: the ONLY visual addition all-clients mode makes to a card - a small
+  // client chip, shown exactly when the merge stamped one (single-client mode
+  // never sets post.clientName, so this renders nothing there). Avatar carries
+  // the accent, the name carries the meaning - never color-only.
+  const clientChip = post.clientName ? (
+    <span className={`${PROJECT_CHIP} max-w-[8rem]`}>
+      <ClientAvatar client={{ displayName: post.clientName, accent: post.accent, logo: null }} size={14} />
+      <span className="truncate">{post.clientName}</span>
+    </span>
+  ) : null;
   const statusBadges = (
     <span className="flex shrink-0 items-center gap-1">
       <ReviewStatusChip post={post} />
-      {pillState ? <StatusPill state={pillState} short /> : null}
-      <ApprovalPill approval={post.approval} editedSinceApproval={post.editedSinceApproval} handOff={offlineLanes.length > 0} />
+      {nextActor.key === 'overdue' || nextActor.key === 'publish-failed'
+        ? <StatusPill state={nextActor.key} short />
+        : <NextActorChip post={post} setup={setup} />}
     </span>
   );
 
@@ -338,7 +470,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
             aria-label={headline}
             className="shrink-0 overflow-hidden rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
-            <CoverThumb media={post.media} image={post.image} className="block h-12 w-auto max-w-[4rem] rounded-md" />
+            <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className="block h-12 w-auto max-w-[4rem] rounded-md" />
           </button>
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="flex min-w-0 items-center gap-2">
@@ -350,11 +482,17 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
                 {headline}
               </button>
               <ReviewStatusChip post={post} />
+              {/* Compact rows in the To-review tab already imply "awaiting approval",
+                  so the default 'approve' state renders no chip; every OTHER
+                  next-actor state is signal worth the space. */}
+              {nextActor.key !== 'approve' ? <NextActorChip post={post} setup={setup} /> : null}
               {contextBadges}
-              {actions}
+              {actions || liveLinks}
+              {menu}
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
               <PlatformIcons platforms={post.platforms} />
+              <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} />
               {/* When + what, together and bold: the two facts a reviewer triages on.
                   The type moved up here OUT of the muted campaign meta below, so it is
                   not buried behind a truncating campaign name on a narrow row. */}
@@ -366,7 +504,9 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
               <span className="hidden min-w-0 truncate text-zinc-500 sm:inline dark:text-zinc-400">
                 {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
               </span>
+              {clientChip}
             </div>
+            {handOffCapture}
             {error ? <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
           </div>
         </>
@@ -378,7 +518,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
             onClick={() => onOpen(post)}
             className="flex w-full min-w-0 cursor-pointer gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
-            <CoverThumb media={post.media} image={post.image} className="h-24 w-16 shrink-0 rounded-lg" />
+            <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className="h-24 w-16 shrink-0 rounded-lg" />
             <span className="flex min-w-0 flex-1 flex-col gap-1">
               <span className="flex items-start justify-between gap-2">
                 <span className="min-w-0 flex-1 truncate text-sm font-bold">{headline}</span>
@@ -391,8 +531,11 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
                 {' · '}
                 {t(`type.${post.type}`)}
               </span>
-              <span className="block truncate text-[11px] text-zinc-500 dark:text-zinc-400">
-                {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
+              <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                <span className="min-w-0 truncate">
+                  {t('approvals.card.campaignMeta', { campaign: campaignBaseLabel(post.campaign), id: post.id })}
+                </span>
+                {clientChip}
               </span>
             </span>
           </button>
@@ -429,6 +572,17 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
               {post.radarReplyTo.excerpt ? (
                 <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{post.radarReplyTo.excerpt}</p>
               ) : null}
+              {/* The agent's WHY (+ score in the tooltip), snapshotted at queue time: the
+                  approver decides on THIS surface, so the reasoning that was Radar-only
+                  rides along. A real Tip, never the title attribute (canon). */}
+              {post.radarReplyTo.reason ? (
+                <Tip label={Number.isFinite(post.radarReplyTo.intentScore) ? t('approvals.radar.reason.tip', { score: post.radarReplyTo.intentScore }) : t('approvals.radar.reason.tip.scoreless')}>
+                  <p className="mt-1 flex cursor-help items-start gap-1 text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+                    <Bot size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
+                    <span className="line-clamp-2">{post.radarReplyTo.reason}</span>
+                  </p>
+                </Tip>
+              ) : null}
             </div>
           ) : null}
           {captionBody ? (
@@ -441,6 +595,7 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
           {isTextPost && !post.radarReplyTo ? <LinkCardPreview image={post.image} title={post.title} link={post.link} /> : null}
           <div className="mt-auto flex items-center gap-1.5 pt-1.5">
             <PlatformIcons platforms={post.platforms} />
+            <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} />
             {/* The interactive badges (archived / auto-approved / warmth advisory): each is an
                 IconBadge WITH a label, so each is a real <button> and belongs HERE, beside the
                 brand-lint badge, as a SIBLING of the open-detail button - never inside it.
@@ -466,8 +621,10 @@ function ApprovalCard({ post, posts = [], onOpen, selected, onToggleSelect, onSe
               </Tip>
             ) : null}
             <span className="flex-1" />
-            {actions}
+            {actions || liveLinks}
+            {menu}
           </div>
+          {handOffCapture}
           {error ? <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
         </div>
       )}
@@ -487,7 +644,7 @@ function KeyboardHelp() {
         <button
           type="button"
           aria-label={t('approvals.keys.title')}
-          className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
+          className="flex h-7 w-7 items-center justify-center rounded-xl text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
         >
           <Info size={15} aria-hidden="true" />
         </button>
@@ -523,13 +680,18 @@ function KeyboardHelp() {
 // toggle shows every post chronologically (the owner asked to also see the
 // full plan here, not just the queue). Approval always acts as the owner; the
 // no-self-approval rule binds agents on the MCP face.
-export default function Freigaben({ campaigns, onOpen, clientName = '', onNavigate = () => {}, platformFilter = [], typeFilter = [], statusFilter = [], isLoading = false, onModeChange }) {
+export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', onNavigate = () => {}, platformFilter = [], typeFilter = [], statusFilter = [], isLoading = false, onModeChange }) {
   const [mode, setMode] = useState('pending'); // 'pending' | 'all'
   // Mirror the tab up so App can gate the shared Status filter to the "All posts" tab
   // (the Status dropdown is dead on the pending tab, which forces statusFilter to []).
   useEffect(() => { onModeChange?.(mode); }, [mode, onModeChange]);
   const [selected, setSelected] = useState(() => new Set()); // Set of `${campaign}-${id}`
   const [bulkError, setBulkError] = useState(null);
+  // Radar-replies facet on the pending tab. EPHEMERAL by design (no localStorage):
+  // it is a triage move for the current sitting, not a standing view preference -
+  // a persisted narrow filter would silently hide non-radar decision work on the
+  // next visit.
+  const [radarOnly, setRadarOnly] = useState(false);
   // Card density. Persisted grid<->compact preference, mirroring the Assets
   // grid/list idiom (read once from localStorage, persisted in an effect below);
   // a failed read in private mode just falls back to the comfortable default.
@@ -607,6 +769,17 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
     () => actionable.filter((p) => matchesFilters(p, platformFilter, typeFilter, [])).length,
     [actionable, platformFilter, typeFilter],
   );
+  // The radar-replies count, scoped EXACTLY like pendingVisible (same actionable set,
+  // same platform/type predicate), so the chip's count and the list it narrows to can
+  // never disagree.
+  const radarPending = useMemo(
+    () => actionable.filter((p) => p.radarReplyTo && matchesFilters(p, platformFilter, typeFilter, [])).length,
+    [actionable, platformFilter, typeFilter],
+  );
+  // Derived, not an effect (Radar's effectiveFilter pattern): when the last radar
+  // draft is decided the chip hides and the filter self-releases this very frame,
+  // so a pressed chip never sits over an empty list.
+  const effectiveRadarOnly = radarOnly && radarPending > 0;
 
   const items = useMemo(() => {
     const base = mode === 'pending' ? actionable : all;
@@ -628,10 +801,13 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
     const byDate = (a, b) => comparePostDate(a, b, newestFirst ? -1 : 1);
     return base
       .filter((p) => matchesFilters(p, platformFilter, typeFilter, mode === 'pending' ? [] : statusFilter))
+      // The radar-replies facet: pending tab only, one predicate, flat list - the
+      // keyboard a/r triage and roving focus see an ordinary (shorter) items array.
+      .filter((p) => mode !== 'pending' || !effectiveRadarOnly || p.radarReplyTo)
       .sort(mode === 'pending'
         ? (a, b) => (activeIds.has(b.campaign) - activeIds.has(a.campaign)) || byDate(a, b)
         : byDate);
-  }, [all, actionable, mode, platformFilter, typeFilter, statusFilter, activeIds, sortOrder]);
+  }, [all, actionable, mode, platformFilter, typeFilter, statusFilter, activeIds, sortOrder, effectiveRadarOnly]);
 
   // The lanes actually present in what the operator is looking at. Naming a lane the
   // list does not contain would be noise; naming one it does is the whole point.
@@ -768,6 +944,12 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
   // approve already swaps to "post yourself" for these; bulk approve must skip them for
   // the same reason (approving publishes nothing), not silently approve into a void.
   const isOffline = useCallback((post) => unconnectedLanes(post, setup).length > 0, [setup]);
+  // Bulk-approve honesty (S3 bulk-skip feedback, fresh-eyes finding 8/19): how many of
+  // the CURRENT selection bulk approve will skip because their lane is offline. Stated
+  // in the bulk bar BEFORE the press as quiet text - and since skipped posts stay
+  // selected after a bulk approve, the same line keeps stating it afterwards. Never a
+  // dialog, never silent.
+  const offlineSelected = useMemo(() => effectiveSelection.filter(isOffline).length, [effectiveSelection, isOffline]);
 
   const runBulk = async (action, label, list = effectiveSelection) => {
     setBulkError(null);
@@ -819,6 +1001,25 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
             </button>
           ))}
         </div>
+        {/* Radar-replies facet (Published's evergreen-filter idiom): offered only on
+            the pending tab and only while radar reply drafts are actually awaiting a
+            decision, so it is never an empty toggle. Count in the label; hidden at
+            zero; the derived effectiveRadarOnly above self-releases it. */}
+        {mode === 'pending' && radarPending > 0 ? (
+          <Tip label={t('approvals.filter.radar.tip')}>
+            <button
+              type="button"
+              onClick={() => setRadarOnly((v) => !v)}
+              aria-pressed={effectiveRadarOnly}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+                effectiveRadarOnly ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : `${INNER_SURFACE} text-zinc-500 hover:ring-1 hover:ring-brand/40 dark:text-zinc-400`
+              }`}
+            >
+              <Bot size={13} aria-hidden="true" />
+              {t('approvals.filter.radar', { n: radarPending })}
+            </button>
+          </Tip>
+        ) : null}
         {/* Card density toggle: comfortable cards <-> compact rows. Icon-only
             (label via aria-label/title) to keep the header lean, mirroring the
             Assets grid/list metaphor. */}
@@ -901,6 +1102,14 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
               destructive Reject/Approve actions) appears/changes - mirroring the
               status patterns in Assets.jsx / Activity.jsx. */}
           <span role="status" aria-live="polite" className="text-xs font-bold">{t('approvals.bulk.selected', { n: selCount })}</span>
+          {/* The bulk-skip truth, stated inline while the offline posts are in the
+              selection: these will not be approved by the bulk action, they need the
+              per-card hand-off. Quiet text, not an alert - it is a fact, not a failure. */}
+          {offlineSelected ? (
+            <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+              {t(offlineSelected === 1 ? 'approvals.bulk.manualNeeded.one' : 'approvals.bulk.manualNeeded', { n: offlineSelected })}
+            </span>
+          ) : null}
           <span className="flex-1" />
           {bulkError ? (
             <p role="alert" className="basis-full text-[11px] text-red-600 dark:text-red-300">{bulkError}</p>
@@ -925,7 +1134,7 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
                 rememberKey: 'approvals.reject',
               });
               if (note === null) throw { canceled: true };
-              await runBulk((p) => rejectPost(p.campaign, p.id, note || undefined), t('approvals.bulk.labelRejected'));
+              await runBulk((p) => (p.clientId ? rejectPost(p.campaign, p.id, note || undefined, p.clientId) : rejectPost(p.campaign, p.id, note || undefined)), t('approvals.bulk.labelRejected'));
             }}
           />
           <ActionButton
@@ -935,15 +1144,15 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
             onError={setBulkError}
             onAction={async () => {
               // Approve only the publishable posts; a post whose lane is offline cannot be
-              // published, so it is skipped and surfaced (parity with the single-row swap).
+              // published, so it is skipped - the standing manualNeeded line in the bar
+              // states the skip before AND after (skipped posts stay selected), so no
+              // separate post-hoc error is stacked on top of it.
               const connected = effectiveSelection.filter((p) => !isOffline(p));
-              const offlineCount = effectiveSelection.length - connected.length;
               if (!connected.length) {
-                setBulkError(t('approvals.bulk.offlineOnly', { n: offlineCount }));
+                setBulkError(t('approvals.bulk.offlineOnly', { n: effectiveSelection.length }));
                 throw { canceled: true };
               }
-              await runBulk((p) => approvePost(p.campaign, p.id), t('approvals.bulk.labelApproved'), connected);
-              if (offlineCount) setBulkError(t('approvals.bulk.offlineSkipped', { n: offlineCount }));
+              await runBulk((p) => (p.clientId ? approvePost(p.campaign, p.id, undefined, p.clientId) : approvePost(p.campaign, p.id)), t('approvals.bulk.labelApproved'), connected);
             }}
           />
         </div>
@@ -974,6 +1183,7 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
               post={post}
               posts={all}
               onOpen={(p) => onOpen(p, items)}
+              onEdit={onEdit}
               selected={selected.has(keyOf(post))}
               onToggleSelect={toggleSelect}
               onSelectThread={selectThread}
@@ -984,6 +1194,7 @@ export default function Freigaben({ campaigns, onOpen, clientName = '', onNaviga
               onArrowNav={onArrowNav}
               onActed={onActed}
               setup={setup}
+              accounts={accounts}
               onNavigate={onNavigate}
               reviewRequired={reviewRequired}
             />

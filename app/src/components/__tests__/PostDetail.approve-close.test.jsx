@@ -28,6 +28,7 @@ vi.mock('../../lib/api.js', () => ({
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),
   usePresubmitCheck: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
+  useAssets: () => ({ data: { dir: 'data/media', assets: [] } }),
   approvePost: (...a) => approvePostMock(...a),
   rejectPost: (...a) => rejectPostMock(...a),
   runPublishDue: (...a) => runPublishDueMock(...a),

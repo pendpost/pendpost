@@ -15,6 +15,7 @@ let healthState;
 vi.mock('../../lib/api.js', () => ({
   usePendpostHealth: () => ({ data: healthState, isLoading: false, isError: false }),
   setSchedulerRunning: vi.fn(() => Promise.resolve({ ok: true })),
+  resumeLane: vi.fn(() => Promise.resolve({ ok: true })),
 }));
 
 function renderChecklist(props = {}) {

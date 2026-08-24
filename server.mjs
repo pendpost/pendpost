@@ -33,6 +33,15 @@ import { bootReviewServer } from './lib/review-server.mjs';
 import { healConnection } from './lib/cloud-client.mjs';
 import { startHealthSchedule } from './lib/health.mjs';
 import { authGateEnabled, checkAuth } from './lib/flags.mjs';
+import { assertMockRootAllowed } from './lib/mode.mjs';
+
+// Mock-mode root fence: refuse to boot PENDPOST_MODE=mock against a live
+// workspace (the mock driver would write fake platform ids into real client
+// data). Fail fast, before anything binds or mutates state.
+try { assertMockRootAllowed(); } catch (err) {
+  logLine('err', err.message);
+  process.exit(1);
+}
 
 // Resolved by lib/util.mjs so the default lives in ONE place: lib/agent-runner.mjs must
 // tell a spawned agent which port to dial, and a second `|| 8090` here would be a silent

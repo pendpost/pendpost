@@ -26,6 +26,7 @@ vi.mock('../../lib/api.js', () => ({
   useRedditFlairs: () => ({ data: undefined, isLoading: false }),
   usePresubmitCheck: () => ({ data: undefined }),
   useValidateMedia: () => ({ data: undefined }),
+  useAssets: () => ({ data: { dir: 'data/media', assets: [] } }),
   lintText: vi.fn(() => Promise.resolve({ ok: true, clean: true, errors: 0, warnings: 0, findings: [] })),
   approvePost: vi.fn(),
   rejectPost: vi.fn(),

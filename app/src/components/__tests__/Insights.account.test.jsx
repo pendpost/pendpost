@@ -5,6 +5,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
 import Insights from '../Insights.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 
 // Spec 04 - the "Audience & local" collapsible: a GENERIC container that renders
@@ -16,6 +17,10 @@ vi.mock('../../lib/api.js', () => ({
   useInsights: () => ({ data: insightsData, isLoading: false, isError: false, error: null }),
   useDigest: () => ({ data: null }),
   fetchInsights: vi.fn(),
+  useConfig: () => ({ data: null }),
+  usePendpostHealth: () => ({ data: null }),
+  usePlans: () => ({ data: { campaigns: [] } }),
+  saveConfig: vi.fn(),
 }));
 
 function renderInsights() {
@@ -24,7 +29,9 @@ function renderInsights() {
     <QueryClientProvider client={qc}>
       <I18nProvider locale="en">
         <TooltipProvider>
-          <Insights active platformFilter={[]} campaignFilter="all" />
+          <ConfirmProvider>
+            <Insights active platformFilter={[]} campaignFilter="all" />
+          </ConfirmProvider>
         </TooltipProvider>
       </I18nProvider>
     </QueryClientProvider>,

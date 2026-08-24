@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // test/cloud-sync-status.test.mjs - cloudSyncStatus(), the guarantee roll-up behind
-// the header cloud dot (lib/cloud-client.mjs). Three-severity contract:
+// the header cloud dot (lib/cloud-client.mjs). Four-state contract (green/yellow/amber/red):
 //   green  - every approved post owing a CLOUD lane is ack'd, contact fresh, no failure
 //   yellow - an owed cloud-lane job has no push-ack yet (push pending)
 //   amber  - delivery DEGRADED but nothing missed yet: cloud unreachable / its worker

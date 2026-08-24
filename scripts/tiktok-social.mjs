@@ -71,6 +71,7 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath } from '../lib/util.mjs';
@@ -258,7 +259,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'tiktokVideoId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'tiktokVideoId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -476,8 +477,8 @@ async function pollStatus(publishId, token, draftHandoff = false) {
 
 async function cmdAuth(args) {
   console.log(`[info] Connecting TikTok - credentials will be written to ${ENV_PATH}`);
-  const clientKey = args['client-key'] || args['client-id'] || readEnv('TIKTOK_CLIENT_KEY');
-  const clientSecret = args['client-secret'] || readEnv('TIKTOK_CLIENT_SECRET');
+  const clientKey = await resolveCredential({ value: args['client-key'] || args['client-id'] || readEnv('TIKTOK_CLIENT_KEY'), hint: 'Paste your TikTok Client key (TikTok for Developers > your app > credentials): ' });
+  const clientSecret = await resolveCredential({ value: args['client-secret'] || readEnv('TIKTOK_CLIENT_SECRET'), secret: true, hint: 'Paste your TikTok Client secret (hidden; same page): ' });
   if (!clientKey || !clientSecret) {
     console.error('[err] Need --client-key and --client-secret (TikTok for Developers -> your app -> credentials) on first run, or set TIKTOK_CLIENT_KEY / TIKTOK_CLIENT_SECRET in .env.');
     process.exit(2);

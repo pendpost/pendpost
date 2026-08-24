@@ -1,4 +1,4 @@
-import { AlertTriangle, BadgeCheck, CalendarClock, CheckCircle, Clock, OctagonX, PauseCircle, Pencil, Send } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, CalendarClock, CheckCircle, Clock, OctagonX, PauseCircle, Pencil, RefreshCw, Send } from 'lucide-react';
 import { getActiveLocale } from './i18n.js';
 
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -56,6 +56,26 @@ export function setCardAccent(value) {
   try {
     if (_cardAccent === 'bar') localStorage.removeItem(CARD_ACCENT_KEY);
     else localStorage.setItem(CARD_ACCENT_KEY, _cardAccent);
+  } catch { /* ignore */ }
+}
+
+// Planner Week-view density: 'comfortable' (the default big PostCard with cover +
+// caption) or 'compact' (the small chip, so a busy day stays scannable). A client-side
+// display preference (localStorage), synced in-module and persisted, mirroring the
+// card-accent pattern above. Only the Week view reads it; Month is always compact.
+const PLANNER_DENSITY_KEY = 'pendpost-planner-density';
+let _plannerDensity = 'comfortable';
+try {
+  const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(PLANNER_DENSITY_KEY) : null;
+  if (stored === 'comfortable' || stored === 'compact') _plannerDensity = stored;
+} catch { /* localStorage unavailable (private mode) */ }
+
+export function getPlannerDensity() { return _plannerDensity; }
+export function setPlannerDensity(value) {
+  _plannerDensity = value === 'compact' ? 'compact' : 'comfortable';
+  try {
+    if (_plannerDensity === 'comfortable') localStorage.removeItem(PLANNER_DENSITY_KEY);
+    else localStorage.setItem(PLANNER_DENSITY_KEY, _plannerDensity);
   } catch { /* ignore */ }
 }
 
@@ -257,6 +277,33 @@ export function fmtInt(n) {
   return new Intl.NumberFormat(dateLocale()).format(Number(n) || 0);
 }
 
+// ── The status STAIRCASE: five fixed stops, red -> grey -> green ────────────────────
+// The owner wants status colour to read as a single lifecycle progression, not a
+// bag of hues: a post travels deep-red (rejected) -> light-red (halted/failed) ->
+// grey (not yet in motion) -> light-green (in motion, human-cleared) -> deep-green
+// (published). Defined ONCE here and spread into every status map below (STATE_META,
+// APPROVAL_META, STATUS_PILL_META, ROW_STATUS_META) so a bucket can never drift a
+// half-shade between the pill, the accent bar and the month dot.
+//
+// `cls` = pill tint (`bg-<c>/<a> text-<c>-<n> dark:text-<c>-<n> ring-<c>/<a>`), `dot`
+// = the solid month-cell dot (it carries the staircase most legibly, so deep vs light
+// are kept clearly apart: red-600 vs rose-400, emerald-600 vs emerald-400), `bar`/
+// `strip` = the two Planner attention-accent styles. Every text pairing clears WCAG
+// 2.2 AA (>= 4.5:1) on BOTH app body backgrounds (light #f8fafc / dark #09090b);
+// measured ratios (light / dark): deepRed red-700 6.18 / red-300 10.48; lightRed
+// rose-700 6.01 / rose-300 10.52 (rose-600 is 4.49 and fails light, hence rose-700);
+// grey zinc-600 7.39 / zinc-300 13.46; lightGreen emerald-700 5.24 / emerald-400
+// 10.35; deepGreen emerald-800 7.34 / emerald-300 13.05. Colour is never the sole
+// signal - every pill still leads with its own lucide icon + carries a text label
+// (WCAG 1.4.1); the stops are told apart by icon + label, not hue alone.
+export const STAIR = {
+  rejected: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/40', dot: 'bg-red-600', bar: 'bg-red-600', strip: 'bg-red-500/10' },
+  halted: { cls: 'bg-rose-400/15 text-rose-700 dark:text-rose-300 ring-rose-400/30', dot: 'bg-rose-400', bar: 'bg-rose-400', strip: 'bg-rose-400/10' },
+  pending: { cls: 'bg-zinc-500/12 text-zinc-600 dark:text-zinc-300 ring-zinc-500/25', dot: 'bg-zinc-400', bar: 'bg-zinc-400', strip: 'bg-zinc-500/10' },
+  inMotion: { cls: 'bg-emerald-400/15 text-emerald-700 dark:text-emerald-400 ring-emerald-400/30', dot: 'bg-emerald-400', bar: 'bg-emerald-400', strip: 'bg-emerald-400/10' },
+  published: { cls: 'bg-emerald-600/18 text-emerald-800 dark:text-emerald-300 ring-emerald-600/45', dot: 'bg-emerald-600', bar: 'bg-emerald-600', strip: 'bg-emerald-600/10' },
+};
+
 // Structural only: `cls` = pill tint, `dot` = month-view status dot color (UX-05),
 // `Icon` = a decorative (aria-hidden) lucide glyph the pills lead with, matching the
 // TimeChip's icon+tone treatment (DESIGN.md section 3). The pills still carry their
@@ -264,32 +311,42 @@ export function fmtInt(n) {
 // The user-facing labels moved to the locale pack - StatusPill resolves them via
 // t('state.<key>') (long) / t('state.short.<key>') (the single-word week-card form,
 // UX-02). The map key IS the i18n key suffix, so this map stays the single source of
-// which states exist while carrying no prose.
+// which states exist while carrying no prose. Every entry draws its tone from the
+// shared STAIR (above), so the lifecycle progression is one palette, not per-map hues.
 export const STATE_META = {
-  posted: { cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30', dot: 'bg-emerald-500', Icon: CheckCircle },
-  'scheduled-native': { cls: 'bg-cyan-500/15 text-cyan-700 dark:text-cyan-300 ring-cyan-500/30', dot: 'bg-cyan-500', Icon: CalendarClock },
-  'fired-assumed': { cls: 'bg-teal-500/15 text-teal-700 dark:text-teal-300 ring-teal-500/30', dot: 'bg-teal-500', Icon: Send },
+  posted: { cls: STAIR.published.cls, dot: STAIR.published.dot, Icon: CheckCircle },
+  'scheduled-native': { cls: STAIR.inMotion.cls, dot: STAIR.inMotion.dot, Icon: CalendarClock },
+  'fired-assumed': { cls: STAIR.published.cls, dot: STAIR.published.dot, Icon: Send },
   // Verify read-back outcomes (lib/verify.mjs): confirmed live on every targeted
   // platform, or read back not-live/missing. They refine 'fired-assumed'.
-  'verified-live': { cls: 'bg-emerald-600/15 text-emerald-700 dark:text-emerald-300 ring-emerald-600/40', dot: 'bg-emerald-600', Icon: BadgeCheck },
-  'verify-failed': { cls: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 ring-orange-500/30', dot: 'bg-orange-500', Icon: AlertTriangle },
-  'waiting-due': { cls: 'bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', dot: 'bg-sky-500', Icon: Clock },
-  overdue: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', dot: 'bg-red-500', Icon: OctagonX },
-  // The platform refused it (lib/plans.mjs lastFailureFor). Same red as overdue - it is a
-  // real failure, not the softer orange of a fired-but-unconfirmed post - but its own icon
-  // and label, because "overdue" reads as "pendpost was not running" and that is a lie here.
-  'publish-failed': { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', dot: 'bg-red-500', Icon: AlertTriangle },
-  parked: { cls: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 ring-zinc-500/30', dot: 'bg-zinc-400', Icon: PauseCircle },
+  'verified-live': { cls: STAIR.published.cls, dot: STAIR.published.dot, Icon: BadgeCheck },
+  'verify-failed': { cls: STAIR.halted.cls, dot: STAIR.halted.dot, Icon: AlertTriangle },
+  'waiting-due': { cls: STAIR.inMotion.cls, dot: STAIR.inMotion.dot, Icon: Clock },
+  overdue: { cls: STAIR.halted.cls, dot: STAIR.halted.dot, Icon: OctagonX },
+  // The platform refused it (lib/plans.mjs lastFailureFor). Same light-red HALTED stop
+  // as overdue - both are stalled failures - but its own icon and label, because
+  // "overdue" reads as "pendpost was not running" and that is a lie here. Only a
+  // rejected post earns the DEEP red; a failure that pendpost can retry stays light.
+  'publish-failed': { cls: STAIR.halted.cls, dot: STAIR.halted.dot, Icon: AlertTriangle },
+  // A publish that HICCUPED but is NOT terminal (lastFailure.terminal === false): the
+  // platform stumbled (e.g. Instagram's intermittent rupload ProcessingFailedError) and
+  // pendpost is auto-retrying it. Not the red HALTED stop - the system is handling it, so
+  // it reads as the calm GREY "working" stop with a retry glyph, never the alarm red the
+  // old code showed for a post it was already recovering. Reserves red for terminal:true.
+  'publish-retrying': { cls: STAIR.pending.cls, dot: STAIR.pending.dot, Icon: RefreshCw },
+  parked: { cls: STAIR.pending.cls, dot: STAIR.pending.dot, Icon: PauseCircle },
 };
 
 // Structural only; ApprovalPill resolves the label via t('approval.<key>'). `Icon`
 // is decorative (aria-hidden), mirroring the TimeChip tones (approved=CheckCircle,
-// pending=Clock, rejected=OctagonX) for cross-surface coherence.
+// pending=Clock, rejected=OctagonX) for cross-surface coherence. Draft + pending sit
+// on the GREY stop (not yet in motion); approved steps to light-green (human-cleared);
+// rejected is the deep-red terminus.
 export const APPROVAL_META = {
-  draft: { cls: 'bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 ring-zinc-500/30', Icon: Pencil },
-  pending: { cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30', Icon: Clock },
-  approved: { cls: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ring-emerald-500/30', Icon: CheckCircle },
-  rejected: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', Icon: OctagonX },
+  draft: { cls: STAIR.pending.cls, Icon: Pencil },
+  pending: { cls: STAIR.pending.cls, Icon: Clock },
+  approved: { cls: STAIR.inMotion.cls, Icon: CheckCircle },
+  rejected: { cls: STAIR.rejected.cls, Icon: OctagonX },
 };
 
 // FR1: the Planner scheduled-time chip carries approval/breaker meaning at a
@@ -358,22 +415,29 @@ export function needsAttention(post) {
 // 1.4.1). Labels resolve from the pack under the status.<bucket> keys (already present
 // for the Status filter), so this map carries no prose.
 export const STATUS_PILL_META = {
-  draft: { cls: 'bg-slate-500/15 text-slate-600 dark:text-slate-300 ring-slate-500/30', bar: 'bg-slate-400', strip: 'bg-slate-500/10', dot: 'bg-slate-400', Icon: Pencil },
-  pending: { cls: 'bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30', bar: 'bg-amber-500', strip: 'bg-amber-500/10', dot: 'bg-amber-500', Icon: Clock },
-  rejected: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', bar: 'bg-red-500', strip: 'bg-red-500/10', dot: 'bg-red-500', Icon: OctagonX },
-  overdue: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', bar: 'bg-red-500', strip: 'bg-red-500/10', dot: 'bg-red-500', Icon: OctagonX },
+  draft: { cls: STAIR.pending.cls, bar: STAIR.pending.bar, strip: STAIR.pending.strip, dot: STAIR.pending.dot, Icon: Pencil },
+  pending: { cls: STAIR.pending.cls, bar: STAIR.pending.bar, strip: STAIR.pending.strip, dot: STAIR.pending.dot, Icon: Clock },
+  rejected: { cls: STAIR.rejected.cls, bar: STAIR.rejected.bar, strip: STAIR.rejected.strip, dot: STAIR.rejected.dot, Icon: OctagonX },
+  overdue: { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, dot: STAIR.halted.dot, Icon: OctagonX },
   // verify-failed filters under the 'overdue' "needs attention" bucket (postStatusKey)
   // but keeps its OWN visible treatment (postDisplayStatusKey): a post that fired and
   // read back not-live is not "pendpost wasn't running", so the planner card must not
-  // mislabel it the red "Overdue". Mirrors STATE_META's verify-failed orange so the
-  // calendar pill/accent/dot match the StatusPill on the detail + run-now surfaces.
-  'verify-failed': { cls: 'bg-orange-500/15 text-orange-700 dark:text-orange-300 ring-orange-500/30', bar: 'bg-orange-500', strip: 'bg-orange-500/10', dot: 'bg-orange-500', Icon: AlertTriangle },
-  // Same red as overdue (a refusal IS a failure), different icon + label: "Overdue" tells
-  // the owner pendpost was not running, which is the wrong thing to go fix.
-  'publish-failed': { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/30', bar: 'bg-red-500', strip: 'bg-red-500/10', dot: 'bg-red-500', Icon: AlertTriangle },
-  scheduled: { cls: 'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-sky-500', Icon: CalendarClock },
-  posted: { cls: 'bg-zinc-500/10 text-emerald-700/80 dark:text-emerald-400/70 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-emerald-500', Icon: CheckCircle },
-  parked: { cls: 'bg-zinc-500/10 text-zinc-500 dark:text-zinc-400 ring-zinc-500/20', bar: '', strip: '', dot: 'bg-zinc-400', Icon: PauseCircle },
+  // mislabel it the red "Overdue". Shares the light-red HALTED stop with overdue so the
+  // calendar pill/accent/dot match the StatusPill on the detail + run-now surfaces; its
+  // own icon + label ("Ungeprüft") is what tells it apart, not a separate hue.
+  'verify-failed': { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, dot: STAIR.halted.dot, Icon: AlertTriangle },
+  // Same light-red HALTED stop as overdue (a refusal IS a stalled failure), different
+  // icon + label: "Overdue" tells the owner pendpost was not running, the wrong fix.
+  'publish-failed': { cls: STAIR.halted.cls, bar: STAIR.halted.bar, strip: STAIR.halted.strip, dot: STAIR.halted.dot, Icon: AlertTriangle },
+  // Non-terminal hiccup, pendpost is auto-retrying (see STATE_META['publish-retrying']):
+  // GREY "working" stop, and NO attention accent (bar/strip empty, like scheduled) - the
+  // system is recovering it, so the card must not wear the red left-edge alarm.
+  'publish-retrying': { cls: STAIR.pending.cls, bar: '', strip: '', dot: STAIR.pending.dot, Icon: RefreshCw },
+  // Settled, in-motion: light-green. No attention accent (bar/strip empty) - the card
+  // is on track, so it carries the staircase tone without the left-edge alarm.
+  scheduled: { cls: STAIR.inMotion.cls, bar: '', strip: '', dot: STAIR.inMotion.dot, Icon: CalendarClock },
+  posted: { cls: STAIR.published.cls, bar: '', strip: '', dot: STAIR.published.dot, Icon: CheckCircle },
+  parked: { cls: STAIR.pending.cls, bar: '', strip: '', dot: STAIR.pending.dot, Icon: PauseCircle },
 };
 
 // Which cards visually recede (dimmed): only the "set aside" buckets - parked
@@ -397,8 +461,27 @@ export function postDisplayStatusKey(post) {
   // Same reasoning for a REFUSED post: it filters as overdue, but showing the owner
   // "past due, pendpost wasn't running" when a platform actually rejected the post sends
   // them to start a scheduler that is already running. The reason rides on post.lastFailure.
-  if (post.derivedState === 'publish-failed') return 'publish-failed';
+  if (post.derivedState === 'publish-failed') {
+    // A NON-terminal failure is one pendpost is auto-retrying (a transient platform
+    // hiccup) - it is not "Failed", it is "Retrying". Only a terminal failure (parked
+    // after the retry window, or a hard refusal) keeps the red 'publish-failed' pill.
+    // A HALTED failure (the lane is circuit-broken, e.g. X 402 credits depleted) is
+    // NOT auto-retrying either, so it keeps the honest red pill - never "Retrying".
+    // Filtering is unchanged (postStatusKey still folds both into 'overdue').
+    return post.lastFailure && post.lastFailure.terminal === false && !post.lastFailure.halted ? 'publish-retrying' : 'publish-failed';
+  }
   return postStatusKey(post);
+}
+
+// The VISIBLE derivedState for the two-axis StatusPill (detail / run-now dialog), which
+// keys STATE_META by the raw derivedState. Mirrors postDisplayStatusKey's one refinement:
+// a non-terminal publish-failed reads as 'publish-retrying' so that surface agrees with
+// the planner card ("the two surfaces can never disagree"). Everything else is unchanged.
+export function postDisplayState(post) {
+  if (post?.derivedState === 'publish-failed' && post.lastFailure && post.lastFailure.terminal === false && !post.lastFailure.halted) {
+    return 'publish-retrying';
+  }
+  return post?.derivedState;
 }
 
 // Month-cell status dot, derived from the SAME visible bucket as the card pill
@@ -408,6 +491,33 @@ export function postDisplayStatusKey(post) {
 export function postDot(post) {
   return STATUS_PILL_META[postDisplayStatusKey(post)]?.dot || 'bg-zinc-400';
 }
+
+// The ONE status the overview cards render (List row, Week card). Identical to
+// postDisplayStatusKey EXCEPT an approved-and-on-track post (bucket 'scheduled',
+// approval 'approved') reads as a calm GREEN 'approved' instead of the neutral zinc
+// 'scheduled'. This is the single place the human-approval gate turns green on the
+// overview - brand/DESIGN.md section 3 (approved = emerald CheckCircle) - so the owner
+// sees "Freigegeben" at a glance instead of a dark neutral chip on one side and an
+// unrelated pill on the other. Every ATTENTION bucket (draft/pending/rejected/overdue/
+// verify-failed/publish-failed) still wins over it via postDisplayStatusKey, so green is
+// the quiet baseline and never competes with an urgent tone on the same row (canon:
+// colour is spent on attention). Keyed off the same visible bucket as the card/dot, so
+// the two can never drift. A rejected post is never 'scheduled', so it is unaffected.
+export function rowStatusKey(post) {
+  const key = postDisplayStatusKey(post);
+  if (key === 'scheduled' && post?.approval === 'approved') return 'approved';
+  return key;
+}
+
+// STATUS_PILL_META plus the green 'approved' baseline (emerald, CheckCircle) that
+// rowStatusKey introduces. Reuses APPROVAL_META.approved's tone so the overview's green
+// matches the detail/approval surfaces exactly. Its label resolves from approval.approved
+// ("Freigegeben"), NOT a status.<key> (there is no 'approved' status bucket) - the row
+// status component handles that one label mapping.
+export const ROW_STATUS_META = {
+  ...STATUS_PILL_META,
+  approved: { cls: STAIR.inMotion.cls, bar: '', strip: '', dot: STAIR.inMotion.dot, Icon: CheckCircle },
+};
 
 // Title-case a campaign id's base segment: "meta-rollout" -> "Meta Rollout".
 function titleizeBase(base) {
@@ -639,6 +749,18 @@ export const HANDOFF_URL_BUDGET = 2000;
 
 function withinBudget(url) {
   return url.length <= HANDOFF_URL_BUDGET;
+}
+
+// The client-side twin of the engine's link-capture gate (externalUrl/postedUrl "must be
+// an absolute http(s) URL"): validating BEFORE the send lets the capture rows refuse a
+// bad paste with a localized message instead of surfacing the raw English engine string.
+export function isAbsoluteHttpUrl(value) {
+  try {
+    const u = new URL(String(value || '').trim());
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 // The text a lane would ACTUALLY publish - the same override precedence the engines
@@ -876,6 +998,84 @@ export function mediaAspect(post) {
   return RES_ASPECT[post?.media?.resolution] || coverAspect(post?.type);
 }
 
+// --- Grid-crop preview (how a tall cover looks on a platform's profile grid) ---
+//
+// The reel PLAYER (feed + Reels tab) shows the full 9:16 - nothing is cut. But the
+// profile GRID and Explore tiles center-crop that 9:16 cover to the grid tile ratio,
+// silently trimming the top and bottom. Operators put title text there, so the grid
+// often chops the very thing the cover was made to say. These helpers model that crop
+// so the preview and the Planner can show the cover AS THE GRID WILL CROP IT.
+
+// The numeric source aspect (width/height) of a post's cover, for crop math. The probe
+// wins (same precedence as mediaAspect); type is the fallback when the file is not yet
+// scanned or is off-spec ('other'). approximate=true whenever the number came from the
+// type, so the UI can say so instead of implying a pixel-exact crop.
+const RES_RATIO_NUM = { 'story-9x16': 9 / 16, 'feed-4x5': 4 / 5, 'square-1x1': 1 };
+const TYPE_RATIO_NUM = {
+  reel: 9 / 16, story: 9 / 16, 'youtube-short': 9 / 16,
+  video: 4 / 5, image: 1, carousel: 1, 'youtube-longform': 16 / 9,
+};
+function sourceRatioNum(post) {
+  if (post?.type === 'carousel') {
+    const label = (Array.isArray(post?.media?.items) ? post.media.items : [])
+      .map((it) => it?.resolution).find((r) => r && r !== 'other');
+    if (label && RES_RATIO_NUM[label] != null) return { num: RES_RATIO_NUM[label], approximate: false };
+    return { num: TYPE_RATIO_NUM.carousel, approximate: true };
+  }
+  const r = post?.media?.resolution;
+  if (r && RES_RATIO_NUM[r] != null) return { num: RES_RATIO_NUM[r], approximate: false };
+  const byType = TYPE_RATIO_NUM[post?.type];
+  return byType != null ? { num: byType, approximate: true } : null;
+}
+
+// The single source of truth for a platform's profile-grid tile shape for VERTICAL
+// covers. Only platforms whose grid tile is less-tall than a 9:16 cover appear here;
+// a platform absent from the map imposes no grid crop (YouTube Shorts plays full
+// 9:16; LinkedIn/X play native with no grid tile). Modeled and honestly approximate -
+// platforms change these, so this is the ONE place to update. Ratios are width/height.
+export const GRID_CROP = {
+  instagram: { ratio: 4 / 5, aspect: 'aspect-[4/5]' }, // portrait grid tile (since 2025)
+  facebook: { ratio: 4 / 5, aspect: 'aspect-[4/5]' }, // reels grid, portrait
+  tiktok: { ratio: 3 / 4, aspect: 'aspect-[3/4]' },
+  pinterest: { ratio: 2 / 3, aspect: 'aspect-[2/3]' },
+};
+
+// Given a post, which of its target platforms crop the cover on their grid, and by
+// how much. `cropped` is true only when the source cover is TALLER (smaller w/h) than
+// a target grid ratio. `tightest` is the worst-case crop (largest grid ratio = most
+// trimmed); `keptFraction` = source/grid = the share of height that survives, centered.
+// Stories are excluded on purpose: an IG/FB story is ephemeral and never hits the grid.
+export function gridCropInfo(post) {
+  const empty = { cropped: false, platforms: [], tightest: null, keptFraction: 1, approximate: false, aspect: null };
+  if (post?.type === 'story') return empty;
+  const src = sourceRatioNum(post);
+  if (!src || src.num == null) return empty;
+  const targets = (post?.platforms || [])
+    .map((p) => {
+      const g = GRID_CROP[p];
+      return g && g.ratio > src.num + 1e-6 ? { platform: p, ratio: g.ratio, aspect: g.aspect } : null;
+    })
+    .filter(Boolean);
+  if (!targets.length) return { ...empty, approximate: src.approximate };
+  const tightest = targets.reduce((a, b) => (b.ratio > a.ratio ? b : a));
+  return {
+    cropped: true,
+    platforms: targets,
+    tightest,
+    keptFraction: src.num / tightest.ratio,
+    approximate: src.approximate,
+    aspect: tightest.aspect,
+  };
+}
+
+// The aspect a PLANNER card should draw so it mirrors the profile grid: the tightest
+// cropping target's tile when the cover is cropped, else today's native mediaAspect.
+// Reuses mediaAspect for the no-crop fallback so the two can never drift.
+export function gridDisplayAspect(post) {
+  const info = gridCropInfo(post);
+  return info.cropped ? info.aspect : mediaAspect(post);
+}
+
 // Is this post's media a still image? The server's probe is authoritative
 // (lib/assets.mjs IMAGE_CODECS -> media.kind), and the extension test only covers
 // the window before a new file is scanned. Deliberately keyed on the MEDIA, not on
@@ -899,6 +1099,13 @@ export function postNeedsMedia(post) {
 }
 
 export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', 'telegram', 'discord', 'reddit', 'pinterest', 'tiktok', 'mastodon', 'wordpress', 'ghost', 'nostr', 'gbp'];
+
+// The X developer portal where the operator tops up API credits (the account-level
+// fix for an HTTP 402 credits-depleted lane halt). Single-sourced in the setup
+// payload (lib/playbooks.mjs -> setup.platforms[].playbook.portalUrl); this constant
+// is the fallback for surfaces that do not carry the health payload (e.g. Activity),
+// and mirrors that value. Keep the two in step if X ever moves the portal.
+export const X_PORTAL_URL = 'https://developer.x.com/en/portal/dashboard';
 
 // The authorable post formats, in menu order. Shared by the Composer's format
 // select and the PostDetail quick-edit select so the two lists can never drift.
@@ -1698,6 +1905,71 @@ export function isActionable(post) {
     && (post.approval !== 'approved' || post.editedSinceApproval);
 }
 
+// ONE truthful next-actor state per card. The approval card used to stack three
+// independent badges ("Geplant" + "Du postest selbst" + "Automatisch freigegeben")
+// that could contradict each other on one post. This is a strict first-match
+// PROJECTION over the existing inputs (derivedState, unconnectedLanes,
+// isActionable's carve-outs) - no state machinery is re-derived - answering the
+// single question the reviewer has: who acts next, and what is that act.
+//
+// Returns { key, actor, at? }:
+//   done            system - posted/verified-live, nothing left to do.
+//   publish-failed  you    - the platform refused it (renders as today's red pill).
+//   overdue         you    - past due with pendpost still owing a lane (red pill).
+//   handOff         you    - a target lane is unconnected: approval publishes
+//                            nothing, YOU post it (beats every schedule claim).
+//   reApprove       you    - approved but edited since: needs a fresh decision
+//                            (beats the auto-approved provenance).
+//   clientSignoff   client - awaiting the client's sign-off (the ReviewStatusChip
+//                            already names who and how long; render nothing extra).
+//   approve         you    - pending/draft: the queue's default state.
+//   rejected        you    - decided against; rework re-enters as draft.
+//   scheduled       system - approved with a slot: goes out at `at`.
+//   awaitingSlot    system - approved, no slot yet.
+export function nextActorOf(post, setup) {
+  if (post.derivedState === 'posted' || post.derivedState === 'verified-live') {
+    return { key: 'done', actor: 'system' };
+  }
+  // V6 clamp, folded into the derivation: a post awaiting client sign-off never
+  // reads overdue-red (the engine keeps reviewPending out of 'overdue'; this
+  // guards the GUI the same way the old pillState clamp did).
+  if (!post.reviewPending && (post.derivedState === 'publish-failed' || post.derivedState === 'overdue')) {
+    return { key: post.derivedState, actor: 'you' };
+  }
+  if (unconnectedLanes(post, setup).length) return { key: 'handOff', actor: 'you' };
+  if (post.approval === 'approved' && post.editedSinceApproval) return { key: 'reApprove', actor: 'you' };
+  if (post.reviewPending) return { key: 'clientSignoff', actor: 'client' };
+  if (post.approval === 'rejected') return { key: 'rejected', actor: 'you' };
+  if (post.approval === 'approved') {
+    return post.scheduledAt
+      ? { key: 'scheduled', actor: 'system', at: post.scheduledAt }
+      : { key: 'awaitingSlot', actor: 'system' };
+  }
+  // pending / draft / absent: the decision is the next act.
+  return { key: 'approve', actor: 'you' };
+}
+
+// The best PUBLIC link for one lane of a post - the "posted = linked" contract
+// (owner decision 3), client-side only: every input already rides the plans DTO.
+// Precedence, most authoritative first:
+//   1. verify read-back permalink (the platform said so),
+//   2. the id-derived post.permalinks[lane] (the engine minted the id),
+//   3. a manual mark's captured URL (manualCompletions[lane].externalUrl -
+//      the link-capture flows write exactly this),
+//   4. post.externalUrl for Instagram (no derivable public slug) and for any
+//      radar reply (whole-post manual marks store the live reply URL there).
+// null when nothing is provable - callers render NOTHING then, never a dead
+// control and never a fabricated link (the derivePermalinks discipline).
+export function resolveLivePermalink(post, platform) {
+  const v = post.verify?.platforms?.[platform];
+  if (v?.permalink) return v.permalink;
+  if (post.permalinks?.[platform]) return post.permalinks[platform];
+  const manual = post.manualCompletions?.[platform]?.externalUrl;
+  if (manual) return manual;
+  if ((platform === 'instagram' || post.radarReplyTo) && post.externalUrl) return post.externalUrl;
+  return null;
+}
+
 // Suggest the next free post id for a type: a short type prefix + the lowest
 // unused integer (r1, st1, v1, yts1, ...). Editable in the composer.
 const TYPE_PREFIX = { reel: 'r', story: 'st', video: 'v', text: 'txt', poll: 'pl', carousel: 'car', 'youtube-short': 'yts', 'youtube-longform': 'ytv', image: 'img', 'nostr-longform': 'na' };
@@ -1765,6 +2037,11 @@ export function publishRunOutcome(res, postId) {
   const rows = (res?.ran || []).filter((r) => r.postId === postId);
   const fired = rows.some((r) => r.ok);
   const held = !fired && rows.some((r) => r.errorCode === 'cloud_held');
-  const fail = rows.find((r) => !r.ok && r.errorCode !== 'cloud_held');
-  return { rows, fired, held, reason: fail ? (fail.errorMessage || fail.errorCode) : null };
+  // `halted` = the lane is paused by an account-level circuit breaker (X 402 credits,
+  // lib/scheduler.mjs) and was dropped before dispatch. Mirrors `held`: the click did
+  // not fail, it just cannot fire until the operator resumes the lane. Both marker codes
+  // are excluded from `reason` so a genuine per-lane failure still surfaces its message.
+  const halted = !fired && rows.some((r) => r.errorCode === 'lane_halted');
+  const fail = rows.find((r) => !r.ok && r.errorCode !== 'cloud_held' && r.errorCode !== 'lane_halted');
+  return { rows, fired, held, halted, reason: fail ? (fail.errorMessage || fail.errorCode) : null };
 }

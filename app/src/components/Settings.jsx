@@ -4,15 +4,13 @@ import { RefreshCw, HelpCircle, RotateCcw } from 'lucide-react';
 import { useConfig, saveConfig } from '../lib/api.js';
 import { useT, LOCALES } from '../lib/i18n.js';
 import { getTimeFormat, setTimeFormat, getCardAccent, setCardAccent } from '../lib/format.js';
-import { FIELD_SURFACE, SectionHeading } from './ui.jsx';
+import { FIELD, FIELD_ERR, SectionHeading } from './ui.jsx';
 import { resetDialogSkips, dialogSkipCount } from './ui/confirm.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { Select } from './ui/Select.jsx';
 import RadarSearches, { RadarGeo, RadarBrand } from './RadarSearches.jsx';
 import AutonomyLedger from './AutonomyLedger.jsx';
 
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-const FIELD_CLS_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
 
 // The operator's own zone, detected once. Backs the pinned "use this device's zone"
 // option, and is the effective selection when the config has no explicit zone yet.
@@ -210,7 +208,7 @@ export default function Settings({ focus = null, onNavigate }) {
                     id="set-language"
                     value={language}
                     onChange={(e) => onLanguage(e.target.value)}
-                    className={FIELD_CLS}
+                    className={`${FIELD} w-full`}
                   >
                     {LOCALES.map((l) => (
                       <option key={l.tag} value={l.tag}>{l.label}</option>
@@ -227,7 +225,7 @@ export default function Settings({ focus = null, onNavigate }) {
                     id="set-tz"
                     value={timezone || DEVICE_TZ}
                     onChange={(e) => saveTimezone(e.target.value)}
-                    className={tzError ? FIELD_CLS_ERR : FIELD_CLS}
+                    className={`${tzError ? FIELD_ERR : FIELD} w-full`}
                     aria-invalid={tzError ? 'true' : undefined}
                   >
                     <option value={DEVICE_TZ}>{t('settings.tz.device', { zone: DEVICE_TZ })}</option>
@@ -254,7 +252,7 @@ export default function Settings({ focus = null, onNavigate }) {
                     onChange={(e) => setMediaBase(e.target.value)}
                     onBlur={saveMediaBase}
                     placeholder="https://media.example.com"
-                    className={mediaBaseError ? FIELD_CLS_ERR : FIELD_CLS}
+                    className={`${mediaBaseError ? FIELD_ERR : FIELD} w-full`}
                     aria-invalid={mediaBaseError ? 'true' : undefined}
                   />
                   {mediaBaseError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{mediaBaseError}</p> : null}
@@ -273,7 +271,7 @@ export default function Settings({ focus = null, onNavigate }) {
                       id="set-timefmt"
                       value={timeFmt}
                       onChange={(e) => { setTimeFormat(e.target.value); setTimeFmt(getTimeFormat()); }}
-                      className={FIELD_CLS}
+                      className={`${FIELD} w-full`}
                     >
                       <option value="auto">{t('settings.time.auto')}</option>
                       <option value="24h">{t('settings.time.24h')}</option>
@@ -287,7 +285,7 @@ export default function Settings({ focus = null, onNavigate }) {
                       id="set-accent"
                       value={cardAccent}
                       onChange={(e) => { setCardAccent(e.target.value); setCardAccentState(getCardAccent()); }}
-                      className={FIELD_CLS}
+                      className={`${FIELD} w-full`}
                     >
                       <option value="bar">{t('settings.cardAccent.bar')}</option>
                       <option value="strip">{t('settings.cardAccent.strip')}</option>

@@ -2,11 +2,12 @@ import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Radar as RadarIcon, RefreshCw, AlertCircle, Radio, Bot, ChevronDown,
-  MessageSquareReply, Settings as SettingsIcon, HelpCircle, Plus,
+  MessageSquareReply, Settings as SettingsIcon, HelpCircle, Plus, Loader2, CheckCircle2,
 } from 'lucide-react';
-import { fmtRelative, effectiveRadarSourcesClient, redditWarmth, signalIsKarma, signalIsPostIdea, signalIsMention } from '../lib/format.js';
-import { useConfig, useSignals, useAccounts, saveConfig, radarTriage, radarQueueReply, radarAgentScan, radarAgentStop, approvePost, usePendpostHealth, radarFollowupCheck } from '../lib/api.js';
-import { INNER_SURFACE, Skeleton, DISABLED_PRIMARY, Segmented } from './ui.jsx';
+import { fmtRelative, fmtTime, effectiveRadarSourcesClient, redditWarmth, signalIsKarma, signalIsPostIdea, signalIsMention } from '../lib/format.js';
+import { useConfig, useSignals, useCommentInbox, useAccounts, saveConfig, radarTriage, radarQueueReply, radarAgentScan, radarAgentStop, approvePost, usePendpostHealth, radarFollowupCheck, errText } from '../lib/api.js';
+import { INNER_SURFACE, Skeleton, Segmented, FilterChip } from './ui.jsx';
+import { CHIP, BTN_PRIMARY, BTN_QUIET } from './ui/recipes.js';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
@@ -18,8 +19,9 @@ import CommentInbox from './radar/CommentInbox.jsx';
 // ranked, deduped feed of EXTERNAL buyer conversations scored by buying intent - unlike
 // the inbox (your-posts-only comments) or Activity (your own event log). It ships BETA,
 // opt-in, default-OFF: nothing scans until posting.radar.enabled is true. The panel:
-//   - is a `glass-panel shrink-0` content block inside the ONE scrolling <main> (the
-//     app-shell scroll model) - NEVER an inner overflow-auto box.
+//   - is a plain content block inside the ONE full-height content canvas (App.jsx),
+//     which fills the viewport and owns the single inner scroll; this panel adds no
+//     scroll box of its own - it just stacks and lets the canvas scroll it.
 //   - shows every state: disabled (Beta off) / loading / empty / per-source error+rate-
 //     limit (non-fatal) / needs-scope / success (ranked rows).
 //   - carries a compact query editor (the per-project "tweak what Radar looks for"
@@ -29,7 +31,13 @@ import CommentInbox from './radar/CommentInbox.jsx';
 // Dismiss/watch are DURABLE server writes (radar_triage): the state.radar.seen[] ledger means
 // a dismissed signal never re-surfaces on a re-scan, and a watched one is pinned and exempt
 // from the 30-day prune.
-export default function Radar({ active = true, campaigns = [], onNavigate, onNewPost }) {
+// Which degraded sources have an in-Studio Setup lane to reconnect (needs_scope recovery).
+// Mirrors RadarSourceGlyphs' SETUP_CONNECTABLE/SETUP_LANE_FOR: Instagram authorizes under the
+// `meta` card; hackernews/bluesky/web have no connect path, so a "reconnect" link would dead-end.
+const RADAR_SETUP_LANE = { reddit: 'reddit', mastodon: 'mastodon', x: 'x', youtube: 'youtube', nostr: 'nostr', linkedin: 'linkedin', instagram: 'meta' };
+const SETUP_LANE_FOR_SOURCE = (id) => RADAR_SETUP_LANE[id] || null;
+
+export default function Radar({ active = true, campaigns = [], allClients = false, allSignals = null, allFailed = [], allLoading = false, allInbox = null, allInboxFailed = [], allInboxLoading = false, onNavigate, onNewPost, onOpenPost }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: config } = useConfig(true);
@@ -46,7 +54,15 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // nothing running - so without this the job row never appeared until the whole multi-minute
   // POST settled. While the press is in flight the feed polls unconditionally; the moment the
   // response carries the running job, the normal predicate takes over.
-  const { data: feed, isLoading } = useSignals(active && enabled, scanning);
+  const { data: feed, isLoading, isError: feedIsError, refetch: refetchFeed } = useSignals(active && enabled, scanning);
+  // Direction C intent 1 (engagement on OUR posts): the unanswered own-post count rides the "On
+  // your posts" segment label, so a full inbox is visible without switching segments first. Own
+  // data path (comment inbox), a light cache read. In the all-projects overview the single-client
+  // read is off and the count sums the merged inbox App fans out (useCommentInboxAll).
+  const { data: inbox } = useCommentInbox(active && !allClients);
+  const onPostsUnanswered = allClients
+    ? (Array.isArray(allInbox) ? allInbox.reduce((n, g) => n + (g.unanswered || 0), 0) : 0)
+    : (inbox?.unanswered || 0);
   const { data: accounts } = useAccounts();
   // S5: the scan control must never claim it will use an agent until the probe says live.
   const { data: health } = usePendpostHealth();
@@ -62,6 +78,12 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   const canDraftPages = agentLive && ['wordpress', 'ghost'].some((p) => accounts?.[p]?.authenticated);
   const jobs = feed?.jobs || [];
   const job = jobs[0] || null;
+  // The suggested-searches loop reads from the newest DISCOVERY scan, not jobs[0]: a geo recheck
+  // or a draft-one run lands as jobs[0] and used to shadow the scan's own suggestions (they carry
+  // none), leaving the operator with no next move. Discovery scans are scope:'feed' (writes.mjs
+  // newJob); geo/draft-one/followup are the side scopes that must never own this, so the newest
+  // job that is NOT one of those three is the scan whose suggestions we surface.
+  const scanJob = jobs.find((j) => j.scope !== 'geo' && j.scope !== 'draft-one' && j.scope !== 'followup') || null;
   const jobRunning = job?.state === 'running';
   // Karma builder: the account's Reddit warmth (cached, from pendpost_health setup). The gauge
   // renders only once warmth is measured; connecting Reddit is the source glyph's job, not a
@@ -72,9 +94,18 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   const [checkNote, setCheckNote] = useState(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState(null);
-  const [signalFilter, setSignalFilter] = useState('all'); // feed filter: all | new | actionable | answered | watched
-  const [sortBy, setSortBy] = useState('newest'); // newest (thread recency, default) | priority (intent-ranked)
+  // Feed filter. Lands on 'new' - the OPEN worklist (everything not yet handled), not 'all':
+  // opening Radar on the full feed put the signals the operator already cleared right back on
+  // screen. keys: new (open worklist, default) | all | repliedToYou | actionable | done | karma
+  // | mention | watched.
+  const [signalFilter, setSignalFilter] = useState('new');
+  const [sortBy, setSortBy] = useState(() => {
+    // priority (intent-ranked) | found (radar ingest time) | posted (the post's own time).
+    // Migrate the retired 'newest' key to 'posted' (its post-time recency behaviour).
+    try { const v = localStorage.getItem('pendpost.radar.sort'); return v === 'newest' ? 'posted' : (v || 'posted'); } catch { return 'posted'; }
+  });
   const [olderOpen, setOlderOpen] = useState(false); // the collapsed "older / weak signals" group
+  useEffect(() => { try { localStorage.setItem('pendpost.radar.sort', sortBy); } catch { /* storage unavailable - the sort just does not persist */ } }, [sortBy]);
 
   // "New since your last visit". The clock is the PREVIOUS visit's timestamp, captured once at
   // mount; this visit stamps its own immediately, so signals found while you watch (a running
@@ -109,8 +140,12 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
     setError(null);
     try {
       await radarAgentScan();
-    } catch (err) {
-      setError(err?.message || t('radar.error.scan'));
+    } catch {
+      // Stage 1: the POST now returns as soon as the running job row is saved, and the job row
+      // (polled by useSignals) is the source of truth for how the scan goes. Any failure HERE is a
+      // failure to START - never surface the browser's raw err.message ("Load failed"); a localized
+      // line is the honest thing, and the row will carry the real reason if one lands.
+      setError(t('radar.error.scan'));
     } finally {
       setScanning(false);
       queryClient.invalidateQueries({ queryKey: ['radar'] });
@@ -126,8 +161,10 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
     setError(null);
     try {
       await radarAgentScan({ scope: 'geo' });
-    } catch (err) {
-      setError(err?.message || t('radar.error.scan'));
+    } catch {
+      // Same as onScan: the geo recheck also returns on row-save now, so never show a raw
+      // browser error - the job row carries the real outcome.
+      setError(t('radar.error.scan'));
     } finally {
       setScanning(false);
       queryClient.invalidateQueries({ queryKey: ['radar'] });
@@ -150,8 +187,18 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // The agent's refined-search suggestions from the last run, minus any already saved (adding one
   // makes it a query, so it naturally drops from the list - which doubles as the "added" state).
   const existingQueryLabels = new Set((radar.queries || []).map((q) => String(q.label || '').toLowerCase()));
-  const suggestions = (Array.isArray(job?.suggestions) ? job.suggestions : [])
+  const suggestions = (Array.isArray(scanJob?.suggestions) ? scanJob.suggestions : [])
     .filter((s) => s && s.label && !existingQueryLabels.has(String(s.label).toLowerCase()));
+  // A scan that accepted almost nothing but carried refinements is a THIN scan, not an empty feed:
+  // its suggestions must surface even when the feed still shows older signals (before, the chips
+  // rendered only in the fully-empty branch, so a thin scan over a non-empty feed was a dead end).
+  const scanWasThin = Boolean(scanJob && scanJob.state === 'done' && (scanJob.accepted || 0) < 3);
+  // One chip list, reused by the empty state AND the thin-scan row so a suggested search reads the
+  // same everywhere (never "active" - adding one saves it as a query and it drops from the list).
+  const suggestItems = suggestions.map((s) => {
+    const chip = <FilterChip active={false} onClick={() => onAddSuggested(s)} icon={Plus} label={s.label} />;
+    return <li key={s.label}>{s.reason ? <Tip label={s.reason}>{chip}</Tip> : chip}</li>;
+  });
 
   // Spec 44: check now whether the authors we replied to have replied back. READ-only - it
   // re-reads our posted replies' threads and stamps an "Author replied" badge on a hit. The
@@ -168,7 +215,7 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
         ? t('radar.followup.result.replied', { replied: res.replied })
         : t('radar.followup.result.none'));
     } catch (err) {
-      setError(err?.message || t('radar.error.scan'));
+      setError(errText(err, t, 'radar.error.scan'));
     } finally {
       setChecking(false);
       queryClient.invalidateQueries({ queryKey: ['radar'] });
@@ -189,10 +236,13 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   const triage = async (signal, action) => {
     setError(null);
     try {
-      await radarTriage(signal.source, signal.externalId, action);
+      // signal.clientId is set only in the all-projects overview (App stamps it on
+      // each merged signal); it routes the write to that project. Invalidating
+      // ['radar'] prefix-matches ['radar', clientId] too, so the merged feed refreshes.
+      await radarTriage(signal.source, signal.externalId, action, signal.clientId);
       queryClient.invalidateQueries({ queryKey: ['radar'] });
     } catch (err) {
-      setError(err?.message || t('radar.error.save'));
+      setError(errText(err, t, 'radar.error.save'));
     }
   };
   const onDismiss = (signal) => triage(signal, 'dismiss');
@@ -207,7 +257,7 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // operator a human would read something that was already cleared to post on the next tick. The
   // one surface whose whole job is honesty about autonomy cannot be the one that guesses.
   const onQueueReply = async (signal, { campaign, text, parentExternalId }) => {
-    const res = await radarQueueReply({ campaign, signalUrl: signal.url, source: signal.source, externalId: signal.externalId, parentExternalId, text });
+    const res = await radarQueueReply({ campaign, signalUrl: signal.url, source: signal.source, externalId: signal.externalId, parentExternalId, text, clientId: signal.clientId });
     queryClient.invalidateQueries({ queryKey: ['plans'] });
     queryClient.invalidateQueries({ queryKey: ['radar'] });
     return res && res.approval === 'approved' ? 'approved' : 'pending';
@@ -216,21 +266,51 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // Approve a queued Radar draft straight from the card - the SAME distinct-human approval the
   // Freigaben page runs (approvePost), so the loop closes where the operator is reading it rather
   // than in a separate queue. The feed refetch flips signal.draft.approval to 'approved'.
-  const onApproveDraft = async (draft) => {
-    setError(null);
-    try {
-      await approvePost(draft.campaign, draft.postId);
-      queryClient.invalidateQueries({ queryKey: ['plans'] });
-      queryClient.invalidateQueries({ queryKey: ['radar'] });
-    } catch (err) {
-      setError(err?.message || t('radar.reply.error'));
-    }
+  // A card action (the row's Approve & post button): its refusal belongs AT the card, in the
+  // row's own replyError slot, never the page banner - so this deliberately does NOT catch. The
+  // caller (SignalRow.approveDraft) already wraps the call and renders the humanized message.
+  const onApproveDraft = async (draft, signal) => {
+    // The queued reply-post lives in the signal's project; in the all-projects
+    // overview signal.clientId routes the approval there (approvePost's 4th arg).
+    await approvePost(draft.campaign, draft.postId, undefined, signal?.clientId);
+    queryClient.invalidateQueries({ queryKey: ['plans'] });
+    queryClient.invalidateQueries({ queryKey: ['radar'] });
   };
 
-  const signals = feed?.items || []; // dismissed signals are dropped server-side
-  // Spec 44: the "check replies" affordance only appears once there is a posted reply whose
-  // thread could have an answer - no posted replies, no button (never a dead control).
-  const hasPostedReplies = signals.some((s) => s.repliedUrl || s.authorReplied);
+  // The auto-post badge's tap: draft THIS signal now, held PENDING for review (the server
+  // arms the fence with holdApproval, so the auto-reply policy stands down for exactly this
+  // draft). The running row lands in jobs[] and the 3s poll carries the card's busy state;
+  // the finished draft arrives as signal.draft on the next feed read.
+  const runningDraftOne = jobs.find((j) => j.state === 'running' && j.scope === 'draft-one') || null;
+  // A card action (the willAutoPost badge / the failed-draft retry link): its refusal belongs AT
+  // the card, not the page banner (issue 7 step 4) - so this deliberately does NOT catch. The
+  // caller (SignalRow.runDraftNow) wraps the call and renders the humanized message via errText.
+  const onDraftNow = async (signal) => {
+    await radarAgentScan({ scope: 'draft-one', target: { source: signal.source, externalId: signal.externalId }, clientId: signal.clientId });
+    queryClient.invalidateQueries({ queryKey: ['radar'] });
+  };
+
+  // All-projects overview: the merged, project-stamped feed from App replaces the
+  // single active client's items. Everything downstream (stats, filters, grouping,
+  // the SignalRow badge) derives from `signals`, so the whole pipeline is reused
+  // unchanged; only the per-client control strips (scan/jobs/GEO) are hidden below.
+  const signals = allClients && Array.isArray(allSignals) ? allSignals : (feed?.items || []); // dismissed signals are dropped server-side
+  const feedLoading = allClients ? allLoading : isLoading;
+  // Spec 44: the "check replies" affordance only appears once there is a posted answer whose
+  // thread could have a reply - no posted answers, no button (never a dead control). A
+  // copy-posted marker counts too: the 24h sweep and the on-demand check both read those
+  // markers back, so hiding the control on a copy-only workspace would hide a real ability.
+  const hasPostedReplies = signals.some((s) => s.replied || s.authorReplied || s.copyPosted);
+  // S1 glyph state 3 ("checked, no reply yet"): the newest follow-up check stamp across the
+  // feed, joined server-side as replied.lastCheckedTs / copyPosted.lastCheckedTs off the
+  // engine-owned radarFollowup. 0 = never checked (the idle tooltip stays); a stamp flips
+  // the tooltip to "Zuletzt geprüft {time}" so a forced check has a visible outcome even
+  // when it found nothing. State 4 (author replied) is the feed badge's job.
+  const lastFollowupCheck = signals.reduce((acc, s) => Math.max(
+    acc,
+    Date.parse(s.replied?.lastCheckedTs || '') || 0,
+    Date.parse(s.copyPosted?.lastCheckedTs || '') || 0,
+  ), 0);
   // S5: a compact stats summary derived from the feed - zero new collection. Now the counts are
   // FILTERS (a filter bar above the list), not a dead header line. Actionable = worth a move now
   // (reply / comparison-page); watched = pinned. Null when off/empty so nothing renders.
@@ -238,13 +318,31 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // answering back, or a copy draft written for hand-posting.
   // R5 piece 2 (dim-2 G2/N1): a COPY draft is not answered just because it exists - drafting
   // is not posting. It counts answered only once it carries the durable copyPosted marker
-  // (radarMarkCopyPosted). A reply-post lane still counts via repliedUrl/authorReplied.
-  const isAnswered = (s) => Boolean(s.repliedUrl || s.authorReplied || s.copyPosted);
-  const stats = enabled && signals.length ? {
+  // (radarMarkCopyPosted). A reply-post lane counts via the evidence-typed `replied`
+  // ({url, via, postId, campaign} - url may be null; via says what it proves) or authorReplied.
+  const isAnswered = (s) => Boolean(s.replied || s.authorReplied || s.copyPosted);
+  // "Offen" and "beantwortet" must be DISJOINT: a signal the scan flagged for a reply that has
+  // already been answered belongs only under "beantwortet" (answered wins). One predicate feeds
+  // both the count and the filter, so the two chips can never claim the same rows (issue 9).
+  const isOpenActionable = (s) => (s.suggestedAction === 'reply' || s.suggestedAction === 'comparison-page') && !isAnswered(s);
+  // Direction C: the old single "answered" chip conflated two OPPOSITE urgencies - a thread we
+  // spoke into and are done with, versus one where the author answered us BACK (a live turn, the
+  // hottest open item in the whole feed). They split into two facets: "replied to you" leads the
+  // row (authorReplied), and everything else we have already answered folds into a trailing "done".
+  const isRepliedToYou = (s) => Boolean(s.authorReplied);
+  const isDone = (s) => isAnswered(s) && !isRepliedToYou(s);
+  // The default landing view: the OPEN worklist - every signal not yet fully handled. Answered
+  // ("done") items fold out and dismissed items are already dropped server-side, so what remains
+  // is only what still needs a move. Unlike the ephemeral "Neu" ROW badge (isNewSignal, found
+  // since last visit), this is a PERSISTENT set: revisiting Radar never empties it back to the
+  // full feed with the already-cleared items in it.
+  const isOpen = (s) => !isDone(s);
+  const stats = (enabled || allClients) && signals.length ? {
     signals: signals.length,
-    newCount: signals.filter(isNewSignal).length,
-    actionable: signals.filter((s) => s.suggestedAction === 'reply' || s.suggestedAction === 'comparison-page').length,
-    answered: signals.filter(isAnswered).length,
+    newCount: signals.filter(isOpen).length,
+    repliedToYou: signals.filter(isRepliedToYou).length,
+    actionable: signals.filter(isOpenActionable).length,
+    done: signals.filter(isDone).length,
     karma: signals.filter((s) => signalIsKarma(s, radar)).length,
     mention: signals.filter((s) => signalIsMention(s, radar)).length,
     watched: signals.filter((s) => s.watched === true).length,
@@ -257,25 +355,49 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // fresh feed) and a filter whose count later returns re-engages the user's last explicit
   // choice - any chip click re-syncs the state.
   const filterCountOf = (key) => { const f = SIGNAL_FILTERS.find((x) => x.key === key); return f && stats ? f.count(stats) : 0; };
-  const effectiveFilter = signalFilter !== 'all' && filterCountOf(signalFilter) > 0 ? signalFilter : 'all';
-  const visibleBase = effectiveFilter === 'actionable'
-    ? signals.filter((s) => s.suggestedAction === 'reply' || s.suggestedAction === 'comparison-page')
+  // 'all' and 'new' are the two ANCHOR filters - always reachable, never auto-degraded. Every
+  // other chip self-heals to 'all' when its count hits 0 (its chip has just hidden). 'new' does
+  // NOT degrade to 'all' when its worklist empties: falling back to the full feed there would put
+  // the already-handled signals back on screen, which is the exact bad UX this default fixes -
+  // an empty worklist renders its own "all clear" state instead (see below).
+  const effectiveFilter = (signalFilter === 'all' || signalFilter === 'new' || filterCountOf(signalFilter) > 0) ? signalFilter : 'all';
+  const visibleBase = effectiveFilter === 'repliedToYou'
+    ? signals.filter(isRepliedToYou)
+    : effectiveFilter === 'actionable'
+    ? signals.filter(isOpenActionable)
     : effectiveFilter === 'watched'
       ? signals.filter((s) => s.watched === true)
       : effectiveFilter === 'new'
-        ? signals.filter(isNewSignal)
-        : effectiveFilter === 'answered'
-          ? signals.filter(isAnswered)
+        ? signals.filter(isOpen)
+        : effectiveFilter === 'done'
+          ? signals.filter(isDone)
           : effectiveFilter === 'karma'
             ? signals.filter((s) => signalIsKarma(s, radar))
             : effectiveFilter === 'mention'
               ? signals.filter((s) => signalIsMention(s, radar))
               : signals;
-  // Sort: 'priority' keeps the server's ranked order (watched -> intent -> recency). 'newest'
-  // re-orders by the thread's own timestamp - pure recency, no pinning. Demotion is NOT
-  // sort-dependent (see below): the timeline applies within each region.
-  const ms = (s) => { const n = Date.parse(s?.ts || s?.foundAt); return Number.isNaN(n) ? -Infinity : n; };
-  const visibleSignals = sortBy === 'newest' ? [...visibleBase].sort((a, b) => ms(b) - ms(a)) : visibleBase;
+  // Sort: 'priority' keeps the server's ranked order (watched -> intent -> recency), with ONE
+  // stable partition on top: author-replied signals lead the feed - the conversation is LIVE,
+  // which outranks any intent score (owner decision 4). Server rank is preserved within each
+  // region (stable partition, no re-sort). 'newest' re-orders the rest by the thread's own
+  // timestamp, but a watched signal stays PINNED to the top either way - the operator asked to
+  // keep an eye on it, so pure recency must never bury it under fresher chatter (the feature's
+  // promise is "watched = pinned"). Demotion is NOT sort-dependent (see below): the timeline
+  // applies within each region.
+  // Two explicit recency clocks the owner can pick between (issue 8): 'posted' ranks by the post's
+  // own time (when a person posted, so a reply is still timely), 'found' by radar ingest time (what
+  // the scan just surfaced). Each falls back to the other so a signal missing one timestamp never
+  // sinks to the bottom for missing data (data honesty). 'priority' keeps the server's ranked order
+  // with author-replied signals partitioned to the top - a live conversation outranks intent there,
+  // but an explicit recency sort is an explicit request for time order, so it is not re-partitioned.
+  const postedOf = (s) => { const n = Date.parse(s?.ts || s?.foundAt); return Number.isNaN(n) ? -Infinity : n; };
+  const foundAtOf = (s) => { const n = Date.parse(s?.foundAt || s?.ts); return Number.isNaN(n) ? -Infinity : n; };
+  const watchedRank = (s) => (s?.watched === true ? 1 : 0);
+  const visibleSignals = sortBy === 'found'
+    ? [...visibleBase].sort((a, b) => watchedRank(b) - watchedRank(a) || foundAtOf(b) - foundAtOf(a))
+    : sortBy === 'posted'
+      ? [...visibleBase].sort((a, b) => watchedRank(b) - watchedRank(a) || postedOf(b) - postedOf(a))
+      : [...visibleBase.filter((s) => s.authorReplied), ...visibleBase.filter((s) => !s.authorReplied)];
   // Demote low-intent / stale rows into a collapsed group so a 599-day-old or near-zero signal
   // never sits as a peer of a fresh, high-intent one. Only in the unfiltered "all" view under the
   // priority sort; a watched or actionable signal is never demoted (Date.now is fine here - this
@@ -286,19 +408,26 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // Brand-mention (reputation) signals are DELIBERATELY not buying-intent, exactly like karma
   // items, so the low-intent demotion must never bury them either - a reputation event the
   // operator needs to see would otherwise sink into the collapsed older group.
+  // An author-replied signal is a LIVE conversation turn: age and intent score are
+  // judgments about the original thread, not about the person who just answered us -
+  // so it is never demoted, however old the thread grew while they typed.
   const isDemoted = (s) => s.watched !== true
-    && s.suggestedAction !== 'reply' && s.suggestedAction !== 'comparison-page'
+    && !s.authorReplied
+    && !isOpenActionable(s)
     && !signalIsKarma(s, radar)
     && !signalIsMention(s, radar)
     && (tierOf(s.intentScore) === 'low' || (s.ts && (Date.now() - Date.parse(s.ts)) > 90 * 24 * 3600 * 1000));
   // Demotion is a judgment about intent/staleness, not ordering, so it survives the sort
   // toggle - a strip that vanished under 'newest' made 8 rows appear from nowhere. It applies
-  // only in the unfiltered view (a chip filter is an explicit request for exactly those rows),
-  // and NOT when every visible signal is demoted: demotion keeps weak rows from sitting as
-  // peers of fresh ones, and with no fresh rows there is no peer problem - an all-weak feed
-  // renders inline instead of hiding everything behind a lonely strip under "8 Signale".
+  // in the two ANCHOR views ('all' and the default 'new' worklist) - a specific chip is an
+  // explicit request for exactly those rows, but the worklist is a broad landing view that must
+  // stay clean at scale, so a 599-day-old low-intent row folds into the same collapsed group
+  // there instead of sitting as a peer of a fresh one. NOT when every visible signal is demoted:
+  // demotion keeps weak rows from sitting as peers of fresh ones, and with no fresh rows there is
+  // no peer problem - an all-weak feed renders inline instead of hiding everything behind a
+  // lonely strip under "8 Signale".
   const allDemoted = visibleSignals.length > 0 && visibleSignals.every(isDemoted);
-  const demoteHere = effectiveFilter === 'all' && !allDemoted;
+  const demoteHere = (effectiveFilter === 'all' || effectiveFilter === 'new') && !allDemoted;
   const primarySignals = demoteHere ? visibleSignals.filter((s) => !isDemoted(s)) : visibleSignals;
   const olderSignals = demoteHere ? visibleSignals.filter(isDemoted) : [];
   // US-RAD-30 (owner-approved): the same question by the same author found on
@@ -337,6 +466,17 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
   // auto-ready connected lanes - mirroring the server derivation, so the header can never
   // promise a scan the brief does not make.
   const scanGlyphs = effectiveRadarSourcesClient(radar, feed?.capabilities, accounts, feed?.sources);
+  // Per-source scan degrades (rate_limited / needs_scope / engine_failure): the source
+  // glyphs only convey CONNECT status, so a scan that a source refused is otherwise invisible.
+  // Surface it as one quiet notice above the feed - what failed, why (plain reason), and the
+  // one move that recovers (reconnect for needs_scope; the others are transient / server-side).
+  // Non-fatal by construction: the other sources' signals still render (P9), so this never
+  // blocks the feed. Per-client (feed.sources is the active client's), hidden in the overview.
+  const degradedSources = (!allClients && feed?.sources && typeof feed.sources === 'object')
+    ? Object.entries(feed.sources)
+        .filter(([id, v]) => v && v.ok === false && SOURCE_META[id])
+        .map(([id, v]) => ({ id, error: v.error || 'engine_failure', scope: v.scope || null }))
+    : [];
   // One row renderer, reused by the primary list and the collapsed older group.
   const renderRow = (s, { grouped = false } = {}) => {
     // Karma builder: a warm-up-query signal is a karma item; if it points at a subreddit
@@ -344,11 +484,16 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
     const isKarma = signalIsKarma(s, radar);
     const isPostIdea = isKarma && signalIsPostIdea(s);
     const isMention = signalIsMention(s, radar);
+    const signalKey = `${s.source} ${s.externalId}`;
+    // Issue 7 step 3: the card's own outcome for a draft-one attempt that already settled and
+    // failed, with no draft to show for it - derived locally from the feed's own jobs[] (already
+    // ordered newest-first, so .find naturally picks the newest matching job).
+    const draftFailed = !s.draft && jobs.some((j) => j.scope === 'draft-one' && j.target === signalKey && j.state === 'failed');
     // `grouped` = this row is the LEAD of a duplicate-group; the group wrapper owns the card
     // chrome (border + padding) so the "Also on" strip lands INSIDE the same boundary, and the
     // lead renders bare to avoid a card-in-a-card.
     return (
-      <SignalRow key={`${s.source} ${s.externalId}`} signal={s} accounts={accounts} watched={s.watched === true} grouped={grouped} isNew={isNewSignal(s)} replyIncapable={feed?.capabilities?.[s.source]?.reply !== true || isPostIdea} copyCapable={feed?.capabilities?.[s.source]?.copyDraft === true} isKarma={isKarma} isPostIdea={isPostIdea} isMention={isMention} campaigns={campaigns} autoReply={radar.autoReply} queryLabel={(id) => (radar.queries || []).find((q) => q && q.id === id)?.label || id} onQueueReply={onQueueReply} onApproveDraft={onApproveDraft} onDismiss={onDismiss} onWatch={onWatch} onNavigate={onNavigate} onNewPost={onNewPost} t={t} />
+      <SignalRow key={signalKey} signal={s} accounts={accounts} watched={s.watched === true} grouped={grouped} isNew={isNewSignal(s)} replyIncapable={feed?.capabilities?.[s.source]?.reply !== true || isPostIdea} copyCapable={feed?.capabilities?.[s.source]?.copyDraft === true} isKarma={isKarma} isPostIdea={isPostIdea} isMention={isMention} campaigns={campaigns} autoReply={radar.autoReply} draftMinScore={Number.isFinite(radar.drafting?.minScore) ? radar.drafting.minScore : 30} queryLabel={(id) => (radar.queries || []).find((q) => q && q.id === id)?.label || id} onQueueReply={onQueueReply} onApproveDraft={onApproveDraft} onDismiss={onDismiss} onWatch={onWatch} onNavigate={onNavigate} onNewPost={onNewPost} onOpenPost={onOpenPost} onDraftNow={onDraftNow} draftingNow={runningDraftOne?.target === signalKey} draftFailed={draftFailed} agentBusy={jobRunning} agentReady={agentLive} t={t} />
     );
   };
 
@@ -361,24 +506,30 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <RadarIcon size={18} className="text-brand dark:text-brand-light" aria-hidden="true" />
         <h2 className="font-display text-base font-bold">{t('nav.radar')}</h2>
-        <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">{t('radar.beta')}</span>
+        {/* UX issue 10: a tag, not a warning - the info-chip recipe (quiet zinc), not a status
+            pill's tone. */}
+        <span className={CHIP}>{t('radar.beta')}</span>
         <Tip label={t('radar.intro')}>
           <button type="button" aria-label={t('radar.about')} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
             <HelpCircle size={14} aria-hidden="true" />
           </button>
         </Tip>
         {/* The two engagement views: EXTERNAL conversations (Discovered) vs comments on your OWN
-            posts (On your posts). Reuses the shared Segmented so the two surfaces read as one. */}
+            posts (On your posts). Reuses the shared Segmented so the two surfaces read as one.
+            BOTH aggregate across projects now (the signal feed and the own-post inbox), so the
+            segment stays usable in the all-projects overview - only the per-client scan/GEO/warmth
+            CONTROLS hide in that mode. */}
         <Segmented
           label={t('radar.segment.aria')}
           value={segment}
           onChange={setSegment}
           options={[
             { key: 'discovered', label: t('radar.segment.discovered') },
-            { key: 'onposts', label: t('radar.segment.onposts') },
+            { key: 'onposts', label: onPostsUnanswered > 0 ? `${t('radar.segment.onposts')} · ${onPostsUnanswered}` : t('radar.segment.onposts') },
           ]}
         />
-        {enabled && segment === 'discovered' ? (
+        {allClients ? <span className={CHIP}>{t('clientSwitcher.all')}</span> : null}
+        {!allClients && enabled && segment === 'discovered' ? (
           <div className="ml-auto flex items-center gap-2">
             {/* The networks being scanned, with a per-source status dot (emerald = replies post
                 from pendpost, amber = connect to reply / copy-paste). ONE shared component with
@@ -392,11 +543,19 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
               onNavigate={onNavigate}
               className="hidden sm:flex"
             />
-            {/* Spec 44: check-replies, glyph-only. Only once a reply is posted; READ-only. */}
+            {/* Spec 44: check-replies, glyph-only. Only once an answer is posted; READ-only.
+                Four states (S1): idle (the explainer tooltip), checking (spinner on the
+                glyph), checked-no-reply (the tooltip states "Zuletzt geprüft {time}" from
+                the joined lastCheckedTs), author replied (the feed badge takes over). */}
             {hasPostedReplies ? (
-              <Tip label={t('radar.followup.check.tip')}>
+              <Tip label={lastFollowupCheck
+                ? t('radar.followup.lastChecked', { time: fmtRelative(new Date(lastFollowupCheck).toISOString()) })
+                : t('radar.followup.check.tip')}
+              >
                 <button type="button" onClick={onCheckReplies} disabled={checking} aria-label={t('radar.followup.check')} className="inline-flex items-center justify-center rounded-xl p-1.5 text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 disabled:opacity-50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5">
-                  <MessageSquareReply size={14} className={checking ? 'animate-pulse' : ''} aria-hidden="true" />
+                  {checking
+                    ? <Loader2 size={14} className="animate-spin" aria-hidden="true" />
+                    : <MessageSquareReply size={14} aria-hidden="true" />}
                 </button>
               </Tip>
             ) : null}
@@ -404,13 +563,13 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
                 proven live it becomes "Connect your agent" and leads to Setup - no fallback scan. */}
             {agentLive ? (
               <Tip label={hasQueries ? t('radar.scan.tip') : t('radar.scanNeedsQuery')}>
-                <button type="button" onClick={onScan} disabled={scanning || jobRunning || !hasQueries} className={`inline-flex items-center gap-1.5 rounded-xl bg-brand px-3 py-1.5 text-sm font-bold text-white transition hover:brightness-95 dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}>
+                <button type="button" onClick={onScan} disabled={scanning || jobRunning || !hasQueries} className={BTN_PRIMARY}>
                   <RefreshCw size={14} className={scanning || jobRunning ? 'animate-spin' : ''} aria-hidden="true" />
                   {scanning || jobRunning ? t('radar.scanning') : t('radar.scanNow')}
                 </button>
               </Tip>
             ) : (
-              <button type="button" onClick={() => onNavigate?.('setup', 'agent')} className="inline-flex items-center gap-1.5 rounded-xl bg-brand px-3 py-1.5 text-sm font-bold text-white transition hover:brightness-95 dark:bg-brand-light dark:text-zinc-900">
+              <button type="button" onClick={() => onNavigate?.('setup', 'agent')} className={BTN_PRIMARY}>
                 <Bot size={14} aria-hidden="true" />
                 {t('radar.scan.connectFirst')}
               </button>
@@ -425,18 +584,71 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
           </div>
         ) : null}
       </div>
+      {/* All-projects overview: one quiet inline notice per project whose radar read
+          failed - never blocks the rest of the merged feed (mirrors allClientsFailed
+          for plans). */}
+      {allClients && allFailed.length ? (
+        <div className="glass-panel space-y-1 rounded-2xl px-4 py-2.5">
+          {allFailed.map(({ q, client }) => (
+            <p key={client.id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              <span>{t('clientSwitcher.loadFailed', { name: client.displayName })}</span>
+              <button type="button" onClick={() => q.refetch()} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                {t('clientSwitcher.retry')}
+              </button>
+            </p>
+          ))}
+        </div>
+      ) : null}
       {segment === 'onposts' ? (
         // On your posts: the own-post comment inbox (own data path, GET /api/comments/inbox),
         // co-located in this one engagement surface. Reachable even when Radar beta is off -
-        // the two features are independent.
-        <CommentInbox onNavigate={onNavigate} />
+        // the two features are independent. In the all-projects overview it renders the merged,
+        // project-stamped inbox App fans out, and threads each item's clientId through its writes.
+        allClients ? (
+          <CommentInbox allClients allPosts={allInbox} allFailed={allInboxFailed} allLoading={allInboxLoading} onNavigate={onNavigate} />
+        ) : (
+          <CommentInbox onNavigate={onNavigate} />
+        )
       ) : (
       <>
-      {/* Subtitle: last result only, quiet. "Last RESULT" not "scan" - lastScan is stamped by both
-          engine + ingest, so it cannot claim a scan it cannot attribute. */}
-      {enabled && feed?.lastScan ? (
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.lastResult', { time: fmtRelative(feed.lastScan) })}</p>
-      ) : null}
+      {/* The scan-status line: ONE quiet meta row, fragments joined by a dot, each
+          rendered only when its datum exists. "Last RESULT" not "scan" - lastScan is
+          stamped by both engine + ingest, so it cannot claim a scan it cannot
+          attribute. The drafted count reads feed.lastProduced (the server's summary
+          of the newest settled job - never re-derived from feed.jobs, one source of
+          truth). "Naechster Scan" comes from feed.nextScan: the spec 40 §4 rule
+          ("never claim a next run") is DELIBERATELY overturned - the rationale is
+          obsolete now that the scheduler owns the tick (lib/scheduler.mjs) and
+          dailyAt is pendpost's own config; a server that cannot say ships no
+          nextScan and the fragment renders nothing (the honesty rule survives). */}
+      {!allClients && enabled ? (() => {
+        const ns = feed?.nextScan;
+        const armedTimes = ns
+          ? [ns.agent, ns.keyword]
+              .filter((x) => x?.armed && x.at)
+              .map((x) => Date.parse(x.at))
+              .filter((n) => !Number.isNaN(n))
+          : [];
+        const nextAt = armedTimes.length ? new Date(Math.min(...armedTimes)) : null;
+        // Budget honesty (A12/F2): when the agent's paid budget is spent, the next-scan
+        // fragment SAYS so instead of a bare clock - but only when the claimed time IS the
+        // agent's clock (a keyword scan owes no budget). The scan is never hidden: the
+        // stated time falls in the new budget window, so the claim stays true.
+        const budgetSpent = Boolean(
+          ns?.agent?.armed
+          && Number.isFinite(ns.agent.budget) && Number.isFinite(ns.agent.spent)
+          && ns.agent.spent >= ns.agent.budget,
+        );
+        const nextIsAgent = Boolean(nextAt && ns?.agent?.at && Date.parse(ns.agent.at) === nextAt.getTime());
+        const fragments = [
+          feed?.lastScan ? t('radar.lastResult', { time: fmtRelative(feed.lastScan) }) : null,
+          Number.isFinite(feed?.lastProduced?.drafted) ? t('radar.lastResult.drafted', { n: feed.lastProduced.drafted }) : null,
+          nextAt ? t(budgetSpent && nextIsAgent ? 'radar.nextScan.budgetSpent' : 'radar.nextScan', { time: fmtTime(nextAt.toISOString()) }) : null,
+        ].filter(Boolean);
+        return fragments.length ? (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">{fragments.join(' · ')}</p>
+        ) : null;
+      })() : null}
 
       {/* Karma builder: the account's Reddit standing, shown once there is real warmth to
           display. It used to render a "connect Reddit" prompt when warmth was unmeasured, but
@@ -462,14 +674,16 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
         </p>
       ) : null}
 
-      {!enabled ? (
-        // Disabled (Beta off): the honest opt-in empty state with the enable CTA.
+      {!allClients && !enabled ? (
+        // Disabled (Beta off): the honest opt-in empty state with the enable CTA. Never shown in
+        // the all-projects overview - that mode aggregates whatever signals every project already
+        // has, regardless of the active client's own beta flag.
         <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
           <div className="max-w-sm space-y-2">
             <RadarIcon size={28} className="mx-auto text-zinc-500" aria-hidden="true" />
             <p className="text-sm font-bold">{t('radar.disabled.title')}</p>
             <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.disabled.body')}</p>
-            <button type="button" onClick={onEnable} className="mt-1 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white dark:bg-brand-light dark:text-zinc-900">
+            <button type="button" onClick={onEnable} className={`mt-1 ${BTN_PRIMARY}`}>
               {t('radar.disabled.enable')}
             </button>
           </div>
@@ -477,28 +691,77 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
       ) : (
         <>
           {/* Spec 41: what actually happened when you pressed Scan now. Absent until there IS
-              a job - an empty card explaining that nothing has run yet would be furniture. */}
-          <JobRow job={job} queries={radar.queries || []} onStop={onStop} stopping={stopping} t={t} onNavigate={onNavigate} onRetry={onScan} retryBusy={scanning || jobRunning || !hasQueries} />
+              a job - an empty card explaining that nothing has run yet would be furniture. The
+              job row is per-client, so it is hidden in the all-projects overview. */}
+          {!allClients ? (
+            <JobRow job={job} queries={radar.queries || []} onStop={onStop} stopping={stopping} t={t} onNavigate={onNavigate} onRetry={onScan} retryBusy={scanning || jobRunning || !hasQueries} />
+          ) : null}
+
+          {/* Per-source scan degrade: one quiet notice (never a loud red banner - the other
+              sources still delivered). Each line names the source, the plain reason, and the
+              recovery: needs_scope gets a Reconnect deep-link (the one move that fixes it);
+              rate_limited / engine_failure are transient/server-side, so they state the reason
+              without a fake button. Mirrors the all-projects load-failed notice pattern. */}
+          {degradedSources.length ? (
+            <div role="status" className={`space-y-1 rounded-xl px-4 py-2.5 ${INNER_SURFACE}`}>
+              {degradedSources.map(({ id, error }) => (
+                <p key={id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  <AlertCircle size={12} className="text-amber-600 dark:text-amber-500" aria-hidden="true" />
+                  <span>{t(`radar.source.degraded.${error === 'needs_scope' || error === 'rate_limited' ? error : 'engine_failure'}`, { platform: t(`radar.source.${id}`) })}</span>
+                  {error === 'needs_scope' && SETUP_LANE_FOR_SOURCE(id) ? (
+                    <button type="button" onClick={() => onNavigate?.('setup', SETUP_LANE_FOR_SOURCE(id))} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                      {t('radar.source.degraded.reconnect')}
+                    </button>
+                  ) : null}
+                </p>
+              ))}
+            </div>
+          ) : null}
+
+          {/* Continuous improvement: a thin scan (accepted < 3) that still carried refinements
+              surfaces them right here, above a populated feed - the empty state already shows them,
+              so this closes the gap where a thin scan over older signals had no next move. */}
+          {!allClients && signals.length > 0 && scanWasThin && suggestItems.length ? (
+            <div className={`space-y-1.5 rounded-xl p-3 ${INNER_SURFACE}`}>
+              <p className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{t('radar.empty.suggest.title')}</p>
+              <ul className="flex flex-wrap gap-1.5">{suggestItems}</ul>
+            </div>
+          ) : null}
 
           {/* The ranked feed: no-queries / loading / empty / success. The searches editor moved to
               Settings, so a Radar page with no queries yet says so and points there - never a dead
               blank, and never the old cold-start editor that made config the first thing you saw. */}
-          {!hasQueries ? (
+          {!allClients && !hasQueries ? (
             <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
               <div className="max-w-sm space-y-2">
                 <RadarIcon size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
                 <p className="text-sm font-bold">{t('radar.noQueries.title')}</p>
                 <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.noQueries.body')}</p>
-                <button type="button" onClick={() => onNavigate?.('settings', 'radar')} className="mt-1 inline-flex items-center gap-1.5 rounded-xl bg-brand px-3 py-1.5 text-xs font-bold text-white dark:bg-brand-light dark:text-zinc-900">
+                <button type="button" onClick={() => onNavigate?.('settings', 'radar')} className={`mt-1 ${BTN_PRIMARY}`}>
                   <SettingsIcon size={13} aria-hidden="true" />{t('radar.noQueries.cta')}
                 </button>
               </div>
             </div>
-          ) : isLoading ? (
+          ) : feedLoading ? (
             <div className="space-y-2">
               <Skeleton className="h-20 rounded-xl" />
               <Skeleton className="h-20 rounded-xl" />
               <Skeleton className="h-20 rounded-xl" />
+            </div>
+          ) : (!allClients && feedIsError) ? (
+            // Feed LOAD error: the radar read failed. Without this it was indistinguishable from
+            // "nothing found" - a fetch failure that silently read as an empty scan (and, worse,
+            // as the "all clear" state). An honest error answers all three: what happened, why
+            // (the feed did not respond), and the one move that recovers (Retry -> refetch).
+            <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
+              <div className="max-w-sm space-y-2">
+                <AlertCircle size={26} className="mx-auto text-rose-600 dark:text-rose-400" aria-hidden="true" />
+                <p className="text-sm font-bold">{t('radar.error.load.title')}</p>
+                <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.error.load.body')}</p>
+                <button type="button" onClick={() => refetchFeed()} className={`mt-1 ${BTN_QUIET}`}>
+                  <RefreshCw size={13} aria-hidden="true" />{t('radar.error.load.retry')}
+                </button>
+              </div>
             </div>
           ) : signals.length ? (
             <div className="space-y-2">
@@ -517,20 +780,21 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
                           <ol>{renderRow(lead, { grouped: true })}</ol>
                           <div className="flex flex-wrap items-center gap-1.5">
                             <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('radar.group.alsoOn', { n: siblings.length })}</span>
+                            {/* UX issue 10: the sibling reveal chips restyle on the shared
+                                FilterChip (selection/reveal semantics - class c of the taxonomy),
+                                same active = filled-brand look every other filter chip carries. */}
                             {siblings.map((sib) => {
                               const meta = SOURCE_META[sib.source] || { Icon: Radio, color: '' };
                               const open = expandedSiblings.has(siblingKey(sib));
                               return (
-                                <button
+                                <FilterChip
                                   key={siblingKey(sib)}
-                                  type="button"
-                                  aria-expanded={open}
+                                  active={open}
                                   onClick={() => toggleSibling(sib)}
-                                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${open ? 'bg-brand/10 ring-brand/40 text-brand dark:text-brand-light' : 'bg-zinc-200/50 text-zinc-600 ring-zinc-900/5 hover:bg-zinc-200 dark:bg-zinc-800/50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-zinc-700/60'}`}
-                                >
-                                  <meta.Icon size={11} className={open ? '' : meta.color} aria-hidden="true" />
-                                  {t(`radar.source.${sib.source}`)}
-                                </button>
+                                  icon={meta.Icon}
+                                  color={meta.color}
+                                  label={t(`radar.source.${sib.source}`)}
+                                />
                               );
                             })}
                           </div>
@@ -556,6 +820,31 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
                     </div>
                   ) : null}
                 </>
+              ) : effectiveFilter === 'new' ? (
+                // The open worklist is empty: everything the scan found is handled. An honest
+                // "all clear" - deliberately NOT a silent fall-back to the full feed (that would
+                // put the already-cleared signals back on screen, the exact thing this default
+                // fixes). One quiet next step: widen to the full feed. No colour on an all-clear.
+                <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
+                  <div className="max-w-sm space-y-2">
+                    <CheckCircle2 size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                    <p className="text-sm font-bold">{t('radar.worklist.empty.title')}</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.worklist.empty.body')}</p>
+                    {/* Two forward moves so an empty worklist is never a near-dead-end: run a
+                        fresh scan (the real "get new finds" action, only when an agent is live and
+                        idle), and widen to the full feed. Scan leads as primary when available. */}
+                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                      {agentLive && hasQueries && !scanning && !jobRunning ? (
+                        <button type="button" onClick={onScan} className={BTN_PRIMARY}>
+                          <RefreshCw size={13} aria-hidden="true" />{t('radar.scanNow')}
+                        </button>
+                      ) : null}
+                      <button type="button" onClick={() => setSignalFilter('all')} className={BTN_QUIET}>
+                        {t('radar.worklist.empty.all')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : (
                 /* Defensive only: the effectiveFilter derivation above makes this unreachable
                    through the chips (a chip only renders when its count > 0, and count>0 means
@@ -563,8 +852,20 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
                    sentence instead of a blank region. */
                 <p className="px-1 py-3 text-xs text-zinc-500 dark:text-zinc-400">{t('radar.filter.empty')}</p>
               )}
-              {/* KI-Sichtbarkeit, minimal: one quiet line at the foot of the feed. */}
-              <GeoStrip geo={feed?.geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={scanning || jobRunning} agentLive={agentLive} />
+              {/* KI-Sichtbarkeit, minimal: one quiet line at the foot of the feed. Per-client
+                  (feed.geo is the active client's), so hidden in the all-projects overview. */}
+              {!allClients ? (
+                <GeoStrip geo={feed?.geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={scanning || jobRunning} agentLive={agentLive} />
+              ) : null}
+            </div>
+          ) : allClients ? (
+            // All-projects overview, nothing found: an honest, simple empty (the per-client
+            // agent-verdict + suggested-search chips belong to a single project's own scan).
+            <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
+              <div className="max-w-sm space-y-2">
+                <Radio size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                <p className="text-sm font-bold">{t('radar.empty')}</p>
+              </div>
             </div>
           ) : (
             <div className="space-y-2">
@@ -579,27 +880,12 @@ export default function Radar({ active = true, campaigns = [], onNavigate, onNew
                   </p>
                   {/* WS2: suggested searches turn the dead end into a next action - one click adds
                       the query. No dead ends (canon). */}
-                  {suggestions.length ? (
+                  {/* WS2: suggested searches turn the dead end into a next action - one click adds
+                      the query (the same chip list the thin-scan row above reuses). No dead ends. */}
+                  {suggestItems.length ? (
                     <div className="space-y-1.5 pt-1">
                       <p className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{t('radar.empty.suggest.title')}</p>
-                      <ul className="flex flex-wrap justify-center gap-1.5">
-                        {suggestions.map((s) => {
-                          const chip = (
-                            <button
-                              type="button"
-                              onClick={() => onAddSuggested(s)}
-                              className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-semibold text-brand ring-1 ring-brand/30 transition hover:bg-brand/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
-                            >
-                              <Plus size={11} aria-hidden="true" />{s.label}
-                            </button>
-                          );
-                          return (
-                            <li key={s.label}>
-                              {s.reason ? <Tip label={s.reason}>{chip}</Tip> : chip}
-                            </li>
-                          );
-                        })}
-                      </ul>
+                      <ul className="flex flex-wrap justify-center gap-1.5">{suggestItems}</ul>
                     </div>
                   ) : null}
                 </div>

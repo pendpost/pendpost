@@ -9,9 +9,9 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, AlertCircle, Play, Loader2, ChevronDown, ChevronRight } from 'lucide-react';
-import { usePendpostHealth, setSchedulerRunning } from '../lib/api.js';
+import { usePendpostHealth, setSchedulerRunning, resumeLane } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
+import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY, PLATFORM_META } from './ui.jsx';
 
 // A pendpost_health blocker arrives as { code, params } (the locale-INDEPENDENT face
 // of the English blockers[]); render it via t() so the readiness panel localizes.
@@ -20,14 +20,22 @@ import { INNER_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 function renderBlocker(t, b) {
   if (!b || !b.code) return '';
   if (b.code === 'blocker.approval') return t(b.code, { state: t(`approval.${b.params?.state}`) });
+  if (b.code === 'blocker.laneBlocked') {
+    // Show the platform under its display name, and fall back to the reason-less
+    // variant when the server recorded no message (never interpolate a null).
+    const platform = PLATFORM_META[b.params?.platform]?.label || b.params?.platform || '';
+    if (!b.params?.reason) return t('blocker.laneBlocked.noReason', { platform });
+    return t(b.code, { platform, reason: b.params.reason });
+  }
   return t(b.code, b.params);
 }
 
-export default function ReadinessChecklist({ hideWhenReady = false, collapsible = false, onNavigate = () => {} }) {
+export default function ReadinessChecklist({ hideWhenReady = false, collapsible = false, onNavigate = () => {}, onOpenPost = null }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data, isLoading } = usePendpostHealth(true);
   const [busy, setBusy] = useState(false);
+  const [busyLane, setBusyLane] = useState(null);
   // On the Planner the panel starts collapsed so the calendar below dominates
   // (owner: "minimize the bereitschaft overview"); first-run renders it open.
   const [open, setOpen] = useState(!collapsible);
@@ -45,28 +53,26 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
   // scheduler-off blocker is NOT a Setup link - it is covered by the dedicated
   // Start button below - so it renders as a calm note rather than a dead-end.
   const usingCodes = blockerCodes.length > 0;
-  // PER-POST blockers do not belong here. This panel is the SETUP checklist and every
-  // row it renders deep-links to Setup, which cannot fix a post a platform rejected.
-  // Worse, blocker.overdueUnpublished carried the failure reason in its params and had
-  // no key in either locale pack, so t() fell back to printing the literal string
-  // "blocker.overdueUnpublished" and threw the reason away - the one bridge that existed
-  // between a stuck post and the operator, rendering as a raw key. The post's own row and
-  // detail view now carry that state (format.js publish-failed, PostDetail failure block).
-  // pendpost_health still emits the blocker: it is the agent's face, and blockers[] is
-  // readable English there.
-  const perPost = new Set(['blocker.overdueUnpublished']);
   // Keep the locale-INDEPENDENT code on each item so the list can key on it
   // rather than the rendered (localized) text - two distinct blockers can
   // localize to identical strings (e.g. duplicate "not connected" lanes),
   // which would collide as React keys and break list reconciliation.
-  const items = (usingCodes ? blockerCodes.filter((b) => !perPost.has(b.code)) : blockers).map((b) => {
+  // blocker.overdueUnpublished is the PER-POST blocker (an approved, past-due post the
+  // publisher could not land, params {campaign, postId, reason}) - the one bridge
+  // between a stuck post and the operator. It renders with its reason and deep-links
+  // to the POST (onOpenPost), not to Setup, which cannot fix a platform rejection.
+  const items = (usingCodes ? blockerCodes : blockers).map((b) => {
     const isScheduler = usingCodes ? b.code === 'blocker.schedulerOff' : /scheduler is off/i.test(b);
-    return { text: usingCodes ? renderBlocker(t, b) : b, code: usingCodes ? b.code : undefined, toSetup: !isScheduler };
+    const post = usingCodes && b.code === 'blocker.overdueUnpublished' && b.params?.campaign && b.params?.postId
+      ? { campaign: b.params.campaign, id: b.params.postId }
+      : null;
+    // blocker.laneBlocked is a halted lane (e.g. X credits depleted): its recovery is
+    // the inline Resume button, not a Setup link - Setup cannot top up an API plan.
+    const lane = usingCodes && b.code === 'blocker.laneBlocked' ? (b.params?.platform || null) : null;
+    return { text: usingCodes ? renderBlocker(t, b) : b, code: usingCodes ? b.code : undefined, toSetup: !isScheduler && !post && !lane, post, lane };
   });
-  // Ready FOR THIS PANEL: the server can report not-ready purely because of a per-post
-  // blocker we just filtered out. Deriving readiness from the rows that actually render
-  // keeps the badge count, the empty list and the "all set" line from contradicting each
-  // other. The post itself still shows its failure - this panel simply is not its home.
+  // Ready FOR THIS PANEL derives from the rows that actually render, so the badge
+  // count, the list and the "all set" line can never contradict each other.
   const ready = serverReady || items.length === 0;
   // US-ONB-12: a fresh workspace repeats the same "not connected" sentence once
   // per lane - eight identical rows of homework. Identical not-connected rows
@@ -87,6 +93,19 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
   // uncluttered. The first-run panel always renders (it confirms readiness too).
   if (hideWhenReady && ready) return null;
   const blockerCount = ready ? 0 : rows.length + (aggregate ? 1 : 0);
+
+  const onResumeLane = async (lane) => {
+    if (busyLane) return;
+    setBusyLane(lane);
+    try {
+      await resumeLane(lane);
+    } finally {
+      setBusyLane(null);
+      queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
+      queryClient.invalidateQueries({ queryKey: ['plans'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    }
+  };
 
   const startScheduler = async () => {
     if (busy) return;
@@ -164,7 +183,38 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
               ) : null}
               {rows.map((item, i) => (
                 <li key={`${i}-${item.code ?? item.text}`}>
-                  {item.toSetup ? (
+                  {item.post && onOpenPost ? (
+                    // Per-post failure: deep-link to the affected POST itself (the
+                    // detail drawer carries the recovery verbs), not to Setup.
+                    <button
+                      type="button"
+                      onClick={() => onOpenPost(item.post)}
+                      className={`group flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-1 hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
+                    >
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-xs">{item.text}</span>
+                        <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{item.post.campaign}</span>
+                      </span>
+                      <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
+                    </button>
+                  ) : item.lane ? (
+                    // Halted lane: the recovery action lives IN the error row (resume
+                    // re-arms publishing and releases the holds the halt parked).
+                    <div className={`flex items-start gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 text-xs">{item.text}</span>
+                      <button
+                        type="button"
+                        onClick={() => onResumeLane(item.lane)}
+                        disabled={busyLane != null}
+                        className="flex shrink-0 items-center gap-1 rounded-lg border border-zinc-300 px-2 py-1 text-[11px] font-bold transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:border-zinc-600 dark:hover:bg-zinc-700/60"
+                      >
+                        {busyLane === item.lane ? <Loader2 size={11} className="animate-spin" aria-hidden="true" /> : null}
+                        {t('readiness.resumeLane')}
+                      </button>
+                    </div>
+                  ) : item.toSetup ? (
                     // Calm + clickable: zinc (not amber-alarm), deep-links to Setup
                     // so a "not connected" lane reads as a setup step, not an error.
                     <button

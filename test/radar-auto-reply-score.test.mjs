@@ -1,17 +1,16 @@
 #!/usr/bin/env node
-// test/radar-auto-reply-score.test.mjs - the SCORE THRESHOLD on the opt-in auto-reply gate (spec C).
+// test/radar-auto-reply-score.test.mjs - the SCORE THRESHOLD on the opt-in auto-reply gate (spec C),
+// re-pinned after the DECOUPLING (engagement engine, owner decision 2026-08-17):
 //
-// The owner's ask (round 3 sharpened it): minScore is THE DRAFT THRESHOLD - below it the system
-// does not draft at all; at/above it drafts are created and (with auto-reply armed) auto-approved.
-// The threshold gates on the AGENT's score ONLY. A regex "Match 16" and an agent's 80 are
-// incommensurable numbers, and auto-posting to a stranger on a number whose meaning changes per
-// row is the footgun the Fable-5 review flagged. So:
-//   - minScore SET   -> an agent-scored signal BELOW it is refused at queue time with code
-//     below_threshold (no draft, reply and copy paths alike); at/above it queues, and
-//     auto-approve additionally requires scoredBy==='agent' AND intentScore >= minScore.
-//   - minScore UNSET -> the pre-existing gate (enabled + lane + fences), byte-unchanged.
-//   - engine-scored or uncached signal under a threshold -> still queues (a pending draft a
-//     human reads is harmless) but NEVER auto-approves (fail-closed).
+//   - autoReply.minScore gates ONLY the AUTO-APPROVE decision. It no longer refuses drafts at
+//     the queue door - that job moved to posting.radar.drafting.minScore (default 30), so a
+//     signal above the drafting threshold but below autoReply.minScore queues PENDING for a
+//     human and is NEVER auto-approved. Volume changed; autonomy did not.
+//   - the auto-approve gate still requires scoredBy==='agent' AND intentScore >= minScore:
+//     a regex "Match 16" and an agent's 80 are incommensurable numbers, and auto-posting to a
+//     stranger on a number whose meaning changes per row is the footgun the Fable-5 review
+//     flagged. Engine-scored and uncached signals never auto-post under a threshold.
+//   - minScore UNSET -> the pre-existing auto-approve gate (enabled + lane + fences).
 import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -65,15 +64,20 @@ try {
   const hi = await seed({ score: 80 });
   ok((await queue(hi)).approval === 'approved', 'agent-scored 80 >= threshold 70 -> auto-approved');
 
+  // THE DECOUPLING PIN: agent-scored 30 clears the DRAFTING threshold (default 30, inclusive)
+  // so it QUEUES - but it is below autoReply.minScore 70, so it lands PENDING for a human and
+  // is never auto-approved. Under the old coupling this was refused outright; the owner wants
+  // the draft (volume), just not the autonomy.
   const lo = await seed({ score: 30 });
   const loRes = await queue(lo);
-  ok(loRes.code === 'below_threshold' && loRes.ok !== true, "agent-scored 30 < threshold 70 -> REFUSED with below_threshold: the owner's draft threshold means no draft at all");
+  ok(loRes.ok === true && loRes.approval === 'pending',
+    'agent-scored 30: above drafting.minScore (30, inclusive) -> DRAFTS; below autoReply.minScore 70 -> PENDING, never auto-approved');
 
-  // The COPY path honors the same threshold: a draft is a draft, whether it posts via API or
-  // is pasted by hand. (hackernews is a copy-draft lane; the signal must be cached, and is.)
+  // The COPY path honors the DRAFTING threshold: a draft is a draft, whether it posts via API
+  // or is pasted by hand. 25 < drafting.minScore 30 -> no draft at all.
   const loCopy = await seed({ source: 'hackernews', score: 25 });
   const loCopyRes = await queue(loCopy);
-  ok(loCopyRes.code === 'below_threshold' && loCopyRes.ok !== true, 'copy path (hackernews), agent-scored 25 < 70 -> refused with below_threshold too');
+  ok(loCopyRes.code === 'below_threshold' && loCopyRes.ok !== true, 'copy path (hackernews), agent-scored 25 < drafting.minScore 30 -> refused with below_threshold (the drafting door)');
   const hiCopy = await seed({ source: 'hackernews', score: 75 });
   const hiCopyRes = await queue(hiCopy);
   ok(hiCopyRes.ok === true && hiCopyRes.mode === 'copy', 'copy path at/above the threshold still saves the copy-paste suggestion');
@@ -89,7 +93,7 @@ try {
   const orphan = await queueRadarReply({ campaign: CAMP, signalUrl: 'https://example.com/orphan', source: 'reddit', externalId: 'not-seeded', text: 'clean answer', actor: 'agent:claude', confirm: true });
   ok(orphan.approval === 'pending', 'uncached signal under a threshold stays pending (fail-closed)');
 
-  console.log(`\n[radar-auto-reply-score] OK - the threshold gates auto-reply on the agent score only (${pass} assertions).`);
+  console.log(`\n[radar-auto-reply-score] OK - autoReply.minScore gates the auto-approve decision ONLY (agent score, inclusive, fail-closed for engine-scored/uncached); the draft door belongs to drafting.minScore (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

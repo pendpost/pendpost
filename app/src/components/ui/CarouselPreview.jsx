@@ -38,7 +38,7 @@ function Slide({ item, t }) {
   if (!item?.url) {
     return (
       <div className={`grid h-full w-full place-items-center gap-1 px-3 text-center ${PLACEHOLDER}`}>
-        <ImageOff size={18} className="text-amber-600 dark:text-amber-300" aria-hidden="true" />
+        <ImageOff size={18} className="text-amber-700 dark:text-amber-300" aria-hidden="true" />
         <p role="status" className="text-[11px] text-amber-700 dark:text-amber-300">
           {t('ui.preview.mediaNotFound', { file: item?.file || t('postDetail.file.missing') })}
         </p>
@@ -161,7 +161,7 @@ export function CarouselPreview({ items = [], aspect, ratio, mixed, onEdit }) {
                     <img src={item.url} alt="" loading="lazy" className={`h-full w-full object-cover ${PLACEHOLDER}`} />
                   ) : (
                     <span className={`grid h-full w-full place-items-center ${PLACEHOLDER}`}>
-                      <ImageOff size={13} className={item?.url ? 'text-zinc-500 dark:text-zinc-400' : 'text-amber-600 dark:text-amber-300'} aria-hidden="true" />
+                      <ImageOff size={13} className={item?.url ? 'text-zinc-500 dark:text-zinc-400' : 'text-amber-700 dark:text-amber-300'} aria-hidden="true" />
                     </span>
                   )}
                   <span className="absolute left-0.5 top-0.5 rounded bg-black/60 px-1 text-[9px] font-bold tabular-nums text-white">{n + 1}</span>
@@ -178,7 +178,7 @@ export function CarouselPreview({ items = [], aspect, ratio, mixed, onEdit }) {
       {status ? (
         <div className={`flex flex-wrap items-center gap-2 rounded-xl p-2 ${INNER_SURFACE}`}>
           <p role="status" className="flex min-w-0 flex-1 items-start gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-300">
-            <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
+            <AlertTriangle size={12} className="mt-0.5 shrink-0 text-amber-700 dark:text-amber-300" aria-hidden="true" />
             <span>{status}</span>
           </p>
           {onEdit ? (

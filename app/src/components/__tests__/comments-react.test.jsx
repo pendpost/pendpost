@@ -105,7 +105,7 @@ describe('CommentsPanel react control (spec 24)', () => {
     await user.click(fav);
     await waitFor(() => expect(reactMock).toHaveBeenCalledTimes(1));
     // (campaign, postId, commentId, reaction, platform, emoji, remove, authorPubkey)
-    expect(reactMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'favourite', 'mastodon', undefined, false, 'mock_reader');
+    expect(reactMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'favourite', 'mastodon', undefined, false, 'mock_reader', undefined);
     expect(spy).toHaveBeenCalledWith({ queryKey: ['plans'] });
     expect(refetchMock).toHaveBeenCalled();
     // The active reaction shows the pressed state after success (the picker stays open).
@@ -121,7 +121,7 @@ describe('CommentsPanel react control (spec 24)', () => {
     // A second click on the ACTIVE reaction un-reacts (remove:true) and toggles it off.
     await user.click(screen.getByRole('button', { name: /^favourite$/i }));
     await waitFor(() => expect(reactMock).toHaveBeenCalledTimes(2));
-    expect(reactMock).toHaveBeenLastCalledWith('c1', 'p1', 'c-1', 'favourite', 'mastodon', undefined, true, 'mock_reader');
+    expect(reactMock).toHaveBeenLastCalledWith('c1', 'p1', 'c-1', 'favourite', 'mastodon', undefined, true, 'mock_reader', undefined);
     await waitFor(() => expect(screen.getByRole('button', { name: /^favourite$/i })).toHaveAttribute('aria-pressed', 'false'));
   });
 
@@ -133,7 +133,7 @@ describe('CommentsPanel react control (spec 24)', () => {
     renderPanel();
     await user.click(screen.getByRole('button', { name: /^react$/i }));
     await waitFor(() => expect(reactMock).toHaveBeenCalledTimes(1));
-    expect(reactMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'emoji', 'telegram', '👍', false, 'mock_reader');
+    expect(reactMock).toHaveBeenCalledWith('c1', 'p1', 'c-1', 'emoji', 'telegram', '👍', false, 'mock_reader', undefined);
   });
 
   it('surfaces an inline error when the reaction fails (never a silent success)', async () => {

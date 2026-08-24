@@ -110,16 +110,18 @@ describe('postDot agrees with the card pill (one bucket, one color)', () => {
     for (const p of cases) expect(postDot(p)).toBe(STATUS_PILL_META[postStatusKey(p)].dot);
   });
 
-  it('paints rejected and approved-overdue red, but a draft-that-is-past-due stays the draft hue', () => {
-    expect(postDot({ approval: 'rejected', derivedState: 'waiting-due' })).toBe('bg-red-500');
-    expect(postDot({ approval: 'approved', derivedState: 'overdue' })).toBe('bg-red-500');
-    // draft+overdue: the card calls it "draft", so the dot must too (slate, not red).
-    expect(postDot({ approval: 'draft', derivedState: 'overdue' })).toBe('bg-slate-400');
+  it('paints rejected deep-red and approved-overdue light-red, but a draft-that-is-past-due stays the draft grey', () => {
+    // Staircase: rejected is the DEEP-red terminus (bg-red-600); a halted/overdue post
+    // is the softer light-red (bg-rose-400) - a failure pendpost can retry, not a rejection.
+    expect(postDot({ approval: 'rejected', derivedState: 'waiting-due' })).toBe('bg-red-600');
+    expect(postDot({ approval: 'approved', derivedState: 'overdue' })).toBe('bg-rose-400');
+    // draft+overdue: the card calls it "draft", so the dot must too (grey, not red).
+    expect(postDot({ approval: 'draft', derivedState: 'overdue' })).toBe('bg-zinc-400');
   });
 
-  it('gives settled buckets distinct calm hues (upcoming vs published vs parked)', () => {
-    expect(postDot({ approval: 'approved', derivedState: 'waiting-due' })).toBe('bg-sky-500');
-    expect(postDot({ approval: 'approved', derivedState: 'posted' })).toBe('bg-emerald-500');
+  it('gives settled buckets distinct staircase hues (upcoming light-green vs published deep-green vs parked grey)', () => {
+    expect(postDot({ approval: 'approved', derivedState: 'waiting-due' })).toBe('bg-emerald-400');
+    expect(postDot({ approval: 'approved', derivedState: 'posted' })).toBe('bg-emerald-600');
     expect(postDot({ approval: 'approved', derivedState: 'parked' })).toBe('bg-zinc-400');
   });
 });

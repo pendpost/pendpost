@@ -109,4 +109,36 @@ describe('ConnectionStatus', () => {
     await user.click(await screen.findByRole('button', { name: 'Set up 24/7 service' }));
     expect(onNavigate).toHaveBeenCalledWith('cloud');
   });
+
+  // Every red (broken) state names the planner as where the fix happens, so every red
+  // state must offer the planner CTA - not only the ones that carry a missed-count.
+  // manifest_error is the regression that motivated this: its counts are structurally
+  // zero (the reason ladder puts overdue/failed first), so gating the CTA on a count
+  // stranded the one red state whose copy says "fix it in the planner" with only a
+  // "Manage cloud" button that routes to the wrong page.
+  function cloudOnBroken(reason, counts = {}) {
+    cloudState = { data: { workspaceId: 'ws_1', enabled: true, apiKey: { present: true }, sync: { state: 'red', reason, pendingCount: 0, overdueCount: 0, failedCount: 0, ...counts } }, isLoading: false };
+    clientsState = { data: { clients: [{ clientId: 'acme', active: true, alwaysOn: true }] } };
+  }
+
+  it('red manifest_error (zero missed-count): still offers the planner CTA', async () => {
+    const user = userEvent.setup();
+    const onShowAtRisk = vi.fn();
+    cloudOnBroken('manifest_error');
+    renderStatus({ running: false, onShowAtRisk });
+    await user.click(trigger());
+    const cta = await screen.findByRole('button', { name: 'View in planner' });
+    await user.click(cta);
+    expect(onShowAtRisk).toHaveBeenCalledTimes(1);
+  });
+
+  it('red cloud_failures (missed-count > 0): still offers the planner CTA', async () => {
+    const user = userEvent.setup();
+    const onShowAtRisk = vi.fn();
+    cloudOnBroken('cloud_failures', { failedCount: 1 });
+    renderStatus({ running: false, onShowAtRisk });
+    await user.click(trigger());
+    await user.click(await screen.findByRole('button', { name: 'View in planner' }));
+    expect(onShowAtRisk).toHaveBeenCalledTimes(1);
+  });
 });

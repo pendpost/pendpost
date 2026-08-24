@@ -2,12 +2,15 @@ import { useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   ExternalLink, Reply, CircleSlash, Pencil, Radio, Globe, Pin, Bot, ChevronDown,
-  Search, Check, FileText, Loader2, MessageSquareReply, MoreHorizontal, Copy, Sprout, AtSign,
+  Search, Check, FileText, Loader2, MessageSquareReply, MoreHorizontal, Copy, Sprout, AtSign, Link2,
 } from 'lucide-react';
-import { fmtRelative, mastodonThreadUrl } from '../../lib/format.js';
-import { radarBacklogTriage, radarMarkCopyPosted, radarDraftComparison } from '../../lib/api.js';
-import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, EYEBROW, DISABLED_PRIMARY } from '../ui.jsx';
+import { fmtRelative, mastodonThreadUrl, isAbsoluteHttpUrl } from '../../lib/format.js';
+import { radarBacklogTriage, radarMarkCopyPosted, radarDraftComparison, markPosted, errText } from '../../lib/api.js';
+import { PLATFORM_META, INNER_SURFACE, FIELD, FIELD_MULTILINE, EYEBROW, FilterChip } from '../ui.jsx';
+import { PILL_BASE, PILL_TONES, BTN_PRIMARY, BTN_QUIET, BTN_GHOST, PROJECT_CHIP } from '../ui/recipes.js';
+import { ClientAvatar } from '../ClientSwitcher.jsx';
 import { Tip } from '../ui/Tooltip.jsx';
+import LinkCaptureRow from '../ui/LinkCaptureRow.jsx';
 import HistoryChip from '../HistoryChip.jsx';
 import { Select } from '../ui/Select.jsx';
 import { useLint, LintPanel } from '../Composer.jsx';
@@ -18,8 +21,6 @@ import { useLint, LintPanel } from '../Composer.jsx';
 // comparison-page BacklogRow, and the shared row helpers (source glyphs, thread pill, copy path,
 // live elapsed clock, intent tier). Pure structural extraction: no behaviour change. The GEO
 // cluster lives in ./RadarGeo.jsx; the thin composing shell is ../Radar.jsx.
-
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 // The four Radar sources - all now have a brand glyph in the shared PLATFORM_META
 // (spec 33 added bluesky + hackernews marks). The human label is externalized via the
@@ -40,6 +41,10 @@ const SOURCE_META = {
   youtube: PLATFORM_META.youtube,
   // WP7: nostr is agent-found like x/youtube; answers travel the copy path (no reply lane yet).
   nostr: PLATFORM_META.nostr,
+  // 2026-08-19: LinkedIn + Instagram are agent-found like x - no stranger-reply API, so answers
+  // travel the copy path. Brand glyph on a signal row; never a search source (search:false).
+  linkedin: PLATFORM_META.linkedin,
+  instagram: PLATFORM_META.instagram,
 };
 // The "where from" label for a signal row: the community/subreddit when the source carried
 // one, else (spec 38) the url's domain for a web signal - so an open-web result always shows
@@ -55,11 +60,11 @@ function signalWhere(signal) {
 const sourceLabel = (t, id) => t(`radar.source.${id}`);
 
 // Reusable button treatments for the signal card's action bar. ONE primary per card (canon #4)
-// gets PRIMARY_BTN (filled brand); everything else is QUIET_BTN (ring) or GHOST_BTN (text). The
+// gets BTN_PRIMARY (filled brand); everything else is BTN_QUIET (ring) or BTN_GHOST (text). The
 // old card had three flat text buttons and no clear lead - the owner's word was "chaotic".
-const PRIMARY_BTN = `inline-flex items-center gap-1.5 rounded-xl bg-brand px-3 py-1.5 text-xs font-bold text-white transition dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`;
-const QUIET_BTN = 'inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5';
-const GHOST_BTN = 'inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 transition hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200';
+// UX issue 10: promoted to the shared ui/recipes.js tokens (imported above) so every surface
+// speaks the same status/action language; these three names stay as local aliases only in the
+// history above this line - the file now imports, never redefines, them.
 
 // The thread link, once, as a real pill (the owner: "make it a pill", "more clearly than the
 // little link icon"). Primary when opening the post IS the card's move (replied / surface-only /
@@ -68,7 +73,7 @@ function OpenPill({ signal, accounts, t, primary }) {
   if (!signal.url) return null;
   return (
     <Tip label={t('radar.signal.openThread')}>
-      <a href={mastodonThreadUrl(signal, accounts)} target="_blank" rel="noreferrer" className={primary ? PRIMARY_BTN : QUIET_BTN}>
+      <a href={mastodonThreadUrl(signal, accounts)} target="_blank" rel="noreferrer" className={primary ? BTN_PRIMARY : BTN_QUIET}>
         <ExternalLink size={13} aria-hidden="true" />
         {t('radar.signal.openOn', { platform: sourceLabel(t, signal.source) })}
       </a>
@@ -102,10 +107,14 @@ function CopyOpenBtn({ signal, accounts, text, t }) {
     if (signal.url) window.open(mastodonThreadUrl(signal, accounts), '_blank', 'noopener');
   };
   const mark = async () => {
+    // The link stays optional here, but a PRESENT link must be an absolute http(s)
+    // URL - refused client-side with the localized message (the raw English engine
+    // string never reaches this German-capable surface). The typed value survives.
+    if (url.trim() && !isAbsoluteHttpUrl(url)) { setErr(t('radar.copyPosted.linkInvalid')); return; }
     setSaving(true);
     setErr(null);
     try {
-      await radarMarkCopyPosted(signal.source, signal.externalId, url.trim() || undefined);
+      await radarMarkCopyPosted(signal.source, signal.externalId, url.trim() || undefined, signal.clientId);
       queryClient.invalidateQueries({ queryKey: ['radar'] });
       // The invalidation re-renders this row with signal.copyPosted set -> the posted pill.
     } catch (e) {
@@ -113,39 +122,100 @@ function CopyOpenBtn({ signal, accounts, text, t }) {
       setSaving(false);
     }
   };
-  // Already recorded: collapse to the confirmation pill (link when we have one).
+  // The shared link-capture row (ui/LinkCaptureRow): paste the live post's URL,
+  // save the marker/correction. The link stays optional here - the honest marker
+  // "I posted it" exists without proof and stays repairable.
+  const linkRow = (
+    <LinkCaptureRow
+      value={url}
+      onChange={setUrl}
+      onSave={mark}
+      saving={saving}
+      error={err}
+      placeholder={t('radar.copyPosted.linkPlaceholder')}
+      inputLabel={t('radar.copyPosted.linkLabel')}
+      label={t('radar.copyPosted.mark')}
+    />
+  );
+  // Already recorded: collapse to the confirmation pill (link when we have one). A LINKLESS
+  // mark stays honest and repairable: the pill renders plain plus a quiet add-a-link
+  // affordance - the server upsert corrects the marker without wiping anything.
   if (posted) {
-    const cls = 'inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300';
-    return posted.postedUrl
-      ? <a href={posted.postedUrl} target="_blank" rel="noreferrer" className={cls}><Check size={13} aria-hidden="true" />{t('radar.copyPosted.done')}</a>
-      : <span className={cls}><Check size={13} aria-hidden="true" />{t('radar.copyPosted.done')}</span>;
+    // UX issue 10: re-expressed on the shared status-pill tokens (tone ok). The link variant is
+    // the one allowed exception (a pill MAY be a link when its sole behaviour is "open the thing
+    // it names") - cursor-pointer + underline-on-hover make that affordance visible.
+    const cls = `${PILL_BASE} ${PILL_TONES.ok}`;
+    if (posted.postedUrl) {
+      return <a href={posted.postedUrl} target="_blank" rel="noreferrer" className={`${cls} cursor-pointer underline-offset-2 hover:underline`}><Check size={13} aria-hidden="true" />{t('radar.copyPosted.done')}</a>;
+    }
+    return (
+      <span className="inline-flex flex-wrap items-center gap-2">
+        <span className={cls}><Check size={13} aria-hidden="true" />{t('radar.copyPosted.done')}</span>
+        {reveal ? linkRow : (
+          <button type="button" onClick={() => setReveal(true)} className={BTN_GHOST}>
+            <Link2 size={13} aria-hidden="true" />{t('radar.copyPosted.addLink')}
+          </button>
+        )}
+      </span>
+    );
   }
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Tip label={t('radar.reply.copyOpen.tip', { platform: sourceLabel(t, signal.source) })}>
-        <button type="button" onClick={go} className={PRIMARY_BTN} aria-live="polite">
+        <button type="button" onClick={go} className={BTN_PRIMARY} aria-live="polite">
           {copied ? <Check size={13} aria-hidden="true" /> : <Copy size={13} aria-hidden="true" />}
           {copied ? t('radar.reply.copied') : t('radar.reply.copyOpen')}
         </button>
       </Tip>
-      {reveal ? (
-        <span className="inline-flex items-center gap-1">
-          <input
-            type="url"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder={t('radar.copyPosted.linkPlaceholder')}
-            aria-label={t('radar.copyPosted.linkLabel')}
-            className={`w-44 rounded-lg border-0 px-2 py-1 text-xs ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
-          />
-          <button type="button" onClick={mark} disabled={saving} className={QUIET_BTN}>
-            {saving ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Check size={13} aria-hidden="true" />}
-            {t('radar.copyPosted.mark')}
-          </button>
-        </span>
-      ) : null}
-      {err ? <span className="text-[11px] text-red-600 dark:text-red-400">{err}</span> : null}
+      {reveal ? linkRow : null}
     </div>
+  );
+}
+
+// The repair path for a claim without proof: a reply marked posted by hand with NO link
+// (replied.via 'manual'). One quiet affordance pastes the live answer's URL; the server's
+// one legal mark-posted re-entry stores it and the next read upgrades the badge to a real
+// "Beantwortet" link. No new write, no new panel - the same inline row the copy path uses.
+function AttachAnswerLink({ replied, t }) {
+  const queryClient = useQueryClient();
+  const [reveal, setReveal] = useState(false);
+  const [url, setUrl] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  const save = async () => {
+    if (!url.trim()) return;
+    // Client-side gate: same absolute-http(s) rule the server enforces, localized.
+    if (!isAbsoluteHttpUrl(url)) { setErr(t('radar.copyPosted.linkInvalid')); return; }
+    setSaving(true);
+    setErr(null);
+    try {
+      await markPosted(replied.campaign, replied.postId, url.trim());
+      queryClient.invalidateQueries({ queryKey: ['radar'] });
+      queryClient.invalidateQueries({ queryKey: ['plans'] });
+    } catch (e) {
+      setErr(e?.message || t('radar.copyPosted.failed'));
+      setSaving(false);
+    }
+  };
+  if (!reveal) {
+    return (
+      <button type="button" onClick={() => setReveal(true)} className={BTN_GHOST}>
+        <Link2 size={13} aria-hidden="true" />{t('radar.copyPosted.addLink')}
+      </button>
+    );
+  }
+  return (
+    <LinkCaptureRow
+      value={url}
+      onChange={setUrl}
+      onSave={save}
+      saving={saving}
+      error={err}
+      placeholder={t('radar.copyPosted.linkPlaceholder')}
+      inputLabel={t('radar.copyPosted.linkLabel')}
+      label={t('radar.copyPosted.mark')}
+      requireValue
+    />
   );
 }
 
@@ -265,6 +335,10 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
   if (!job) return null;
   const running = job.state === 'running';
   const failed = job.state === 'failed';
+  // A promoted partial (Stage 2/4): a done run where some sources did not finish, or a timeout that
+  // still ingested signals. It reads as an AMBER caveat + retry, never a red dead-end - the results
+  // that landed are real. `retrying` is true only during the auto-retry backoff (Stage 3).
+  const partial = job.partial === true;
   // The standalone KI-Sichtbarkeit recheck (scope:'geo') reads differently: it researches no
   // sources and ingests no signals, so the source-named phase and the "N gemeldet/verworfen" tally
   // would both be nonsense on it. It gets its own lead, phase, and done line.
@@ -285,9 +359,12 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
   const queryLabel = job.queryId ? (queries.find((q) => q.id === job.queryId)?.label || '').trim() : '';
   const lead = isGeo
     ? t('radar.agent.job.geo')
-    : job.queryId
-      ? (queryLabel ? t('radar.agent.job.one.named', { name: queryLabel }) : t('radar.agent.job.one'))
-      : t('radar.agent.job.all');
+    // The operator's draft-this-signal tap (scope:'draft-one'): no research, one held draft.
+    : job.scope === 'draft-one'
+      ? t('radar.agent.job.draftOne')
+      : job.queryId
+        ? (queryLabel ? t('radar.agent.job.one.named', { name: queryLabel }) : t('radar.agent.job.one'))
+        : t('radar.agent.job.all');
   const activity = Array.isArray(job.activity) ? job.activity : [];
   // The live line carries what the child is DOING; the found-tally already lives in the
   // header ("n found so far"). Echoing a per-call "1 finding reported" beside that total
@@ -297,7 +374,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
   return (
     <section aria-label={t('radar.agent.job.label')} className={`rounded-xl px-3 py-2 text-sm ${INNER_SURFACE}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <Bot size={14} className={`shrink-0 ${failed ? 'text-red-500' : 'text-brand dark:text-brand-light'}`} aria-hidden="true" />
+        <Bot size={14} className={`shrink-0 ${failed ? 'text-red-500' : partial ? 'text-amber-500' : 'text-brand dark:text-brand-light'}`} aria-hidden="true" />
         <span className="font-semibold text-zinc-600 dark:text-zinc-300">
           {lead}
         </span>
@@ -332,6 +409,13 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
                 <span className="text-zinc-500 dark:text-zinc-400">{t('radar.agent.job.picked', { n: job.draftTargets })}</span>
               </>
             ) : null}
+            {/* Stage 3: the auto-retry backoff, so a transient blip does not read as a stall. */}
+            {job.retrying ? (
+              <>
+                <span className="text-zinc-300 dark:text-zinc-600" aria-hidden="true">·</span>
+                <span className="text-amber-700 dark:text-amber-400">{t('radar.agent.job.retrying')}</span>
+              </>
+            ) : null}
             {/* A job spends the operator's subscription. Anything spending money needs a way
                 out before the 10-minute timeout. */}
             <button type="button" onClick={onStop} disabled={stopping} className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 disabled:opacity-50 dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-white/5">
@@ -353,6 +437,11 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
         ) : null}
         {failed ? (
           <span className="text-red-600 dark:text-red-400">{t(`radar.agent.job.reason.${job.reason}`) || job.reason}</span>
+        ) : null}
+        {/* Stage 2/4: the partial caveat rides beside the done tally, in amber and role=status
+            (informative, not an alert): the results DID land, some sources just did not finish. */}
+        {partial && job.reason ? (
+          <span role="status" className="text-amber-700 dark:text-amber-400">{t(`radar.agent.job.reason.${job.reason}`) || ''}</span>
         ) : null}
         {/* On a settled job the transcript disclosure packs into THIS line ("space is earned"):
             its old home was a whole row holding one small button and nothing else. */}
@@ -459,9 +548,10 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
         </button>
       ) : null}
       {/* Every other failure recovers by trying again - the error strip offers that action
-          itself (an error without its recovery is a dead end). Setup-shaped failures keep the
-          Setup link above instead: a retry cannot mint a token. */}
-      {failed && onRetry && ['exit', 'limit', 'timeout', 'agent_error', 'failed', 'spawn_failed'].includes(job.reason) ? (
+          itself (an error without its recovery is a dead end). A partial run offers it too: the
+          sources that did not finish are worth another pass. Setup-shaped failures keep the Setup
+          link above instead: a retry cannot mint a token. */}
+      {onRetry && ((failed && ['exit', 'limit', 'timeout', 'agent_error', 'failed', 'spawn_failed'].includes(job.reason)) || partial) ? (
         <button type="button" onClick={onRetry} disabled={retryBusy} className="mt-1 text-xs font-semibold text-brand underline-offset-2 hover:underline disabled:opacity-50">
           {t('radar.agent.job.retry')}
         </button>
@@ -470,15 +560,25 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
   );
 }
 
-// Every chip except "all" hides at zero: a permanent "0" chip is furniture, and a CLICKABLE
-// zero chip is worse - it filters to a guaranteed-empty list under a header still advertising
-// the total ("8 Signale" above "Keine Signale in dieser Ansicht"). One uniform rule, no
-// per-chip exception set.
+// Every chip except the two ANCHORS ("all" and the default "new" worklist) hides at zero: a
+// permanent "0" facet chip is furniture, and a CLICKABLE zero chip is worse - it filters to a
+// guaranteed-empty list under a header still advertising the total ("8 Signale" above "Keine
+// Signale in dieser Ansicht"). The anchors always render so the operator can always return to
+// the full feed or the worklist; an empty worklist shows its own "all clear" state, not a
+// misleading blank under a count.
 const SIGNAL_FILTERS = [
-  { key: 'all', label: 'radar.stats.all', count: (c) => c.signals },
+  // 'new' = the OPEN worklist (everything not yet handled) and the DEFAULT landing view, so it
+  // leads the row. It is an ANCHOR chip like 'all': always rendered (even at count 0, where its
+  // "all clear" empty state takes over), never auto-degraded.
   { key: 'new', label: 'radar.stats.new', count: (c) => c.newCount },
+  { key: 'all', label: 'radar.stats.all', count: (c) => c.signals },
+  // Direction C: "replied to you" LEADS the meaningful facets (an author answering back is the
+  // hottest open item in the feed) and carries the reply glyph so it reads distinct from the rest.
+  { key: 'repliedToYou', label: 'radar.stats.repliedToYou', icon: MessageSquareReply, count: (c) => c.repliedToYou },
   { key: 'actionable', label: 'radar.stats.actionable', count: (c) => c.actionable },
-  { key: 'answered', label: 'radar.stats.answered', count: (c) => c.answered },
+  // "Done": threads we have already answered (posted reply / copy-posted), split OUT of the live
+  // "replied to you" state so the two opposite urgencies never share one chip.
+  { key: 'done', label: 'radar.stats.done', count: (c) => c.done },
   // Karma builder: the warm-up items (comments + post ideas) surfaced to warm a cold Reddit account.
   { key: 'karma', label: 'radar.stats.karma', count: (c) => c.karma },
   // R9 brand mentions (reputation): the signals a mention query surfaced.
@@ -489,25 +589,17 @@ function StatFilters({ counts, value, onChange, sortBy, onSort, t }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <div role="group" aria-label={t('radar.filter.label')} className="flex flex-wrap gap-1.5">
-        {SIGNAL_FILTERS.filter((f) => f.key === 'all' || f.count(counts) > 0).map((f) => {
-          const on = value === f.key;
-          return (
-            <button
-              key={f.key}
-              type="button"
-              aria-pressed={on}
-              onClick={() => onChange(f.key)}
-              className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 transition ${on ? 'bg-brand/15 text-brand ring-brand/40 dark:text-brand-light' : 'text-zinc-500 ring-zinc-300/60 hover:text-zinc-700 dark:ring-zinc-600/60 dark:hover:text-zinc-300'}`}
-            >
-              {t(f.label, { n: f.count(counts) })}
-            </button>
-          );
-        })}
+        {/* UX issue 10: the counts-as-filters row now renders through the ONE shared FilterChip
+            (ui.jsx) instead of its own bespoke chip class - one filter-chip implementation
+            app-wide, active state keeps FilterChip's filled-brand look. */}
+        {SIGNAL_FILTERS.filter((f) => f.key === 'all' || f.key === 'new' || f.count(counts) > 0).map((f) => (
+          <FilterChip key={f.key} active={value === f.key} onClick={() => onChange(f.key)} icon={f.icon} label={t(f.label, { n: f.count(counts) })} />
+        ))}
       </div>
-      {/* Sort, right-aligned: priority (the ranked default) or thread recency. Two words,
-          one active - a Select for a two-value choice would be ceremony. */}
+      {/* Sort, right-aligned: priority (best chances first), newly found (radar ingest time),
+          or newly posted (the post's own time). One active - three words, no Select ceremony. */}
       <div role="group" aria-label={t('radar.sort.label')} className="ml-auto flex gap-1">
-        {['priority', 'newest'].map((k) => (
+        {['priority', 'found', 'posted'].map((k) => (
           <button
             key={k}
             type="button"
@@ -556,7 +648,7 @@ function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, t }) {
   return (
     <div ref={ref} className="relative">
       <Tip label={t('radar.signal.more')}>
-        <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('radar.signal.more')} onClick={() => setOpen((v) => !v)} className={`${GHOST_BTN} px-1.5`}>
+        <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('radar.signal.more')} onClick={() => setOpen((v) => !v)} className={`${BTN_GHOST} px-1.5`}>
           <MoreHorizontal size={16} aria-hidden="true" />
         </button>
       </Tip>
@@ -595,7 +687,7 @@ function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, t }) {
 // The intent-tag vocabulary the fact row can humanize (lib/radar.mjs spec 32 §4); an
 // unknown tag renders nothing rather than a raw enum (canon: humanize machine labels).
 const SIGNAL_TAGS = ['buying-question', 'alternative-seeking', 'competitor-mention', 'pain-described'];
-function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, replyIncapable, copyCapable, isKarma = false, isPostIdea = false, isMention = false, campaigns, autoReply, queryLabel, onQueueReply, onApproveDraft, onDismiss, onWatch, onNavigate, onNewPost, t }) {
+function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, replyIncapable, copyCapable, isKarma = false, isPostIdea = false, isMention = false, campaigns, autoReply, draftMinScore = 30, queryLabel, onQueueReply, onApproveDraft, onDismiss, onWatch, onNavigate, onNewPost, onOpenPost, onDraftNow, draftingNow = false, draftFailed = false, agentBusy = false, agentReady = false, t }) {
   const src = SOURCE_META[signal.source] || { Icon: Radio, color: '' };
   const SrcIcon = src.Icon;
   const [replyOpen, setReplyOpen] = useState(false);
@@ -623,9 +715,13 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   const [threadTo, setThreadTo] = useState(null);
   const replyLint = useLint(draftText, signal.source);
 
-  // S3(b) joins the signal's own reply-post back onto it: a POSTED reply -> repliedUrl (the loop
-  // closed), an OPEN drafted reply -> signal.draft {text, approval, postId, campaign}.
-  const repliedUrl = signal.repliedUrl || null;
+  // S3(b) joins the signal's own reply-post back onto it: a POSTED reply -> `replied`
+  // {url, via, postId, campaign} (the loop closed - url is the ANSWER's own permalink or
+  // null when nothing is provable, never the signal thread; via = published|external|manual
+  // says what the state can prove), an OPEN drafted reply -> signal.draft {text, approval,
+  // postId, campaign}. repliedUrl is the server's deprecated alias, kept as a fallback only.
+  const replied = signal.replied || (signal.repliedUrl ? { url: signal.repliedUrl, via: 'external', postId: null, campaign: null } : null);
+  const repliedUrl = replied?.url || null;
   // Spec 44: the author of the thread we replied into answered us back -> authorReplied
   // {author, text, permalink, ts}. The payoff state - it SUPERSEDES the muted "Replied" chip.
   const authorReplied = signal.authorReplied || null;
@@ -654,7 +750,14 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
       setReplyOpen(false);
       setThreadTo(null);
     } catch (err) {
-      setReplyError(err?.message || t('radar.reply.error'));
+      // Map the KNOWN refusal by its stable code, never by matching English prose
+      // (F3): below_threshold is the drafting gate - both numbers are already on
+      // the client (the signal's own agent score + the owner's drafting.minScore),
+      // so the localized template states them. Everything else keeps the server
+      // message as the fallback detail.
+      setReplyError(err?.code === 'below_threshold'
+        ? t('radar.reply.belowThreshold', { score: signal.intentScore, min: draftMinScore })
+        : (err?.message || t('radar.reply.error')));
     } finally {
       setQueuing(false);
     }
@@ -662,15 +765,25 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   const approveDraft = async () => {
     if (!draft) return;
     setApproving(true);
-    try { await onApproveDraft(draft); } catch (err) { setReplyError(err?.message || t('radar.reply.error')); }
+    try { await onApproveDraft(draft, signal); } catch (err) { setReplyError(errText(err, t, 'radar.reply.error')); }
     finally { setApproving(false); }
+  };
+  // Issue 7 step 2/4: the willAutoPost badge and the failed-draft retry link both funnel through
+  // here so their refusal renders in THIS card's own replyError slot, humanized by code (never
+  // raw prose) - never the page-level banner, which is reserved for page-level failures.
+  const runDraftNow = async () => {
+    if (!onDraftNow) return;
+    setReplyError(null);
+    try { await onDraftNow(signal); } catch (err) { setReplyError(errText(err, t, 'radar.error.save')); }
   };
 
   // Exactly one PRIMARY, resolved by state (canon #4): a pending draft -> Approve & post; nothing
   // drafted on a reply-capable source -> Draft reply; otherwise (replied / already-cleared /
   // surface-only) opening the thread IS the move.
   const primaryIsApprove = draftPending;
-  const primaryIsDraft = !hasDraft && !repliedUrl && !replyIncapable;
+  // `replied`, not `repliedUrl`: an answered signal whose reply has no provable link (a
+  // manual mark) must still never re-offer "Draft reply" as if it were unanswered.
+  const primaryIsDraft = !hasDraft && !replied && !replyIncapable;
   const primaryIsOpen = !primaryIsApprove && !primaryIsDraft;
 
   // Expanding the card is "show me everything": the draft opens with it, and collapsing
@@ -689,14 +802,26 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   };
 
   // Spec C: the PRE-FIRE marker. An un-drafted signal that already clears the owner's auto-reply
-  // threshold (agent-scored, at/above minScore, on an enabled lane) will auto-post once drafted -
-  // say so BEFORE it fires, not only after, so an outbound reply is never a surprise.
+  // threshold (agent-scored, at/above minScore, on an enabled lane) is ELIGIBLE to auto-post once
+  // drafted - say so BEFORE it fires, not only after, so an outbound reply is never a surprise.
+  // It is a BUTTON now, not a prophecy: tapping it drafts the reply for THIS signal immediately,
+  // held pending for review (no auto-approve), so "see the answer before it goes out" is one tap.
+  // Suppressed once the agent examined the thread and declined to reply (signal.agentDeclined) -
+  // a badge promising an auto-post the agent already refused was a live contradiction.
   const willAutoPost = primaryIsDraft
     && autoReply?.enabled === true
     && Array.isArray(autoReply?.lanes) && autoReply.lanes.includes(signal.source)
     && signal.scoredBy === 'agent'
+    && !signal.agentDeclined
     && Number.isFinite(autoReply?.minScore)
     && Number(signal.intentScore) >= autoReply.minScore;
+  // UX issue 10: the split status pill (zone 1) and its paired "Jetzt entwerfen" action (the
+  // action bar) must appear and disappear TOGETHER - both only when willAutoPost is the header's
+  // actual state, i.e. neither the busy spinner nor the failed-draft outcome already owns that
+  // slot (they are mutually exclusive branches of the same ternary below). Without this, a
+  // failed-draft card would show BOTH "Nochmal versuchen" and "Jetzt entwerfen" - two controls
+  // for the same retry.
+  const showAutoPostAction = willAutoPost && !draftingNow && !draftFailed;
 
   return (
     // The DOM id is the jump target for the transcript's "finding reported" lines
@@ -732,7 +857,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           // Found since your last visit. A quiet brand-tint word, not a colour-only dot and not
           // a reorder: the feed stays ranked by intent, the chip just makes the fresh finds
           // findable inside that order.
-          <span className="inline-flex items-center rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold text-brand dark:bg-brand-light/15 dark:text-brand-light">
+          <span className={`${PILL_BASE} ${PILL_TONES.accent}`}>
             {t('radar.signal.new')}
           </span>
         ) : null}
@@ -740,6 +865,16 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
         {/* Relationship memory (spec 49 R12): the "Nth exchange" chip beside the signal
             author, keyed on this lane (S2a). An 'unknown'/empty author never keys (S2b). */}
         {signal.author ? <HistoryChip lane={signal.source} handle={signal.author} slot="author" /> : null}
+        {/* All-projects overview: which project this signal belongs to. Stamped by App
+            only in that mode (single-client mode never sets clientName, so nothing
+            renders). The avatar carries the accent, the name carries the meaning -
+            never colour-only - matching the Planner/Freigaben card chip exactly. */}
+        {signal.clientName ? (
+          <span className={`${PROJECT_CHIP} max-w-[8rem]`}>
+            <ClientAvatar client={{ displayName: signal.clientName, accent: signal.accent, logo: null }} size={14} />
+            <span className="truncate">{signal.clientName}</span>
+          </span>
+        ) : null}
         {signalWhere(signal) ? <span className="text-xs text-zinc-500 dark:text-zinc-400">{signalWhere(signal)}</span> : null}
         {/* Karma builder: a warm-up item, pinned with a Sprout pill (icon + word, never colour
             alone) whose hover explains WHY it is here - comment genuinely to warm the account, or,
@@ -747,7 +882,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             distinct from the plain-text "New" word and the amber auto-post warning. */}
         {isKarma ? (
           <Tip label={t(isPostIdea ? 'radar.signal.karma.postIdea.tip' : 'radar.signal.karma.comment.tip')}>
-            <span className="inline-flex cursor-help items-center gap-1 rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold text-brand dark:bg-brand-light/15 dark:text-brand-light">
+            <span className={`${PILL_BASE} ${PILL_TONES.accent} cursor-help`}>
               <Sprout size={11} aria-hidden="true" />{t(isPostIdea ? 'radar.signal.karma.postIdea' : 'radar.signal.karma')}
             </span>
           </Tip>
@@ -758,7 +893,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             permanent chrome on ordinary buying-intent rows. */}
         {isMention ? (
           <Tip label={t('radar.signal.mention.tip')}>
-            <span className="inline-flex cursor-help items-center gap-1 rounded-full bg-brand/10 px-1.5 py-0.5 text-[10px] font-bold text-brand dark:bg-brand-light/15 dark:text-brand-light">
+            <span className={`${PILL_BASE} ${PILL_TONES.accent} cursor-help`}>
               <AtSign size={11} aria-hidden="true" />{t('radar.signal.mention')}
             </span>
           </Tip>
@@ -771,11 +906,31 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           <span className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.signal.foundAt', { time: fmtRelative(signal.foundAt) })}</span>
         ) : null}
         <div className="ml-auto flex items-center gap-1.5">
-          {willAutoPost ? (
-            // The heads-up, BEFORE it fires: this clears the auto-reply threshold, so its draft posts
-            // without waiting for you. Amber = attention (an autonomous action is about to happen).
+          {draftingNow ? (
+            // The tap's busy state: the agent is writing this signal's reply right now. The
+            // spinner is not colour-only (word + motion), and the finished draft arrives on
+            // the card via the running-job poll.
+            <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300" aria-live="polite">
+              <Loader2 size={11} className="animate-spin" aria-hidden="true" />{t('radar.signal.draftingNow')}
+            </span>
+          ) : draftFailed ? (
+            // Issue 7 step 3: the card's own outcome. The badge went quiet before with no trace
+            // beyond the JobRow line - this says so, in the card, with the one recovery move.
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+              {t('radar.signal.draftFailed')}
+              <button type="button" onClick={runDraftNow} disabled={agentBusy} className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-50 disabled:no-underline dark:text-brand-light">
+                {t('radar.signal.draftRetry')}
+              </button>
+            </span>
+          ) : willAutoPost ? (
+            // UX issue 10: the heads-up, BEFORE it fires - this clears the auto-reply threshold,
+            // so its draft can post without waiting for you. It is now a non-interactive STATUS
+            // pill (round-full = state, never an action): amber = attention (an autonomous
+            // action can happen). Tapping used to double as the drafting trigger; that action now
+            // lives as its own named BTN_QUIET ("Jetzt entwerfen") in the card's action bar below,
+            // so a status and a control no longer share one body.
             <Tip label={t('radar.signal.willAutoPost.tip', { score: signal.intentScore, min: autoReply?.minScore })}>
-              <span className="inline-flex cursor-help items-center gap-1 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 dark:text-amber-300">
+              <span className={`${PILL_BASE} ${PILL_TONES.attention}`}>
                 <Bot size={11} aria-hidden="true" />{t('radar.signal.willAutoPost')}
               </span>
             </Tip>
@@ -788,28 +943,62 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             // the badge (never nested inside the anchor - Tier 1 nested-interactive).
             <>
               <Tip label={t('radar.signal.authorReplied.tip', { author: authorReplied.author || signal.author })}>
-                <a href={authorReplied.permalink || repliedUrl || signal.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white ring-1 ring-emerald-600/40 transition hover:bg-emerald-700 dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400">
+                {/* The allowed exception (UX issue 10): a status pill MAY be a link when its sole
+                    behaviour is "open the thing it names" - cursor-pointer + underline-on-hover
+                    make that affordance visible instead of implying a plain status word. */}
+                <a href={authorReplied.permalink || repliedUrl || signal.url} target="_blank" rel="noreferrer" className="inline-flex cursor-pointer items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-bold text-white underline-offset-2 ring-1 ring-emerald-600/40 transition hover:bg-emerald-700 hover:underline dark:bg-emerald-500 dark:text-emerald-950 dark:hover:bg-emerald-400">
                   <MessageSquareReply size={11} aria-hidden="true" />{t('radar.signal.authorReplied')}<ExternalLink size={10} aria-hidden="true" />
                 </a>
               </Tip>
               {(authorReplied.author || signal.author) ? <HistoryChip lane={signal.source} handle={authorReplied.author || signal.author} slot="replied" /> : null}
             </>
-          ) : repliedUrl ? (
-            <a href={repliedUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300">
-              <Reply size={11} aria-hidden="true" />{t('radar.reply.posted')}
-            </a>
+          ) : replied ? (
+            // Evidence decides the badge, never the claim alone (data honesty):
+            //  - a provable link -> "Beantwortet" linking the ANSWER (the old code fell back to
+            //    the question's own thread url here, a lie with a green checkmark on it);
+            //  - published with no derivable link -> the same emerald word, no href, the tooltip
+            //    says why ("Antwort öffnen" in the action bar still opens the reply itself);
+            //  - a bare manual mark -> a visibly DIFFERENT muted claim ("Manuell als beantwortet
+            //    markiert") plus the add-a-link repair in the action bar.
+            replied.url ? (
+              // The allowed exception (UX issue 10): opens the ANSWER, nothing else - cursor-
+              // pointer + underline-on-hover make the link affordance visible on the pill shape.
+              <a href={replied.url} target="_blank" rel="noreferrer" className={`${PILL_BASE} ${PILL_TONES.ok} cursor-pointer underline-offset-2 hover:underline`}>
+                <Reply size={11} aria-hidden="true" />{t('radar.reply.posted')}<ExternalLink size={10} aria-hidden="true" />
+              </a>
+            ) : replied.via === 'manual' ? (
+              <Tip label={t('radar.reply.manualMarked.tip')}>
+                <span className={`${PILL_BASE} ${PILL_TONES.neutral} cursor-help`}>
+                  <Reply size={11} aria-hidden="true" />{t('radar.reply.manualMarked')}
+                </span>
+              </Tip>
+            ) : (
+              <Tip label={t('radar.reply.posted.noLink.tip')}>
+                <span className={`${PILL_BASE} ${PILL_TONES.ok} cursor-help`}>
+                  <Reply size={11} aria-hidden="true" />{t('radar.reply.posted')}
+                </span>
+              </Tip>
+            )
           ) : draftApproved ? (
-            // Cleared by the auto-reply policy and going out on the next tick - links to Freigaben
-            // where the operator can still catch it. An autonomous action is never invisible.
-            <button type="button" onClick={() => onNavigate?.('freigaben')} className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-500/30 dark:text-emerald-300">
-              <Check size={11} aria-hidden="true" />{t('radar.reply.autoApproved')}
-            </button>
+            // Cleared by the auto-reply policy and going out - opens THE draft itself
+            // (PostDetail) so the operator can still read, edit or catch it; the whole
+            // Freigaben queue is the fallback when the draft's address is not at hand (an
+            // optimistic row right after queueing). The tooltip says WHEN it fires (fresh-eyes:
+            // "cleared to fire" without a when reads as a surprise), and the action bar carries
+            // a visible Bearbeiten twin - a status badge must never be the only door.
+            // The allowed exception (UX issue 10): this pill's only behaviour is "open the draft",
+            // so it stays a button-shaped pill with cursor-pointer + underline-on-hover.
+            <Tip label={draft?.scheduledAt ? t('radar.reply.autoApproved.tip', { time: fmtRelative(draft.scheduledAt) }) : t('radar.reply.autoApproved.tip.generic')}>
+              <button type="button" onClick={() => (draft?.postId && onOpenPost ? onOpenPost({ campaign: draft.campaign, id: draft.postId }) : onNavigate?.('freigaben'))} className={`${PILL_BASE} ${PILL_TONES.ok} cursor-pointer underline-offset-2 transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}>
+                <Check size={11} aria-hidden="true" />{t('radar.reply.autoApproved')}
+              </button>
+            </Tip>
           ) : null}
           {/* Priority is carried by the feed's order; this chip is a quiet tier WORD, not a loud
               number. The exact figure - and whether an agent actually READ the thread vs a keyword
               match - lives in the tooltip (canon: priority by order, not loud badges). */}
           <Tip label={signal.scoredBy === 'agent' ? t('radar.signal.score.agent.tip', { n: signal.intentScore }) : t('radar.signal.score.engine.tip', { n: signal.intentScore })}>
-            <span className="inline-flex cursor-help items-center rounded-full bg-zinc-200/70 px-2 py-0.5 text-[11px] font-semibold text-zinc-600 dark:bg-zinc-700/70 dark:text-zinc-300">
+            <span className={`${PILL_BASE} ${PILL_TONES.neutral} cursor-help`}>
               {t(`radar.signal.tier.${tierOf(signal.intentScore)}`)}
             </span>
           </Tip>
@@ -829,7 +1018,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             onClick={toggleExpanded}
             aria-expanded={expanded}
             aria-label={t(expanded ? 'radar.signal.collapse' : 'radar.signal.expand')}
-            className={`${GHOST_BTN} px-1`}
+            className={`${BTN_GHOST} px-1`}
           >
             <ChevronDown size={14} className={`transition ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
           </button>
@@ -897,20 +1086,30 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
         ) : primaryIsApprove ? (
           <>
             <Tip label={t('radar.reply.approve.tip')}>
-              <button type="button" onClick={approveDraft} disabled={approving} className={PRIMARY_BTN}>
+              <button type="button" onClick={approveDraft} disabled={approving} className={BTN_PRIMARY}>
                 <Check size={13} aria-hidden="true" />{approving ? t('radar.reply.approving') : t('radar.reply.approve')}
               </button>
             </Tip>
-            <button type="button" onClick={() => onNavigate?.('freigaben')} className={QUIET_BTN}>
+            <button type="button" onClick={() => (draft?.postId && onOpenPost ? onOpenPost({ campaign: draft.campaign, id: draft.postId }) : onNavigate?.('freigaben'))} className={BTN_QUIET}>
               <Pencil size={13} aria-hidden="true" />{t('radar.reply.edit')}
             </button>
             <OpenPill signal={signal} accounts={accounts} t={t} primary={false} />
           </>
         ) : primaryIsDraft ? (
           <>
-            <button type="button" onClick={() => openReply(null)} aria-expanded={replyOpen} className={PRIMARY_BTN}>
+            <button type="button" onClick={() => openReply(null)} aria-expanded={replyOpen} className={BTN_PRIMARY}>
               <Reply size={13} aria-hidden="true" />{t('radar.reply.draft')}
             </button>
+            {/* UX issue 10: willAutoPost used to be the badge's OWN onClick; the badge is now
+                a non-interactive status pill (zone 1, above), and the action it carried moves
+                here as a named, quiet secondary - status and control no longer share one body. */}
+            {showAutoPostAction ? (
+              <Tip label={agentBusy ? t('radar.busy.tip') : t('radar.action.draftNow')}>
+                <button type="button" onClick={() => (agentReady && onDraftNow ? runDraftNow() : openReply(null))} disabled={agentBusy} className={BTN_QUIET}>
+                  <Bot size={13} aria-hidden="true" />{t('radar.action.draftNow')}
+                </button>
+              </Tip>
+            ) : null}
             <OpenPill signal={signal} accounts={accounts} t={t} primary={false} />
           </>
         ) : (
@@ -919,8 +1118,31 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           // Draft reply (derived from the capability table, never hardcoded) - the
           // missing button must never look broken beside reply-capable neighbours.
           <>
-            <OpenPill signal={signal} accounts={accounts} t={t} primary={primaryIsOpen && !!signal.url} />
-            {copyCapable && !hasDraft && !repliedUrl ? (
+            {draftApproved && draft?.postId ? (
+              // The VISIBLE door to the auto-approved draft (fresh-eyes: the badge alone was a
+              // secret primary). Same quiet Bearbeiten the pending branch offers, same target.
+              <button type="button" onClick={() => (onOpenPost ? onOpenPost({ campaign: draft.campaign, id: draft.postId }) : onNavigate?.('freigaben'))} className={BTN_QUIET}>
+                <Pencil size={13} aria-hidden="true" />{t('radar.reply.edit')}
+              </button>
+            ) : null}
+            {/* A8: with the author having answered (canReplyToReply), continuing the
+                conversation IS the move - R11 below takes the primary treatment and
+                this pill demotes to quiet. A swap, never two primaries on one row. */}
+            <OpenPill signal={signal} accounts={accounts} t={t} primary={primaryIsOpen && !!signal.url && !canReplyToReply} />
+            {replied?.postId && onOpenPost ? (
+              // The answer itself, one tap away IN the product (no dead ends): opens the posted
+              // reply's PostDetail - its text, its attempts, its permalink - even when no public
+              // link was derivable for the badge.
+              <Tip label={t('radar.reply.openAnswer.tip')}>
+                <button type="button" onClick={() => onOpenPost({ campaign: replied.campaign, id: replied.postId })} className={BTN_QUIET}>
+                  <FileText size={13} aria-hidden="true" />{t('radar.reply.openAnswer')}
+                </button>
+              </Tip>
+            ) : null}
+            {replied?.via === 'manual' && !replied.url && replied.postId ? (
+              <AttachAnswerLink replied={replied} t={t} />
+            ) : null}
+            {copyCapable && !hasDraft && !replied ? (
               <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('radar.copy.byHand', { source: t(`radar.source.${signal.source}`) })}</span>
             ) : null}
           </>
@@ -931,7 +1153,10 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           // turn is a distinct pending post through the same approval gate: no new surface, no
           // autonomy change - the payoff badge simply becomes actionable.
           <Tip label={t('radar.reply.toReply.tip', { author: authorReplied.author || signal.author })}>
-            <button type="button" onClick={() => openReply(authorReplied.commentId)} aria-expanded={replyOpen && !!threadTo} className={QUIET_BTN}>
+            {/* A8: the row's PRIMARY when opening-the-thread would otherwise lead
+                (the buyer answered - answering back outranks re-reading the thread);
+                quiet when a pending draft's Approve already owns the primary. */}
+            <button type="button" onClick={() => openReply(authorReplied.commentId)} aria-expanded={replyOpen && !!threadTo} className={primaryIsOpen ? BTN_PRIMARY : BTN_QUIET}>
               <MessageSquareReply size={13} aria-hidden="true" />{t('radar.reply.toReply')}
             </button>
           </Tip>
@@ -941,7 +1166,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           // post of OUR OWN instead of a reply in their thread. Quiet, expanded-state only - the
           // collapsed card keeps its one primary.
           <Tip label={t('radar.reply.asPost.tip')}>
-            <button type="button" onClick={() => onNewPost({ type: 'text', caption: asPostSeed() })} className={QUIET_BTN}>
+            <button type="button" onClick={() => onNewPost({ type: 'text', caption: asPostSeed() })} className={BTN_QUIET}>
               <FileText size={13} aria-hidden="true" />{t('radar.reply.asPost')}
             </button>
           </Tip>
@@ -955,13 +1180,16 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
               <button type="button" onClick={() => { setConfirmingDone(false); onDismiss(signal); }} className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-2 py-0.5 text-[11px] font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-200 dark:text-zinc-900">
                 <Check size={11} aria-hidden="true" /> {t('radar.signal.doneYes')}
               </button>
-              <button type="button" onClick={() => setConfirmingDone(false)} className="rounded-lg px-2 py-0.5 text-[11px] font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100">
+              <button type="button" onClick={() => setConfirmingDone(false)} className={BTN_GHOST}>
                 {t('radar.signal.doneCancel')}
               </button>
             </span>
           ) : (
             <Tip label={t('radar.signal.done.tip')}>
-              <button type="button" onClick={() => setConfirmingDone(true)} className={GHOST_BTN}>
+              {/* UX issue 10: "Erledigt" is a named, deliberate secondary action, not a
+                  tertiary/overflow affordance - it now wears the quiet ring tier (BTN_QUIET),
+                  no longer visually indistinguishable from the muted status text beside it. */}
+              <button type="button" onClick={() => setConfirmingDone(true)} className={BTN_QUIET}>
                 <Check size={13} aria-hidden="true" /> {t('radar.signal.done')}
               </button>
             </Tip>
@@ -980,7 +1208,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           <label className="sr-only" htmlFor={`radar-reply-${signal.source}-${signal.externalId}`}>{t('radar.reply.draft')}</label>
           <textarea
             id={`radar-reply-${signal.source}-${signal.externalId}`}
-            className={`${FIELD_CLS} min-h-[64px]`}
+            className={`${FIELD_MULTILINE} w-full min-h-[64px]`}
             value={draftText}
             placeholder={t('radar.reply.placeholder')}
             onChange={(e) => setDraftText(e.target.value)}
@@ -992,7 +1220,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
                 {/* A visible label, not sr-only: a bare dropdown showing a campaign name told the
                     operator nothing about what the control selects. The word is on screen now. */}
                 <span className={EYEBROW}>{t('radar.reply.campaign')}</span>
-                <Select value={campaign} onChange={(e) => setCampaign(e.target.value)} wrapClassName="w-auto" className={`rounded-lg border-0 px-2 py-1.5 text-xs ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`} aria-label={t('radar.reply.campaign')}>
+                <Select value={campaign} onChange={(e) => setCampaign(e.target.value)} wrapClassName="w-auto" className={`${FIELD} w-auto`} aria-label={t('radar.reply.campaign')}>
                   {campaigns.map((c) => <option key={c.id} value={c.id}>{c.displayName || c.id}</option>)}
                 </Select>
               </label>
@@ -1005,14 +1233,19 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
                 {t('radar.reply.noCampaign')}
               </button>
             )}
-            <button type="button" onClick={submitReply} disabled={queuing || !draftText.trim() || !campaign} className={PRIMARY_BTN}>
+            <button type="button" onClick={submitReply} disabled={queuing || !draftText.trim() || !campaign} className={BTN_PRIMARY}>
               <Reply size={12} aria-hidden="true" />
               {queuing ? t('radar.reply.queuing') : t('radar.reply.queue')}
             </button>
           </div>
-          {replyError ? <p role="alert" className="text-xs text-red-600 dark:text-red-400">{replyError}</p> : null}
         </div>
       ) : null}
+      {/* Issue 7 step 4: EVERY card action's refusal (queue reply, approve & post, draft now)
+          renders HERE, at the card - never the page-level banner, which the JobRow/badge/banner
+          "three truths" bug came from. Unconditional (not gated on replyOpen): approve & post and
+          draft now never open the inline editor, so their error needs a home even when it stays
+          closed. */}
+      {replyError ? <p role="alert" className="text-xs text-red-600 dark:text-red-400">{replyError}</p> : null}
     </li>
   );
 }

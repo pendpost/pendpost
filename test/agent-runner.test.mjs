@@ -126,8 +126,10 @@ try {
   // us - filtering the OS's own dunder vars keeps this asserting what pendpost actually
   // hands over, which is the property that matters, instead of failing on a platform quirk.
   const envKeys = Object.keys(dump.env).filter((k) => !k.startsWith('__')).sort();
-  ok(JSON.stringify(envKeys) === JSON.stringify(['CLAUDE_CODE_OAUTH_TOKEN', 'HOME', 'PATH']),
-    `the child env pendpost hands over is EXACTLY { PATH, HOME, CLAUDE_CODE_OAUTH_TOKEN } - got ${envKeys.join(', ')}`);
+  ok(JSON.stringify(envKeys) === JSON.stringify(['CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CONFIG_DIR', 'HOME', 'PATH']),
+    `the child env pendpost hands over is EXACTLY { PATH, HOME, CLAUDE_CONFIG_DIR, CLAUDE_CODE_OAUTH_TOKEN } - got ${envKeys.join(', ')}`);
+  ok(typeof dump.env.CLAUDE_CONFIG_DIR === 'string' && dump.env.CLAUDE_CONFIG_DIR !== path.join(dump.env.HOME, '.claude'),
+    'the child gets a HERMETIC CLAUDE_CONFIG_DIR, not the operator ~/.claude - so its SessionStart hooks/plugins/CLAUDE.md never run in the research child (the "ran too long" hang)');
   ok(!('META_PAGE_TOKEN' in dump.env) && !('X_ACCESS_TOKEN' in dump.env),
     'NO platform token crosses into the child, though the daemon env holds them');
   ok(!('PENDPOST_ROOT' in dump.env), 'PENDPOST_ROOT is withheld - the child is not an engine and has no filesystem relationship with pendpost');

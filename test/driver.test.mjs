@@ -190,10 +190,18 @@ try {
   // 141 routes / 117 tools = +the own-post comment-watch inbox faces (radar-post-comments): the three
   // REST+MCP twins comment_inbox (GET /api/comments/inbox), comment_inbox_refresh (POST .../refresh)
   // and comment_resolve (POST .../resolve), so both routes and tools go +3 (138 -> 141, 114 -> 117).
-  ok(/141 routes, 117 tools.*1 documented UI-only/.test(parityOut),
+  // 141 routes / 118 tools = +radar_followup_report (engagement engine, owner decision 4): the
+  // spawned follow-up child's fenced report verb, MCP-only with NO REST twin by design (fail-closed
+  // fence refuses every caller a route could reach; parity exemption alongside radar_geo_reset in
+  // API-CONTRACT.md's exemptions.tools), so tools go 117 -> 118 while routes stay 141.
+  // 143 routes / 119 tools = +the inbound X Activity round-trip: list_inbound_events (GET
+  // /api/inbound/events) + reply_to_inbound_event (POST /api/inbound/reply), each a route + tool.
+  // 143 routes / 120 tools = +resume_lane on the EXISTING POST /api/state/lane-resume route (mcpTool
+  // null -> resume_lane), so tools go 119 -> 120 while routes stay 143.
+  ok(/143 routes, 120 tools.*1 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 138/114 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 143/120 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

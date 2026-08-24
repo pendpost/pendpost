@@ -110,7 +110,10 @@ For each platform that is not validated-live or skipped:
 3. A missing IDENTIFIER (\`kind:"identifier"\`): ask the owner and write it with
    \`config_set\` (\`set.identifiers\`). A missing SECRET (\`kind:"secret"\`): give the
    owner the exact CLI to run (the step's \`cli\` / the \`connectAction\`); the owner
-   runs it and the localhost callback writes \`.env\`.
+   runs it and the localhost callback writes \`.env\`. On a multi-client workspace the
+   command must carry \`--client <client-id>\` so the ceremony targets the right client
+   - \`connectAction\` from \`pendpost_health\` already fills it in; the playbook prose
+   shows it as a \`<client-id>\` placeholder (single-client installs omit the flag).
 4. Call \`health_recheck{platform}\` to VALIDATE - a read-only liveness probe that
    surfaces the REAL pass/fail (\`validation.ok\` + \`.detail\`). On failure, relay
    \`validation.fix\` and re-probe.

@@ -48,6 +48,11 @@ export function useActionState() {
 const IDLE_VARIANTS = {
   subtle: 'bg-zinc-200/60 text-zinc-700 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60',
   success: 'bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300',
+  // FILLED emerald primary: the "go / approve" action reads as a solid green button, the
+  // top of the status staircase (brand/DESIGN.md §3: approved = emerald). AA-safe both ways,
+  // mirroring BTN_PRIMARY's light/dark pattern - white on emerald-700 clears 4.5:1 (emerald-600
+  // white text is ~3.2:1 and FAILS), and dark mode flips to a light emerald fill + dark ink.
+  primary: 'bg-emerald-700 text-white hover:bg-emerald-800 dark:bg-emerald-400 dark:text-emerald-950 dark:hover:bg-emerald-300',
   danger: 'bg-red-500/10 text-red-700 hover:bg-red-500/20 dark:text-red-300',
   // The "you do this part" tone (sky), for the one action pendpost hands back to the
   // operator: a post on a lane pendpost cannot publish to, because the lane is not

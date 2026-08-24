@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, CalendarPlus, PauseCircle, CheckCheck, Send, ExternalLink, FileImage, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, MessageSquare, ListPlus, ChevronLeft, ChevronRight, Cloud as CloudIcon, Zap, RefreshCw, Pin, PlugZap, ClipboardCopy, Wrench } from 'lucide-react';
-import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome } from '../lib/format.js';
+import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, CalendarPlus, PauseCircle, CheckCheck, Send, ExternalLink, FileImage, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, MessageSquare, ListPlus, ChevronLeft, ChevronRight, Cloud as CloudIcon, Zap, RefreshCw, Pin, PlugZap, ClipboardCopy, Wrench, Crop } from 'lucide-react';
+import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome, gridCropInfo, X_PORTAL_URL } from '../lib/format.js';
 import {
-  useAccounts, usePendpostHealth, usePlatformValidate, usePresubmitCheck, useValidateMedia, useActiveClient, useRedditFlairs, useInsights, useConfig,
+  useAccounts, usePendpostHealth, usePlatformValidate, usePresubmitCheck, useValidateMedia, useActiveClient, useRedditFlairs, useInsights, useConfig, useAssets,
   approvePost, rejectPost, deletePost, unschedulePost, reschedulePost, markPosted, verifyPost,
-  runPublishDue, setCoverFrame, uploadCover, clearCover, updatePost, editPublished, discordScheduleEvent, mastodonPin,
+  runPublishDue, setCoverFrame, uploadCover, clearCover, updatePost, editPublished, discordScheduleEvent, mastodonPin, resumeLane,
 } from '../lib/api.js';
+import { VideoPicker } from './Composer.jsx';
 import { MetricChips, makeMetricLabel } from './Insights.jsx';
 import { useCloudDelivery } from '../lib/cloud.js';
-import { StatusPill, ApprovalPill, PlatformIcons, PLATFORM_META, INNER_SURFACE, Modal, CloseButton, PostPreview, PlatformBlockers, setupLinkOffered, EYEBROW } from './ui.jsx';
+import { StatusPill, ApprovalPill, PlatformIcons, PLATFORM_META, INNER_SURFACE, Modal, CloseButton, PostPreview, PlatformBlockers, setupLinkOffered, EYEBROW, FIELD, FIELD_MULTILINE } from './ui.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import ClientBand from './ClientBand.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
+import { ServedBadge } from './ui/ServedBadge.jsx';
 import BrandLintBadge from './ui/BrandLintBadge.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { destinationFor, shortId } from './ui/DestinationStrip.jsx';
@@ -23,6 +25,8 @@ import { useConfirm, usePrompt } from './ui/confirm.jsx';
 import CommentsPanel from './CommentsPanel.jsx';
 import PlaylistPanel from './PlaylistPanel.jsx';
 import ZapModal from './ZapModal.jsx';
+import { showToast } from './AppToast.jsx';
+import { patchPlanRemove } from '../lib/useReschedule.js';
 import { useT } from '../lib/i18n.js';
 
 // The comment-capable platforms (spec 02, Pattern P6): the Comments thread panel is
@@ -38,12 +42,47 @@ const COMMENT_CAPABLE_PLATFORMS = new Set(['instagram', 'facebook', 'youtube', '
 // browser bundle never imports the server-only lib module).
 const EDIT_LANE_ID = { youtube: 'ytVideoId', telegram: 'tgMessageId', discord: 'dcMessageId' };
 
+// Publish-evidence id fields, mirroring the engine's ALL_PLATFORM_ID_FIELDS
+// (lib/plans.mjs PLATFORM_ID_FIELDS, kept as a small local copy so the browser
+// bundle never imports the server-only lib module). Drives the ONE delete
+// confirm: a post carrying any of these (or status 'posted') gets the stronger
+// force wording and sends force:true - the server would refuse without it.
+const EVIDENCE_ID_FIELDS = [
+  'fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId',
+  'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId',
+  'mastodonStatusId', 'mastodonScheduledId', 'wordpressPostId', 'ghostPostId',
+  'nostrEventId', 'gbpPostId', 'blueskyPostId',
+];
+
 function Section({ title, children }) {
   return (
     <section className="space-y-1.5">
       <h3 className={EYEBROW}>{title}</h3>
       {children}
     </section>
+  );
+}
+
+// US-MEDIA-UP: swap an open post's media in place - upload, drop, or pick a library
+// file - via the SAME VideoPicker the editor uses. The asset fetch lives here (not
+// in PostDetail) so it runs ONLY when a single-media editable post actually renders
+// this control; `onChange` receives the picked `${dir}/${file}` ref (or '' to clear).
+function ChangeMediaField({ post, onChange }) {
+  const t = useT();
+  const { data: assetsData } = useAssets(true);
+  const dir = assetsData?.dir || '';
+  return (
+    <Section title={t('postDetail.section.media')}>
+      <div className={`space-y-1.5 rounded-xl p-2.5 ${INNER_SURFACE}`}>
+        <VideoPicker
+          assets={assetsData?.assets || []}
+          assetsDir={dir}
+          value={post.media.file ? `${dir}/${post.media.file}` : ''}
+          onChange={onChange}
+        />
+        <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('postDetail.media.hint')}</p>
+      </div>
+    </Section>
   );
 }
 
@@ -77,7 +116,7 @@ function ContentField({ label, platforms, showIcons, hint, kind, mono, value, on
             aria-label={label}
             placeholder={placeholder}
             rows={rows}
-            className={`w-full resize-y break-words rounded-xl p-3 text-sm leading-relaxed scrollbar-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${mono ? 'font-mono ' : ''}${INNER_SURFACE}`}
+            className={`w-full resize-y break-words leading-relaxed scrollbar-soft ${mono ? 'font-mono ' : ''}${FIELD_MULTILINE}`}
           />
         ) : (
           <input
@@ -85,7 +124,7 @@ function ContentField({ label, platforms, showIcons, hint, kind, mono, value, on
             onChange={(e) => onChange(e.target.value)}
             aria-label={label}
             placeholder={placeholder}
-            className={`w-full rounded-xl px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
+            className={`${FIELD} w-full`}
           />
         )
       ) : (
@@ -305,7 +344,6 @@ const ACTION_BTN = 'flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs f
 
 // The Composer's form-field surface, mirrored for the quick-edit controls so the
 // modal's format select + schedule trigger read as the same field family.
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 
 // Honest per-platform cover reality (mirrors covers.mjs applicability /
 // PLATFORM-MATRIX.md) - never imply a cover reaches a platform it cannot.
@@ -316,8 +354,12 @@ function coverChips(post, t) {
     if (p === 'facebook') chips.push({ p, ok: true, text: t('postDetail.cover.chip.fb') });
     else if (p === 'instagram') {
       if (post.type === 'story') chips.push({ p, ok: false, text: t('postDetail.cover.chip.igStory') });
+      else if (source === 'url') chips.push({ p, ok: true, text: t('postDetail.cover.chip.igUrl') });
       else if (source === 'file') chips.push({ p, ok: false, text: t('postDetail.cover.chip.igFile') });
-      else chips.push({ p, ok: true, text: t('postDetail.cover.chip.igFrame') });
+      else if (source === 'frame') chips.push({ p, ok: true, text: t('postDetail.cover.chip.igFrame') });
+      // No explicit cover: the engine publishes frame 0, where the render
+      // pipeline bakes the title card (meta-social container default).
+      else chips.push({ p, ok: true, text: t('postDetail.cover.chip.igFrame0') });
     } else if (p === 'youtube') chips.push({ p, ok: true, text: t('postDetail.cover.chip.yt') });
     else if (p === 'linkedin') chips.push({ p, ok: true, text: t('postDetail.cover.chip.li') });
     else if (p === 'x') chips.push({ p, ok: false, text: t('postDetail.cover.chip.x') });
@@ -334,6 +376,15 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // react-query dedupes by key, so this is a read of a cache the modal simply never looked at.
   const { data: health } = usePendpostHealth(true);
   const offlineLanes = unconnectedLanes(post, health?.setup);
+  // A lane-wide halt (post.lastFailure.halted, e.g. X 402 credits depleted) offers a
+  // top-up link. The portal URL is single-sourced from the SAME setup payload the Setup
+  // page reads (lib/playbooks.mjs -> setup.platforms[].playbook.portalUrl), so it never
+  // drifts from a hardcoded copy; the link renders only once that value resolves.
+  const haltedLane = post.lastFailure?.halted ? post.lastFailure.lane : null;
+  const haltPortalUrl = haltedLane
+    ? (health?.setup?.platforms?.find((r) => r.platform === haltedLane)?.playbook?.portalUrl
+        || (haltedLane === 'x' ? X_PORTAL_URL : null))
+    : null;
   // dim-3 M5: the after-publish home shows THIS post's stored metric chips beside
   // its verify chips (the ['insights'] query is already held by the Insights panel,
   // react-query dedupes by key - no extra fetch). A per-platform map of the stored
@@ -619,41 +670,69 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
     refresh();
     onClose();
   };
+  // "Delete always works": ONE confirm, then instant. The force question is
+  // folded INTO the primary confirm (client-side evidence detection mirrors the
+  // engine's gate), so the old confirm -> server refusal -> second confirm ->
+  // retry dance is gone. After the confirm the post leaves the ['plans'] cache
+  // optimistically and the dialog closes at once; the server answer lands as a
+  // bottom-right toast - success quietly, failure with the message AND the post
+  // rolled back into place. The engine cancels natively scheduled platform
+  // objects itself now (lib/writes.mjs deletePost), so no unschedule ceremony.
   const onDelete = async () => {
     setError(null);
+    const hasEvidence = post.status === 'posted' || EVIDENCE_ID_FIELDS.some((k) => post.ids?.[k]);
+    // F7: dcEventId is NOT publish evidence (the guild event is a separate calendar
+    // object), but deleting the row cancels that live event platform-side (the
+    // engine's deleteSideHandoffs). The plain confirm must say so - one sentence,
+    // same dialog. The force wording already carries its own cancel sentence.
+    const cancelsEvent = !hasEvidence && Boolean(post.ids?.dcEventId);
+    const baseBody = hasEvidence
+      ? t('postDetail.delete.forceBody', { id: post.id })
+      : cancelsEvent
+        ? `${t('postDetail.delete.body', { id: post.id })}\n\n${t('postDetail.delete.eventWarn')}`
+        : t('postDetail.delete.body', { id: post.id });
     // Thread guard: deleting a post other posts reply to (xReplyTo) strands
     // them - the X lane holds a child forever once its parent is gone.
     const deleteBody = threadReplies.length
-      ? `${t('postDetail.delete.body', { id: post.id })}\n\n${t('postDetail.delete.threadWarn', { count: threadReplies.length, ids: threadReplies.map((r) => r.id).join(', ') })}`
-      : t('postDetail.delete.body', { id: post.id });
+      ? `${baseBody}\n\n${t('postDetail.delete.threadWarn', { count: threadReplies.length, ids: threadReplies.map((r) => r.id).join(', ') })}`
+      : baseBody;
     const ok = await confirm({
       title: t('postDetail.delete.title'),
       body: withClientLine(deleteBody),
-      confirmLabel: t('postDetail.delete.confirmLabel'),
+      confirmLabel: hasEvidence ? t('postDetail.delete.forceLabel') : t('postDetail.delete.confirmLabel'),
       danger: true,
-      // Suppressible for a plain delete, but never when a thread-strand warning is in
-      // play - that escalated warning must always be seen (it can orphan X replies).
-      rememberKey: threadReplies.length ? undefined : 'postDetail.delete',
+      // Suppressible for a plain delete only: the evidence (force) wording, the
+      // thread-strand warning and the event-cancel sentence must always be seen -
+      // each names a real consequence.
+      rememberKey: threadReplies.length || hasEvidence || cancelsEvent ? undefined : 'postDetail.delete',
     });
     if (!ok) throw { canceled: true };
-    try {
-      await deletePost(post.campaign, post.id);
-    } catch (err) {
-      if (err?.code === 'invalid_input' && /publish evidence/.test(err.message)) {
-        const force = await confirm({
-          title: t('postDetail.confirm.title'),
-          body: withClientLine(t('postDetail.delete.forceBody', { message: err.message })),
-          confirmLabel: t('postDetail.delete.forceLabel'),
-          danger: true,
-        });
-        if (!force) throw { canceled: true };
-        await deletePost(post.campaign, post.id, true);
-      } else {
-        throw err;
-      }
-    }
-    refresh();
+    // Optimistic: the post leaves the plan NOW (useReschedule's snapshot/rollback
+    // pattern) and the dialog closes with it - one motion, no waiting on the wire.
+    const prev = queryClient.getQueryData(['plans']);
+    queryClient.setQueryData(['plans'], (old) => patchPlanRemove(old, post.campaign, post.id));
     onClose();
+    try {
+      if (hasEvidence) await deletePost(post.campaign, post.id, true);
+      else await deletePost(post.campaign, post.id);
+      showToast({ kind: 'success', text: t('postDetail.delete.toastSuccess') });
+    } catch (err) {
+      // Rollback: the post reappears where it was; the toast carries the server's
+      // reason (e.g. a native platform cancel that failed, leaving the post intact).
+      // F3: the KNOWN refusal maps by its stable code - engine_failure here means the
+      // platform-side cancel failed - so the toast leads with a localized sentence
+      // and keeps the engine's own words as the quoted detail.
+      queryClient.setQueryData(['plans'], prev);
+      const detail = err?.message || t('postDetail.error.generic');
+      showToast({
+        kind: 'error',
+        text: err?.code === 'engine_failure'
+          ? t('postDetail.delete.toastError.cancelFailed', { detail })
+          : t('postDetail.delete.toastError', { message: detail }),
+      });
+    } finally {
+      queryClient.invalidateQueries({ queryKey: ['plans'] });
+    }
   };
   const onPark = () => withConfirm((confirm2) => unschedulePost(post.campaign, post.id, confirm2));
   // One dialog (not two): the link prompt IS the confirmation - its body explains
@@ -680,8 +759,13 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // (read-only; writes a non-destructive verify block, never publishes).
   const onVerify = async () => {
     setError(null);
-    await verifyPost(post.campaign, post.id);
+    const res = await verifyPost(post.campaign, post.id);
     refresh();
+    // Only a real live read-back is a success. verify_post returns ok:true even
+    // when the post reads back NOT live (liveCount 0) - throw so the ActionButton
+    // shows the honest "Still not live" state instead of flashing a false green
+    // "Verified" that the refetched verify-failed state then overwrites.
+    if (!res?.liveCount) throw new Error(t('postDetail.verify.notLive'));
   };
   // Force-publish an overdue, approved post NOW instead of waiting for the next
   // scheduler sweep. Reuses the per-post publish-due path (confirm:true = a REAL
@@ -713,12 +797,24 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
       }
     }
     const res = await runPublishDue({ campaign: post.campaign, postId: post.id });
-    const { rows: mine, fired, held, reason } = publishRunOutcome(res, post.id);
+    const { rows: mine, fired, held, halted, reason } = publishRunOutcome(res, post.id);
     if (!fired && held) {
       // The cloud owns this lane inside its handoff grace: nothing failed, the
       // click just cannot fire locally yet. Say so instead of flashing success.
       refresh();
       setError(t('postDetail.publishNow.cloudHeld'));
+      throw { canceled: true };
+    }
+    if (!fired && halted && !reason) {
+      // The lane is paused by an account-level breaker (X 402 credits) and dropped
+      // before dispatch, and NOTHING else genuinely failed (reason excludes the
+      // informational markers). Change 1 hides the button on a post carrying its OWN
+      // halt, so this fires only for the residual case (an overdue post on ANOTHER
+      // post's block). Tell the truth and point at the resume control. When a real
+      // lane DID fail alongside the halt, `reason` is set and the failure branch below
+      // wins - the actionable failure must not be masked by the halt marker.
+      refresh();
+      setError(t('postDetail.publishNow.laneHalted'));
       throw { canceled: true };
     }
     if (!fired && mine.length) {
@@ -800,6 +896,21 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
       refresh();
     }
   };
+  // US-MEDIA-UP: swap the post's media file in place. VideoPicker emits the same
+  // `${dir}/${file}` ref the Composer stores, so we write it as `path` and null
+  // `file` to keep the reference single-valued (both are on the server's
+  // owner-editable allow-list). An empty value clears the media. A stale rev is the
+  // same ifRev conflict every detail write surfaces, not a new failure mode.
+  const onChangeMedia = async (value) => {
+    setError(null);
+    try {
+      await updatePost(post.campaign, post.id, post.rev, { path: value || null, file: null });
+    } catch (err) {
+      setError(err?.code === 'stale_write' ? t('composer.error.staleWrite') : (err?.message || t('postDetail.error.generic')));
+    } finally {
+      refresh();
+    }
+  };
 
   // An edited-since-approval post is approval:'approved' but needs a FRESH decision:
   // offer Approve (re-approve) again. Reject stays available so the owner can pull it.
@@ -848,7 +959,14 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
   // zero lanes and then read like a scheduler bug (the exact B7 class), so the
   // state's one recovery verb is the failure banner's "Discard draft" instead.
   const targetGone = Boolean(post.radarReplyTo) && post.radarReplyState === 'target_gone' && post.derivedState !== 'posted';
-  const canPublishNow = (post.derivedState === 'overdue' || post.derivedState === 'publish-failed') && post.approval === 'approved' && !post.editedSinceApproval && !heldLaneOffline && !targetGone;
+  // A lane halted by an account-level circuit breaker (X 402 credits, lib/state.mjs
+  // recordLaneBlock) is dropped before dispatch (lib/scheduler.mjs), so a bare
+  // "Publish now" would fire zero lanes and then read like a scheduler race (the B7
+  // class). The failure banner's "Lane fortsetzen" (resumeLane) is the sole recovery -
+  // mirrors postActions.canPublishNowPost. Change 3's lane_halted run row keeps the
+  // planner run-now dialog + an overdue post on ANOTHER post's block honest too.
+  const laneHalted = Boolean(post.lastFailure?.halted);
+  const canPublishNow = (post.derivedState === 'overdue' || post.derivedState === 'publish-failed') && post.approval === 'approved' && !post.editedSinceApproval && !heldLaneOffline && !targetGone && !laneHalted;
   const retryHeld = canPublishNow && held;
   // The Comments thread panel (spec 02, Pattern P6) is offered on a POSTED post that
   // reached a comment-capable lane. Opening it pulls the comments on demand; the
@@ -1202,6 +1320,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                   Terminal without that retry (cloud cap spent, failing lane offline):
                   the way out really is the owner's hands. Still retrying: say so. */}
               {targetGone ? t('postDetail.failure.targetGone')
+                : post.lastFailure.halted ? t('postDetail.failure.creditsHalted')
                 : retryHeld ? t('postDetail.failure.heldRetry')
                 : post.lastFailure.terminal ? t('postDetail.failure.stopped')
                 : t('postDetail.failure.retrying')}
@@ -1220,6 +1339,44 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                 onAction={onDelete}
                 onError={setError}
               />
+            ) : post.lastFailure.halted ? (
+              /* The lane is circuit-broken (e.g. X 402 credits depleted). No per-post
+                 verb recovers it - the operator tops up the account (portal link, single-
+                 sourced from the setup payload) and then resumes the whole lane, the SAME
+                 lane-resume the readiness strip runs. */
+              <>
+                {haltPortalUrl ? (
+                  <a
+                    href={haltPortalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-0.5 rounded text-[11px] font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                  >
+                    <ExternalLink size={11} aria-hidden="true" /> {t('action.topUpCredits')}
+                  </a>
+                ) : null}
+                <ActionButton
+                  variant="subtle"
+                  icon={PlugZap}
+                  labels={{ idle: t('readiness.resumeLane'), loading: t('postDetail.action.markLoading'), success: t('postDetail.action.markSuccess'), error: t('postDetail.error.generic') }}
+                  onAction={async () => {
+                    // Consume the recheck signal: resumeLane clears the block, re-fires
+                    // the lane's due posts, and reports whether credits are back. If the
+                    // re-fire hit the same 402 the block re-armed (stillDepleted) - say so
+                    // instead of flashing success, or the operator reads "resumed" while
+                    // the post is still halted (the exact dishonest signal this avoids).
+                    const r = await resumeLane(post.lastFailure.lane);
+                    await queryClient.invalidateQueries({ queryKey: ['health'] });
+                    await queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
+                    await queryClient.invalidateQueries({ queryKey: ['plans'] });
+                    if (r?.stillDepleted) {
+                      setError(t('postDetail.resume.stillDepleted'));
+                      throw { canceled: true }; // no success flash; the banner carries the truth
+                    }
+                  }}
+                  onError={setError}
+                />
+              </>
             ) : post.lastFailure.terminal && !retryHeld ? (
               <ActionButton
                 variant="subtle"
@@ -1349,7 +1506,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                   across platforms; full list when none) - a text lane never lists
                   Reel/Story. The current value stays listed even if now invalid, so
                   a platform change never silently rewrites the format. */}
-              <select id="detail-type" value={typeDraft} onChange={(e) => setTypeDraft(e.target.value)} className={`${FIELD_CLS} h-10`}>
+              <select id="detail-type" value={typeDraft} onChange={(e) => setTypeDraft(e.target.value)} className={`${FIELD} w-full h-10`}>
                 {TYPES.filter((ty) => ty === typeDraft || (platformsDraft.length ? platformsDraft.some((p) => formatsForPlatform(p).includes(ty)) : true)).map((ty) => (
                   <option key={ty} value={ty}>{typeOptionLabel(t, platformsDraft, ty)}</option>
                 ))}
@@ -1357,7 +1514,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
             </div>
             <div className="space-y-1.5">
               <label className={EYEBROW}>{t('composer.field.schedule')}</label>
-              <DateTimePicker value={scheduleDraft} onChange={setScheduleDraft} disablePast triggerClassName={`${FIELD_CLS} h-10`} />
+              <DateTimePicker value={scheduleDraft} onChange={setScheduleDraft} disablePast triggerClassName={`${FIELD} w-full h-10`} />
             </div>
           </div>
         </section>
@@ -1404,7 +1561,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
         <div className="space-y-1.5">
           <span className={EYEBROW}>{t('composer.field.redditFlair')}</span>
           {redditFlairsLoading ? (
-            <select aria-label={t('composer.field.redditFlair')} disabled className={FIELD_CLS}>
+            <select aria-label={t('composer.field.redditFlair')} disabled className={`${FIELD} w-full`}>
               <option>{t('composer.reddit.flairLoading')}</option>
             </select>
           ) : redditFlairsUnavailable ? (
@@ -1419,7 +1576,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                 // flair_text only rides an EDITABLE template (Reddit ignores it otherwise).
                 setFlairDraft({ id: e.target.value, text: picked && picked.editable ? (picked.text || '') : '' });
               }}
-              className={FIELD_CLS}
+              className={`${FIELD} w-full`}
             >
               <option value="">{t('composer.reddit.flairNone')}</option>
               {redditFlairs.map((f) => (
@@ -1442,7 +1599,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
             in its own row below - blocked label + the one recovering action -
             instead of a second sentence up here saying the same thing. */}
         {deliveryHint ? (
-          <p className={`mb-1.5 flex items-center gap-1.5 text-[11px] ${deliveryHint.tone === 'local' ? 'text-amber-600 dark:text-amber-300' : 'text-zinc-500 dark:text-zinc-400'}`}>
+          <p className={`mb-1.5 flex items-center gap-1.5 text-[11px] ${deliveryHint.tone === 'local' ? 'text-amber-700 dark:text-amber-300' : 'text-zinc-500 dark:text-zinc-400'}`}>
             {deliveryHint.tone === 'local'
               ? <Power size={11} aria-hidden="true" className="shrink-0" />
               : deliveryHint.viaCloud
@@ -1471,13 +1628,13 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
             const stateCls = state.tier === 'done'
               ? 'text-emerald-600 dark:text-emerald-300'
               : state.tier === 'warn' || blocked
-                ? 'text-amber-600 dark:text-amber-300'
+                ? 'text-amber-700 dark:text-amber-300'
                 : 'text-zinc-500 dark:text-zinc-400';
             const verifyCls = verify?.tone === 'ok'
               ? 'text-emerald-600 dark:text-emerald-300'
               : verify?.tone === 'err'
                 ? 'text-red-600 dark:text-red-300'
-                : 'text-amber-600 dark:text-amber-300';
+                : 'text-amber-700 dark:text-amber-300';
             const VerifyIcon = verify?.tone === 'ok' ? ShieldCheck : verify?.tone === 'err' ? ShieldX : ShieldAlert;
             const verifySr = verify?.tone === 'ok'
               ? t('postDetail.verify.toneOk')
@@ -1539,6 +1696,9 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                         <ExternalLink size={11} aria-hidden="true" /> {t('postDetail.verify.viewLink')}
                       </a>
                     ) : null}
+                    {/* Measured post-publish: the rendition Instagram actually serves
+                        (media_url ffprobe). Self-hides for non-IG lanes and unmeasured posts. */}
+                    {p === 'instagram' ? <ServedBadge served={post.verify?.platforms?.instagram?.served} /> : null}
                   </div>
                 ) : null}
                 {/* dim-3 M5: this post's stored metric chips, beside its verify
@@ -1654,6 +1814,13 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
           dead ends into recoverable ones: the same "open in the editor" action the ⋯ menu
           offers, present as a control inside the state that needs it. */}
       <PostPreview key={`${post.campaign}-${post.id}`} post={post} videoRef={videoRef} onEdit={editable ? () => onEdit(post) : undefined} />
+      {/* US-MEDIA-UP: swap the underlying media right here - upload, drop, or pick a
+          library file - the same VideoPicker the editor uses, so a fresh clip no
+          longer needs an "open in editor" detour. Single-media only (a carousel edits
+          its slides in the Composer); the cover editor below stays a separate box. */}
+      {editable && postNeedsMedia(post) && post.type !== 'carousel' ? (
+        <ChangeMediaField post={post} onChange={onChangeMedia} />
+      ) : null}
       {post.media.url && editable && !isImageMedia(post.media) ? (
         <Section title={t('postDetail.section.cover')}>
           <div
@@ -1708,6 +1875,12 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
             <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
               {t('postDetail.cover.hint')}
             </p>
+            {gridCropInfo(post).cropped ? (
+              <p className="flex items-start gap-1.5 rounded-lg bg-amber-500/10 px-2 py-1.5 text-[10px] text-amber-700 dark:text-amber-300">
+                <Crop size={12} className="mt-px shrink-0" aria-hidden="true" />
+                <span>{t('postDetail.cover.gridHint', { platforms: gridCropInfo(post).platforms.map((x) => PLATFORM_META[x.platform]?.label || x.platform).join(', ') })}</span>
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-1">
               {coverChips(post, t).map(({ p, ok, text }) => (
                 <IconBadge key={p} tone={ok ? 'ok' : 'neutral'} text={PLATFORM_META[p]?.label || p} label={text} />
@@ -1799,7 +1972,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                     {t('postDetail.thread.repliesTo', { id: post.xReplyTo })}
                   </button>
                 ) : (
-                  <span className="text-amber-600 dark:text-amber-300">{t('postDetail.thread.parentMissing', { id: post.xReplyTo })}</span>
+                  <span className="text-amber-700 dark:text-amber-300">{t('postDetail.thread.parentMissing', { id: post.xReplyTo })}</span>
                 )}
               </p>
             ) : null}
@@ -1963,7 +2136,7 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
                   reads "Re-check" - the state-correct recovery verb (the read-back
                   said not-live; the fix is to read again), mirroring how a held post's
                   slot becomes "Try again". Same action, honest label. */}
-              <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckTip' : 'postDetail.action.verifyTip')} labels={{ idle: t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckIdle' : 'postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.error.generic') }} onAction={onVerify} onError={setError} />
+              <ActionButton variant="success" size="md" icon={ShieldCheck} ariaLabel={t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckTip' : 'postDetail.action.verifyTip')} labels={{ idle: t(post.derivedState === 'verify-failed' ? 'postDetail.action.recheckIdle' : 'postDetail.action.verifyIdle'), loading: t('postDetail.action.verifyLoading'), success: t('postDetail.action.verifySuccess'), error: t('postDetail.action.verifyNotLive') }} onAction={onVerify} onError={setError} />
             </Tip>
           ) : null}
 

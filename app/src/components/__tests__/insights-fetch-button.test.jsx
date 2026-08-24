@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
 import Insights from '../Insights.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 
 // US-INS-09: the "Fetch metrics" button should reflect freshness - green right
@@ -13,6 +14,10 @@ vi.mock('../../lib/api.js', () => ({
   useInsights: () => ({ data: insightsData, isLoading: false, isError: false, error: null }),
   useDigest: () => ({ data: null }),
   fetchInsights: vi.fn(),
+  useConfig: () => ({ data: null }),
+  usePendpostHealth: () => ({ data: null }),
+  usePlans: () => ({ data: { campaigns: [] } }),
+  saveConfig: vi.fn(),
 }));
 
 function renderInsights() {
@@ -21,7 +26,9 @@ function renderInsights() {
     <QueryClientProvider client={qc}>
       <I18nProvider locale="en">
         <TooltipProvider>
-          <Insights active platformFilter={[]} campaignFilter="all" accounts={{}} />
+          <ConfirmProvider>
+            <Insights active platformFilter={[]} campaignFilter="all" accounts={{}} />
+          </ConfirmProvider>
         </TooltipProvider>
       </I18nProvider>
     </QueryClientProvider>,
@@ -29,8 +36,9 @@ function renderInsights() {
 }
 
 // The header carries the freshness-aware button; the empty state adds a second
-// plain fetch button, so target the first (header) match.
-const fetchBtn = () => screen.getAllByRole('button', { name: /fetch metrics/i })[0];
+// plain fetch button, so target the first (header) match. Since B (cost-aware
+// refresh) the label is "Refresh analytics" (the free-scope default of the split).
+const fetchBtn = () => screen.getAllByRole('button', { name: /refresh analytics/i })[0];
 
 describe('Insights fetch button freshness (US-INS-09)', () => {
   it('carries a green (fresh) state right after a recent fetch', () => {

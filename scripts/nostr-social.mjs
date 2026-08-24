@@ -77,6 +77,7 @@ import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isPollPost, pollOptions, pollDurationMinutes, pollMultiple, pollBlocker, pollBlockRow, POLL_LANE_LIMITS } from '../lib/poll.mjs';
 import { envPath } from '../lib/util.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -519,7 +520,7 @@ function loadPlan(planPath) {
   return { abs, plan: JSON.parse(fs.readFileSync(abs, 'utf8')) };
 }
 
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'xPostId', 'tgMessageId', 'dcMessageId', 'redditPostId', 'pinId', 'tiktokVideoId', 'mastodonStatusId', 'wordpressPostId', 'ghostPostId', 'nostrEventId', 'gbpPostId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'externalUrl', 'radarReplyState', 'radarFollowup'];
 
 async function withPlanLock(abs, fn) {
   const lockDir = `${abs}.lock.d`;
@@ -1048,10 +1049,25 @@ async function cmdKeygen(args) {
 
 async function cmdAuth() {
   requireWebSocket();
-  if (!readEnv('NOSTR_PRIVATE_KEY')) { console.error('[err] NOSTR_PRIVATE_KEY missing in .env (nsec1... or 64-char hex - mint one with `keygen --save`).'); process.exit(2); }
+  // .env still wins; otherwise, on an interactive terminal, prompt the operator to paste
+  // what they copied (the private key hidden, never echoed, never in shell history) and
+  // persist it so deriveKeys() below (and every later run) can read it. A non-interactive
+  // run (daemon/CI/mock) skips the prompt and fails closed at the guards.
+  const privKey = await resolveCredential({
+    value: readEnv('NOSTR_PRIVATE_KEY'),
+    secret: true,
+    hint: 'Paste your Nostr private key (nsec1... or 64-char hex - or mint one with `keygen --save`): ',
+  });
+  if (!privKey) { console.error('[err] NOSTR_PRIVATE_KEY missing in .env (nsec1... or 64-char hex - mint one with `keygen --save`).'); process.exit(2); }
+  writeEnv({ NOSTR_PRIVATE_KEY: privKey });
   const keys = deriveKeys();
   writeEnv({ NOSTR_PUBLIC_KEY: keys.pubHex, NOSTR_NPUB: keys.npub });
   console.log(`[ok] Key valid - identity ${keys.npub} (persisted NOSTR_PUBLIC_KEY + NOSTR_NPUB).`);
+  const relaysRaw = await resolveCredential({
+    value: readEnv('NOSTR_RELAYS'),
+    hint: 'Paste your Nostr relays (comma-separated wss:// relay URLs): ',
+  });
+  if (relaysRaw) writeEnv({ NOSTR_RELAYS: relaysRaw });
   const relays = relayUrls();
   if (!relays.length) { console.error('[err] NOSTR_RELAYS missing in .env (comma-separated wss:// relay URLs).'); process.exit(2); }
   let reachable = 0;
@@ -1958,6 +1974,9 @@ async function cmdPublishRadar(args) {
       const accepted = outcomes.filter((o) => o.status === 'fulfilled').length;
       if (!accepted) throw new Error(`no relay accepted the reply (0/${relays.length})`);
       post.nostrEventId = event.id;
+      // The reply's public address (njump) - persisted so the Radar card's
+      // "Beantwortet" links the ANSWER, not the question (no bech32 in lib).
+      post.externalUrl = permalinkFor(event.id);
       post.status = 'posted';
       post.postedAt = new Date(now).toISOString();
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'nostr', action: 'publish', ok: true, errorCode: null, errorMessage: null, actor: ACTOR });

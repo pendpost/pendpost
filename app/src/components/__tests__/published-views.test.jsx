@@ -51,6 +51,37 @@ describe('Published views (US-PUB-11)', () => {
     expect(screen.queryByRole('link', { name: /view on instagram/i })).toBeNull();
   });
 
+  it('resolves a manually-marked URL into the lane link (resolveLivePermalink)', () => {
+    renderPublished([post({
+      id: 'p1m',
+      postedAt: iso(1),
+      manualCompletions: { linkedin: { at: iso(1), externalUrl: 'https://www.linkedin.com/posts/marked-by-hand' } },
+    })]);
+    const link = screen.getByRole('link', { name: /view on linkedin/i });
+    expect(link).toHaveAttribute('href', 'https://www.linkedin.com/posts/marked-by-hand');
+  });
+
+  // S6 at-scale (canon finding 13): at most 5 lane links render inline; a post published
+  // to more lanes collapses the remainder into one quiet "+n" overflow, so the row's
+  // decision point never exceeds the 7-choice cap.
+  it('caps inline lane links at 5 and collapses the remainder into a +n overflow', async () => {
+    const user = userEvent.setup();
+    const lanes = ['linkedin', 'x', 'reddit', 'mastodon', 'youtube', 'telegram'];
+    renderPublished([post({
+      id: 'p6',
+      postedAt: iso(1),
+      platforms: lanes,
+      permalinks: Object.fromEntries(lanes.map((p) => [p, `https://example.com/${p}`])),
+    })]);
+    // Five inline icon links, the sixth behind the overflow.
+    expect(screen.getAllByRole('link', { name: /view on/i })).toHaveLength(5);
+    expect(screen.queryByRole('link', { name: /view on telegram/i })).toBeNull();
+    const more = screen.getByRole('button', { name: /1 more link/i });
+    await user.click(more);
+    const overflow = await screen.findByRole('link', { name: /view on telegram/i });
+    expect(overflow).toHaveAttribute('href', 'https://example.com/telegram');
+  });
+
   it('filters by a date-range preset', async () => {
     const user = userEvent.setup();
     renderPublished([

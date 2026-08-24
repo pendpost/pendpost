@@ -128,6 +128,29 @@ try {
   r = await queue('mastodon', 'Check out this game-changer!!! '.repeat(3));
   ok(r.approval === 'approved', 'a WARN-only draft still auto-approves (parity with autoApproveDecision)');
 
+  // ---- the draft-for-review hold (the "Auto-Antwort aktiv" tap) ---------------
+  // A drafting child spawned FOR the operator's review runs with the fence armed
+  // holdApproval: the target fence still admits exactly its signal, but the policy
+  // stands down - the draft the human asked to READ lands pending with every gate green.
+  {
+    const { beginDraftFence, endDraftFence } = await import('../lib/agent-runner.mjs');
+    setRadar({ enabled: true, autoReply: { enabled: true, lanes: ['mastodon'], requireLintClean: false } });
+    beginDraftFence(['mastodon hold-1'], { holdApproval: true });
+    let held;
+    try {
+      held = await queueRadarReply({ campaign: CAMP, signalUrl: 'https://example.com/thread/hold', source: 'mastodon', externalId: 'hold-1', text: 'A genuinely useful answer to the question asked.', actor: 'agent:claude', confirm: true });
+    } finally { endDraftFence(); }
+    ok(held.ok === true && held.approval === 'pending', 'holdApproval fence: the auto-reply policy stands down - the operator-requested draft stays PENDING');
+    ok(getPost(held.postId).approval === 'pending', 'the persisted held draft is pending');
+    // The plain fence (no hold) keeps its existing meaning byte-for-byte: auto-approve fires.
+    beginDraftFence(['mastodon hold-2']);
+    let auto2;
+    try {
+      auto2 = await queueRadarReply({ campaign: CAMP, signalUrl: 'https://example.com/thread/hold2', source: 'mastodon', externalId: 'hold-2', text: 'A genuinely useful answer to the question asked.', actor: 'agent:claude', confirm: true });
+    } finally { endDraftFence(); }
+    ok(auto2.approval === 'approved', 'a plain fence (no hold) leaves the auto-reply policy in force');
+  }
+
   // ---- config: owner-gated + typed -------------------------------------------
   const agentTry = setRadar({ autoReply: { enabled: true, lanes: ['reddit'] } }, 'agent:claude');
   ok(agentTry && agentTry.code === 'invalid_input', 'an AGENT cannot enable autoReply (owner-gated)');

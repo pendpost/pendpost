@@ -232,9 +232,18 @@ try {
   // three REST+MCP twins comment_inbox (GET /api/comments/inbox), comment_inbox_refresh
   // (POST /api/comments/inbox/refresh) and comment_resolve (POST /api/comments/inbox/resolve),
   // so both routes and tools go +3 (138 -> 141 routes, 114 -> 117 tools).
-  ok(/141 routes, 117 tools/.test(parityOut), `parity is 141 routes / 117 tools: ${parityOut.trim()}`);
+  // 141 routes / 118 tools = +radar_followup_report (engagement engine, owner decision 4): the
+  // spawned follow-up child's fenced report verb, MCP-only with NO REST twin by design (fail-closed
+  // fence refuses every caller a route could reach; parity exemption alongside radar_geo_reset in
+  // API-CONTRACT.md's exemptions.tools), so tools go 117 -> 118 while routes stay 141.
+  // 143 routes / 119 tools = +the inbound X Activity round-trip: list_inbound_events (GET
+  // /api/inbound/events) and reply_to_inbound_event (POST /api/inbound/reply), each a route + an
+  // MCP tool, so both go +2 (141 -> 143 routes, ... -> 119 tools).
+  // 143 routes / 120 tools = +resume_lane: the EXISTING POST /api/state/lane-resume route gains an
+  // MCP face (mcpTool null -> resume_lane), so tools go 119 -> 120 while routes stay 143.
+  ok(/143 routes, 120 tools/.test(parityOut), `parity is 143 routes / 120 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 141/117 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 143/120 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

@@ -363,7 +363,64 @@ try {
   ok(marked && marked.repliedUrl === 'https://reddit.com/r/x/comment/rr1', 'listRadar marks a signal repliedUrl once a posted radarReplyTo post targets it (S3b)');
   const others = afterReply.items.filter((s) => !(s.source === 'reddit' && s.externalId === s3sig.externalId));
   ok(others.every((s) => s.repliedUrl == null), 'only the replied signal is marked - the rest carry no repliedUrl');
-  const { loadState } = await import('../lib/state.mjs');
+  const { loadState, saveState } = await import('../lib/state.mjs');
+
+  // ---- the evidence-first `replied` contract (the "Beantwortet" truth fix) --------------
+  // A mark_posted WITH a URL is operator-supplied evidence: via 'external', url = that link,
+  // plus the reply post's own address so the UI can open the answer in the planner.
+  ok(marked.replied && marked.replied.via === 'external' && marked.replied.url === 'https://reddit.com/r/x/comment/rr1', 'replied.via=external + the operator URL when mark_posted carried one');
+  ok(marked.replied.postId === 'rr1' && marked.replied.campaign === 'radar-reply-camp', 'replied carries the reply post address {postId, campaign} for open-in-planner');
+  ok(marked.repliedUrl === marked.replied.url, 'repliedUrl stays as a deprecated alias of replied.url');
+  // The MatthewBerman repro: status:'posted' minted by mark_posted with NO url and NO
+  // platform id = zero evidence. via:'manual', url:null - and NEVER the signal's own url
+  // (the old join linked "Beantwortet" back to the question here).
+  {
+    const st = loadState();
+    st.radar.signals.push({ source: 'mastodon', externalId: 'manual1', url: 'https://mastodon.example/@asker/111', author: 'asker', text: 'is there a buffer alternative?', ts: new Date().toISOString(), intentScore: 55 });
+    saveState();
+    await createPost({ campaign: 'radar-reply-camp', post: { id: 'rrm1', type: 'text', platforms: ['mastodon'], caption: 'we can help with that', scheduledAt: '2020-01-01T00:00:00Z', radarReplyTo: { url: 'https://mastodon.example/@asker/111', source: 'mastodon', externalId: 'manual1' } }, actor: 'owner' });
+    await markPosted({ campaign: 'radar-reply-camp', postId: 'rrm1', actor: 'owner' });
+    const manualSig = (await listRadar({})).items.find((s) => s.source === 'mastodon' && s.externalId === 'manual1');
+    ok(manualSig && manualSig.replied && manualSig.replied.via === 'manual' && manualSig.replied.url === null, 'a no-evidence manual mark is via:manual with url:null (never a fabricated link)');
+    ok(manualSig.repliedUrl == null && manualSig.repliedUrl !== manualSig.url, 'the alias is null too - the signal\'s own thread url is NEVER served as the answer');
+    // Attach-after-the-fact: the ONE legal mark_posted re-entry records the real link ->
+    // the same signal upgrades to via:external on the next read. This is the UI's
+    // paste-a-link affordance, end to end.
+    const attach = await markPosted({ campaign: 'radar-reply-camp', postId: 'rrm1', actor: 'owner', externalUrl: 'https://mastodon.example/@op/222' });
+    ok(attach.ok, 'mark_posted re-entry attaches the live URL to an already-manual post');
+    const upgraded = (await listRadar({})).items.find((s) => s.source === 'mastodon' && s.externalId === 'manual1');
+    ok(upgraded.replied.via === 'external' && upgraded.replied.url === 'https://mastodon.example/@op/222', 'the attached URL upgrades the state to via:external with the real answer link');
+  }
+
+  // ---- resolveReplyPermalink: the pure per-lane evidence table ---------------------------
+  // Input mirrors a NORMALIZED post (ids nested, verify/permalinks/externalUrl top-level).
+  {
+    const { resolveReplyPermalink } = await import('../lib/radar.mjs');
+    const base = (lane, ext, over = {}) => ({ radarReplyTo: { source: lane, externalId: ext, url: 'https://signal.example/thread' }, ids: {}, verify: null, externalUrl: null, manualCompletions: null, permalinks: {}, ...over });
+    const rd = resolveReplyPermalink(base('reddit', 't3_q1', { ids: { redditPostId: 't1_c9' } }));
+    ok(rd.via === 'published' && rd.url === 'https://www.reddit.com/comments/q1/comment/c9/', 'reddit: t1_ comment + t3_ thread derive the canonical comment permalink');
+    const rdFallback = resolveReplyPermalink(base('reddit', 't3_q1', { ids: { redditPostId: 'reply_t3_q1' } }));
+    ok(rdFallback.via === 'published' && rdFallback.url === null, 'reddit: the reply_ failure-fallback id NEVER derives a link (published, url null)');
+    const rdPath = resolveReplyPermalink(base('reddit', 't3_q1', { ids: { redditPostId: 't1_c9', redditPermalink: '/r/x/comments/q1/t/c9/' } }));
+    ok(rdPath.url === 'https://www.reddit.com/r/x/comments/q1/t/c9/', 'reddit: the platform-stored permalink PATH wins over derivation');
+    const bx = resolveReplyPermalink(base('bluesky', 'at://did:plc:asker/app.bsky.feed.post/q', { ids: { blueskyPostId: 'at://did:plc:me/app.bsky.feed.post/r7' } }));
+    ok(bx.via === 'published' && bx.url === 'https://bsky.app/profile/did:plc:me/post/r7', 'bluesky: the at:// uri derives the bsky.app permalink');
+    ok(resolveReplyPermalink(base('bluesky', 'x', { ids: { blueskyPostId: 'not-an-at-uri' } })).url === null, 'bluesky: a malformed id derives nothing (never a guessed link)');
+    const xr = resolveReplyPermalink(base('x', '123', { ids: { xPostId: '999' }, permalinks: { x: 'https://x.com/i/web/status/999' } }));
+    ok(xr.via === 'published' && xr.url === 'https://x.com/i/web/status/999', 'x: the minted id resolves via the shared permalinks derivation');
+    const yt = resolveReplyPermalink(base('youtube', 'vid42', { ids: { ytCommentId: 'Ugz9' } }));
+    ok(yt.via === 'published' && yt.url === 'https://www.youtube.com/watch?v=vid42&lc=Ugz9', 'youtube: video id + comment-thread id derive the ?lc= watch permalink');
+    const mastoNoEnv = resolveReplyPermalink(base('mastodon', '111', { ids: { mastodonStatusId: '222' } }));
+    ok(mastoNoEnv.via === 'published' && mastoNoEnv.url === null, 'mastodon: a minted id WITHOUT env identity stays url:null (honest, never guessed)');
+    const nostr = resolveReplyPermalink(base('nostr', 'a'.repeat(64), { ids: { nostrEventId: 'b'.repeat(64) } }));
+    ok(nostr.via === 'published' && nostr.url === null, 'nostr: read-time derivation is null by design (driver writes externalUrl at publish)');
+    const ver = resolveReplyPermalink(base('mastodon', '111', { ids: { mastodonStatusId: '222' }, verify: { platforms: { mastodon: { permalink: 'https://inst.example/@me/222' } } }, externalUrl: 'https://else.example/x' }));
+    ok(ver.url === 'https://inst.example/@me/222', 'the verify read-back permalink beats every other source');
+    const lane = resolveReplyPermalink(base('mastodon', '111', { manualCompletions: { mastodon: { at: 'now', externalUrl: 'https://inst.example/@me/333' } } }));
+    ok(lane.via === 'external' && lane.url === 'https://inst.example/@me/333', 'a lane-scoped manual completion URL counts as external evidence');
+    const naked = resolveReplyPermalink(base('mastodon', '111'));
+    ok(naked.via === 'manual' && naked.url === null && naked.url !== 'https://signal.example/thread', 'zero evidence = via:manual, url:null - the signal url is NEVER the answer');
+  }
   ok(RADAR_REPLY_SOURCES.length === 5 && ['reddit', 'mastodon', 'bluesky', 'youtube', 'nostr'].every((s) => RADAR_REPLY_SOURCES.includes(s)) && !RADAR_REPLY_SOURCES.includes('hackernews') && !RADAR_REPLY_SOURCES.includes('x'), 'RADAR_REPLY_SOURCES = reddit/mastodon/bluesky/youtube/nostr (HN surface-only; x has no reply path X will accept; nostr flipped wave 5)');
   await createCampaign({ id: 'radarc', note: 'radar replies', timezone: 'UTC', actor: 'owner' });
   const getP = (id) => (loadPlanStore().campaigns.find((c) => c.id === 'radarc')?.posts || []).find((p) => p.id === id);
@@ -398,6 +455,9 @@ try {
     await runDueExclusive('scheduler', { campaign: 'radarc', postId: q.postId });
     const posted = getP(q.postId);
     ok(posted.ids[idField] && posted.status === 'posted', `${source}: the approved reply POSTS to the resolved external thread (${idField} minted)`);
+    // Mock/live parity for the reply-evidence write: the lanes whose LIVE engine persists
+    // the reply's own public URL at publish (mastodon; nostr likewise) do it in mock too.
+    if (source === 'mastodon') ok(typeof posted.externalUrl === 'string' && posted.externalUrl.includes(posted.ids[idField]), `${source}: publish persists the reply's own public URL (externalUrl) for the Beantwortet link`);
   }
   // radar_target_gone (safety review #5): an externalId containing 'gone' degrades at fire
   // time - never a stray post. It is TERMINAL (radarReplyState=target_gone) so a SECOND tick

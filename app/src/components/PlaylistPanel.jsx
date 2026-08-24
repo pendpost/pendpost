@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ListPlus, PlusCircle, ShieldAlert, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useYoutubePlaylists, createYoutubePlaylist, addToYoutubePlaylist } from '../lib/api.js';
-import { INNER_SURFACE, FIELD_SURFACE, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
+import { INNER_SURFACE, FIELD, EYEBROW, DISABLED_PRIMARY } from './ui.jsx';
 import { useT } from '../lib/i18n.js';
 
 // YouTube "Add to playlist" picker (spec 15, Pattern P3+P4+P9). Rendered as a
@@ -13,7 +13,6 @@ import { useT } from '../lib/i18n.js';
 // mutation -> invalidateQueries(['plans']) path as every other write, plus a
 // panel refetch so a fresh playlist's itemCount updates. Every state is icon+text
 // (never color-only).
-const FIELD_CLS = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 const PRIVACY_OPTIONS = ['public', 'unlisted', 'private'];
 
 export default function PlaylistPanel({ campaign, postId, enabled = true }) {
@@ -109,7 +108,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
         </p>
       ) : data?.needsScope ? (
         <div className={`space-y-1 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
-          <p className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-300">
+          <p className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
             <ShieldAlert size={13} aria-hidden="true" /> {t('postDetail.playlist.needsScope')}
           </p>
           {data.scope ? <p className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">{data.scope}</p> : null}
@@ -118,7 +117,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
         <div className="space-y-2">
           {options.length ? (
             <div className="flex flex-wrap items-center gap-1.5">
-              <select value={selected} onChange={(e) => setSelected(e.target.value)} aria-label={t('postDetail.playlist.pick')} className={`${FIELD_CLS} h-9 flex-1`}>
+              <select value={selected} onChange={(e) => setSelected(e.target.value)} aria-label={t('postDetail.playlist.pick')} className={`${FIELD} w-full flex-1`}>
                 <option value="">{t('postDetail.playlist.pick')}</option>
                 {options.map((p) => (
                   <option key={p.id} value={p.id}>{p.title}</option>
@@ -146,9 +145,9 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
                 onChange={(e) => setTitle(e.target.value)}
                 aria-label={t('postDetail.playlist.title')}
                 placeholder={t('postDetail.playlist.title')}
-                className={`${FIELD_CLS} h-9`}
+                className={`${FIELD} w-full`}
               />
-              <select value={privacy} onChange={(e) => setPrivacy(e.target.value)} aria-label={t('postDetail.playlist.privacy')} className={`${FIELD_CLS} h-9`}>
+              <select value={privacy} onChange={(e) => setPrivacy(e.target.value)} aria-label={t('postDetail.playlist.privacy')} className={`${FIELD} w-full`}>
                 {PRIVACY_OPTIONS.map((p) => (
                   <option key={p} value={p}>{t(`postDetail.playlist.privacy.${p}`)}</option>
                 ))}
@@ -182,7 +181,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
           )}
 
           {result ? (
-            <p className={`flex items-center gap-1.5 text-[11px] ${result.duplicate ? 'text-amber-600 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-300'}`}>
+            <p className={`flex items-center gap-1.5 text-[11px] ${result.duplicate ? 'text-amber-700 dark:text-amber-300' : 'text-emerald-600 dark:text-emerald-300'}`}>
               <CheckCircle2 size={12} aria-hidden="true" />
               {result.duplicate ? t('postDetail.playlist.duplicate', { title: result.title }) : t('postDetail.playlist.added', { title: result.title })}
             </p>

@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-08-24
+
+This release closes the loop on X. pendpost now sees the mentions, replies, likes, follows, and direct messages your posts draw, gathers them into one inbound inbox, and lets you answer without leaving the app. In the same breath it stops the quiet money leak that a metered X account could spring: a lane that runs out of credits now says so honestly instead of pretending to publish, and the daily reading that used to drain those credits is off by default.
+
+### Added
+- The inbound X Activity engine. pendpost watches what happens to your X posts, mentions, replies, likes, follows, and direct messages, and shows them in one inbound inbox you can act on. You can reply to a mention or a reply straight from that inbox, and an agent can do the same through the `reply_to_inbound_event` tool with a REST twin. The always-on cloud runtime carries the same stream so the inbox stays current even while your machine is asleep.
+- Honest recovery when an X lane runs out of credits. X bills per call, and a depleted account used to look like a post that quietly failed. Now the lane halts with a plain reason, the post keeps an honest Failed pill instead of a misleading Retrying one, and both the app and the `resume_lane` tool can re-check credits and pick the work back up. The credits panel links straight to the X top-up portal.
+- Cost-aware Insights. Reading performance from a metered lane costs money, so the daily refresh now runs the free lanes on its own and leaves X as an explicit opt-in. This closes the case where a background read sweep drained X credits even though the balance looked fine. The Reddit and Mastodon sweeps are bounded the same way.
+- A rebuilt Radar worklist. Radar opens on the work that is still open, hides the signals you have already handled, and marks a thread read in one click. The open and answered views are now separate filters with a three way sort, the nav shows a live count of new signals, and one hung source can no longer burn the whole scan because each source runs on its own. A partial or retrying scan reads as amber rather than a dead end, and once a signal is answered its card can never link back to the question again.
+- An all-projects overview. When you run more than one brand, Activity, Insights, and the Radar comment inbox each have a combined view across every project, with weighted-average rates where an average makes sense, and both Approvals and the Planner can work in cross-project mode. Every card carries a clear project badge so you always know whose post you are looking at.
+- Media upload in the editor. You can now upload or drag and drop a photo or video straight into the composer and the post detail, not only through the asset library.
+- Covers that match the grid. A reel cover is shown the way each platform's profile grid will actually crop it, Instagram gets a grid-safe cover delivered without any extra dependency, and pendpost measures the rendition Instagram served after publishing so a cover surprise is caught. Video assets and cards carry an HD-quality badge.
+- Connect ceremonies that ask for what they need. A hand-run command-line connect step now prompts for a missing credential instead of failing with an error, for both the OAuth and the static-token lanes, and the Setup page tells you the command will ask for the values.
+- Smaller additions: auto-approve now only offers the lanes you have actually connected; a shared field primitive gives every labelled input the same shape; the Planner gained instant reschedule, a compact week view, and month drag and drop; deleting a post always works because the engine cancels the native platform object itself, in one confirm with an instant close; and the capability-drift gate now runs inside the OSS publish pipeline with a matching capability catalog on the website.
+
+### Changed
+- The website drops the managed-offering waitlist and goes self-serve.
+- pendpost adopts the server's posting language when your machine has no local preference yet, so a fresh install speaks the right language.
+- Every command-line engine verb now honours an explicit brand target, so a stray command cannot touch the wrong account.
+- Radar's daily-run controls moved into Radar settings, and the reconcile now aligns to the daily run time.
+
+### Fixed
+- Native delete and unschedule are now idempotent across Ghost, WordPress, Mastodon, Facebook, and YouTube: removing a post that is already gone on the platform counts as success instead of an error.
+- Intermittent Meta hiccups no longer park a healthy post; pendpost rides them out and lets the post go when the platform recovers.
+- The cover that shows in the app is the cover that publishes, after a client-root path fix with a sibling fallback and an Instagram first-frame default.
+- Mock mode is fenced and honestly bannered so a test run can never reach a live account, and a reverted YouTube handoff heals itself and ships the overdue posts.
+- Cloud delivery: a rescheduled post clears its stale cloud markers so a retry drops the phantom failure, the health-dot popover copy matches the control it explains, and every red health state routes to the Planner.
+- A broad accessibility pass clears Tier-1 contrast failures and meets WCAG AA across the comment inbox, the sidebar primaries, and the amber and zinc state colours, and the served dashboard now ships a robots.txt so it can be indexed.
+
 ## [2.1.0] - 2026-08-12
 
 This release turns pendpost outward. It now watches the comments on your own posts, lets a client sign off on work through a link of their own, remembers the people who engage with you across lanes, and hardens the moment a post publishes so a broken one is caught before it ships rather than after.

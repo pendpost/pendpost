@@ -39,11 +39,12 @@ import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
+import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath } from '../lib/util.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
-import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
+import { avSyncBlocker, avSyncBlockRow, findCoverSibling } from '../lib/assets.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -224,7 +225,7 @@ function loadPlan(planPath) {
 // ytPlaylistItems (spec 15): the optional [{playlistId,itemId}] membership echo a
 // successful playlist-add writes onto the post, so PostDetail can show "In: Series A"
 // with no re-fetch - engine-owned like every other minted id above.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'ytCaptionId', 'ytCommentId', 'ytPlaylistItems', 'status', 'postedAt', 'attempts', 'publishHold', 'radarReplyState'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'ytCaptionId', 'ytCommentId', 'ytPlaylistItems', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'radarReplyState', 'radarFollowup'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -309,13 +310,21 @@ function resolveMediaPath(plan, post) {
   return null;
 }
 
-// Cover override materialized by pendpost (lib/covers.mjs):
-// post.cover = { source: 'frame'|'file', offsetMs?, path } with a repo-relative
-// path to the JPEG. Engines only ever READ it - the field is pendpost-owned.
-function resolveCoverPath(post) {
-  if (!post.cover?.path) return null;
-  const abs = path.resolve(__dirname, '..', post.cover.path);
-  return fs.existsSync(abs) ? abs : null;
+// Cover for a post, in display-parity precedence (exported for the engine tests):
+//  1. The explicit post.cover override materialized by pendpost (lib/covers.mjs) -
+//     its path is CLIENT-ROOT-relative (covers.mjs writes it relative to
+//     activeRoot()), so it anchors at PENDPOST_ROOT exactly like resolveMediaPath.
+//  2. Else the render-sibling <base>.jpg next to the media - the SAME JPEG the app
+//     shows as the post's cover (plans.mjs findCover), so what pendpost displays is
+//     what publishes. A stale override pointer falls through to the sibling,
+//     mirroring the read model's overrideExists precedence.
+export function resolveCoverPath(post, mediaPath = null) {
+  if (post.cover?.path) {
+    const root = process.env.PENDPOST_ROOT ? path.resolve(process.env.PENDPOST_ROOT) : path.resolve(__dirname, '..');
+    const abs = path.resolve(root, post.cover.path);
+    if (fs.existsSync(abs)) return abs;
+  }
+  return findCoverSibling(mediaPath);
 }
 
 // Subtitle SRT track: the owner-set post.captionPath (repo-relative or absolute),
@@ -413,9 +422,9 @@ function tagsArray(tags) {
 // snippet from the plan entry; publishAt only on the real schedule path (never on validation).
 // privacy defaults to 'private' so validate/schedule are unchanged; cmdPublish passes
 // 'public'/'unlisted' for an immediate, visible upload (compliance-demo / one-off).
-function buildMeta(post, { withPublishAt = false, privacy = 'private' } = {}) {
+function buildMeta(post, { withPublishAt = false, privacy = 'private', publishAtMs = null } = {}) {
   const status = { privacyStatus: privacy, selfDeclaredMadeForKids: false };
-  if (withPublishAt) status.publishAt = new Date(post.scheduledAt).toISOString();
+  if (withPublishAt) status.publishAt = new Date(publishAtMs ?? Date.parse(post.scheduledAt)).toISOString();
   return {
     snippet: {
       title: post.title || 'pendpost',
@@ -433,8 +442,19 @@ function buildMeta(post, { withPublishAt = false, privacy = 'private' } = {}) {
 
 async function cmdAuth(args) {
   console.log(`[info] Connecting YouTube - credentials will be written to ${ENV_PATH}`);
-  const clientId = args['client-id'] || readEnv('YT_CLIENT_ID');
-  const clientSecret = args['client-secret'] || readEnv('YT_CLIENT_SECRET');
+  // Flag or .env wins; otherwise, on an interactive terminal, prompt the operator to
+  // paste what they just copied from the GCP console (the secret hidden, never echoed,
+  // never in shell history). A non-interactive run (daemon/CI/mock) skips the prompt
+  // and falls through to the fail-closed error below.
+  const clientId = await resolveCredential({
+    value: args['client-id'] || readEnv('YT_CLIENT_ID'),
+    hint: 'Paste your YouTube OAuth Client ID (GCP Console > APIs & Services > Credentials > your OAuth client): ',
+  });
+  const clientSecret = await resolveCredential({
+    value: args['client-secret'] || readEnv('YT_CLIENT_SECRET'),
+    secret: true,
+    hint: 'Paste your YouTube Client secret (hidden; same OAuth client page): ',
+  });
   if (!clientId || !clientSecret) {
     console.error('[err] Need --client-id and --client-secret (GCP Console -> APIs & Services -> Credentials -> the OAuth client) on first run, or set YT_CLIENT_ID / YT_CLIENT_SECRET in .env.');
     process.exit(2);
@@ -616,7 +636,18 @@ async function cmdSchedule(args) {
     if (args.only && post.id !== args.only) continue;
     if (!isYouTube(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
-    if (post.status !== 'planned') continue;
+    // Self-heal the poisoned "scheduled but nothing exists" state: a status of
+    // 'scheduled' WITHOUT a ytVideoId means a prior handoff was reverted (e.g. a
+    // cleared mock id) - nothing is actually scheduled on YouTube, so treat it as
+    // plannable instead of silently skipping it (the silent skip surfaced as the
+    // daemon's reason-less "engine returned no result" failure).
+    if (post.status !== 'planned') {
+      if (post.status === 'scheduled' && !post.ytVideoId) {
+        console.log(`[info] ${post.id}: status is "scheduled" but no ytVideoId exists - re-scheduling it.`);
+      } else {
+        continue;
+      }
+    }
     // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
     // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
     // held post from the fire loop. Reschedule or edit clears the hold.
@@ -633,7 +664,14 @@ async function cmdSchedule(args) {
 
     const dueMs = Date.parse(post.scheduledAt);
     if (Number.isNaN(dueMs)) { console.log(`[warn] ${post.id}: unparseable scheduledAt "${post.scheduledAt}" - skipping.`); continue; }
-    if (dueMs <= now) { console.log(`[warn] ${post.id}: scheduledAt is in the past - YouTube requires a future publishAt. Reschedule or upload manually.`); continue; }
+    // An OVERDUE approved post still publishes: YouTube refuses a past publishAt,
+    // so clamp to the nearest valid future moment instead of silently skipping
+    // (the old skip left "Try again" on an overdue post as a reason-less dead end).
+    let publishAtMs = dueMs;
+    if (dueMs <= now) {
+      publishAtMs = now + 2 * 60_000;
+      console.log(`[info] ${post.id}: scheduledAt is in the past - clamping publishAt to ${new Date(publishAtMs).toISOString()} (about 2 minutes from now) so the overdue post still ships.`);
+    }
 
     const mediaPath = resolveMediaPath(plan, post);
     if (!mediaPath) { console.log(`[warn] ${post.id}: media not found (${post.path || post.file}) - skipping.`); continue; }
@@ -658,7 +696,7 @@ async function cmdSchedule(args) {
       continue;
     }
 
-    const meta = buildMeta(post, { withPublishAt: true });
+    const meta = buildMeta(post, { withPublishAt: true, publishAtMs });
     if (args['dry-run']) {
       console.log(`\n[dry] ${post.id}: would schedule a PRIVATE YouTube video to auto-publish at ${meta.status.publishAt} (${fmtLocal(post.scheduledAt, plan.timezone)} ${plan.timezone || 'UTC'}):`);
       console.log(`      title:       ${meta.snippet.title}`);
@@ -682,8 +720,9 @@ async function cmdSchedule(args) {
       RUN.results.push({ postId: post.id, platform: 'youtube', action: 'schedule-native', ok: true, id: video.id });
       console.log(`[ok] ${post.id}: scheduled (video id ${video.id}, privacyStatus=${video.status?.privacyStatus}, publishAt=${video.status?.publishAt}). Confirm it reads "Scheduled" in YouTube Studio.`);
       scheduled += 1;
-      // Cover override: cosmetic + non-fatal - the scheduled upload stands.
-      const ytCover = resolveCoverPath(post);
+      // Cover (override or render-sibling title card): cosmetic + non-fatal - the
+      // scheduled upload stands.
+      const ytCover = resolveCoverPath(post, mediaPath);
       if (ytCover) {
         try {
           await setThumbnail(video.id, ytCover, token);
@@ -760,14 +799,29 @@ async function cmdStatus(args) {
   }
 }
 
-async function cmdDelete(args) {
+// Delete/cancel a natively-scheduled video. A 404 videoNotFound means the video is
+// ALREADY GONE (deleted in Studio, removed after publishing, or never resolvable) -
+// which is precisely the end state a delete wants, so we swallow it as an idempotent
+// success rather than raising engine_failure and stranding the plan row. This mirrors
+// the Discord lane's cmdDeleteEvent (scripts/discord-social.mjs) 404 handling; api()
+// already rides err.status/err.reason (and the insights path already treats a 404 as a
+// benign "gone" signal), so the check is local and consistent. Any OTHER error still throws.
+export async function cmdDelete(args) {
   if (!args.id) {
     console.error('Usage: node scripts/yt-social.mjs delete --id <videoId>');
     process.exit(2);
   }
   const token = await getAccessToken();
-  await api('DELETE', '/videos', { query: { id: args.id }, token });
-  console.log(`[ok] Deleted YouTube video ${args.id}.`);
+  try {
+    await api('DELETE', '/videos', { query: { id: args.id }, token });
+    console.log(`[ok] Deleted YouTube video ${args.id}.`);
+  } catch (err) {
+    if (err?.status !== 404 && err?.reason !== 'videoNotFound') throw err;
+    console.log(`[skip] YouTube video ${args.id} is already gone (404) - counting it cancelled.`);
+    RUN.results.push({ platform: 'youtube', action: 'delete', ok: true, id: String(args.id), alreadyGone: true });
+    return;
+  }
+  RUN.results.push({ platform: 'youtube', action: 'delete', ok: true, id: String(args.id) });
 }
 
 // ---------- main ----------
@@ -937,9 +991,9 @@ async function cmdSetThumbnail(args) {
   for (const post of plan.posts || []) {
     if (args.only && post.id !== args.only) continue;
     if (!isYouTube(post)) continue;
-    const coverPath = resolveCoverPath(post);
+    const coverPath = resolveCoverPath(post, resolveMediaPath(plan, post));
     if (!coverPath) {
-      if (args.only) console.log(`[skip] ${post.id}: no materialized cover override (set one via pendpost first).`);
+      if (args.only) console.log(`[skip] ${post.id}: no cover override and no <render>.jpg sibling (set one via pendpost first).`);
       continue;
     }
     if (!post.ytVideoId) {

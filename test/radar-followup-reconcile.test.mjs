@@ -68,6 +68,15 @@ try {
   // idempotence: a second forced check does not re-report the already-answered thread
   const res2 = await radarFollowupCheck({});
   ok(res2 && res2.checked === 1 && res2.replied === 0, 'check-now: only the still-quiet reply is re-checked; the answered one is terminal');
+
+  // Engagement engine (owner decision 4): with NO agent-lane targets due (this whole client
+  // is reddit-only), the ENGINE-verb path is byte-unchanged - the reconcile result carries
+  // no agentFollowup key, and no agent job was ever spawned (no provider is even configured,
+  // and the branch never armed: the zero-due count short-circuits before any agent logic).
+  ok(!('agentFollowup' in res) && !('agentFollowup' in res2),
+    'no agent lanes due -> the reconcile return shape is byte-unchanged (no agentFollowup key)');
+  const jobs = JSON.parse(fs.readFileSync(path.join(WS, 'state.json'), 'utf8')).radar?.jobs || [];
+  ok(jobs.length === 0, 'no agent lanes due -> no agent job row was ever created by the reconcile');
 } catch (err) {
   failures += 1;
   console.error('  FAIL - threw:', err && err.stack || err);

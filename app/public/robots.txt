@@ -1,0 +1,17 @@
+# robots.txt for the pendpost dashboard
+#
+# The public site is fully crawlable and indexable. Only the operational
+# endpoints below are disallowed: they serve JSON, stream local media, speak
+# MCP, or hand out private per-client review links - none of which belong in a
+# search index (the review pages also carry <meta name="robots" content="noindex">).
+#
+# Fixes Search Console "Blocked by robots.txt": there was previously no
+# robots.txt, so /robots.txt fell through to the SPA fallback and returned an
+# HTML page instead of a valid rules file.
+
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /media
+Disallow: /mcp
+Disallow: /review/

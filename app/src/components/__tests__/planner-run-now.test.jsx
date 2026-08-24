@@ -158,6 +158,24 @@ describe('PlannerRunNow', () => {
     expect(runBtn()).toBeDisabled();
   });
 
+  it('a genuine lane failure wins over the halt marker on a mixed post (Fix A)', async () => {
+    const user = userEvent.setup();
+    // The run drops X (lane_halted marker) AND genuinely fails Instagram: the actionable
+    // IG reason must surface, not "resume the lane".
+    runPublishDue.mockResolvedValueOnce({ ok: true, ran: [
+      { campaign: 'c', postId: 'a', lane: 'x', ok: false, errorCode: 'lane_halted', errorMessage: 'x paused (credits)' },
+      { campaign: 'c', postId: 'a', lane: 'instagram', ok: false, errorCode: 'engine_failure', errorMessage: 'instagram upload rejected: no public URL' },
+    ] });
+    renderRunNow({ pendpostHealth: HEALTHY, campaigns: campaignsWith(duePost('a')) });
+
+    await openDialog(user);
+    await screen.findByRole('dialog');
+    await user.click(runBtn());
+
+    expect(await screen.findByText(/instagram upload rejected/i)).toBeInTheDocument();
+    expect(screen.queryByText(/paused because the credits are used up/i)).not.toBeInTheDocument();
+  });
+
   it('in_flight (HTTP 423) stops with a friendly message and no auto-retry', async () => {
     const user = userEvent.setup();
     runPublishDue.mockRejectedValueOnce(Object.assign(new Error('busy'), { code: 'in_flight' }));

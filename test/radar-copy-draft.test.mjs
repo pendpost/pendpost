@@ -10,8 +10,9 @@
 // policy can ever touch it.
 //
 // What this pins:
-//   1. capability derivation: RADAR_COPY_DRAFT_SOURCES = ['hackernews'], disjoint from
-//      RADAR_REPLY_SOURCES; the queue-reply enum widens, the reply-post validator does NOT.
+//   1. capability derivation: RADAR_COPY_DRAFT_SOURCES = [hackernews, x, linkedin, instagram],
+//      disjoint from RADAR_REPLY_SOURCES; the queue-reply enum widens, the reply-post validator
+//      does NOT.
 //   2. the full press: ONE Scan (research -> drafting) with NO campaign configured still
 //      drafts the HN copy suggestion (the no-campaign gate blocks only reply-POSTS),
 //      the draft rides listRadar as signal.draft.mode==='copy', drafted counts it,
@@ -66,7 +67,7 @@ fs.chmodSync(comboBin, 0o755);
 
 try {
   const { setConfig, getConfig } = await import('../lib/config.mjs');
-  const { radarAgentScan, queueRadarReply, listRadar } = await import('../lib/writes.mjs');
+  const { radarAgentScan, queueRadarReply, listRadar, radarIngest } = await import('../lib/writes.mjs');
   const { handleRpc } = await import('../lib/mcp.mjs');
   const { loadPlanStore } = await import('../lib/plans.mjs');
   const { withClient } = await import('../lib/context.mjs');
@@ -97,17 +98,24 @@ try {
   // ===== (1) capability derivation ==========================================
   ok(RADAR_CAPABILITIES.hackernews.reply === false && RADAR_CAPABILITIES.hackernews.copyDraft === true,
     'hackernews stays reply:false and gains copyDraft:true');
-  ok(JSON.stringify([...RADAR_COPY_DRAFT_SOURCES]) === JSON.stringify(['hackernews', 'x']),
-    'RADAR_COPY_DRAFT_SOURCES derives to exactly [hackernews, x] (x: X refuses API replies to strangers; nostr flipped to the reply lane, wave 5)');
+  ok(JSON.stringify([...RADAR_COPY_DRAFT_SOURCES]) === JSON.stringify(['hackernews', 'x', 'linkedin', 'instagram']),
+    'RADAR_COPY_DRAFT_SOURCES derives to exactly [hackernews, x, linkedin, instagram] (no stranger-reply API for any of them; nostr flipped to the reply lane, wave 5)');
   ok(!RADAR_REPLY_SOURCES.includes('hackernews'),
     'RADAR_REPLY_SOURCES is untouched - the reply-post validator and auto-reply lanes never see HN');
   ok(RADAR_COPY_DRAFT_SOURCES.every((s) => !RADAR_REPLY_SOURCES.includes(s)),
     'the two sets are disjoint by construction');
+  ok(RADAR_CAPABILITIES.linkedin.copyDraft === true && RADAR_CAPABILITIES.linkedin.reply === false
+    && RADAR_CAPABILITIES.linkedin.search === false
+    && RADAR_CAPABILITIES.instagram.copyDraft === true && RADAR_CAPABILITIES.instagram.reply === false
+    && RADAR_CAPABILITIES.instagram.search === false,
+    'linkedin + instagram are agent-found (search:false), copy-draft (reply:false, copyDraft:true) - no stranger-reply API');
+  ok(!RADAR_REPLY_SOURCES.includes('linkedin') && !RADAR_REPLY_SOURCES.includes('instagram'),
+    'neither linkedin nor instagram is a reply source - no reply-POST path renders for them');
 
   // The drafting brief tells the child about the copy path, and drops the campaign line
   // when there is no campaign (the copy-only run).
   const brief = radarDraftPrompt([{ source: 'hackernews', externalId: 'hn1', url: 'u', text: 't' }], { campaign: null });
-  ok(/hackernews, x have no reply path from pendpost/.test(brief), 'the drafting brief explains the copy-paste path (derived - nostr auto-dropped on its reply flip)');
+  ok(/hackernews, x, linkedin, instagram have no reply path from pendpost/.test(brief), 'the drafting brief explains the copy-paste path (derived - nostr auto-dropped on its reply flip)');
   ok(!/campaign: "/.test(brief), 'with no campaign, the brief omits the campaign line instead of interpolating null');
 
   // ===== (2) the full press, campaign-less ==================================
@@ -146,6 +154,27 @@ try {
   endDraftFence();
   ok(inResearch.ok !== true && /not one of the signals/.test(inResearch.message || ''),
     'the empty research fence refuses a copy draft exactly like a reply');
+
+  // ===== (2b) linkedin + instagram travel the same copy path ================
+  // Both are agent-found (search:false), reply:false, copyDraft:true - proven source-agnostic
+  // downstream: an ingested signal is byte-identical to an engine-scanned one. Ingest one of
+  // each, confirm they ride listRadar, and that a human copy draft lands with mode:"copy".
+  const liIngest = await asClient(() => radarIngest({ actor: 'agent:radar-scan', queryId: 'q1', signals: [
+    { source: 'linkedin', externalId: 'urn:li:activity:7000000000000000001', url: 'https://www.linkedin.com/posts/acme_activity-7000000000000000001', text: 'Which platform do coaches use to get discovered and take bookings?', score: 72, reason: 'coach choosing a platform' },
+    { source: 'instagram', externalId: 'Cabc123', url: 'https://www.instagram.com/p/Cabc123/', text: 'Starting my coaching business - what tools do you all use to book clients?', score: 68, reason: 'aspiring coach picking tools' },
+  ] }));
+  ok(liIngest.ok === true && liIngest.accepted === 2, `both linkedin + instagram signals ingest (accepted ${liIngest.accepted})`);
+  const feedLI = await asClient(() => listRadar({}));
+  const li = feedLI.items.find((s) => s.source === 'linkedin' && s.externalId === 'urn:li:activity:7000000000000000001');
+  const ig = feedLI.items.find((s) => s.source === 'instagram' && s.externalId === 'Cabc123');
+  ok(Boolean(li) && Boolean(ig), 'both new-source signals ride listRadar with their own source id + glyph');
+  const liDraft = await asClient(() => queueRadarReply({
+    source: 'linkedin', externalId: 'urn:li:activity:7000000000000000001',
+    signalUrl: 'https://www.linkedin.com/posts/acme_activity-7000000000000000001',
+    text: 'Happy to share what worked for us.', actor: 'owner', confirm: true,
+  }));
+  ok(liDraft.ok === true && liDraft.mode === 'copy' && liDraft.approval === null,
+    'a linkedin answer saves as a copy draft (mode:"copy", no approval) - no stranger-reply POST');
 
   // ===== (3) refusals on the copy path ======================================
   const web = await asClient(() => queueRadarReply({
