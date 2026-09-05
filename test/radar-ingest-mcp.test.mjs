@@ -30,6 +30,30 @@ try {
   const body = JSON.parse(res.result.content[0].text);
   ok(res.result && body.ok === true && body.enabled === false && body.accepted === 0, 'tools/call radar_ingest dispatches to radarIngest (Radar OFF => inert { ok:true, enabled:false, accepted:0 })');
 
+  // Wave 3 Q3: with Radar ON and a lookback window, an undated signal is dropped and the TEXT the
+  // child reads says so - the tally field alone would be a number it can ignore.
+  fs.mkdirSync(path.join(WS, 'data', 'plans'), { recursive: true });
+  fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
+  // handleRpc binds every call to the ACTIVE client's root (withClient), so the config write
+  // must land in that same root - the geo-check test's asClient idiom - or the tool reads defaults.
+  const { getConfig, setConfig } = await import('../lib/config.mjs');
+  const { withClient } = await import('../lib/context.mjs');
+  const { clientRoot, activeClientId } = await import('../lib/multi-client.mjs');
+  fs.mkdirSync(clientRoot(activeClientId()), { recursive: true });
+  const turnedOn = withClient(clientRoot(activeClientId()), () => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: { enabled: true, lookbackDays: 90, queries: [{ id: 'q1', label: 'q', keywords: ['schedule'], minScore: 0 }] } } } }));
+  ok(turnedOn.ok === true, `Radar turned on through config_set for the enabled-path probe: ${JSON.stringify(turnedOn).slice(0, 200)}`);
+  const on = await handleRpc({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'radar_ingest', arguments: { actor: 'agent:claude', queryId: 'q1', signals: [
+    { source: 'web', url: 'https://example.com/dated', text: 'What do you use to schedule posts?', ts: new Date(Date.now() - 86_400_000).toISOString() },
+    { source: 'quora', url: 'https://quora.com/undated', text: 'What do you use to schedule posts?' },
+  ] } } });
+  const text = on.result.content[0].text;
+  const onBody = JSON.parse(text);
+  ok(onBody.accepted === 1 && onBody.dropped === 1 && onBody.droppedUndated === 1 && onBody.staleDropped === 0, 'the tally itemizes the undated drop as droppedUndated (not staleDropped)');
+  ok(/1 signal dropped for missing ts/.test(text) && /Send ts \(ISO-8601\)/.test(text), 'the tool result TEXT the child reads says how many were dropped for missing ts and to send timestamps');
+  ok(on.result.structuredContent && on.result.structuredContent.droppedUndated === 1, 'structuredContent mirrors the field (outputSchema declares it)');
+  ok(tool.outputSchema.properties.droppedUndated && tool.outputSchema.properties.staleDropped && tool.outputSchema.properties.note, 'the outputSchema documents staleDropped, droppedUndated and note');
+  ok(/droppedUndated/.test(tool.description) && /dropped/.test(tool.inputSchema.properties.signals.items.properties.ts.description), 'the description and the ts field description both tell the child an undated signal is dropped');
+
   assert.ok(failures === 0, `${failures} assertion(s) failed`);
   console.log(`[radar-ingest-mcp] OK - radar_ingest is registered + dispatches through handleRpc (${pass} assertions).`);
 } catch (err) {

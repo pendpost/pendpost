@@ -21,7 +21,7 @@ jobs:
     if: github.repository == 'pendpost/pendpost'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v9
+      - uses: actions/stale@v11
         with:
           only-labels: needs-info
           exempt-issue-labels: accepted,rfc,security,help wanted,good first issue,blocked

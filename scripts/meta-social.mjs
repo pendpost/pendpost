@@ -46,7 +46,7 @@ import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
 import { avSyncBlocker, avSyncBlockRow, probeMedia, findCoverSibling } from '../lib/assets.mjs';
-import { effectivePublicUrl, effectiveSlideUrl, classifyMediaProbe } from '../lib/public-media.mjs';
+import { effectivePublicUrl, effectiveSlideUrl, classifyMediaProbe, probeMediaUrl, deadMediaUrlDiagnosis } from '../lib/public-media.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { envPath } from '../lib/util.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
@@ -347,20 +347,17 @@ function appendAttempt(post, entry) {
 
 // After a Meta 9004 ("Only photo or video can be accepted as media type") the real
 // cause is almost always that the PUBLIC image_url did not serve an image (a stale
-// mirror answering with its HTML 404 page). One HEAD probe AFTER the failure turns
-// the next mirror drift into a one-line fix instead of an investigation. Post-failure
-// only: a pre-publish probe would make every happy-path publish depend on THIS
-// machine reaching the mirror, which Meta's fetch does not. A thrown probe returns
-// null - Graph's own message stands as the only evidence.
+// mirror answering with its HTML 404 page). One HEAD probe turns the next mirror
+// drift into a one-line fix instead of an investigation. Shares the ONE probe shape
+// with the pre-fire fail-safe (lib/public-media.mjs probeMediaUrl). A thrown/absent
+// probe returns null - Graph's own message stands as the only evidence.
 async function mediaFetchDiagnosis(url) {
-  if (!url) return null;
-  try {
-    const res = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(10_000) });
-    return classifyMediaProbe({ status: res.status, contentType: res.headers.get('content-type') }, url);
-  } catch {
-    return null;
-  }
+  const probe = await probeMediaUrl(url);
+  return probe ? classifyMediaProbe(probe, url) : null;
 }
+// deadMediaUrlDiagnosis (the PRE-FIRE fail-safe) is the shared lib/public-media.mjs
+// helper: probe, and return the diagnosis only when the URL is deterministically
+// dead so the caller skips the doomed Graph POST. Fail-open on a transient probe.
 
 // Machine-readable run envelope for --json mode (consumed by the pendpost scheduler).
 const RUN = { results: [], blocked368: false };
@@ -849,6 +846,25 @@ async function cmdPublishDue(args) {
         continue;
       }
       if (args['dry-run']) { console.log(`[dry] ${post.id}: would publish an IG carousel of ${slides.length} children.`); continue; }
+      // PRE-FIRE fail-safe (B1): if any IMAGE slide's public URL is DETERMINISTICALLY
+      // dead (404/410 or non-image bytes), Meta's server-side fetch would 9004 every
+      // child - skip the doomed Graph POSTs and record ONE honest failure whose
+      // diagnosis (MEDIA_URL_DEAD_MARK) parks the post on strike 1, instead of the
+      // 2026-08 storm of re-fires. Fail-open: a transient/inconclusive probe proceeds.
+      let deadSlide = null;
+      for (const s of slides) {
+        if (carouselItemKind({ path: s.path }) === 'image' && s.url) {
+          deadSlide = await deadMediaUrlDiagnosis(s.url);
+          if (deadSlide) break;
+        }
+      }
+      if (deadSlide) {
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-carousel', ok: false, errorCode: 9004, errorMessage: deadSlide.slice(0, 300), lateMin, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: false, errorCode: 9004, errorMessage: deadSlide.slice(0, 300) });
+        console.error(`[err] ${post.id}: IG carousel not fired - ${deadSlide}`);
+        continue;
+      }
       console.log(`[info] ${post.id}: assembling IG carousel (${slides.length} children)...`);
       try {
         const childIds = [];
@@ -980,6 +996,17 @@ async function cmdPublishDue(args) {
         const msg = 'instagram feed image needs a public image URL (set imageUrl, or set a public media host in Settings)';
         console.log(`[warn] ${post.id}: ${msg} - skipping.`);
         RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: false, errorCode: 'unsupported', errorMessage: msg });
+        continue;
+      }
+      // PRE-FIRE fail-safe (B1): if the public URL is DETERMINISTICALLY dead, skip the
+      // doomed container POST and record one honest failure (parks on strike 1) rather
+      // than letting Meta 9004 it. Fail-open on a transient/inconclusive probe.
+      const deadImg = await deadMediaUrlDiagnosis(publicUrl);
+      if (deadImg) {
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-image', ok: false, errorCode: 9004, errorMessage: deadImg.slice(0, 300), lateMin, actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish-image', ok: false, errorCode: 9004, errorMessage: deadImg.slice(0, 300) });
+        console.error(`[err] ${post.id}: IG feed image not fired - ${deadImg}`);
         continue;
       }
       try {

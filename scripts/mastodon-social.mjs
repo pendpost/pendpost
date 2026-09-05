@@ -95,6 +95,15 @@ const PROFILE_MAX = { name: 30, bio: 500 };
 const MEDIA_POLL_MS = 2000;
 const MEDIA_POLL_CAP_MS = 60 * 1000;
 
+// Per-request network ceilings so a dead or slow instance fails fast and clearly instead
+// of hanging the whole request to the 300s child-process kill (mirrors nostr-social.mjs's
+// RELAY_TIMEOUT_MS and lib/radar.mjs's AbortSignal.timeout precedent). A media upload
+// carries bytes so it gets the widest ceiling; a transcode-status poll the tightest. All
+// sit well under the lane's 300s child kill so a real upload is bounded, never truncated.
+const HTTP_TIMEOUT_MS = 30 * 1000; // default: status create, profile edits, reads
+const MEDIA_UPLOAD_TIMEOUT_MS = 120 * 1000; // POST /api/v2/media (bytes on the wire)
+const MEDIA_POLL_REQ_TIMEOUT_MS = 15 * 1000; // one GET /api/v1/media/:id transcode poll
+
 // The instance rejects a scheduled_at less than ~5 minutes in the future (422).
 // 7 minutes keeps clear of that floor plus the media-upload/poll time; an entry
 // already inside the window is NOT scheduled early - it publishes AT due time.
@@ -140,13 +149,32 @@ const accessToken = () => readEnv('MASTODON_ACCESS_TOKEN');
 // Returns { status, data } (not bare data like the telegram helper) because the
 // v2/media handshake is status-driven: 202 = still processing, and the poll loop
 // needs to distinguish 200 (done) from 206 (partial/processing) without throwing.
-async function masto(method, apiPath, { body, form, headers } = {}) {
+async function masto(method, apiPath, { body, form, headers, timeoutMs = HTTP_TIMEOUT_MS } = {}) {
   const url = `${instanceUrl()}${apiPath}`;
   const init = { method, headers: { Authorization: `Bearer ${accessToken()}`, ...(headers || {}) } };
   if (form) init.body = form;
   else if (body) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body); }
-  const res = await fetch(url, init);
-  const text = await res.text();
+  // Bound every request so a dead/slow instance cannot eat the whole 300s child budget
+  // and surface as an opaque hang. On abort we throw a clear, host-named reason.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let res;
+  let text;
+  try {
+    res = await fetch(url, { ...init, signal: ctrl.signal });
+    text = await res.text();
+  } catch (err) {
+    if (ctrl.signal.aborted) {
+      const host = (instanceUrl() || '').replace(/^https?:\/\//, '') || 'the Mastodon instance';
+      const e = new Error(`Mastodon ${host} did not respond within ${Math.round(timeoutMs / 1000)}s (${method} ${apiPath}).`);
+      e.status = 0;
+      e.timeout = true;
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   let data;
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
   if (!res.ok) {
@@ -263,7 +291,7 @@ async function uploadMedia(mediaPath, post, deadline = null) {
   // mediaItems[].alt field). Flagged, not fixed here.
   const alt = (post.title || '').trim();
   if (alt) form.append('description', alt);
-  const up = await masto('POST', '/api/v2/media', { form });
+  const up = await masto('POST', '/api/v2/media', { form, timeoutMs: MEDIA_UPLOAD_TIMEOUT_MS });
   const mediaId = up.data?.id;
   if (!mediaId) throw new Error(`media upload returned no id: ${JSON.stringify(up.data).slice(0, 200)}`);
   if (up.status === 202) {
@@ -273,9 +301,16 @@ async function uploadMedia(mediaPath, post, deadline = null) {
     const until = deadline ?? (Date.now() + MEDIA_POLL_CAP_MS);
     for (;;) {
       await new Promise((r) => setTimeout(r, MEDIA_POLL_MS));
-      const poll = await masto('GET', `/api/v1/media/${encodeURIComponent(mediaId)}`);
+      const poll = await masto('GET', `/api/v1/media/${encodeURIComponent(mediaId)}`, { timeoutMs: MEDIA_POLL_REQ_TIMEOUT_MS });
       if (poll.status === 200 && poll.data?.url) break;
-      if (Date.now() > until) throw new Error(`media ${mediaId} still processing at the album deadline`);
+      if (Date.now() > until) {
+        // Honest outcome, not a cryptic id: the instance accepted the upload but has not
+        // finished transcoding within the budget. The post stays approved + unposted and
+        // the next scheduler tick retries it (the per-post Idempotency-Key makes that safe),
+        // by which time transcoding has usually finished.
+        const host = (instanceUrl() || '').replace(/^https?:\/\//, '') || 'the Mastodon instance';
+        throw new Error(`Mastodon ${host} is still processing the media after ${Math.round(MEDIA_POLL_CAP_MS / 1000)}s (transcoding). pendpost retries this on the next run.`);
+      }
     }
   }
   return String(mediaId);
@@ -1187,12 +1222,14 @@ async function cmdReact(args) {
 // (the panel hints "use hashtags"), never a crash. A 429 degrades to rate_limited. Mock
 // mode NEVER reaches here (main() routes `radar` to the mock driver via MOCKABLE_COMMANDS).
 async function cmdRadar(args) {
-  const { radarOkRow, radarNeedsScopeRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
+  const { radarOkRow, radarNeedsScopeRow, radarNotConnectedRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
   let query = {};
   try { query = args.query ? JSON.parse(String(args.query)) : {}; } catch { query = {}; }
   const base = instanceUrl();
   const token = accessToken();
-  if (!base || !token) { RUN.results.push(radarNeedsScopeRow('mastodon', 'read:search')); return; }
+  // L4: no instance/token was EVER configured => not_connected ("connect"), never the
+  // lying "access expired, reconnect" a needs_scope renders as.
+  if (!base || !token) { RUN.results.push(radarNotConnectedRow('mastodon', 'read:search')); return; }
   const headers = { Authorization: `Bearer ${token}` };
   const keywords = Array.isArray(query.keywords) ? query.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
   const hashtags = Array.isArray(query.hashtags) ? query.hashtags.map((h) => String(h).replace(/^#/, '').trim()).filter(Boolean) : [];
@@ -1201,15 +1238,28 @@ async function cmdRadar(args) {
   let fulltextUnavailable = false; // 422: the instance ships no full-text search backend
   let authFailed = false;          // 401/403: revoked/insufficient token -> reconnect, NOT a "use hashtags" hint
   let keywordError = null;         // transient/other keyword-search failure (5xx etc.)
-  if (keywords.length) {
-    const q = keywords.join(' ');
+  // ONE /api/v2/search per keyword. The instance treats a space-joined `q` as AND, so the old
+  // `keywords.join(' ')` returned ~nothing for any multi-keyword query. One search per term
+  // gives OR semantics (what reddit-social.mjs gets from its ` OR `-join); a local Set dedupes
+  // a status two terms both matched. Capped at 10 terms so a wide query stays bounded.
+  const seenKeywordIds = new Set();
+  for (const q of keywords.slice(0, 10)) {
     const url = `${base}/api/v2/search?${new URLSearchParams({ type: 'statuses', resolve: 'false', limit: '20', q }).toString()}`;
     const r = await radarHttp(url, { headers });
-    if (r.ok) { for (const s of (r.json?.statuses || [])) items.push(mapStatus(s, null)); }
-    else if (r.status === 429) { RUN.results.push(radarRateLimitedRow('mastodon', r.retryAfter)); return; }
-    else if (r.status === 401 || r.status === 403) { authFailed = true; }
-    else if (r.status === 422) { fulltextUnavailable = true; }
-    // Any other keyword-search error is transient: record it but STILL try the (public) hashtag timelines.
+    if (r.ok) {
+      for (const s of (r.json?.statuses || [])) {
+        const row = mapStatus(s, null);
+        if (seenKeywordIds.has(row.externalId)) continue;
+        seenKeywordIds.add(row.externalId);
+        items.push(row);
+      }
+    }
+    // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.
+    else if (r.status === 429) { if (!items.length) { RUN.results.push(radarRateLimitedRow('mastodon', r.retryAfter)); return; } break; }
+    // A dead token / no search backend fails every further keyword the same way: stop here.
+    else if (r.status === 401 || r.status === 403) { authFailed = true; break; }
+    else if (r.status === 422) { fulltextUnavailable = true; break; }
+    // Any other keyword-search error is transient: record it, try the next keyword, and STILL try the (public) hashtag timelines.
     else { keywordError = r.error || `HTTP ${r.status}`; }
   }
   for (const tag of hashtags) {
@@ -1220,7 +1270,17 @@ async function cmdRadar(args) {
     else if (r.status === 429 && !items.length) { RUN.results.push(radarRateLimitedRow('mastodon', r.retryAfter)); return; }
     // A single tag's error is otherwise non-fatal (skip it); other tags + keyword items still return.
   }
-  if (items.length) { RUN.results.push(radarOkRow('mastodon', items)); return; }
+  if (items.length) {
+    // D6 (audit 2026-08-31): hashtag hits used to MASK a failing keyword-search credential
+    // (401/403) - the lane read plain ok while its token was dead. Keep ok:true + the
+    // items, but CARRY the auth degrade so the seam records it in state.radar.sources.
+    // (fulltextUnavailable is NOT carried here: the hashtag fallback working is exactly
+    // what that hint prescribes; keywordError is transient and the hashtags answered.)
+    const okRow = radarOkRow('mastodon', items);
+    if (authFailed) okRow.degrade = { error: 'needs_scope', scope: 'read:search' };
+    RUN.results.push(okRow);
+    return;
+  }
   // Nothing matched — pick the HONEST degrade in priority order.
   if (authFailed) { RUN.results.push(radarNeedsScopeRow('mastodon', 'read:search')); return; }         // reconnect
   if (fulltextUnavailable) { RUN.results.push(radarNeedsScopeRow('mastodon', 'mastodon_fulltext')); return; } // use hashtags
@@ -1351,4 +1411,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 // cmdUnschedule is exported the SAME way so a delete-idempotency test can drive
 // the real 404-swallow logic in-process against a stubbed global.fetch, with no
 // network/credentials/subprocess - mirrors yt-social.mjs's cmdDelete export.
-export { cmdProfile, RUN, cmdPin, cmdUnpin, cmdFollow, cmdUnfollow, cmdUnschedule };
+// masto + uploadMedia are exported as test seams: mastodon-timeout.test.mjs drives the
+// per-request AbortController ceiling and the transcode-deadline message in-process
+// against a stubbed global.fetch, no network/credentials (mirrors the cmdUnschedule export).
+export { cmdProfile, RUN, cmdPin, cmdUnpin, cmdFollow, cmdUnfollow, cmdUnschedule, cmdRadar, masto, uploadMedia };

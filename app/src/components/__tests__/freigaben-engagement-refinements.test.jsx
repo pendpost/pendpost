@@ -26,6 +26,9 @@ const lintText = vi.fn(() => Promise.resolve({ ok: true, clean: true, errors: 0,
 const SETUP = { platforms: [{ platform: 'mastodon', status: 'incomplete' }] };
 
 vi.mock('../../lib/api.js', () => ({
+  // A new dependency of the approval card: fail OPEN in tests (no content blockers) so
+  // the approve button keeps its pre-gate behaviour here; blocking is covered in its own test.
+  usePlatformValidate: () => ({ data: null }),
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
   markPosted: (...a) => markPosted(...a),

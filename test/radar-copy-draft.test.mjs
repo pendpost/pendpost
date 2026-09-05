@@ -10,9 +10,9 @@
 // policy can ever touch it.
 //
 // What this pins:
-//   1. capability derivation: RADAR_COPY_DRAFT_SOURCES = [hackernews, x, linkedin, instagram],
-//      disjoint from RADAR_REPLY_SOURCES; the queue-reply enum widens, the reply-post validator
-//      does NOT.
+//   1. capability derivation: RADAR_COPY_DRAFT_SOURCES = [hackernews, x, linkedin, instagram,
+//      quora], disjoint from RADAR_REPLY_SOURCES; the queue-reply enum widens, the reply-post
+//      validator does NOT.
 //   2. the full press: ONE Scan (research -> drafting) with NO campaign configured still
 //      drafts the HN copy suggestion (the no-campaign gate blocks only reply-POSTS),
 //      the draft rides listRadar as signal.draft.mode==='copy', drafted counts it,
@@ -56,7 +56,7 @@ const cfg = JSON.parse(fs.readFileSync(a[a.indexOf('--mcp-config') + 1], 'utf8')
 const call = (name, args) => fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json());
 call('radar_ingest', { clientId: 'default', actor: 'agent:radar-scan', queryId: 'q1', signals: [{
-  source: 'hackernews', externalId: 'hn1', url: 'https://news.ycombinator.com/item?id=1',
+  source: 'hackernews', ts: new Date().toISOString(), externalId: 'hn1', url: 'https://news.ycombinator.com/item?id=1',
   text: 'I would love a social media management tool, all the ones I found were insanely expensive or unusable.', score: 70, reason: 'open pain point' }] })
   .then(() => call('radar_queue_reply', { clientId: 'default', actor: 'agent:radar-draft', confirm: true,
     source: 'hackernews', externalId: 'hn1', signalUrl: 'https://news.ycombinator.com/item?id=1',
@@ -98,8 +98,8 @@ try {
   // ===== (1) capability derivation ==========================================
   ok(RADAR_CAPABILITIES.hackernews.reply === false && RADAR_CAPABILITIES.hackernews.copyDraft === true,
     'hackernews stays reply:false and gains copyDraft:true');
-  ok(JSON.stringify([...RADAR_COPY_DRAFT_SOURCES]) === JSON.stringify(['hackernews', 'x', 'linkedin', 'instagram']),
-    'RADAR_COPY_DRAFT_SOURCES derives to exactly [hackernews, x, linkedin, instagram] (no stranger-reply API for any of them; nostr flipped to the reply lane, wave 5)');
+  ok(JSON.stringify([...RADAR_COPY_DRAFT_SOURCES]) === JSON.stringify(['hackernews', 'x', 'linkedin', 'instagram', 'quora']),
+    'RADAR_COPY_DRAFT_SOURCES derives to exactly [hackernews, x, linkedin, instagram, quora] (no stranger-reply API for any of them; nostr flipped to the reply lane, wave 5)');
   ok(!RADAR_REPLY_SOURCES.includes('hackernews'),
     'RADAR_REPLY_SOURCES is untouched - the reply-post validator and auto-reply lanes never see HN');
   ok(RADAR_COPY_DRAFT_SOURCES.every((s) => !RADAR_REPLY_SOURCES.includes(s)),
@@ -109,13 +109,17 @@ try {
     && RADAR_CAPABILITIES.instagram.copyDraft === true && RADAR_CAPABILITIES.instagram.reply === false
     && RADAR_CAPABILITIES.instagram.search === false,
     'linkedin + instagram are agent-found (search:false), copy-draft (reply:false, copyDraft:true) - no stranger-reply API');
+  // Quora (2026-08-26) joins the same lane: a real answerable thread with no answer API at all.
+  ok(RADAR_CAPABILITIES.quora.copyDraft === true && RADAR_CAPABILITIES.quora.reply === false
+    && RADAR_CAPABILITIES.quora.search === false && !RADAR_REPLY_SOURCES.includes('quora'),
+    'quora is agent-found (search:false), copy-draft only - no reply-POST path renders for it');
   ok(!RADAR_REPLY_SOURCES.includes('linkedin') && !RADAR_REPLY_SOURCES.includes('instagram'),
     'neither linkedin nor instagram is a reply source - no reply-POST path renders for them');
 
   // The drafting brief tells the child about the copy path, and drops the campaign line
   // when there is no campaign (the copy-only run).
-  const brief = radarDraftPrompt([{ source: 'hackernews', externalId: 'hn1', url: 'u', text: 't' }], { campaign: null });
-  ok(/hackernews, x, linkedin, instagram have no reply path from pendpost/.test(brief), 'the drafting brief explains the copy-paste path (derived - nostr auto-dropped on its reply flip)');
+  const brief = radarDraftPrompt([{ source: 'hackernews', ts: new Date().toISOString(), externalId: 'hn1', url: 'u', text: 't' }], { campaign: null });
+  ok(/hackernews, x, linkedin, instagram, quora have no reply path from pendpost/.test(brief), 'the drafting brief explains the copy-paste path (derived - nostr auto-dropped on its reply flip)');
   ok(!/campaign: "/.test(brief), 'with no campaign, the brief omits the campaign line instead of interpolating null');
 
   // ===== (2) the full press, campaign-less ==================================
@@ -160,8 +164,8 @@ try {
   // downstream: an ingested signal is byte-identical to an engine-scanned one. Ingest one of
   // each, confirm they ride listRadar, and that a human copy draft lands with mode:"copy".
   const liIngest = await asClient(() => radarIngest({ actor: 'agent:radar-scan', queryId: 'q1', signals: [
-    { source: 'linkedin', externalId: 'urn:li:activity:7000000000000000001', url: 'https://www.linkedin.com/posts/acme_activity-7000000000000000001', text: 'Which platform do coaches use to get discovered and take bookings?', score: 72, reason: 'coach choosing a platform' },
-    { source: 'instagram', externalId: 'Cabc123', url: 'https://www.instagram.com/p/Cabc123/', text: 'Starting my coaching business - what tools do you all use to book clients?', score: 68, reason: 'aspiring coach picking tools' },
+    { source: 'linkedin', ts: new Date().toISOString(), externalId: 'urn:li:activity:7000000000000000001', url: 'https://www.linkedin.com/posts/acme_activity-7000000000000000001', text: 'Which platform do coaches use to get discovered and take bookings?', score: 72, reason: 'coach choosing a platform' },
+    { source: 'instagram', ts: new Date().toISOString(), externalId: 'Cabc123', url: 'https://www.instagram.com/p/Cabc123/', text: 'Starting my coaching business - what tools do you all use to book clients?', score: 68, reason: 'aspiring coach picking tools' },
   ] }));
   ok(liIngest.ok === true && liIngest.accepted === 2, `both linkedin + instagram signals ingest (accepted ${liIngest.accepted})`);
   const feedLI = await asClient(() => listRadar({}));
@@ -208,7 +212,7 @@ try {
 
   // ===== (5) mergeSignals keeps the draft sticky ============================
   const prior = { source: 'hackernews', externalId: 'hn1', url: 'u', text: 't', intentScore: 40, draft: { text: 'kept', mode: 'copy', ts: '2026-07-17T00:00:00Z' } };
-  const fresher = { source: 'hackernews', externalId: 'hn1', url: 'u', text: 't', intentScore: 90 };
+  const fresher = { source: 'hackernews', ts: new Date().toISOString(), externalId: 'hn1', url: 'u', text: 't', intentScore: 90 };
   const merged = mergeSignals([prior], [fresher], [], Date.now());
   ok(merged.length === 1 && merged[0].intentScore === 90 && merged[0].draft && merged[0].draft.text === 'kept',
     'a re-scan re-finding the thread (higher score wins) KEEPS the stored copy draft - sticky like watched');

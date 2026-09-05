@@ -78,11 +78,11 @@ try {
     sn += 1;
     const externalId = `t3_${sn}`;
     const url = `https://reddit.com/r/x/${sn}`;
-    const signal = { source: 'reddit', externalId, url, author: `u${sn}`, community: 'r/test', text };
+    const signal = { source: 'reddit', ts: new Date().toISOString(), externalId, url, author: `u${sn}`, community: 'r/test', text };
     if (score != null) signal.score = score;
     const res = await asClient(() => radarIngest({ queryId: 'q1', signals: [signal], actor: 'agent:claude' }));
     assert.ok(res.ok, `ingest ok: ${JSON.stringify(res)}`);
-    return { source: 'reddit', externalId, url };
+    return { source: 'reddit', ts: new Date().toISOString(), externalId, url };
   };
   const s20 = await seed({ score: 20 });
   await seed({ score: 50 });

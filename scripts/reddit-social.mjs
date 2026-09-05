@@ -1297,22 +1297,45 @@ async function cmdModerate(args) {
 // the global /search. Mock mode NEVER reaches here (main() routes `radar` to the mock
 // driver via MOCKABLE_COMMANDS) - this is the LIVE path. Reddit Data API Terms: keep it
 // BYO-key + rate-limited; single-project self-hosted search is in-bounds.
+// D7 (audit 2026-08-31): map the configured lookback window onto Reddit's fixed `t` search
+// windows - the SMALLEST window that still covers lookbackDays (1 -> day, <=7 -> week,
+// <=31 -> month, else year). The verb used to hardcode t:'week', silently ignoring
+// posting.radar.lookbackDays: a 30-day lookback searched only the last 7 days, a 1-day
+// lookback paid for a week of stale hits the seam then dropped. Absent/invalid input keeps
+// the historical 'week' default (the seam only forwards a configured value). Pure; exported
+// for tests (main() is guarded below, so importing this never runs the CLI).
+export function redditWindowFor(lookbackDays) {
+  const n = Number(lookbackDays);
+  if (!Number.isFinite(n) || n <= 0) return 'week';
+  if (n <= 1) return 'day';
+  if (n <= 7) return 'week';
+  if (n <= 31) return 'month';
+  return 'year';
+}
+
 async function cmdRadar(args) {
-  const { radarOkRow, radarNeedsScopeRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
+  const { radarOkRow, radarNeedsScopeRow, radarNotConnectedRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
   let query = {};
   try { query = args.query ? JSON.parse(String(args.query)) : {}; } catch { query = {}; }
+  // L4: NEVER configured (no BYO app stored) is not_connected - "connect", not the lying
+  // "access expired, reconnect" a needs_scope renders as.
   if (!readEnv('REDDIT_CLIENT_ID') || !readEnv('REDDIT_CLIENT_SECRET') || !readEnv('REDDIT_USERNAME') || !readEnv('REDDIT_PASSWORD')) {
-    RUN.results.push(radarNeedsScopeRow('reddit', 'reddit_oauth'));
+    RUN.results.push(radarNotConnectedRow('reddit', 'reddit_oauth'));
     return;
   }
   let token;
-  try { token = await mintToken(); } catch { RUN.results.push(radarNeedsScopeRow('reddit', 'reddit_oauth')); return; }
+  // A stored-but-refused credential IS needs_scope (reconnect) - and the mint error's own
+  // words survive in `detail` instead of being discarded (L4).
+  try { token = await mintToken(); } catch (err) { RUN.results.push(radarNeedsScopeRow('reddit', 'reddit_oauth', String((err && err.message) || err))); return; }
   const keywords = Array.isArray(query.keywords) ? query.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
   const q = (keywords.length ? keywords.join(' OR ') : (typeof query.label === 'string' ? query.label.trim() : '')).trim();
   if (!q) { RUN.results.push(radarOkRow('reddit', [])); return; }
   const subs = Array.isArray(query.subreddits) ? query.subreddits.map((s) => String(s).replace(/^\/?r\//, '').trim()).filter(Boolean) : [];
   const headers = { Authorization: `Bearer ${token}`, 'User-Agent': userAgent() };
-  const params = (extra) => new URLSearchParams({ q, sort: 'new', t: 'week', limit: '25', type: 'link,comment', raw_json: '1', ...extra }).toString();
+  // D7: honor the configured lookback (query.lookbackDays, forwarded by the seam) instead
+  // of a hardcoded week - the seam's withinLookback fence still applies downstream, this
+  // just stops the SEARCH from silently under- or over-shooting the window.
+  const params = (extra) => new URLSearchParams({ q, sort: 'new', t: redditWindowFor(query.lookbackDays), limit: '25', type: 'link,comment', raw_json: '1', ...extra }).toString();
   const paths = subs.length ? subs.map((s) => `/r/${encodeURIComponent(s)}/search?${params({ restrict_sr: '1' })}`) : [`/search?${params({})}`];
   const items = [];
   let degrade = null; // first per-subreddit failure — surfaced ONLY if nothing was collected (keep partial yield)
@@ -1338,7 +1361,13 @@ async function cmdRadar(args) {
     }
   }
   if (!items.length && degrade) { RUN.results.push(degrade); return; }
-  RUN.results.push(radarOkRow('reddit', items));
+  // D6 (audit 2026-08-31): a half-failed run (earlier subreddits yielded, a later one
+  // 403'd/throttled) used to DISCARD the degrade - masking a failing credential for as
+  // long as any subreddit still answered. Keep ok:true + the items, but CARRY the degrade
+  // so the seam records it in state.radar.sources.
+  const okRow = radarOkRow('reddit', items);
+  if (degrade) okRow.degrade = { error: degrade.error, ...(degrade.scope ? { scope: degrade.scope } : {}), ...(degrade.retryAfter != null ? { retryAfter: degrade.retryAfter } : {}), ...(degrade.detail || degrade.message ? { detail: degrade.detail || degrade.message } : {}) };
+  RUN.results.push(okRow);
 }
 
 // Spec 44 (READ-only): did the thread's original author reply back to OUR posted comment?

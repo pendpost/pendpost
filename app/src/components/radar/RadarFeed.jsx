@@ -3,8 +3,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   ExternalLink, Reply, CircleSlash, Pencil, Radio, Globe, Pin, Bot, ChevronDown,
   Search, Check, FileText, Loader2, MessageSquareReply, MoreHorizontal, Copy, Sprout, AtSign, Link2,
+  MessageCircleQuestion,
 } from 'lucide-react';
-import { fmtRelative, mastodonThreadUrl, isAbsoluteHttpUrl } from '../../lib/format.js';
+import { fmtRelative, mastodonThreadUrl, isAbsoluteHttpUrl, agentNoteIsForeign, agentNoteExcerpt, AGENT_JOB_CAP_MINUTES } from '../../lib/format.js';
 import { radarBacklogTriage, radarMarkCopyPosted, radarDraftComparison, markPosted, errText } from '../../lib/api.js';
 import { PLATFORM_META, INNER_SURFACE, FIELD, FIELD_MULTILINE, EYEBROW, FilterChip } from '../ui.jsx';
 import { PILL_BASE, PILL_TONES, BTN_PRIMARY, BTN_QUIET, BTN_GHOST, PROJECT_CHIP } from '../ui/recipes.js';
@@ -14,6 +15,7 @@ import LinkCaptureRow from '../ui/LinkCaptureRow.jsx';
 import HistoryChip from '../HistoryChip.jsx';
 import { Select } from '../ui/Select.jsx';
 import { useLint, LintPanel } from '../Composer.jsx';
+import { useLocale } from '../../lib/i18n.js';
 
 // Radar FEED cluster (split out of the former ~1850-line Radar.jsx monolith, 2026-08-05).
 // The ranked signal feed and its row machinery: the scored SignalRow (with its R12 relationship
@@ -45,6 +47,10 @@ const SOURCE_META = {
   // travel the copy path. Brand glyph on a signal row; never a search source (search:false).
   linkedin: PLATFORM_META.linkedin,
   instagram: PLATFORM_META.instagram,
+  // 2026-08-26: Quora is agent-found and copy-only like linkedin/instagram. It is not a pendpost
+  // publish lane, so it has no PLATFORM_META brand mark - a question glyph carries "a Q&A thread",
+  // the same way `web` carries "from the open web" with a Globe.
+  quora: { Icon: MessageCircleQuestion, color: 'text-rose-600' },
 };
 // The "where from" label for a signal row: the community/subreddit when the source carried
 // one, else (spec 38) the url's domain for a web signal - so an open-web result always shows
@@ -321,7 +327,104 @@ function activityText(a, t) {
 }
 const ACTIVITY_ICON = { search: Search, fetch: Globe, found: Radio, queued: Reply, note: Bot };
 
-function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, retryBusy }) {
+// H4 (lane honesty, 2026-09-04): the agent's own closing words, READABLE. They used to sit
+// behind a one-line truncate + tooltip - unreachable on touch, and the owner's screenshot
+// showed the one sentence that explained the whole run cut off after eight words. A note that
+// fits renders whole; a longer one is a native <details>: the summary carries the byline + the
+// first ~120 characters, opening it shows the full text with nothing clipped. The byline says
+// when the words are not in the surface's language (agentNoteIsForeign) - quoted, never
+// presented as pendpost's voice. Shared by the job row and the empty state's promotion.
+// J2 + K2 (fresh-eyes rounds 1 and 2, 2026-09-04): on a run that was CUT OFF (`stopped` - a
+// timeout, a sleep, a stop) the note is what the agent said BEFORE the cut ("Three research
+// agents are now running ... I'll report back"), which read as a live promise under a red
+// failure - and, with the excerpt still on the closed row, it STAYED on screen under a caption.
+// So a cut-off note is closed by default and shows ONE muted summary line only, "Agent's note,
+// written before the run stopped" + the toggle; the quote appears when opened. That summary IS
+// the attribution: no second "Your agent's note:" byline (one attribution line, never two). A
+// finished run - done, or a failure whose tail is the failure's own words - keeps the byline +
+// excerpt shape. ONE disclosure control either way: the summary is the toggle, "Show all / Show
+// less" its trailing label, no chevron glyph.
+function AgentNote({ text, t, className = '', stopped = false }) {
+  const locale = useLocale();
+  const foreign = agentNoteIsForeign(text, locale);
+  const body = 'text-[11px] text-zinc-500 dark:text-zinc-400';
+  const summaryCls = `-my-3.5 -mx-2 block cursor-pointer list-none rounded-lg px-2 py-3.5 ${body} [&::-webkit-details-marker]:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+  const toggle = (
+    <>
+      <span className="ml-1 font-bold text-brand group-open:hidden dark:text-brand-light">{t('radar.agent.job.note.more')}</span>
+      <span className="ml-1 hidden font-bold text-brand group-open:inline dark:text-brand-light">{t('radar.agent.job.note.less')}</span>
+    </>
+  );
+  if (stopped) {
+    return (
+      <div className={`min-w-0 ${className}`}>
+        <details className="group min-w-0" data-radar-note-stopped="">
+          <summary className={summaryCls}>
+            <p className="min-w-0 break-words italic">
+              {t(foreign ? 'radar.agent.job.note.beforeStop.foreign' : 'radar.agent.job.note.beforeStop')}
+              {toggle}
+            </p>
+          </summary>
+          <p className={`${body} mt-1 whitespace-pre-wrap break-words`}>{text}</p>
+        </details>
+      </div>
+    );
+  }
+  const byline = t(foreign ? 'radar.agent.job.note.foreign' : 'radar.agent.job.note');
+  const { excerpt, truncated } = agentNoteExcerpt(text);
+  if (!truncated) {
+    return (
+      <div className={`min-w-0 ${className}`}>
+        <p className={`${body} min-w-0 break-words`}>
+          <span className="font-semibold">{byline}:</span>{' '}{text}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className={`min-w-0 ${className}`}>
+      <details className="group min-w-0">
+        {/* J4: the summary is the one toggle - padded to a 44px tap area, the negative margin
+            hands the space back so the row does not grow. */}
+        <summary className={summaryCls}>
+          <p className="min-w-0 break-words">
+            <span className="font-semibold">{byline}:</span>{' '}
+            <span className="group-open:hidden">{excerpt}</span>
+            {toggle}
+          </p>
+        </summary>
+        <p className={`${body} mt-1 whitespace-pre-wrap break-words`}>{text}</p>
+      </details>
+    </div>
+  );
+}
+
+// J1 (fresh-eyes 2026-09-04): the run-outcome reasons lib/writes.mjs stamps onto every
+// agent-only lane (capabilities search:false) a job did not finish. Shared by the degrade card
+// (which collapses such rows into one line per reason, H1) and the job row (which OWNS the
+// newest job's own group, so one failed run is never narrated twice).
+const JOB_OWNED_LANE_REASONS = ['timeout', 'sleep', 'partial_timeout', 'agent_error', 'exit', 'limit', 'stopped', 'spawn_failed'];
+// K2: the reasons under which the run was CUT OFF from outside - the agent's tail then predates
+// the stop (a plan, a promise) and gets the "written before the run stopped" disclosure. Every
+// other failure's tail IS the failure detail ("weekly limit - resets 5am", "Not logged in"),
+// which must stay readable on the row, under the byline.
+const CUT_OFF_REASONS = ['timeout', 'sleep', 'partial_timeout', 'stopped'];
+// K1: the retry names the lanes it will rescan; at five or more, the first three + "and N more".
+const RETRY_NAMED_LANES = 3;
+function retryLaneList(names, t) {
+  if (names.length <= RETRY_NAMED_LANES + 1) return names.join(', ');
+  return t('radar.agent.job.retry.more', { lanes: names.slice(0, RETRY_NAMED_LANES).join(', '), n: names.length - RETRY_NAMED_LANES });
+}
+
+// J4: the ONE inline action for a row-level move (the job row's retry / connect, every degrade
+// line's rescan / connect, the create-campaign link). One accent token in both themes: text-brand
+// on light, the DESIGN.md dark slot (brand-light, #5eead4) on dark - the retry used to keep the
+// light seed on a dark ground and read as disabled next to a bright card link. The vertical
+// padding buys a 44px tap target (WCAG 2.5.8: 16px line + 2 x 14px); the matching negative margin hands the space back
+// to the layout, so no line grows and nothing shifts.
+const INLINE_ACTION = 'inline-flex items-center gap-1 rounded-lg -mx-2 -my-3.5 px-2 py-3.5 font-bold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 disabled:no-underline dark:text-brand-light';
+
+function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, retryBusy, laneNames = [] }) {
   // Hooks before the early return (rules of hooks): the disclosure survives the job settling,
   // so a transcript opened mid-run stays open on the finished row.
   const [logOpen, setLogOpen] = useState(false);
@@ -339,6 +442,23 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
   // still ingested signals. It reads as an AMBER caveat + retry, never a red dead-end - the results
   // that landed are real. `retrying` is true only during the auto-retry backoff (Stage 3).
   const partial = job.partial === true;
+  // J1: this row OWNS its failed run when Radar.jsx hands it the lanes the run did not finish
+  // (the agent-only lanes whose degrade rows carry this job's own reason). The reason line then
+  // names the lanes and what survived, and the single retry is labelled with the lane count -
+  // the degrade card says nothing about them, so the outcome is narrated exactly once.
+  const ownsLanes = !running && (failed || partial) && Array.isArray(laneNames) && laneNames.length > 0 && JOB_OWNED_LANE_REASONS.includes(job.reason);
+  const kept = Number.isFinite(job.accepted) && job.accepted > 0 ? t('radar.agent.job.kept', { n: job.accepted }) : t('radar.agent.job.kept.none');
+  // K5: "time limit" alone did not say whose limit - the reason line quotes the cap in minutes
+  // (AGENT_JOB_CAP_MINUTES, one constant, mirrored from the runner's AGENT_TIMEOUT_MS).
+  const reasonText = ownsLanes
+    ? `${t(`radar.agent.job.reason.lanes.${job.reason}`, { platforms: laneNames.join(', '), minutes: AGENT_JOB_CAP_MINUTES })} ${kept}`
+    : (t(`radar.agent.job.reason.${job.reason}`) || job.reason);
+  // K1: the retry names the lanes, never a count ("Retry X, YouTube, LinkedIn, Instagram").
+  const retryLabel = ownsLanes
+    ? t('radar.agent.job.retry.lanes', { lanes: retryLaneList(laneNames, t) })
+    : t('radar.agent.job.retry');
+  const cutOff = (failed || partial) && CUT_OFF_REASONS.includes(job.reason);
+  const showRetry = !!onRetry && ((failed && ['exit', 'limit', 'timeout', 'sleep', 'partial_timeout', 'agent_error', 'failed', 'spawn_failed', 'declined', 'stale'].includes(job.reason)) || partial || ownsLanes || (job.state === 'done' && job.reason === 'no_results'));
   // The standalone KI-Sichtbarkeit recheck (scope:'geo') reads differently: it researches no
   // sources and ingests no signals, so the source-named phase and the "N gemeldet/verworfen" tally
   // would both be nonsense on it. It gets its own lead, phase, and done line.
@@ -371,6 +491,14 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
   // read as two numbers disagreeing (fresh-eyes finding), so 'found' events stay in the
   // log only.
   const latest = [...activity].reverse().find((a) => a.kind !== 'found') || null;
+  // B11: per-reply draft refusals (below_threshold / fence / copy-lane) tallied onto the row.
+  // Defensive by design: rendered only when the engine landed a per-code object of numeric
+  // counts. The humanized total leads; the raw codes survive in the tooltip (never bare on
+  // the row - humanize-machine-labels).
+  const refusals = job.draftRefusals && typeof job.draftRefusals === 'object' && !Array.isArray(job.draftRefusals)
+    ? Object.entries(job.draftRefusals).filter(([, n]) => typeof n === 'number' && n > 0)
+    : [];
+  const refusedTotal = refusals.reduce((sum, [, n]) => sum + n, 0);
   return (
     <section aria-label={t('radar.agent.job.label')} className={`rounded-xl px-3 py-2 text-sm ${INNER_SURFACE}`}>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -385,8 +513,12 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
         {!running && job.finishedAt ? (
           // "finished 9 days ago" beside a red failure reason said two opposite things about
           // one event (fresh-eyes finding). A failed run is labeled failed; a stopped run
-          // still "finished" - the operator ended it, it did not fail on them.
-          <span className="text-xs text-zinc-500 dark:text-zinc-400">{t(failed && job.reason !== 'stopped' ? 'radar.agent.job.failedAt' : 'radar.agent.job.finishedAt', { time: fmtRelative(job.finishedAt) })}</span>
+          // still "finished" - the operator ended it, it did not fail on them. K4: the whole-set
+          // title is the honest minimum, "Scan", so the row reads "Scan · failed 10 minutes ago".
+          <>
+            <span className="-mx-1.5 text-zinc-300 dark:text-zinc-600" aria-hidden="true">·</span>
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">{t(failed && job.reason !== 'stopped' ? 'radar.agent.job.failedAt' : 'radar.agent.job.finishedAt', { time: fmtRelative(job.finishedAt) })}</span>
+          </>
         ) : null}
         {running ? (
           <>
@@ -435,26 +567,62 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
             {!isGeo && job.autoPosted ? ` ${t('radar.agent.job.autoPosted', { n: job.autoPosted })}` : ''}
           </span>
         ) : null}
+        {/* B11: refusal suffix on the done tally - one quiet number, codes in the tooltip. */}
+        {job.state === 'done' && !isGeo && refusedTotal ? (
+          <Tip label={refusals.map(([code, n]) => `${code}: ${n}`).join(' · ')}>
+            <span className="cursor-help text-zinc-500 dark:text-zinc-400">{t('radar.agent.job.refused', { n: refusedTotal })}</span>
+          </Tip>
+        ) : null}
         {failed ? (
-          <span className="text-red-600 dark:text-red-400">{t(`radar.agent.job.reason.${job.reason}`) || job.reason}</span>
+          <span className="text-red-600 dark:text-red-400">{reasonText}</span>
         ) : null}
         {/* Stage 2/4: the partial caveat rides beside the done tally, in amber and role=status
-            (informative, not an alert): the results DID land, some sources just did not finish. */}
-        {partial && job.reason ? (
-          <span role="status" className="text-amber-700 dark:text-amber-400">{t(`radar.agent.job.reason.${job.reason}`) || ''}</span>
+            (informative, not an alert): the results DID land, some sources just did not finish.
+            A settled done row can carry a reason too (A8/B6 `no_results`: the run was clean but
+            the child never ingested anything) - that is the same quiet-amber class, never red:
+            nothing failed, the operator just needs to know "done, 0" was not a shrug. */}
+        {!failed && job.reason && (partial || job.state === 'done') ? (
+          <span role="status" className="text-amber-700 dark:text-amber-400">{ownsLanes ? reasonText : (t(`radar.agent.job.reason.${job.reason}`) || '')}</span>
         ) : null}
-        {/* On a settled job the transcript disclosure packs into THIS line ("space is earned"):
-            its old home was a whole row holding one small button and nothing else. */}
-        {!running && activity.length ? (
-          <button
-            type="button"
-            aria-expanded={logOpen}
-            onClick={() => setLogOpen((v) => !v)}
-            className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-zinc-900/5 dark:text-zinc-400 dark:hover:bg-white/5"
-          >
-            {t('radar.agent.activity.label', { n: activity.length })}
-            <ChevronDown size={12} className={`transition ${logOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
-          </button>
+        {/* B9: research succeeded but drafting was skipped - no active campaign to file replies
+            under. Amber caveat plus the one move that fixes it, through the SAME planner seam as
+            the inline reply editor's no-campaign link (no dead ends, no new surface). */}
+        {!running && job.draftSkipped === 'no_campaign' ? (
+          <span role="status" className="text-amber-700 dark:text-amber-400">
+            {t('radar.agent.job.draftSkipped.no_campaign')}{' '}
+            <button type="button" onClick={() => onNavigate?.('planner')} className={INLINE_ACTION}>
+              {t('radar.agent.job.createCampaign')}
+            </button>
+          </span>
+        ) : null}
+        {/* THE ACTION SLOT (settled rows), right-aligned: the transcript disclosure as the quiet
+            link ("space is earned": its old home was a whole row holding one small button), then
+            the row's ONE retry as the house secondary button (K1) - no inline text link at the
+            foot of the row. The retry names the lanes it will rescan. min-h-11 keeps the 44px
+            tap target (WCAG 2.5.8) the round-1 measure established. A row that owns lanes always
+            offers it - even a run you stopped yourself left lanes unfinished, and the degrade
+            card no longer offers their rescan. Setup-shaped failures keep the Setup link below
+            instead: a retry cannot mint a token. A clean done run that ingested nothing (reason
+            no_results) retries too - a rescan or a tweaked search is its whole recovery. */}
+        {!running && (activity.length || showRetry) ? (
+          <span className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-2">
+            {activity.length ? (
+              <button
+                type="button"
+                aria-expanded={logOpen}
+                onClick={() => setLogOpen((v) => !v)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-zinc-900/5 dark:text-zinc-400 dark:hover:bg-white/5"
+              >
+                {t('radar.agent.activity.label', { n: activity.length })}
+                <ChevronDown size={12} className={`transition ${logOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
+              </button>
+            ) : null}
+            {showRetry ? (
+              <button type="button" onClick={onRetry} disabled={retryBusy} className={`${BTN_QUIET} min-h-11`} data-radar-retry="">
+                {retryLabel}
+              </button>
+            ) : null}
+          </span>
         ) : null}
       </div>
       {/* THE LOADING BAR: indeterminate on a FIXED track (an LLM research job has no honest
@@ -531,30 +699,18 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
       {/* The agent's own closing line / the failure detail. Load-bearing when it found nothing:
           "done, 0" alone cannot tell an honest empty result from a broken run, and the operator
           just paid for the difference. A real tooltip, never title= (unreachable on touch/keyboard). */}
-      {!running && job.tail ? (
-        <Tip label={job.tail}>
-          <p className="mt-1 min-w-0 cursor-help truncate text-[11px] text-zinc-500 dark:text-zinc-400">
-            {/* The label rides FAILED tails too: a failure detail is the CLI's own words
-                (often English) - quoted under the agent's byline, never presented bare as if
-                it were pendpost's voice on a localized surface. */}
-            <span className="font-semibold">{t('radar.agent.job.note')}:</span>{' '}{job.tail}
-          </p>
-        </Tip>
-      ) : null}
+      {/* The byline rides FAILED tails too: a failure detail is the CLI's own words (often
+          English) - quoted under the agent's byline, never presented bare as if it were
+          pendpost's voice on a localized surface. On a failed row the reason (above, in the
+          header line) stays above the note. */}
+      {!running && job.tail ? <AgentNote text={job.tail} t={t} className="mt-1" stopped={cutOff} /> : null}
       {/* A credential failure is the one that has a fix: name it and go there. */}
       {failed && (job.reason === 'no_credential' || job.reason === 'not_installed') ? (
-        <button type="button" onClick={() => onNavigate?.('setup', 'agent')} className="mt-1 text-xs font-semibold text-brand underline-offset-2 hover:underline">
-          {t('radar.scan.connectFirst')}
-        </button>
-      ) : null}
-      {/* Every other failure recovers by trying again - the error strip offers that action
-          itself (an error without its recovery is a dead end). A partial run offers it too: the
-          sources that did not finish are worth another pass. Setup-shaped failures keep the Setup
-          link above instead: a retry cannot mint a token. */}
-      {onRetry && ((failed && ['exit', 'limit', 'timeout', 'agent_error', 'failed', 'spawn_failed'].includes(job.reason)) || partial) ? (
-        <button type="button" onClick={onRetry} disabled={retryBusy} className="mt-1 text-xs font-semibold text-brand underline-offset-2 hover:underline disabled:opacity-50">
-          {t('radar.agent.job.retry')}
-        </button>
+        <p className="mt-1 text-xs">
+          <button type="button" onClick={() => onNavigate?.('setup', 'agent')} className={INLINE_ACTION}>
+            {t('radar.scan.connectFirst')}
+          </button>
+        </p>
       ) : null}
     </section>
   );
@@ -898,7 +1054,10 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             </span>
           </Tip>
         ) : null}
-        {signal.ts ? <span className="text-xs text-zinc-500 dark:text-zinc-400">{fmtRelative(signal.ts)}</span> : null}
+        {/* The post's own age. An undated find (the agent could not determine a date - common
+            for quora/web) is KEPT by the lookback fence and says so, rather than rendering an
+            empty slot the reader mistakes for "fresh". */}
+        <span className="text-xs text-zinc-500 dark:text-zinc-400">{signal.ts ? fmtRelative(signal.ts) : t('radar.signal.ageUnknown')}</span>
         {/* Two clocks, both shown (owner round 3, point 5): the post's own age above judges
             the thread, this one says when Radar surfaced it - the fresher of the two is the
             one that answers "why am I seeing this now". */}
@@ -1251,4 +1410,4 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
 }
 
 
-export { SignalRow, StatFilters, JobRow, BacklogRow, tierOf, SOURCE_META, SIGNAL_FILTERS };
+export { SignalRow, StatFilters, JobRow, AgentNote, BacklogRow, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS, INLINE_ACTION };

@@ -24,6 +24,8 @@ const saveConfigMock = vi.fn(() => Promise.resolve({}));
 // is no longer reachable from the Studio at all, so there is no radarScan mock any more.
 const radarAgentScanMock = vi.fn(() => Promise.resolve({ ok: true, enabled: true, job: null }));
 const radarAgentStopMock = vi.fn(() => Promise.resolve({ ok: true, stopped: true }));
+// S7.3: the owner-only GEO reset (POST /api/radar/geo-reset), armed from the panel overflow.
+const radarGeoResetMock = vi.fn(() => Promise.resolve({ ok: true, cleared: { footprint: 2, comparisonBacklog: 1, dismissedBacklog: 1 } }));
 const radarDraftComparisonMock = vi.fn(() => Promise.resolve({ ok: true, drafted: true }));
 let healthData;
 const radarTriageMock = vi.fn(() => Promise.resolve({ ok: true }));
@@ -39,6 +41,9 @@ const markPostedMock = vi.fn(() => Promise.resolve({ ok: true }));
 const lintMock = vi.fn(() => Promise.resolve({ ok: true, clean: false, warnings: 1, truncated: false, findings: [{ rule: 'ai-tell', match: 'game-changer', hint: 'avoid AI hype', severity: 'warning', index: 0 }] }));
 
 vi.mock('../../lib/api.js', () => ({
+  // A new dependency of the approval card: fail OPEN in tests (no content blockers) so
+  // the approve button keeps its pre-gate behaviour here; blocking is covered in its own test.
+  usePlatformValidate: () => ({ data: null }),
   // R12: SignalRow now renders a HistoryChip, which reads useEngager. No record -> no chip.
   useEngager: () => ({ data: undefined }),
   unforgetEngager: vi.fn(() => Promise.resolve({ ok: true })),
@@ -58,6 +63,7 @@ vi.mock('../../lib/api.js', () => ({
   saveConfig: (...a) => saveConfigMock(...a),
   radarAgentScan: (...a) => radarAgentScanMock(...a),
   radarAgentStop: (...a) => radarAgentStopMock(...a),
+  radarGeoReset: (...a) => radarGeoResetMock(...a),
   radarDraftComparison: (...a) => radarDraftComparisonMock(...a),
   radarTriage: (...a) => radarTriageMock(...a),
   radarBacklogTriage: (...a) => radarBacklogTriageMock(...a),
@@ -69,8 +75,11 @@ vi.mock('../../lib/api.js', () => ({
   // Issue 7: the real humanize-by-code helper, mirrored here since this suite mocks the
   // whole module - matches app/src/lib/api.js's own implementation exactly.
   errText: (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
-    : err instanceof TypeError ? t('error.network')
-      : (err?.message || t(fallbackKey))),
+    : err?.code === 'disabled' ? t('radar.error.budget')
+      : err?.code === 'not_configured' ? t('radar.error.notConfigured')
+        : err?.code === 'timeout' ? t('error.timeout')
+          : err instanceof TypeError ? t('error.network')
+            : (err?.message || t(fallbackKey))),
 }));
 
 // setup.agent, as pendpost_health reports it. Default: an agent PROVEN live, because that is
@@ -79,13 +88,13 @@ const agentLive = () => ({ setup: { agent: { validation: { state: 'live' }, conn
 const agentNotLive = (state = 'unproven') => ({ setup: { agent: { validation: { state }, connected: false, provider: '' } } });
 
 const CAMPAIGNS = [{ id: 'c1', displayName: 'Campaign One' }];
-function renderPanel() {
+function renderPanel({ locale = 'en' } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
     qc,
     ...render(
       <QueryClientProvider client={qc}>
-        <I18nProvider locale="en">
+        <I18nProvider locale={locale}>
           <TooltipProvider>
             <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} onOpenPost={onOpenPostMock} />
           </TooltipProvider>
@@ -105,6 +114,7 @@ beforeEach(() => {
   saveConfigMock.mockClear();
   radarAgentScanMock.mockClear();
   radarAgentStopMock.mockClear();
+  radarGeoResetMock.mockClear();
   radarDraftComparisonMock.mockClear();
   healthData = agentLive();
   radarTriageMock.mockClear();
@@ -129,7 +139,10 @@ beforeEach(() => {
     enabled: true,
     lastScan: new Date().toISOString(),
     // The per-source reply capability the seam returns (spec 33): HN is reply-incapable.
-    capabilities: { reddit: { reply: true }, hackernews: { reply: false }, bluesky: { reply: true }, mastodon: { reply: true } },
+    // `search: true` mirrors lib/radar.mjs RADAR_CAPABILITIES for the four engine lanes: it is
+    // what puts an unconnected lane in the EFFECTIVE scan set (effectiveRadarSourcesClient), and
+    // since H2 only lanes in that set can carry a feed notice.
+    capabilities: { reddit: { reply: true, search: true }, hackernews: { reply: false, search: true }, bluesky: { reply: true, search: true }, mastodon: { reply: true, search: true } },
     // Spec 35 GEO: the comparison-page backlog + LLM-footprint trend ride every list response.
     geo: {
       comparisonBacklog: [{ title: 'Buffer alternative', buyerPhrases: ['alternative to Buffer'], examples: ['https://reddit.com/r/x/2'] }],
@@ -316,10 +329,71 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(radarAgentScanMock).not.toHaveBeenCalled();
     });
 
+    // J3 (fresh-eyes 2026-09-04): the empty state said "Press Scan now" while the only primary
+    // on the page was "Connect your agent". The hint follows the same predicate as the primary.
+    // K3 (fresh-eyes round 2): the empty state never repeats the CTA the header shows. With no
+    // agent it reads "No signals yet." and POINTS at the header primary instead of echoing it.
+    it('K3: with no agent proven live the empty state points at the header primary, never repeats it', () => {
+      healthData = agentNotLive();
+      feedData.items = [];
+      renderPanel();
+      const card = screen.getByText('No signals yet.').closest('div');
+      expect(within(card).getByText(/scanning starts once an agent is connected \(top right\)\./i)).toBeInTheDocument();
+      expect(card.textContent).not.toMatch(/connect your agent/i);
+      expect(screen.queryByText(/press scan now/i)).not.toBeInTheDocument();
+      // The header primary is still the one place that says it.
+      expect(screen.getByRole('button', { name: /connect your agent/i })).toBeInTheDocument();
+    });
+
+    it('K3: German empty state without an agent - Du-form, umlauts, no repeated CTA', () => {
+      healthData = agentNotLive();
+      feedData.items = [];
+      renderPanel({ locale: 'de-CH' });
+      const card = screen.getByText('Noch keine Signale.').closest('div');
+      expect(within(card).getByText(/Das Scannen startet, sobald ein Agent verbunden ist \(oben rechts\)\./)).toBeInTheDocument();
+      expect(card.textContent).not.toMatch(/Agent verbinden/);
+    });
+
+    it('J3: with a live agent the empty state keeps "Press Scan now"', () => {
+      feedData.items = [];
+      renderPanel();
+      expect(screen.getByText(/press scan now/i)).toBeInTheDocument();
+      expect(screen.queryByText(/connect your agent to start scanning/i)).not.toBeInTheDocument();
+    });
+
     it('the no-queries guard still holds: there is nothing to research without a search', () => {
       configData = radarOn([]);
       renderPanel();
       expect(screen.getByRole('button', { name: /scan now/i })).toBeDisabled();
+    });
+
+    // L3: the false-"Scan failed" class. A start refusal carries a machine code, and the
+    // panel must render THAT code's line - never the generic failure next to a running job.
+    it('an in_flight (423) start refusal says an agent run is already going, not "Scan failed"', async () => {
+      const user = userEvent.setup();
+      radarAgentScanMock.mockRejectedValueOnce(Object.assign(new Error('HTTP 423'), { code: 'in_flight' }));
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /scan now/i }));
+      expect(await screen.findByText(/an agent run is already going/i)).toBeInTheDocument();
+      expect(screen.queryByText(/scan failed/i)).not.toBeInTheDocument();
+    });
+
+    it('a disabled (budget spent) start refusal names the budget, with the auto-rerun reassurance', async () => {
+      const user = userEvent.setup();
+      radarAgentScanMock.mockRejectedValueOnce(Object.assign(new Error('radar disabled'), { code: 'disabled' }));
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /scan now/i }));
+      expect(await screen.findByText(/daily budget spent/i)).toBeInTheDocument();
+      expect(screen.queryByText(/scan failed/i)).not.toBeInTheDocument();
+    });
+
+    it('a not_configured start refusal points at connecting the agent in Setup', async () => {
+      const user = userEvent.setup();
+      radarAgentScanMock.mockRejectedValueOnce(Object.assign(new Error('no agent'), { code: 'not_configured' }));
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /scan now/i }));
+      expect(await screen.findByText(/no agent connected/i)).toBeInTheDocument();
+      expect(screen.queryByText(/scan failed/i)).not.toBeInTheDocument();
     });
   });
 
@@ -383,7 +457,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
       // Latest entry is the live line; the older one hides until the log is opened.
       expect(row.textContent).toMatch(/Reading reddit\.com/i);
       expect(row.textContent).not.toMatch(/best social planner/i);
-      await userEvent.click(screen.getByRole('button', { name: /activity \(2\)/i }));
+      await userEvent.click(screen.getByRole('button', { name: /log \(2\)/i }));
       expect(row.textContent).toMatch(/best social planner/i);
     });
 
@@ -393,7 +467,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
         activity: [{ ts: new Date().toISOString(), kind: 'found', n: 1 }],
       })];
       renderPanel();
-      await userEvent.click(screen.getByRole('button', { name: /activity \(1\)/i }));
+      await userEvent.click(screen.getByRole('button', { name: /log \(1\)/i }));
       expect(screen.getByRole('region', { name: /research job/i }).textContent).toMatch(/1 finding reported/i);
     });
 
@@ -431,6 +505,343 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(row.textContent).toMatch(/Not logged in/);
     });
 
+    // H4 (lane honesty): the agent's own words are READABLE - a native disclosure whose summary
+    // carries the byline + the first ~120 characters, and whose open state shows all of it with
+    // nothing clipped. A one-line truncate + tooltip hid the sentence that explained the run.
+    // K2 helper: the row's text with the disclosure BODY removed - jsdom's textContent
+    // includes a closed <details> body, so "on screen while closed" is asserted structurally:
+    // the quote lives ONLY in the body paragraph, nowhere else in the row.
+    const textOutsideNoteBody = (region) => {
+      const details = region.querySelector('details');
+      const bodyP = details ? [...details.children].find((el) => el.tagName === 'P') : null;
+      return [...region.querySelectorAll('*')]
+        .filter((n) => !bodyP || (n !== bodyP && !bodyP.contains(n) && !n.contains(bodyP)))
+        .map((n) => n.textContent).join(' ');
+    };
+    const LONG_TAIL = "Three research agents are now running in the background covering German-speaking (CH/DACH), English-global, and French/Italian coach signals, plus a brand-mention check baked into each. I'll wait for their results before ingesting anything into Radar - I'll report back once they complete.";
+    it('failed with a long note: the note is a disclosure, the full text readable once opened, the reason above it', async () => {
+      const user = userEvent.setup();
+      feedData.jobs = [job({ state: 'failed', reason: 'timeout', tail: LONG_TAIL, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      const details = region.querySelector('details');
+      expect(details).not.toBeNull();
+      expect(details.open).toBe(false);
+      const summary = details.querySelector('summary');
+      // K2: a cut-off run's closed note is ONE summary line - no excerpt, no quote on screen.
+      expect(summary.textContent).toMatch(/agent's note, written before the run stopped/i);
+      expect(summary.textContent).not.toMatch(/Three research agents/);
+      expect(textOutsideNoteBody(region)).not.toMatch(/report back once they complete/);
+      // Nothing in the row is truncated any more.
+      expect(region.querySelector('.truncate')).toBeNull();
+      await user.click(summary);
+      expect(details.open).toBe(true);
+      const full = [...details.querySelectorAll('p')].find((p) => /report back once they complete/.test(p.textContent));
+      expect(full).toBeTruthy();
+      expect(full.className).not.toMatch(/truncate|line-clamp/);
+      // The reason line sits ABOVE the note in reading order.
+      const reason = within(region).getByText(/ran too long/i);
+      expect(reason.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it('a short note renders whole - no disclosure to open', () => {
+      feedData.jobs = [job({ state: 'failed', reason: 'exit', tail: 'segfault', finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.querySelector('details')).toBeNull();
+      expect(region.textContent).toMatch(/your agent's note: segfault/i);
+    });
+
+    // J2 + K2 (fresh-eyes rounds 1 and 2, 2026-09-04): the agent's "now running ... I'll report
+    // back" under a red failure read as a live promise - and with the excerpt on the closed row it
+    // stayed on screen under a caption. On a CUT-OFF run (timeout / sleep / stopped) the closed
+    // note is ONE muted summary line, "Agent's note, written before the run stopped", with the
+    // toggle; the quote appears only when opened. That line is the whole attribution - no second
+    // "Your agent's note:" byline. One disclosure control, closed by default.
+    it('K2: a cut-off row shows one summary line and NO quote while closed; the quote appears on open', async () => {
+      const user = userEvent.setup();
+      feedData.jobs = [job({ state: 'failed', reason: 'timeout', tail: LONG_TAIL, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      const details = region.querySelector('details');
+      expect(details.open).toBe(false);
+      const summary = details.querySelector('summary');
+      expect(summary.textContent).toMatch(/^Agent's note, written before the run stopped\s*Show all/);
+      // Closed: none of the quote is in the rendered text - not the head, not the tail.
+      const outside = textOutsideNoteBody(region);
+      expect(outside).not.toMatch(/Three research agents/);
+      expect(outside).not.toMatch(/report back once they complete/);
+      expect([...details.children].find((el) => el.tagName === 'P').textContent).toMatch(/report back once they complete/);
+      // ONE attribution line, never two: no "Your agent's note:" beside the summary.
+      expect(region.textContent.match(/agent's note/gi)).toHaveLength(1);
+      expect(region.textContent).not.toMatch(/your agent's note:/i);
+      // The reason line before the note; ONE control - the summary, no chevron, no button.
+      const reason = within(region).getByText(/ran too long/i);
+      expect(reason.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(details.querySelector('summary svg')).toBeNull();
+      expect(details.querySelectorAll('button, [role="button"]')).toHaveLength(0);
+      await user.click(summary);
+      expect(details.open).toBe(true);
+      expect(summary.textContent).toMatch(/show less/i);
+    });
+
+    it('K2: a short note is still behind the disclosure on a cut-off row; a failure-detail tail keeps the byline', () => {
+      // stopped: the tail predates the stop - closed, one line.
+      feedData.jobs = [job({ state: 'failed', reason: 'stopped', tail: 'Starting the LinkedIn pass now.', finishedAt: new Date().toISOString() })];
+      const first = renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.querySelector('details').open).toBe(false);
+      expect(screen.getByText(/agent's note, written before the run stopped/i)).toBeInTheDocument();
+      first.unmount();
+      // exit: the tail IS the failure detail - it stays readable under the byline, no prefix.
+      feedData.jobs = [job({ state: 'failed', reason: 'exit', tail: 'segfault', finishedAt: new Date().toISOString() })];
+      const second = renderPanel();
+      expect(screen.queryByText(/before the run stopped/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('region', { name: /research job/i }).textContent).toMatch(/your agent's note: segfault/i);
+      second.unmount();
+      // done: the bare byline.
+      feedData.jobs = [job({ state: 'done', accepted: 1, tail: 'All quiet this week.', finishedAt: new Date().toISOString() })];
+      renderPanel();
+      expect(screen.queryByText(/before the run stopped/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('region', { name: /research job/i }).textContent).toMatch(/your agent's note: All quiet this week\./i);
+    });
+
+    it('K2: German summary line, Du-form surface, real umlauts, sentence case', () => {
+      feedData.jobs = [job({ state: 'failed', reason: 'timeout', tail: 'Alles läuft, ich melde mich gleich zurück.', finishedAt: new Date().toISOString() })];
+      renderPanel({ locale: 'de-CH' });
+      const region = screen.getByRole('region', { name: /Recherche/i });
+      const summary = region.querySelector('details > summary');
+      expect(summary.textContent).toMatch(/^Notiz des Agenten, geschrieben bevor der Lauf gestoppt wurde\s*Alles anzeigen/);
+      expect(textOutsideNoteBody(region)).not.toMatch(/Alles läuft/);
+    });
+
+    // J5: the transcript disclosure is labelled by what it opens.
+    it('J5: the transcript disclosure reads "Log (n)"', () => {
+      feedData.jobs = [job({ state: 'failed', reason: 'exit', finishedAt: new Date().toISOString(), activity: [{ ts: new Date().toISOString(), kind: 'phase', text: 'research' }] })];
+      renderPanel();
+      expect(screen.getByRole('button', { name: /^Log \(1\)$/ })).toBeInTheDocument();
+    });
+
+    it('on a German surface an English note is bylined as such - quoted, never pendpost\'s voice', () => {
+      feedData.jobs = [job({ state: 'failed', reason: 'timeout', tail: LONG_TAIL, finishedAt: new Date().toISOString() })];
+      const { unmount } = renderPanel({ locale: 'de-CH' });
+      // K2: on a cut-off row the ONE summary line carries the foreign tell.
+      expect(screen.getByRole('region', { name: /Recherche/i }).textContent).toMatch(/Notiz des Agenten \(auf Englisch\), geschrieben bevor der Lauf gestoppt wurde/);
+      unmount();
+      feedData.jobs = [job({ state: 'failed', reason: 'limit', tail: "You've hit your weekly limit - resets 5am", finishedAt: new Date().toISOString() })];
+      renderPanel({ locale: 'de-CH' });
+      expect(screen.getByRole('region', { name: /Recherche/i }).textContent).toMatch(/Notiz deines Agenten \(auf Englisch\): You've hit/);
+    });
+
+    it('empty state: a done run\'s long verdict gets the same disclosure, under the byline', async () => {
+      const user = userEvent.setup();
+      feedData.items = [];
+      feedData.jobs = [job({ state: 'done', accepted: 0, tail: LONG_TAIL, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      // Two disclosures: the job row's and the empty state's promotion. Both open to the full text.
+      const all = document.querySelectorAll('main details, details');
+      expect(all.length).toBeGreaterThanOrEqual(2);
+      const last = all[all.length - 1];
+      expect(last.querySelector('summary').textContent).toMatch(/your agent's note/i);
+      await user.click(last.querySelector('summary'));
+      expect(last.textContent).toMatch(/report back once they complete/);
+      expect(screen.queryByText(/your agent researches/i)).not.toBeInTheDocument();
+    });
+
+    // C9 + J1 (lane honesty): the newest job row OWNS its failed run. The agent-only lanes whose
+    // degrade rows carry this job's own reason ride the row's reason line (lanes + what
+    // survived) and its ONE retry, labelled with the lane count and scoped to exactly those
+    // lanes (radarAgentScan { sources }). The degrade card says nothing about them - one failed
+    // run, narrated once, one retry. A job with no owned lane keeps "Scan again" over the whole set.
+    describe('C9/J1: the job row owns its failed run - lanes on the reason line, one scoped retry', () => {
+      const runFailure = (reason, over = {}) => {
+        configData.posting.radar.sources = { x: { scan: true }, youtube: { scan: true } };
+        feedData.capabilities = { ...feedData.capabilities, x: { search: false, reply: false }, youtube: { search: false, reply: true } };
+        feedData.sources = {
+          x: { ok: false, error: reason, at: new Date().toISOString() },
+          youtube: { ok: false, error: reason, at: new Date().toISOString() },
+          hackernews: { ok: true, at: new Date().toISOString() },
+        };
+        feedData.jobs = [job({ state: 'failed', reason, sources: ['x', 'youtube', 'hackernews'], finishedAt: new Date().toISOString(), ...over })];
+      };
+      // K1: the retry NAMES the lanes it will rescan, never a count.
+      const retryOf = (region) => within(region).getByRole('button', { name: /^retry X, YouTube$/i });
+
+      for (const reason of ['timeout', 'sleep', 'partial_timeout', 'exit', 'limit', 'agent_error', 'stopped', 'spawn_failed']) {
+        it(`${reason}: the row names the lanes, the card is silent, the one retry passes exactly those lanes`, async () => {
+          const user = userEvent.setup();
+          runFailure(reason);
+          renderPanel();
+          const region = screen.getByRole('region', { name: /research job/i });
+          // The reason line names the lanes and what survived - never the raw key.
+          expect(region.textContent).toMatch(/on X, YouTube\.|for X, YouTube\./);
+          expect(region.textContent).toMatch(/Nothing was kept from this run\./);
+          expect(region.textContent).not.toMatch(/radar\.agent\.job/);
+          // The degrade card carries NO line for these lanes (the row owns them).
+          expect(screen.queryByText(/Agent research on/)).not.toBeInTheDocument();
+          expect(screen.queryByRole('button', { name: /rescan only these sources/i })).not.toBeInTheDocument();
+          // Exactly one retry control on the surface, labelled with the lane count.
+          expect(screen.getAllByRole('button', { name: /^retry |scan again|rescan/i })).toHaveLength(1);
+          await user.click(retryOf(region));
+          expect(radarAgentScanMock).toHaveBeenCalledWith({ sources: ['x', 'youtube'] });
+        });
+      }
+
+      it('what survived is counted: accepted > 0 reads "{n} results from other sources were kept"', () => {
+        runFailure('timeout', { accepted: 3 });
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        // K5: the reason line says WHOSE limit - the job's 15-minute cap.
+        expect(region.textContent).toMatch(/Stopped at the 15-minute limit on X, YouTube\. 3 results from other sources were kept\./);
+      });
+
+      it('a promoted partial (done + partial_timeout) owns its lanes the same way, in the amber caveat', async () => {
+        const user = userEvent.setup();
+        runFailure('partial_timeout', { state: 'done', partial: true, accepted: 2 });
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        expect(within(region).getByRole('status').textContent).toMatch(/Ran out of time on X, YouTube\. 2 results from other sources were kept\./);
+        expect(screen.queryByText(/Agent research on/)).not.toBeInTheDocument();
+        await user.click(retryOf(region));
+        expect(radarAgentScanMock).toHaveBeenCalledWith({ sources: ['x', 'youtube'] });
+      });
+
+      it('one owned lane: the retry names that one lane', async () => {
+        const user = userEvent.setup();
+        runFailure('timeout');
+        feedData.sources = { x: { ok: false, error: 'timeout', at: new Date().toISOString() }, hackernews: { ok: true } };
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        await user.click(within(region).getByRole('button', { name: /^retry X$/i }));
+        expect(radarAgentScanMock).toHaveBeenCalledWith({ sources: ['x'] });
+      });
+
+      // K1: at five or more lanes the label names the first three and counts the rest.
+      const fiveLanes = ['x', 'youtube', 'linkedin', 'instagram', 'quora'];
+      const runFiveLaneTimeout = () => {
+        configData.posting.radar.sources = Object.fromEntries(fiveLanes.map((id) => [id, { scan: true }]));
+        feedData.capabilities = { ...feedData.capabilities, ...Object.fromEntries(fiveLanes.map((id) => [id, { search: false, reply: false }])) };
+        feedData.sources = Object.fromEntries(fiveLanes.map((id) => [id, { ok: false, error: 'timeout', at: new Date().toISOString() }]));
+        feedData.jobs = [job({ state: 'failed', reason: 'timeout', sources: fiveLanes, finishedAt: new Date().toISOString() })];
+      };
+      it('K1: five owned lanes read "Retry X, YouTube, LinkedIn and 2 more" and pass all five', async () => {
+        const user = userEvent.setup();
+        runFiveLaneTimeout();
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        await user.click(within(region).getByRole('button', { name: /^retry X, YouTube, LinkedIn and 2 more$/i }));
+        expect(radarAgentScanMock).toHaveBeenCalledWith({ sources: fiveLanes });
+      });
+
+      it('K1: German five-lane label - "X, YouTube, LinkedIn und 2 weitere erneut scannen"', () => {
+        runFiveLaneTimeout();
+        renderPanel({ locale: 'de-CH' });
+        const region = screen.getByRole('region', { name: /Recherche/i });
+        expect(within(region).getByRole('button', { name: /^X, YouTube, LinkedIn und 2 weitere erneut scannen$/ })).toBeInTheDocument();
+      });
+
+      // K1: the retry is the house SECONDARY BUTTON (BTN_QUIET ring, 44px tall), right-aligned
+      // in the header line's action slot beside the quiet "Log (n)" link - not an inline text
+      // link at the foot of the row.
+      it('K1: the retry is the secondary button primitive in the action slot, with Log as the quiet link to its left', () => {
+        runFailure('timeout', { activity: [{ ts: new Date().toISOString(), kind: 'phase', text: 'research' }] });
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        const retry = retryOf(region);
+        expect(retry.tagName).toBe('BUTTON');
+        expect(retry.className).toMatch(/ring-1/);
+        expect(retry.className).toMatch(/min-h-11/);
+        expect(retry.className).not.toMatch(/underline/);
+        const log = within(region).getByRole('button', { name: /^Log \(1\)$/ });
+        expect(log.parentElement).toBe(retry.parentElement);
+        expect(log.compareDocumentPosition(retry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(retry.parentElement.className).toMatch(/ml-auto/);
+        // The slot sits in the header line, not under the note.
+        expect(retry.closest('div')).toBe(region.firstElementChild);
+      });
+
+      // K4 + oneNoun: the whole-set title is "Scan" beside its timestamp; the row uses ONE noun
+      // for the lanes ("sources"), never "searches" or "lanes".
+      it('K4: the row reads "Scan · failed ..." and carries one noun for the lanes', () => {
+        runFailure('timeout', { tail: LONG_TAIL, activity: [{ ts: new Date().toISOString(), kind: 'phase', text: 'research' }] });
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        expect(region.textContent).toMatch(/^Scan·failed/);
+        expect(region.textContent).not.toMatch(/Research: all/);
+        expect(region.textContent).not.toMatch(/searches|lanes/i);
+      });
+
+      // K3: with the newest run failed the empty state names THAT and offers no second retry.
+      it('K3: an empty feed under a failed run reads "No signals from this run." with no second retry', () => {
+        runFailure('timeout');
+        feedData.items = [];
+        renderPanel();
+        const card = screen.getByText('No signals from this run.').closest('div');
+        expect(within(card).queryByRole('button', { name: /retry|scan again|rescan/i })).not.toBeInTheDocument();
+        expect(card.textContent).not.toMatch(/press scan now|connect your agent/i);
+        expect(screen.getAllByRole('button', { name: /^retry |scan again|rescan/i })).toHaveLength(1);
+      });
+
+      it('K3: German - "Keine Signale aus diesem Lauf."', () => {
+        runFailure('timeout');
+        feedData.items = [];
+        renderPanel({ locale: 'de-CH' });
+        expect(screen.getByText('Keine Signale aus diesem Lauf.')).toBeInTheDocument();
+      });
+
+      it('rows with no stamp at all (writes.mjs before R5) still belong to the newest job', () => {
+        runFailure('timeout');
+        feedData.sources = { x: { ok: false, error: 'timeout' }, youtube: { ok: false, error: 'timeout' } };
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        expect(region.textContent).toMatch(/Stopped at the 15-minute limit on X, YouTube\./);
+        expect(screen.queryByText(/Agent research on/)).not.toBeInTheDocument();
+        expect(retryOf(region)).toBeInTheDocument();
+      });
+
+      it('a group from an OLDER run (stamped before this job started) stays on the card, muted - the row does not claim it', () => {
+        runFailure('timeout');
+        const old = new Date(Date.now() - 3 * 86_400_000).toISOString();
+        feedData.sources = { x: { ok: false, error: 'timeout', at: old }, youtube: { ok: false, error: 'timeout', at: old }, hackernews: { ok: true } };
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        expect(region.textContent).toMatch(/It ran too long and was stopped\./);
+        expect(within(region).getByRole('button', { name: /scan again/i })).toBeInTheDocument();
+        const card = screen.getByRole('status', { name: '' });
+        expect(card.textContent).toMatch(/Agent research on X, YouTube: last tried 3 days ago/);
+        expect(within(card).getByRole('button', { name: /rescan only these sources/i })).toBeInTheDocument();
+      });
+
+      it('a group with a DIFFERENT reason than the job stays on the card; the row keeps the whole-set retry', () => {
+        runFailure('exit');
+        feedData.sources = { x: { ok: false, error: 'timeout', at: new Date().toISOString() }, hackernews: { ok: true } };
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        expect(region.textContent).toMatch(/Your agent quit unexpectedly\./);
+        expect(within(region).getByRole('button', { name: /scan again/i })).toBeInTheDocument();
+        expect(screen.getByText(/Agent research on X: time limit reached/)).toBeInTheDocument();
+      });
+
+      it('a timeout with no failed agent-only row left retries the whole set as "Scan again"', async () => {
+        const user = userEvent.setup();
+        runFailure('timeout');
+        feedData.sources = { hackernews: { ok: true, at: new Date().toISOString() } };
+        renderPanel();
+        const region = screen.getByRole('region', { name: /research job/i });
+        expect(region.textContent).toMatch(/It ran too long and was stopped\./);
+        await user.click(within(region).getByRole('button', { name: /scan again/i }));
+        expect(radarAgentScanMock).toHaveBeenCalledWith({});
+      });
+
+      it('German: the lanes line, the kept line and the retry label all read in Du-form with real umlauts', () => {
+        runFailure('timeout');
+        renderPanel({ locale: 'de-CH' });
+        const region = screen.getByRole('region', { name: /Recherche/i });
+        expect(region.textContent).toMatch(/Beim 15-Minuten-Limit gestoppt auf X, YouTube\. Aus diesem Lauf blieb nichts erhalten\./);
+        expect(within(region).getByRole('button', { name: /^X, YouTube erneut scannen$/ })).toBeInTheDocument();
+      });
+    });
+
     it('failed on a missing credential: links to the card that fixes it', async () => {
       const user = userEvent.setup();
       feedData.jobs = [job({ state: 'failed', reason: 'no_credential', tail: 'no credential stored', finishedAt: new Date().toISOString() })];
@@ -464,6 +875,70 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(within(region).getByRole('button', { name: /scan again/i })).toBeEnabled();
       // The failed tail carries the agent-note label too - quoted, never pendpost's voice.
       expect(region.textContent).toMatch(/your agent's note/i);
+    });
+
+    it('failed on declined (agent rejected every candidate): humanized line + retry, never the raw key', async () => {
+      // B10: reason:declined had no locale key, so the row rendered "radar.agent.job.reason.declined".
+      const user = userEvent.setup();
+      feedData.jobs = [job({ state: 'failed', reason: 'declined', finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).toMatch(/declined every candidate/i);
+      expect(region.textContent).not.toMatch(/radar\.agent\.job\.reason/);
+      await user.click(within(region).getByRole('button', { name: /scan again/i }));
+      expect(radarAgentScanMock).toHaveBeenCalled();
+    });
+
+    it('failed on stale (app restarted mid-run): a rescan is the recovery, so retry is offered', () => {
+      feedData.jobs = [job({ state: 'failed', reason: 'stale', finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).toMatch(/restarted mid-run/i);
+      expect(within(region).getByRole('button', { name: /scan again/i })).toBeEnabled();
+    });
+
+    it('done with draftSkipped no_campaign: quiet note + Create-campaign action to the planner', async () => {
+      // B9: research succeeded, drafting skipped because no active campaign exists. The row
+      // says so in the amber caveat voice and offers the one move that fixes it - the same
+      // planner seam the inline reply editor's no-campaign link uses (no dead ends).
+      const user = userEvent.setup();
+      feedData.jobs = [job({ state: 'done', accepted: 2, draftSkipped: 'no_campaign', finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).toMatch(/no active campaign, drafts skipped/i);
+      await user.click(within(region).getByRole('button', { name: /create campaign/i }));
+      expect(onNavigateMock).toHaveBeenCalledWith('planner');
+    });
+
+    it('done with reason no_results: the zero-ingest run is labelled amber (never red) and retries', async () => {
+      // A8/B6: a clean run whose child never ingested anything used to read as a plain
+      // "done, 0" shrug. It now carries reason:no_results - the quiet caveat + Scan again.
+      const user = userEvent.setup();
+      feedData.jobs = [job({ state: 'done', reason: 'no_results', ingestCalls: 0, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).toMatch(/nothing came back/i);
+      expect(region.textContent).not.toMatch(/radar\.agent\.job\.reason/);
+      // Amber caveat, not the red failure slot: nothing failed on this row.
+      expect(within(region).getByRole('status').textContent).toMatch(/nothing came back/i);
+      await user.click(within(region).getByRole('button', { name: /scan again/i }));
+      expect(radarAgentScanMock).toHaveBeenCalled();
+    });
+
+    it('done with draftRefusals: the tally carries a humanized refusal suffix, codes only in the tooltip', () => {
+      // B11: per-reply refusals fold into the done line as one number; the machine codes
+      // never render bare on the row.
+      feedData.jobs = [job({ state: 'done', accepted: 3, draftRefusals: { below_threshold: 2, fence: 1 }, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      const region = screen.getByRole('region', { name: /research job/i });
+      expect(region.textContent).toMatch(/3 replies declined/i);
+      expect(region.textContent).not.toMatch(/below_threshold/);
+    });
+
+    it('done with a malformed draftRefusals shape renders no refusal suffix (defensive)', () => {
+      feedData.jobs = [job({ state: 'done', accepted: 1, draftRefusals: { below_threshold: 'lots', fence: null }, finishedAt: new Date().toISOString() })];
+      renderPanel();
+      expect(screen.getByRole('region', { name: /research job/i }).textContent).not.toMatch(/declined/i);
     });
 
     it('stopped: the job is failed/stopped and the feed KEEPS what was already ingested', () => {
@@ -522,6 +997,36 @@ describe('Radar panel (spec 32 listening seam)', () => {
       };
       renderPanel();
       expect(screen.getByText(/budget spent, next scan/i)).toBeInTheDocument();
+    });
+
+    // L7 (UI half, a): the run the budget just counted may still be RUNNING - the spent
+    // phrase beside its own live job row is a contradiction, so it yields to the plain clock.
+    it('suppresses the budget-spent phrasing while a radar job is running', () => {
+      feedData.nextScan = {
+        timezone: 'Europe/Zurich',
+        dailyAt: '07:00',
+        agent: { armed: true, at: '2026-08-19T05:00:00.000Z', budget: 1, spent: 1 },
+        keyword: { armed: false, at: null },
+      };
+      feedData.jobs = [{ id: 'job-run', queryId: null, providerId: 'claude-code', startedAt: new Date().toISOString(), finishedAt: null, state: 'running', accepted: 0, dropped: 0, deduped: 0, exitCode: null, reason: null, tail: null }];
+      renderPanel();
+      expect(screen.queryByText(/budget spent/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/next scan/i)).toBeInTheDocument();
+    });
+
+    // L7 (UI half, b): when the spent phrase DOES show, it is the one quiet link to the
+    // budget setting - the single move that changes the number.
+    it('the budget-spent phrase deep-links to Radar settings', async () => {
+      const user = userEvent.setup();
+      feedData.nextScan = {
+        timezone: 'Europe/Zurich',
+        dailyAt: '07:00',
+        agent: { armed: true, at: '2026-08-19T05:00:00.000Z', budget: 1, spent: 2 },
+        keyword: { armed: false, at: null },
+      };
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /budget spent, next scan/i }));
+      expect(onNavigateMock).toHaveBeenCalledWith('settings', 'radar');
     });
 
     it('keeps the plain next-scan copy while budget remains', () => {
@@ -798,6 +1303,50 @@ describe('Radar panel (spec 32 listening seam)', () => {
     // Writes the FEATURE flag (radar.enabled:false), leaving the query's own enabled untouched.
     expect(saveConfigMock.mock.calls[0][1].posting.radar.enabled).toBe(false);
     expect(saveConfigMock.mock.calls[0][1].posting.radar.queries.find((q) => q.id === 'q1').enabled).not.toBe(false);
+  });
+
+  // S7.3 (radar-reliability 2026-08-31): a polluted GEO state (footprint seeded with another
+  // brand's rows) is STATE, not config - the only recovery is the owner-gated reset, and it
+  // must be reachable from the Studio. It rides the SAME panel overflow as the kill-switch,
+  // armed by the feed's inline-confirm idiom (a question + explicit yes/cancel), never a
+  // bare destructive click and never window.confirm.
+  it('Reset GEO lives in the panel overflow, confirms inline, then calls the reset helper and says what it did', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
+    await user.click(within(headerCluster).getByRole('button', { name: /more actions/i }));
+    // First press ARMS the confirm - nothing is reset yet.
+    await user.click(screen.getByRole('menuitem', { name: /reset ai visibility/i }));
+    expect(radarGeoResetMock).not.toHaveBeenCalled();
+    expect(screen.getByText(/really clear the ai-visibility history\?/i)).toBeInTheDocument();
+    // The explicit yes commits, exactly once...
+    await user.click(screen.getByRole('button', { name: /^reset$/i }));
+    await waitFor(() => expect(radarGeoResetMock).toHaveBeenCalledTimes(1));
+    // ...and the quiet receipt line reports the counts dropped (2 footprint + 1 backlog + 1 dismissed).
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/ai visibility reset, 4 entries removed/i));
+  });
+
+  it('cancelling the GEO reset confirm resets nothing', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
+    await user.click(within(headerCluster).getByRole('button', { name: /more actions/i }));
+    await user.click(screen.getByRole('menuitem', { name: /reset ai visibility/i }));
+    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    expect(radarGeoResetMock).not.toHaveBeenCalled();
+    // Disarmed, the plain entry is back - the confirm never lingers armed.
+    expect(screen.getByRole('menuitem', { name: /reset ai visibility/i })).toBeInTheDocument();
+  });
+
+  it('with NO GEO state the overflow carries no reset entry - a menu item that resets nothing never renders', async () => {
+    const user = userEvent.setup();
+    feedData.geo = { comparisonBacklog: [], footprint: [], footprintRate: { checks: 0, mentioned: 0, rate: 0 }, buyingQuestions: [] };
+    renderPanel();
+    const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
+    await user.click(within(headerCluster).getByRole('button', { name: /more actions/i }));
+    expect(screen.queryByRole('menuitem', { name: /reset ai visibility/i })).not.toBeInTheDocument();
+    // The kill-switch still renders: the menu itself is alive, only the dead entry is gone.
+    expect(screen.getByRole('menuitem', { name: /turn off radar/i })).toBeInTheDocument();
   });
 
   it('W3b: the no-queries guard still disables Scan now for a CREDENTIALED project', () => {
@@ -1383,10 +1932,228 @@ describe('Radar panel (spec 32 listening seam)', () => {
     renderPanel();
     expect(screen.getByText(/access expired, reconnect/i)).toBeInTheDocument();
     expect(screen.getByText(/rate limit hit/i)).toBeInTheDocument();
-    // needs_scope is recoverable in Setup; rate_limited is transient (no fake button).
+    // needs_scope is recoverable in Setup; rate_limited gets a lane-scoped rescan (H1).
     const reconnect = screen.getByRole('button', { name: /reconnect/i });
     await user.click(reconnect);
     expect(onNavigateMock).toHaveBeenCalledWith('setup', 'reddit');
+  });
+
+  // L4: a source that never had credentials is NOT "expired". not_connected says so plainly
+  // and offers the SAME Setup deep-link, labelled Connect (not Reconnect).
+  it('a never-connected source says "not connected" with a Connect deep-link, never "expired"', async () => {
+    const user = userEvent.setup();
+    feedData.sources = {
+      reddit: { ok: false, error: 'not_connected' },
+    };
+    renderPanel();
+    expect(screen.getByText(/not connected/i)).toBeInTheDocument();
+    expect(screen.queryByText(/access expired/i)).not.toBeInTheDocument();
+    const connect = screen.getByRole('button', { name: /^connect$/i });
+    await user.click(connect);
+    expect(onNavigateMock).toHaveBeenCalledWith('setup', 'reddit');
+  });
+
+  // H1 (lane honesty): the agent-only lanes (capabilities search:false) that one job did not
+  // finish collapse into ONE line naming them all, with the job's reason and a rescan scoped to
+  // exactly those lanes (radarAgentScan { sources }). Five identical "unreachable" lines was the
+  // 2026-09-04 screenshot.
+  describe('H1 lane honesty: one control per notice line', () => {
+    const agentLanes = () => {
+      configData.posting.radar.sources = { x: { scan: true }, youtube: { scan: true }, linkedin: { scan: true } };
+      feedData.capabilities = { ...feedData.capabilities, x: { search: false, reply: false }, youtube: { search: false, reply: true }, linkedin: { search: false, reply: false } };
+    };
+
+    it('agent-only lanes that timed out collapse into ONE line with a rescan scoped to those lanes', async () => {
+      const user = userEvent.setup();
+      agentLanes();
+      const at = new Date().toISOString();
+      feedData.sources = {
+        x: { ok: false, error: 'timeout', at },
+        youtube: { ok: false, error: 'timeout', at },
+        linkedin: { ok: false, error: 'timeout', at },
+      };
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      const lines = [...card.querySelectorAll('p')];
+      expect(lines).toHaveLength(1);
+      expect(lines[0].textContent).toMatch(/Agent research on X, YouTube, LinkedIn: time limit reached/);
+      // Never one line per lane.
+      expect(card.textContent.match(/time limit reached/g)).toHaveLength(1);
+      await user.click(within(card).getByRole('button', { name: /rescan only these sources/i }));
+      expect(radarAgentScanMock).toHaveBeenCalledWith({ sources: ['x', 'youtube', 'linkedin'] });
+    });
+
+    it('every reason the agent runner stamps has its own words on the group line, never the raw key', () => {
+      agentLanes();
+      for (const reason of ['sleep', 'partial_timeout', 'limit', 'agent_error', 'exit', 'stopped', 'spawn_failed']) {
+        feedData.sources = { x: { ok: false, error: reason, at: new Date().toISOString() } };
+        const { unmount } = renderPanel();
+        const card = screen.getByRole('status', { name: '' });
+        expect(card.textContent).toMatch(/Agent research on X: /);
+        expect(card.textContent).not.toMatch(/radar\.source/);
+        unmount();
+      }
+    });
+
+    it('a mixed card: the agent group, an engine failure and a setup gap each carry exactly one control', async () => {
+      const user = userEvent.setup();
+      agentLanes();
+      feedData.sources = {
+        x: { ok: false, error: 'timeout', at: new Date().toISOString() },
+        youtube: { ok: false, error: 'timeout', at: new Date().toISOString() },
+        hackernews: { ok: false, error: 'engine_failure', at: new Date().toISOString() },
+        reddit: { ok: false, error: 'not_connected', at: new Date().toISOString() },
+        mastodon: { ok: false, error: 'rate_limited', at: new Date().toISOString() },
+      };
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      const lines = [...card.querySelectorAll('p')];
+      expect(lines).toHaveLength(4);
+      for (const line of lines) expect(line.querySelectorAll('button, a[href]')).toHaveLength(1);
+      // The engine lane's rescan is scoped to exactly that lane.
+      const hn = lines.find((l) => /Hacker News/.test(l.textContent));
+      await user.click(within(hn).getByRole('button', { name: /rescan this source/i }));
+      expect(radarAgentScanMock).toHaveBeenLastCalledWith({ sources: ['hackernews'] });
+      // rate_limited offers the same rescan (a line with no move is a dead end).
+      const md = lines.find((l) => /Mastodon/.test(l.textContent));
+      expect(within(md).getByRole('button', { name: /rescan this source/i })).toBeInTheDocument();
+      // The setup gap keeps its Connect deep-link, never a rescan that cannot mint a token.
+      const rd = lines.find((l) => /Reddit/.test(l.textContent));
+      expect(within(rd).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
+      expect(within(rd).queryByRole('button', { name: /rescan/i })).not.toBeInTheDocument();
+    });
+
+    it('the rescan controls are disabled while a job runs - never a second spend', () => {
+      agentLanes();
+      feedData.sources = { x: { ok: false, error: 'timeout', at: new Date().toISOString() }, hackernews: { ok: false, error: 'engine_failure', at: new Date().toISOString() } };
+      feedData.jobs = [{ id: 'job-1', queryId: null, providerId: 'claude-code', startedAt: new Date().toISOString(), finishedAt: null, state: 'running', accepted: 0, dropped: 0, deduped: 0, exitCode: null, reason: null, tail: null }];
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      expect(within(card).getByRole('button', { name: /rescan only these sources/i })).toBeDisabled();
+      expect(within(card).getByRole('button', { name: /rescan this source/i })).toBeDisabled();
+    });
+
+    // H6: a row older than 48h (or with no stamp at all) is old news - muted zinc, "last tried",
+    // History glyph - never the rose halted stop, and still one rescan control.
+    it('a stale row reads muted with "last tried", never as a live failure', async () => {
+      const user = userEvent.setup();
+      agentLanes();
+      const old = new Date(Date.now() - 3 * 86_400_000).toISOString();
+      feedData.sources = {
+        x: { ok: false, error: 'timeout', at: old },
+        youtube: { ok: false, error: 'timeout', at: old },
+        hackernews: { ok: false, error: 'engine_failure', at: old },
+      };
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      const lines = [...card.querySelectorAll('p')];
+      expect(lines).toHaveLength(2);
+      expect(lines[0].textContent).toMatch(/Agent research on X, YouTube: last tried 3 days ago/);
+      expect(lines[1].textContent).toMatch(/Hacker News: last tried 3 days ago/);
+      for (const line of lines) {
+        expect(line.className).toMatch(/text-zinc-500/);
+        expect(line.className).not.toMatch(/rose/);
+      }
+      expect(card.textContent).not.toMatch(/time limit reached|unreachable/);
+      await user.click(within(lines[0]).getByRole('button', { name: /rescan only these sources/i }));
+      expect(radarAgentScanMock).toHaveBeenCalledWith({ sources: ['x', 'youtube'] });
+    });
+
+    it('a fresh failure and a stale one for the same reason never share a line', () => {
+      agentLanes();
+      feedData.sources = {
+        x: { ok: false, error: 'timeout', at: new Date().toISOString() },
+        youtube: { ok: false, error: 'timeout', at: new Date(Date.now() - 3 * 86_400_000).toISOString() },
+      };
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      const lines = [...card.querySelectorAll('p')].map((l) => l.textContent);
+      expect(lines).toHaveLength(2);
+      expect(lines.some((l) => /Agent research on X: time limit reached/.test(l))).toBe(true);
+      expect(lines.some((l) => /Agent research on YouTube: last tried 3 days ago/.test(l))).toBe(true);
+    });
+
+    it('a row with no `at` at all is stale but keeps its reason (no time to name), muted', () => {
+      agentLanes();
+      feedData.sources = { x: { ok: false, error: 'timeout' } };
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      const line = card.querySelector('p');
+      expect(line.textContent).toMatch(/Agent research on X: time limit reached/);
+      expect(line.className).toMatch(/text-zinc-500/);
+      expect(line.className).not.toMatch(/rose/);
+    });
+
+    // H3: bluesky has no Setup lane - its credential is BLUESKY_APP_PASSWORD in the .env. The
+    // line says so and hands the name to the clipboard; a refusal never reads as success.
+    it('a not_connected bluesky line names the .env variable and copies it', async () => {
+      const user = userEvent.setup();
+      const writeText = vi.fn(() => Promise.resolve());
+      Object.defineProperty(window.navigator, 'clipboard', { value: { writeText }, configurable: true });
+      feedData.sources = { bluesky: { ok: false, error: 'not_connected', scope: 'app-password', at: new Date().toISOString() } };
+      renderPanel();
+      const card = screen.getByRole('status', { name: '' });
+      const line = card.querySelector('p');
+      expect(line.textContent).toMatch(/Bluesky: not connected/);
+      expect(line.textContent).toMatch(/app password in the \.env:\s*BLUESKY_APP_PASSWORD/);
+      expect(line.querySelectorAll('button, a[href]')).toHaveLength(1);
+      await user.click(within(line).getByRole('button', { name: /copy variable name/i }));
+      expect(writeText).toHaveBeenCalledWith('BLUESKY_APP_PASSWORD=');
+      expect(await within(line).findByText(/copied/i)).toBeInTheDocument();
+    });
+
+    it('a clipboard refusal on the bluesky hint shows the failure, never a false "Copied"', async () => {
+      const user = userEvent.setup();
+      Object.defineProperty(window.navigator, 'clipboard', { value: { writeText: vi.fn(() => Promise.reject(new Error('denied'))) }, configurable: true });
+      feedData.sources = { bluesky: { ok: false, error: 'not_connected', at: new Date().toISOString() } };
+      renderPanel();
+      const line = screen.getByRole('status', { name: '' }).querySelector('p');
+      await user.click(within(line).getByRole('button', { name: /copy variable name/i }));
+      expect(await within(line).findByText(/could not copy/i)).toBeInTheDocument();
+      expect(within(line).queryByText(/^copied$/i)).not.toBeInTheDocument();
+    });
+
+    it('the notice card is axe-clean', async () => {
+      agentLanes();
+      feedData.sources = { x: { ok: false, error: 'timeout', at: new Date().toISOString() }, reddit: { ok: false, error: 'not_connected', at: new Date().toISOString() } };
+      const { container } = renderPanel();
+      expect(await axeClean(container)).toHaveNoViolations();
+    });
+  });
+
+  // H2 (lane honesty): a standing degrade row for a lane OUTSIDE the effective scan set is a
+  // lane no scan was asked to reach - the feed says nothing about it. The in-scan-set case
+  // above (search:true, no scan:false flag) keeps its notice.
+  it('a not_connected lane outside the scan set renders no feed notice', () => {
+    configData.posting.radar.sources = { reddit: { scan: false } };
+    feedData.sources = {
+      reddit: { ok: false, error: 'not_connected', at: new Date().toISOString() },
+    };
+    renderPanel();
+    expect(screen.queryByText(/not connected/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^connect$/i })).not.toBeInTheDocument();
+  });
+
+  // D6/D1: a lane that half delivered says so ("Partial:"), and the engine's raw error text
+  // survives as a tooltip on the notice - one line, no widening.
+  it('a partial source degrade reads "Partial:" and keeps the raw detail behind a tooltip', async () => {
+    const user = userEvent.setup();
+    feedData.sources = {
+      reddit: { ok: false, error: 'engine_failure', partial: true, detail: 'HTTP 500 from oauth.reddit.com' },
+    };
+    renderPanel();
+    const notice = screen.getByText(/partial: .*unreachable right now/i);
+    // The raw engine words never render bare on the row.
+    expect(screen.queryByText(/HTTP 500/)).not.toBeInTheDocument();
+    await user.hover(notice);
+    expect((await screen.findAllByText(/HTTP 500 from oauth\.reddit\.com/)).length).toBeGreaterThan(0);
+  });
+
+  it('a degrade without partial/detail renders exactly as before (no prefix, no tooltip)', () => {
+    feedData.sources = { reddit: { ok: false, error: 'rate_limited' } };
+    renderPanel();
+    expect(screen.getByText(/rate limit hit/i)).toBeInTheDocument();
+    expect(screen.queryByText(/partial:/i)).not.toBeInTheDocument();
   });
 
   it('chip/list coherence: every rendered chip filters to exactly the count it advertises', async () => {

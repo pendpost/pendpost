@@ -33,17 +33,17 @@ const setRadar = (radar) => setConfig({ ifRev: getConfig().rev, actor: 'owner', 
 const QUERY = { id: 'q1', label: 'q', sources: ['reddit'], keywords: ['schedule', 'scheduler'] };
 
 // Seed ONE signal (agent- or engine-scored) via the real ingest, so queueRadarReply's cached
-// lookup finds it with a real scoredBy/intentScore. Returns its {source, externalId, url}.
+// lookup finds it with a real scoredBy/intentScore. Returns its {source, ts: new Date().toISOString(), externalId, url}.
 let sn = 0;
 const seed = async ({ source = 'reddit', score = null, text = 'Can anyone recommend a tool to schedule social posts across Mastodon and Reddit?' } = {}) => {
   sn += 1;
   const externalId = `ext-${sn}`;
   const url = `https://example.com/thread/${sn}`;
-  const signal = { source, externalId, url, author: `u${sn}`, community: 'r/test', text };
+  const signal = { source, ts: new Date().toISOString(), externalId, url, author: `u${sn}`, community: 'r/test', text };
   if (score != null) signal.score = score;
   const res = await radarIngest({ queryId: 'q1', signals: [signal], actor: 'agent:claude' });
   assert.ok(res.ok, `ingest ok: ${JSON.stringify(res)}`);
-  return { source, externalId, url };
+  return { source, ts: new Date().toISOString(), externalId, url };
 };
 const queue = async (sig, text = 'A genuinely useful, link-free answer to the question asked, no url anywhere.') =>
   queueRadarReply({ campaign: CAMP, signalUrl: sig.url, source: sig.source, externalId: sig.externalId, text, actor: 'agent:claude', confirm: true });

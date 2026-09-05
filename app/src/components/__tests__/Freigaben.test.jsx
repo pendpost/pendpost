@@ -25,9 +25,18 @@ const lintText = vi.fn(() =>
 );
 
 vi.mock('../../lib/api.js', () => ({
+  // A new dependency of the approval card: fail OPEN in tests (no content blockers) so
+  // the approve button keeps its pre-gate behaviour here; blocking is covered in its own test.
+  usePlatformValidate: () => ({ data: null }),
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
   lintText: (...a) => lintText(...a),
+  // Faithful stub of the real errText: bulk-approve now localizes each failure
+  // reason through it (timeout/network get their strings, a server/engine message
+  // passes through) before folding it into the summary.
+  errText: (err, tt, fk) => (err?.code === 'timeout' ? tt('error.timeout')
+    : err instanceof TypeError ? tt('error.network')
+      : (err?.message || (fk ? tt(fk) : ''))),
   // Spec 37: Freigaben reads the setup signal (reddit warmth) for the per-card tier cue.
   // These posts are non-reddit, so the tier is always approved-auto (no manual cue).
   usePendpostHealth: () => ({ data: null }),
@@ -349,5 +358,60 @@ describe('Freigaben reports its tab via onModeChange', () => {
     await waitFor(() => expect(onModeChange).toHaveBeenCalledWith('pending'));
     await user.click(screen.getByText(t('approvals.view.all')));
     await waitFor(() => expect(onModeChange).toHaveBeenCalledWith('all'));
+  });
+});
+
+// The bulk-approve "infinite spinner" bug: runBulk awaited N approve fetches with no
+// timeout, so one stalled request wedged the loading state forever and the summary
+// dropped the reason. These pin the fixed contract: the batch always settles, states
+// each failure's reason, and shows live progress while it runs.
+describe('Freigaben bulk approve', () => {
+  const p3 = { ...pendingPost, id: 'p3', title: 'Summer promo', caption: 'Summer promo headline\nBody reviewers read.' };
+
+  it('settles when one post fails, names the reason, leaves loading, and keeps the failed post selected', async () => {
+    const user = userEvent.setup();
+    // p1 approves; the other post fails with a lane reason.
+    approvePost.mockImplementation((_c, id) => (id === 'p3'
+      ? Promise.reject(new Error('Mastodon still processing the media'))
+      : Promise.resolve({ ok: true })));
+
+    renderFreigaben([pendingPost, p3]);
+    const boxes = screen.getAllByRole('checkbox', { name: /select post/i });
+    for (const b of boxes) await user.click(b); // eslint-disable-line no-await-in-loop
+
+    const bar = screen.getByRole('region', { name: /selected/i });
+    await user.click(within(bar).getByRole('button', { name: t('approvals.action.approve') }));
+
+    // Both posts were attempted and the run settled (the old bug never got here).
+    await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(2));
+    // The summary names the failed post AND why, not a bare id.
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/p3 \(Mastodon still processing the media\)/);
+    // The button recovered out of the loading state (no spinner label lingers).
+    await waitFor(() => expect(screen.queryByText(/Approving/)).not.toBeInTheDocument());
+    // The failed post stays selected for a retry; the succeeded one is dropped.
+    expect(screen.getByRole('region', { name: /1 selected/i })).toBeInTheDocument();
+  });
+
+  it('shows live N/total progress while the batch runs', async () => {
+    const user = userEvent.setup();
+    let releaseFirst;
+    const firstGate = new Promise((res) => { releaseFirst = res; });
+    let call = 0;
+    approvePost.mockImplementation(() => {
+      call += 1;
+      return call === 1 ? firstGate.then(() => ({ ok: true })) : Promise.resolve({ ok: true });
+    });
+
+    renderFreigaben([pendingPost, p3]);
+    const boxes = screen.getAllByRole('checkbox', { name: /select post/i });
+    for (const b of boxes) await user.click(b); // eslint-disable-line no-await-in-loop
+    const bar = screen.getByRole('region', { name: /selected/i });
+    await user.click(within(bar).getByRole('button', { name: t('approvals.action.approve') }));
+
+    // First item is in flight: the bulk button shows a running count, not a frozen spinner.
+    expect(await within(bar).findByText(/Approving \d\/2/)).toBeInTheDocument();
+    releaseFirst();
+    await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(2));
   });
 });

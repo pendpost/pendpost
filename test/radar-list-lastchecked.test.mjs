@@ -37,9 +37,9 @@ try {
   await radarIngest({
     queryId: 'q1',
     signals: [
-      { source: 'reddit', externalId: 'r1', url: 'https://reddit.com/r/x/1', author: 'a1', text: 'any scheduler?' },
-      { source: 'mastodon', externalId: 'm1', url: 'https://mastodon.example/@a2/2', author: 'a2', text: 'buffer alternative?' },
-      { source: 'x', externalId: 'tw1', url: 'https://x.com/a3/status/3', author: 'a3', text: 'tools for this?' },
+      { source: 'reddit', ts: new Date().toISOString(), externalId: 'r1', url: 'https://reddit.com/r/x/1', author: 'a1', text: 'any scheduler?' },
+      { source: 'mastodon', ts: new Date().toISOString(), externalId: 'm1', url: 'https://mastodon.example/@a2/2', author: 'a2', text: 'buffer alternative?' },
+      { source: 'x', ts: new Date().toISOString(), externalId: 'tw1', url: 'https://x.com/a3/status/3', author: 'a3', text: 'tools for this?' },
     ],
     actor: 'agent:claude',
   });

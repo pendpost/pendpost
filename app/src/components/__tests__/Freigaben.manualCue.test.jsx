@@ -20,6 +20,9 @@ const lintText = vi.fn(() => Promise.resolve({ ok: true, clean: true, errors: 0,
 const WARM_SETUP = { platforms: [{ platform: 'reddit', warmth: { ageDays: 400, linkKarma: 3000, commentKarma: 2000, karma: 5000 } }] };
 
 vi.mock('../../lib/api.js', () => ({
+  // A new dependency of the approval card: fail OPEN in tests (no content blockers) so
+  // the approve button keeps its pre-gate behaviour here; blocking is covered in its own test.
+  usePlatformValidate: () => ({ data: null }),
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
   lintText: (...a) => lintText(...a),

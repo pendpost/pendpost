@@ -103,6 +103,23 @@ try {
   // Guard: the bilingual additions must NOT push neutral chatter into actionable territory.
   ok(chatter.suggestedAction === 'ignore' || chatter.suggestedAction === 'watch', `chatter stays low after the bilingual additions (${chatter.suggestedAction})`);
 
+  // ---- (a2b) FR + IT (Suisse romande / Ticino) ------------------------------
+  // The other two Swiss languages get the same out-of-the-box treatment: buyer language in
+  // French and Italian must outrank chatter and carry the right tag, while ordinary sentences
+  // that share a verb ("je cherche mes clés", "cerco casa") stay at the chatter level.
+  const frRec = scoreSignal("Je cherche une plateforme pour trouver des clients coaching en Suisse romande, quelqu'un recommande?");
+  ok(frRec.intentScore > chatter.intentScore && frRec.intentTags.includes('recommendation-request'), `French "je cherche une plateforme / quelqu'un recommande" scores as a recommendation (${frRec.intentScore}) above chatter (${chatter.intentScore})`);
+  const frAlt = scoreSignal('Une alternative à CoachAccountable en français?');
+  ok(frAlt.intentTags.includes('alternative-seeking'), `French "alternative à" carries alternative-seeking (${frAlt.intentScore})`);
+  const itRec = scoreSignal('Cerco un software per gestire prenotazioni e fatture come coach, qualcuno consiglia qualcosa?');
+  ok(itRec.intentScore > chatter.intentScore && itRec.intentTags.includes('recommendation-request'), `Italian "cerco un software / qualcuno consiglia" scores as a recommendation (${itRec.intentScore}) above chatter (${chatter.intentScore})`);
+  const itBuy = scoreSignal('Quale piattaforma usate per trovare clienti come coach in Svizzera?');
+  ok(itBuy.intentTags.includes('buying-question'), `Italian "quale piattaforma" carries buying-question (${itBuy.intentScore})`);
+  for (const text of ['Je cherche mes clés depuis ce matin', 'Cerco casa a Lugano', 'On a passé un meilleur week-end que prévu']) {
+    const r = scoreSignal(text);
+    ok(r.intentScore <= chatter.intentScore && (r.suggestedAction === 'ignore' || r.suggestedAction === 'watch'), `FR/IT chatter "${text}" stays at the chatter level (${r.intentScore}, ${r.suggestedAction})`);
+  }
+
   // ---- (a3) spec 40 6.9: gaps found on real threads -------------------------
   // Every phrase below is ordinary buyer language the library scored at or near zero,
   // so a genuine buying question ranked alongside chatter. The scorer is the ONLY

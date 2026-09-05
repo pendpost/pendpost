@@ -35,9 +35,9 @@ const seed = async ({ source = 'hackernews', text = 'Looking for a tool to sched
   sn += 1;
   const externalId = `ext-${sn}`;
   const url = `https://example.com/thread/${sn}`;
-  const res = await radarIngest({ queryId: 'q1', signals: [{ source, externalId, url, author: `u${sn}`, text, score: 70 }], actor: 'agent:claude' });
+  const res = await radarIngest({ queryId: 'q1', signals: [{ source, ts: new Date().toISOString(), externalId, url, author: `u${sn}`, text, score: 70 }], actor: 'agent:claude' });
   assert.ok(res.ok, `ingest ok: ${JSON.stringify(res)}`);
-  return { source, externalId, url };
+  return { source, ts: new Date().toISOString(), externalId, url };
 };
 const findSignal = async (sig) => (await listRadar({})).items.find((s) => s.source === sig.source && s.externalId === sig.externalId);
 
@@ -79,7 +79,7 @@ try {
   ok(fixed.copyPosted.postedUrl === 'https://reddit.com/r/x/karma', 'the link was corrected in place (last write wins)');
 
   // --- durability: the marker outlives a re-scan that rebuilds the signal cache ------
-  await radarIngest({ queryId: 'q1', signals: [{ source: 'hackernews', externalId: hn.externalId, url: hn.url, author: 'u1', text: 'refreshed text', score: 90 }], actor: 'agent:claude' });
+  await radarIngest({ queryId: 'q1', signals: [{ source: 'hackernews', ts: new Date().toISOString(), externalId: hn.externalId, url: hn.url, author: 'u1', text: 'refreshed text', score: 90 }], actor: 'agent:claude' });
   const rescanned = await findSignal(hn);
   ok(rescanned && rescanned.copyPosted && rescanned.copyPosted.postedUrl === 'https://news.ycombinator.com/item?id=42',
     'the copyPosted marker survives a re-scan (durable ledger, not a cache field)');

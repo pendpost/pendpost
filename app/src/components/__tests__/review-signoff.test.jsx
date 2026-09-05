@@ -14,6 +14,9 @@ import { ReviewStatusChip } from '../ReviewLink.jsx';
 let reviewRequired = false;
 const approvePost = vi.fn(() => Promise.resolve({ ok: true }));
 vi.mock('../../lib/api.js', () => ({
+  // A new dependency of the approval card: fail OPEN in tests (no content blockers) so
+  // the approve button keeps its pre-gate behaviour here; blocking is covered in its own test.
+  usePlatformValidate: () => ({ data: null }),
   approvePost: (...a) => approvePost(...a),
   rejectPost: vi.fn(() => Promise.resolve({ ok: true })),
   lintText: vi.fn(() => Promise.resolve({ ok: true, clean: true, errors: 0, warnings: 0, findings: [] })),

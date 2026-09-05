@@ -40,7 +40,7 @@ fs.writeFileSync(ingestBin, `#!/usr/bin/env node
 const fs = require('fs');
 const args = process.argv.slice(2);
 const cfg = JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8'));
-const sig = (n) => ({ source: 'web', url: 'https://example.com/thread/' + n, text: 'what do you all use for scheduling posts?' });
+const sig = (n) => ({ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/thread/' + n, text: 'what do you all use for scheduling posts?' });
 fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
     params: { name: 'radar_ingest', arguments: { actor: 'agent:radar-scan', queryId: 'q1', signals: [sig(1), sig(2)] } } }) })
@@ -66,7 +66,7 @@ const cfg = JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], '
 fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
     params: { name: 'radar_ingest', arguments: { actor: 'agent:radar-scan', queryId: 'q1',
-      signals: [{ source: 'web', url: 'https://example.com/found-before-stop', text: 'anyone know a good tool for this?' }] } } }) })
+      signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/found-before-stop', text: 'anyone know a good tool for this?' }] } } }) })
   .then(() => setInterval(() => {}, 1000));
 `);
 fs.chmodSync(hangBin, 0o755);
@@ -256,6 +256,11 @@ try {
   ok(/wrong one/.test(promptFor), 'and says WHY, so the agent does not treat it as boilerplate');
   const promptNoClient = radarScanPrompt([{ id: 'q1', label: 'S' }], 20, null);
   ok(!/clientId/.test(promptNoClient), 'a legacy single-workspace job (no client id) does not invent one');
+  // R2 (2026-09-04): the child is told its lane's wall-clock budget in MINUTES, once; absent -> silent.
+  const promptBudget = radarScanPrompt([{ id: 'q1', label: 'S' }], 20, 'pendpost', null, null, null, null, null, 450_000);
+  ok(/TIME BUDGET: you have about 8 minutes/.test(promptBudget), 'the prompt states the per-lane budget in minutes (450s -> about 8 minutes)');
+  ok((promptBudget.match(/TIME BUDGET/g) || []).length === 1, 'exactly one budget sentence');
+  ok(!/TIME BUDGET/.test(promptFor), 'no perLaneMs -> no budget sentence (older callers unchanged)');
   // The free-text brief is the operator's own words and leads the query block as the intent to
   // judge against. A query with a brief and no keyword arrays is complete, not empty.
   const promptBrief = radarScanPrompt([{ id: 'q1', label: 'S', brief: 'people asking which scheduler handles Mastodon' }], 20, 'pendpost');
@@ -266,6 +271,41 @@ try {
   ok(/already saved in this project/.test(promptFor), 'the prompt states the queryIds are already saved');
   ok(!AGENT_SCAN_TOOLS.includes('mcp__pendpost__config_get'), 'config_get stays OFF the allow-list - the query is in the prompt, and a research child gets no config read');
 
+  // ===== THE PER-LANE BUDGET FOLLOWS THE WORK (incident 2026-09-04) =====
+  // bondigoo's saved queries grew from 4 to 7 and every manual lane child timed out: five
+  // one-source spawns at 180s each, every one told to research all seven queries. The lanes now
+  // pack into as many spawns as fit under the cap, so each child gets a slice it can use.
+  const recordBin = path.join(WS, 'record-claude');
+  const promptLog = path.join(WS, 'prompts.ndjson');
+  fs.writeFileSync(recordBin, `#!/usr/bin/env node
+const fs = require('fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(promptLog)}, JSON.stringify(args[args.indexOf('-p') + 1]) + '\\n');
+process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: 'nothing found' }));
+`);
+  fs.chmodSync(recordBin, 0o755);
+  process.env[BIN_VAR] = recordBin;
+  const sevenQueries = [{ id: 'q1', label: 'Scheduling', enabled: true, keywords: ['scheduling'] },
+    ...['DE', 'EN', 'FR', 'IT', 'DE2', 'EN2'].map((k, i) => ({ id: `q${i + 10}`, label: k, enabled: true, keywords: [k.toLowerCase()] }))];
+  await asClient(() => setConfig({
+    ifRev: getConfig().rev,
+    actor: 'owner',
+    set: { posting: { radar: {
+      queries: sevenQueries,
+      sources: { reddit: { scan: false }, x: { scan: true }, youtube: { scan: true }, linkedin: { scan: true }, instagram: { scan: true }, quora: { scan: true } },
+    } } },
+  }));
+  r = await asClient(() => radarAgentScan({ actor: 'owner' }));
+  ok(r.ok === true && r.job.state === 'done', 'a manual scan over 5 agent-found lanes and 7 queries settles done');
+  const prompts = fs.readFileSync(promptLog, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  ok(prompts.length === 2, `7 queries x 5 lanes = TWO packed spawns, not five 180s ones (got ${prompts.length})`);
+  ok(prompts.every((p) => /no subagents|cannot delegate|must not delegate/i.test(p)), 'each child is told it has NO subagents and must not try to delegate (the 08:19 child spent its budget spawning "three research agents" that were denied)');
+  const lanesSeen = prompts.flatMap((p) => ['x', 'youtube', 'linkedin', 'instagram', 'quora'].filter((s) => new RegExp(`source: one of [^\\n]*\\b${s}\\b`).test(p)));
+  ok(new Set(lanesSeen).size === 5, `every lane is named in exactly one child's brief (saw ${[...new Set(lanesSeen)].join(',')})`);
+  ok(lanesSeen.length === 5, 'and no lane is briefed twice');
+  ok(Object.values(state_sources_after()).filter((row) => row.ok).length === 5, 'all five lanes report ok in state.radar.sources');
+  function state_sources_after() { return asClient(() => loadState()).radar.sources || {}; }
+
   // ===== the job cap =====
   const state = asClient(() => loadState());
   ok(state.radar.jobs.length <= 20, 'jobs[] is capped - the volatile feed never grows unbounded');
@@ -275,7 +315,7 @@ try {
   ok(!jobsBlob.includes('sk-ant-oat01-fake'), 'no job row carries the credential');
 
   // ===== an ingest OUTSIDE a job still works (agents that scan on their own) =====
-  const solo = await asClient(() => radarIngest({ actor: 'agent:other', queryId: 'q1', signals: [{ source: 'web', url: 'https://example.com/solo', text: 'looking for a tool' }] }));
+  const solo = await asClient(() => radarIngest({ actor: 'agent:other', queryId: 'q1', signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/solo', text: 'looking for a tool' }] }));
   ok(solo.ok === true && solo.accepted === 1, 'radar_ingest still works with NO job running - spec 38 is untouched');
 
   assert.ok(failures === 0, `${failures} assertion(s) failed`);

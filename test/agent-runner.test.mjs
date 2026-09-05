@@ -149,6 +149,9 @@ try {
   ok(allowIdx > -1 && dump.argv[allowIdx + 1] === 'WebSearch,WebFetch,mcp__pendpost__radar_ingest',
     'the allow-list IS the fence and carries exactly the research surface + radar_ingest');
   ok(!dump.argv.some((a) => /[;&|`$]/.test(String(a)) && !a.startsWith('-p')), 'no argv element carries a shell metacharacter path');
+  const disIdx = dump.argv.indexOf('--disallowed-tools');
+  ok(disIdx > -1 && dump.argv[disIdx + 1] === 'Agent,Task', '--disallowed-tools Agent,Task: the child cannot spawn subagents even if a CLI treats built-ins as implicitly allowed (R2)');
+  ok(disIdx > pIdx + 1, '--disallowed-tools sits after the prompt - it is variadic and would swallow a trailing positional');
   const cfgIdx = dump.argv.indexOf('--mcp-config');
   ok(cfgIdx > -1 && !fs.existsSync(dump.argv[cfgIdx + 1]), 'the temp MCP config is deleted in a finally - it does not linger after the job');
 
@@ -304,6 +307,30 @@ process.exit(0);
   })();
   ok(throwingObserver.ok === true, 'a throwing observer never hurts the job - progress is a bonus, not a risk');
   process.env[BIN_VAR] = fakeBin;
+
+  // ===== (12) the per-lane budget is sized to the WORK, and the total stays under the cap =====
+  // Incident 2026-09-04 (bondigoo): the saved queries grew from 4 to 7 and every manual lane
+  // child (5 lanes x 180s) timed out - each child had to research all 7 queries in 3 minutes.
+  // The planner derives what one lane needs from the query count, then packs lanes into as
+  // many spawns as fit under AGENT_TIMEOUT_MS. Total wall-clock never exceeds the cap; a lane
+  // is never handed a slice it cannot use.
+  const { planAgentScanLanes, AGENT_LANE_MS_PER_QUERY, AGENT_LANE_MIN_MS, AGENT_TIMEOUT_MS } = await import('../lib/agent-runner.mjs');
+  const five = ['x', 'youtube', 'linkedin', 'instagram', 'quora'];
+  const tiny = planAgentScanLanes({ actor: 'owner', scanLanes: five, queryCount: 1 });
+  ok(tiny.lanes.length === 5 && tiny.lanes.every((l) => l.length === 1), 'one query: five lanes still isolate one-per-spawn (unchanged)');
+  ok(tiny.perLaneMs === 180_000, `one query: 900s / 5 = 180s per lane, exactly as before (got ${tiny.perLaneMs})`);
+  const seven = planAgentScanLanes({ actor: 'owner', scanLanes: five, queryCount: 7 });
+  const need7 = Math.max(AGENT_LANE_MIN_MS, 7 * AGENT_LANE_MS_PER_QUERY);
+  ok(seven.lanes.length === 2, `seven queries: lanes are PACKED into the ${seven.lanes.length} spawns that fit (need ${need7 / 1000}s each)`);
+  ok(seven.lanes.flat().length === 5 && new Set(seven.lanes.flat()).size === 5, 'every lane is covered exactly once');
+  ok(seven.perLaneMs >= need7 && seven.perLaneMs * seven.lanes.length <= AGENT_TIMEOUT_MS, `each spawn gets >= what its queries need, and the total (${seven.perLaneMs * seven.lanes.length / 1000}s) stays under the ${AGENT_TIMEOUT_MS / 1000}s cap`);
+  const huge = planAgentScanLanes({ actor: 'owner', scanLanes: five, queryCount: 40 });
+  ok(huge.lanes.length === 1 && huge.perLaneMs === AGENT_TIMEOUT_MS, 'when even one lane cannot fit twice, it falls back to ONE combined spawn at the hard cap');
+  const sched = planAgentScanLanes({ actor: 'scheduler', scanLanes: five, queryCount: 7 });
+  ok(JSON.stringify(sched) === JSON.stringify(seven), 'the scheduler packs EXACTLY like a manual run (R1: the daily budget counts job rows, so one job with packed spawns is still one job)');
+  const one = planAgentScanLanes({ actor: 'owner', scanLanes: ['x'], queryCount: 7 });
+  ok(one.lanes.length === 1 && one.perLaneMs === AGENT_TIMEOUT_MS, 'a single source is one spawn at the full cap');
+  ok(planAgentScanLanes({ actor: 'owner', scanLanes: five, queryCount: 0 }).lanes.length === 5, 'a missing query count is treated as the minimum, not as zero work');
 
   assert.ok(failures === 0, `${failures} assertion(s) failed`);
   console.log(`[agent-runner] OK - the registry fences the provider, the child env is a floor, the credential cannot leak, timeout+stop kill cleanly (${pass} assertions).`);

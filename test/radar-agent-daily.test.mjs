@@ -152,7 +152,13 @@ try {
   ok(freed.ok === true && freed.job && freed.job.state === 'done', 'reason:limit jobs do not consume the scheduler budget either');
 
   // ===== (f) Activity =====
-  const acts = asClient(() => getActivity(20)).filter((a) => a.action === 'radar-agent-scan');
+  // L7: the over-budget scheduled skips above also wrote (at most one) honest
+  // errorCode:'budget' entry - that is its own proof (test/radar-budget-truth.test.mjs);
+  // here we count the RUN entries.
+  const allActs = asClient(() => getActivity(20)).filter((a) => a.action === 'radar-agent-scan');
+  ok(allActs.some((a) => a.errorCode === 'budget' && a.ok === false),
+    '(f) an over-budget scheduled skip is VISIBLE in Activity (errorCode budget), never a silent null');
+  const acts = allActs.filter((a) => a.errorCode !== 'budget');
   ok(acts.length === 2, `(f) each unattended job is logged to Activity (got ${acts.length})`);
   ok(acts[0].actor === 'scheduler', 'the log says WHO spent the money');
   ok('ok' in acts[0] && 'errorCode' in acts[0] && 'lateMin' in acts[0], 'the entry carries the full canonical Activity shape');

@@ -55,7 +55,7 @@ try {
   ok(!RADAR_REPLY_SOURCES.includes('web'), 'web is not a reply-capable source');
 
   // ---- (b) beta gate: Radar OFF => inert ------------------------------------
-  const offIngest = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'web', url: 'https://example.com/a', text: 'hi' }] });
+  const offIngest = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/a', text: 'hi' }] });
   ok(offIngest.ok === true && offIngest.enabled === false && offIngest.accepted === 0,
     'Radar OFF (default) => radarIngest is inert (enabled:false, accepted:0, no persist)');
 
@@ -111,37 +111,37 @@ try {
 
   // ---- (g) a non-https url is REJECTED (XSS via href + reply-prompt interpolation) ----
   const badUrl = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [
-    { source: 'web', url: 'javascript:alert(1)', text: 'evil' },
-    { source: 'web', url: 'ftp://x/y', text: 'evil2' },
-    { source: 'web', url: 'https://good.example/ok', text: 'What should I use for scheduling?' },
+    { source: 'web', ts: new Date().toISOString(), url: 'javascript:alert(1)', text: 'evil' },
+    { source: 'web', ts: new Date().toISOString(), url: 'ftp://x/y', text: 'evil2' },
+    { source: 'web', ts: new Date().toISOString(), url: 'https://good.example/ok', text: 'What should I use for scheduling?' },
   ] });
   ok(badUrl.accepted === 1 && badUrl.dropped === 2, 'non-https urls (javascript:, ftp:) are DROPPED; only the https signal is accepted (dropped:2)');
   ok(!(await listRadar({})).items.some((s) => /^javascript:/i.test(s.url || '')), 'no javascript: url ever enters the feed (the rendered-href injection surface is closed)');
 
   // ---- (h) an unknown source is dropped -------------------------------------
-  const badSrc = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'facebook', url: 'https://facebook.com/x', text: 'hi' }] });
+  const badSrc = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'facebook', ts: new Date().toISOString(), url: 'https://facebook.com/x', text: 'hi' }] });
   ok(badSrc.accepted === 0 && badSrc.dropped === 1, 'a signal with an unknown source (facebook) is dropped');
 
   // ---- (i) size caps: text<=2000, author/community<=200, <=50 signals/call ---
   const bigText = 'x'.repeat(5000);
   const bigAuthor = 'a'.repeat(500);
   const capIng = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [
-    { source: 'web', url: 'https://example.com/big', text: bigText, author: bigAuthor, community: 'c'.repeat(500) },
+    { source: 'web', ts: new Date().toISOString(), url: 'https://example.com/big', text: bigText, author: bigAuthor, community: 'c'.repeat(500) },
   ] });
   ok(capIng.accepted === 1, 'an over-size signal is still accepted (fields are clipped, not dropped)');
   const capSig = (await listRadar({})).items.find((s) => s.url === 'https://example.com/big');
   ok(capSig && capSig.text.length === 2000, 'text is clipped to 2000 chars');
   ok(capSig && capSig.author.length === 200 && capSig.community.length === 200, 'author + community are clipped to 200 chars');
-  const many = Array.from({ length: 60 }, (_, i) => ({ source: 'web', url: `https://example.com/n${i}`, text: `looking for a tool ${i}` }));
+  const many = Array.from({ length: 60 }, (_, i) => ({ source: 'web', ts: new Date().toISOString(), url: `https://example.com/n${i}`, text: `looking for a tool ${i}` }));
   const manyIng = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: many });
   ok(manyIng.accepted <= 50 && manyIng.dropped >= 10, 'no more than 50 signals per call are accepted; the excess is reported dropped (never silently discarded)');
 
   // ---- (j) deterministic sha256(url) externalId fallback --------------------
-  const noId = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'web', url: 'https://example.com/noid', text: 'What should I use for X?' }] });
+  const noId = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/noid', text: 'What should I use for X?' }] });
   ok(noId.accepted === 1, 'a signal with no externalId is accepted (url-hash fallback)');
   const noIdSig = (await listRadar({})).items.find((s) => s.url === 'https://example.com/noid');
   ok(noIdSig && noIdSig.externalId && noIdSig.externalId.length >= 16, 'a missing externalId is filled with a deterministic hash of the url');
-  const noId2 = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'web', url: 'https://example.com/noid', text: 'What should I use for X?' }] });
+  const noId2 = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/noid', text: 'What should I use for X?' }] });
   ok(noId2.deduped === 1, 're-ingesting the same url (no externalId) is idempotent: the sha256(url) fallback dedupes it');
 
   // ---- (k0) agent-CURATED signals persist: an old-dated ingested signal is NOT age-pruned ----
@@ -149,18 +149,34 @@ try {
   // relevant but older conversations. Unlike an engine firehose (which re-surfaces live results),
   // a curated ingest must not silently vanish under the 30-day retention prune. It is retention-
   // exempt (like a watched signal), still capped by RADAR_SIGNAL_CAP, and recency still SCORES it low.
-  const oldTs = new Date(Date.now() - 120 * 86_400_000).toISOString(); // 120 days old
+  // 60 days: older than the 30-day RETENTION prune (so it exercises the exemption) but WITHIN the
+  // default 90-day lookback window (so it is not dropped at ingest). The two windows are distinct.
+  const oldTs = new Date(Date.now() - 60 * 86_400_000).toISOString(); // 60 days old
   const oldIngest = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [
     { source: 'reddit', url: 'https://reddit.com/r/askswitzerland/comments/oldbutreal', externalId: 't3_oldbutreal', text: 'Looking for a career coach recommendation in Zurich, is it worth it?', author: 'seeker', community: 'r/askswitzerland', ts: oldTs },
   ] });
-  ok(oldIngest.accepted === 1 && oldIngest.total >= 1, 'an old-dated (120d) ingested signal is accepted AND kept in the feed (curated, retention-exempt)');
+  ok(oldIngest.accepted === 1 && oldIngest.total >= 1, 'a 60-day-old ingested signal (past the 30-day retention prune, within the 90-day lookback) is accepted AND kept in the feed (curated, retention-exempt)');
   const oldSig = (await listRadar({})).items.find((s) => s.externalId === 't3_oldbutreal');
-  ok(oldSig, 'the 120-day-old ingested signal survives in the feed (not age-pruned like an engine firehose result)');
+  ok(oldSig, 'the 60-day-old ingested signal survives in the feed (not age-pruned like an engine firehose result)');
   // Sanity: an engine-scanned signal with the same old ts WOULD be pruned - prove the exemption is
   // specific to ingested (mergeSignals age-prunes a non-ingested, non-watched old signal).
   const { mergeSignals: mergeS } = await import('../lib/radar.mjs');
   const engineOld = mergeS([], [{ source: 'reddit', externalId: 't3_engineold', text: 't', ts: oldTs, intentScore: 50 }]);
   ok(!engineOld.some((s) => s.externalId === 't3_engineold'), 'a non-ingested old engine signal IS still age-pruned (the exemption is specific to curated ingests)');
+
+  // ---- (k0b) lookback window: a KNOWN-old post beyond posting.radar.lookbackDays is dropped at
+  // ingest (the "found 3h ago but posted 7 years ago" case), and so is an UNDATED post (fail closed,
+  // Wave 3 Q3) - itemized apart as droppedUndated, with a note the child reads. Default 90 days.
+  const wayOldTs = new Date(Date.now() - 200 * 86_400_000).toISOString(); // 200 days old, > 90 window
+  const lookback = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [
+    { source: 'reddit', url: 'https://reddit.com/r/askswitzerland/comments/ancient', externalId: 't3_ancient', text: 'Looking for a career coach recommendation, is it worth it?', author: 'seeker', community: 'r/askswitzerland', ts: wayOldTs },
+    { source: 'quora', url: 'https://www.quora.com/What-is-the-best-coaching-software', externalId: 'quora-best-coaching', text: 'What is the best coaching software with scheduling?', author: 'asker' }, // NO ts - undated
+  ] });
+  ok(lookback.staleDropped === 1 && lookback.droppedUndated === 1 && lookback.accepted === 0 && lookback.dropped === 2, 'a 200-day-old dated post is dropped (staleDropped) AND the undated quora post is dropped (droppedUndated) under the default 90-day lookback - the tally tells the two apart');
+  ok(/1 signal dropped for missing ts/.test(lookback.note || ''), 'the result text names the undated drop, so the child learns to send ts');
+  const items2 = (await listRadar({})).items;
+  ok(!items2.some((s) => s.externalId === 't3_ancient'), 'the 200-day-old dated post never enters the feed (beyond the lookback window)');
+  ok(!items2.some((s) => s.externalId === 'quora-best-coaching'), 'the undated quora post never enters the feed either - no date, no entry');
 
   // ---- (k) a web signal is TRIAGEABLE (widened triageSignal source guard) ----
   const tri = await triageSignal({ source: 'web', externalId: noIdSig.externalId, action: 'dismiss', actor: 'tester' });

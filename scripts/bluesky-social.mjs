@@ -37,16 +37,18 @@ let JSON_MODE = false;
 // password) -> app.bsky.feed.searchPosts. Creds via readEnv (never requireEnv): a
 // missing app-password degrades to needs_scope (not a process.exit), a 429 to
 // rate_limited, a session failure to needs_scope - never a throw (P9). Keywords +
-// hashtags fold into ONE searchPosts `q`. Mock mode NEVER reaches here (main() routes
-// `radar` to the mock driver via MOCKABLE_COMMANDS).
-async function cmdRadar(args) {
-  const { radarOkRow, radarNeedsScopeRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
+// hashtags each get their OWN searchPosts call (see the loop). Mock mode NEVER reaches
+// here (main() routes `radar` to the mock driver via MOCKABLE_COMMANDS).
+export async function cmdRadar(args) {
+  const { radarOkRow, radarNeedsScopeRow, radarNotConnectedRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
   let query = {};
   try { query = args.query ? JSON.parse(String(args.query)) : {}; } catch { query = {}; }
   const identifier = readEnv('BLUESKY_IDENTIFIER') || readEnv('BLUESKY_HANDLE');
   const appPassword = readEnv('BLUESKY_APP_PASSWORD');
   const pds = (readEnv('BLUESKY_PDS_URL') || 'https://bsky.social').replace(/\/+$/, '');
-  if (!identifier || !appPassword) { RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password')); return; }
+  // L4: no app password was EVER configured => not_connected ("connect"), never the lying
+  // "access expired, reconnect" a needs_scope renders as.
+  if (!identifier || !appPassword) { RUN.results.push(radarNotConnectedRow('bluesky', 'bluesky_app_password')); return; }
 
   const sess = await radarHttp(`${pds}/xrpc/com.atproto.server.createSession`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -54,25 +56,19 @@ async function cmdRadar(args) {
   });
   if (!sess.ok || !sess.json?.accessJwt) {
     if (sess.status === 429) { RUN.results.push(radarRateLimitedRow('bluesky', sess.retryAfter)); return; }
-    RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password'));
+    // A stored-but-refused app password IS needs_scope (reconnect); the PDS's own words
+    // survive in `detail` instead of being discarded (L4).
+    RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password', sess.json?.message || sess.error || (sess.status ? `HTTP ${sess.status}` : null)));
     return;
   }
   const jwt = sess.json.accessJwt;
 
   const keywords = Array.isArray(query.keywords) ? query.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
   const hashtags = Array.isArray(query.hashtags) ? query.hashtags.map((h) => `#${String(h).replace(/^#/, '').trim()}`).filter((h) => h.length > 1) : [];
-  const q = [...keywords, ...hashtags].join(' ').trim();
-  if (!q) { RUN.results.push(radarOkRow('bluesky', [])); return; }
+  const terms = [...keywords, ...hashtags].map((t) => t.trim()).filter(Boolean).slice(0, 10);
+  if (!terms.length) { RUN.results.push(radarOkRow('bluesky', [])); return; }
 
-  const url = `${pds}/xrpc/app.bsky.feed.searchPosts?${new URLSearchParams({ q, limit: '25' }).toString()}`;
-  const { ok, status, json, retryAfter, error } = await radarHttp(url, { headers: { Authorization: `Bearer ${jwt}` } });
-  if (!ok) {
-    if (status === 429) { RUN.results.push(radarRateLimitedRow('bluesky', retryAfter)); return; }
-    if (status === 401 || status === 403) { RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password')); return; }
-    RUN.results.push(radarErrorRow('bluesky', error || `HTTP ${status}`));
-    return;
-  }
-  const items = (json?.posts || []).map((p) => {
+  const mapPost = (p) => {
     const rkey = String(p.uri || '').split('/').pop();
     const handle = p.author?.handle;
     return {
@@ -84,8 +80,48 @@ async function cmdRadar(args) {
       text: p.record?.text || '',
       ts: p.indexedAt || null,
     };
-  });
-  RUN.results.push(radarOkRow('bluesky', items));
+  };
+  // ONE searchPosts call per term (each keyword, each #hashtag). searchPosts treats a
+  // space-joined `q` as AND, so the old `[...keywords, ...hashtags].join(' ')` returned
+  // ~nothing for any multi-term query. One search per term gives OR semantics (what
+  // reddit-social.mjs gets from its ` OR `-join); a local Set dedupes a post two terms both
+  // matched. Capped at 10 terms so a wide query stays bounded.
+  const items = [];
+  const seenIds = new Set();
+  let authFailed = false; // 401/403: the JWT was refused mid-run -> reconnect
+  let lastError = null;   // transient/other search failure (5xx etc.)
+  let anySearchOk = false;
+  for (const q of terms) {
+    const url = `${pds}/xrpc/app.bsky.feed.searchPosts?${new URLSearchParams({ q, limit: '25' }).toString()}`;
+    const { ok, status, json, retryAfter, error } = await radarHttp(url, { headers: { Authorization: `Bearer ${jwt}` } });
+    if (!ok) {
+      // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.
+      if (status === 429) { if (!items.length) { RUN.results.push(radarRateLimitedRow('bluesky', retryAfter)); return; } break; }
+      // A refused token fails every further term the same way: stop here.
+      if (status === 401 || status === 403) { authFailed = true; break; }
+      lastError = error || `HTTP ${status}`;
+      continue;
+    }
+    anySearchOk = true;
+    for (const p of (json?.posts || [])) {
+      const row = mapPost(p);
+      if (seenIds.has(row.externalId)) continue;
+      seenIds.add(row.externalId);
+      items.push(row);
+    }
+  }
+  if (items.length) {
+    // Keep ok:true + the items, but CARRY the auth degrade so the seam records it in
+    // state.radar.sources (mirrors mastodon-social.mjs D6).
+    const okRow = radarOkRow('bluesky', items);
+    if (authFailed) okRow.degrade = { error: 'needs_scope', scope: 'bluesky_app_password' };
+    RUN.results.push(okRow);
+    return;
+  }
+  // Nothing matched: pick the HONEST degrade in priority order.
+  if (authFailed) { RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password')); return; }
+  if (lastError && !anySearchOk) { RUN.results.push(radarErrorRow('bluesky', lastError)); return; } // every term errored
+  RUN.results.push(radarOkRow('bluesky', [])); // a genuine empty result (search worked, no hits)
 }
 
 // The engine-owned fields bluesky writes (spec 34): the minted reply id + the posted

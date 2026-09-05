@@ -120,7 +120,7 @@ try {
   ];
   fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
   // DUE: a copy-posted x entry with a cached-signal author...
-  await asClient(() => radarIngest({ queryId: 'q1', signals: [{ source: 'x', externalId: 'tw1', url: 'https://x.com/buyer_bob/status/1', author: 'buyer_bob', text: 'any scheduler tips?' }], actor: 'agent:claude' }));
+  await asClient(() => radarIngest({ queryId: 'q1', signals: [{ source: 'x', ts: new Date().toISOString(), externalId: 'tw1', url: 'https://x.com/buyer_bob/status/1', author: 'buyer_bob', text: 'any scheduler tips?' }], actor: 'agent:claude' }));
   await asClient(() => markCopyPosted({ source: 'x', externalId: 'tw1', postedUrl: 'https://x.com/pendpost/status/2', actor: 'owner' }));
   // ...EXCLUDED: a terminal copy entry, and one with no cached signal (authorless).
   await asClient(() => markCopyPosted({ source: 'x', externalId: 'tw_done', actor: 'owner' }));
@@ -165,12 +165,29 @@ try {
     'the fence is DISARMED after the job (finally) - fail-closed again for every later caller');
 
   // ===== (4) the scheduled reconcile respects the budget =====
-  // One job ran in the last 24h and dailyBudget defaults 1 -> the scheduled path must
-  // refuse to spawn and say so; the x target is still due.
+  // L7 (audit 2026-08-31): the OPERATOR'S forced followup job above is budget-EXEMPT (the
+  // budget bounds unattended spend, and that spend was the operator's own decision) - so
+  // it alone must NOT make the scheduled path refuse. Seed a scheduler-actor FEED job (the
+  // daily scan's row shape) to exhaust dailyBudget:1, then the scheduled path must refuse
+  // and say so; the x target is still due.
+  {
+    const preSched = await asClient(() => reconcileAuthorReplies({}));
+    ok(preSched && preSched.agentFollowup && preSched.agentFollowup.skipped !== 'budget',
+      'the operator\'s own followup job does NOT eat the unattended budget (manual spend is budget-exempt)');
+    // That un-skipped scheduled pass spawned a real followup job; keep the ledger sane and
+    // re-arm the reconcile clock for the budget-refusal proof below.
+    await asClient(() => { const st = loadState(); st.radar.lastAuthorReplyReconcile = new Date(Date.now() - 25 * 3600 * 1000).toISOString(); saveState(); });
+  }
+  await asClient(() => {
+    const st = loadState();
+    st.radar.jobs = [{ id: 'job-sched-feed', queryId: null, scope: 'feed', actor: 'scheduler', providerId: 'claude-code', sources: [], startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), state: 'done', reason: null }, ...st.radar.jobs];
+    saveState();
+  });
+  const jobsBeforeSched = asClient(() => (loadState().radar.jobs || []).length);
   const sched = await asClient(() => reconcileAuthorReplies({}));
   ok(sched && sched.agentFollowup && sched.agentFollowup.due === 1 && sched.agentFollowup.skipped === 'budget',
     'scheduled reconcile at budget -> { agentFollowup: { due: 1, skipped: "budget" } }, no silent spawn');
-  ok(asClient(() => (loadState().radar.jobs || []).length) === 1, 'and no second job row appeared');
+  ok(asClient(() => (loadState().radar.jobs || []).length) === jobsBeforeSched, 'and no new job row appeared');
 
   // ===== (5) the forced check is budget-exempt =====
   process.env[BIN_VAR] = noopBin;
@@ -181,7 +198,7 @@ try {
 
   // ===== (6) the per-run cap =====
   for (let i = 0; i < 12; i++) {
-    await asClient(() => radarIngest({ queryId: 'q1', signals: [{ source: 'x', externalId: `twcap${i}`, url: `https://x.com/u${i}/status/${i}`, author: `u${i}`, text: 'scheduler?' }], actor: 'agent:claude' }));
+    await asClient(() => radarIngest({ queryId: 'q1', signals: [{ source: 'x', ts: new Date().toISOString(), externalId: `twcap${i}`, url: `https://x.com/u${i}/status/${i}`, author: `u${i}`, text: 'scheduler?' }], actor: 'agent:claude' }));
     await asClient(() => markCopyPosted({ source: 'x', externalId: `twcap${i}`, actor: 'owner' }));
   }
   ok(asClient(() => agentFollowupTargets()).length === 13, '13 targets are now due (1 x + 12 seeded)');

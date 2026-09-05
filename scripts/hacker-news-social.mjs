@@ -30,21 +30,15 @@ let JSON_MODE = false;
 // stories + comments (newest-first). No auth (public index) - so no needs_scope on creds;
 // only a 429 degrades to rate_limited, any other transport error to engine_failure. Never
 // throws (P9). Mock mode NEVER reaches here (main() routes `radar` to the mock driver).
-async function cmdRadar(args) {
+export async function cmdRadar(args) {
   const { radarOkRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
   let query = {};
   try { query = args.query ? JSON.parse(String(args.query)) : {}; } catch { query = {}; }
   const keywords = Array.isArray(query.keywords) ? query.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
-  const q = (keywords.length ? keywords.join(' ') : (typeof query.label === 'string' ? query.label.trim() : '')).trim();
-  if (!q) { RUN.results.push(radarOkRow('hackernews', [])); return; }
-  const url = `https://hn.algolia.com/api/v1/search_by_date?${new URLSearchParams({ query: q, tags: '(story,comment)', hitsPerPage: '25' }).toString()}`;
-  const { ok, status, json, retryAfter, error } = await radarHttp(url);
-  if (!ok) {
-    if (status === 429) { RUN.results.push(radarRateLimitedRow('hackernews', retryAfter)); return; }
-    RUN.results.push(radarErrorRow('hackernews', error || `HTTP ${status}`));
-    return;
-  }
-  const items = (json?.hits || []).map((h) => ({
+  const label = typeof query.label === 'string' ? query.label.trim() : '';
+  const terms = (keywords.length ? keywords : [label]).map((t) => t.trim()).filter(Boolean).slice(0, 10);
+  if (!terms.length) { RUN.results.push(radarOkRow('hackernews', [])); return; }
+  const mapHit = (h) => ({
     source: 'hackernews',
     externalId: String(h.objectID || ''),
     url: h.objectID ? `https://news.ycombinator.com/item?id=${h.objectID}` : null,
@@ -52,8 +46,35 @@ async function cmdRadar(args) {
     community: 'news.ycombinator.com',
     text: h.title || h.comment_text || h.story_title || '',
     ts: Number.isFinite(h.created_at_i) ? new Date(h.created_at_i * 1000).toISOString() : (h.created_at || null),
-  }));
-  RUN.results.push(radarOkRow('hackernews', items));
+  });
+  // ONE Algolia query per keyword. Algolia treats a space-joined `query` as AND, so the old
+  // `keywords.join(' ')` returned ~nothing for any multi-keyword query. One search per term
+  // gives OR semantics (what reddit-social.mjs gets from its ` OR `-join); a local Set dedupes
+  // a hit two terms both matched. Capped at 10 terms so a wide query stays bounded.
+  const items = [];
+  const seenIds = new Set();
+  let lastError = null; // transient/other search failure (5xx etc.)
+  let anySearchOk = false;
+  for (const q of terms) {
+    const url = `https://hn.algolia.com/api/v1/search_by_date?${new URLSearchParams({ query: q, tags: '(story,comment)', hitsPerPage: '25' }).toString()}`;
+    const { ok, status, json, retryAfter, error } = await radarHttp(url);
+    if (!ok) {
+      // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.
+      if (status === 429) { if (!items.length) { RUN.results.push(radarRateLimitedRow('hackernews', retryAfter)); return; } break; }
+      lastError = error || `HTTP ${status}`;
+      continue;
+    }
+    anySearchOk = true;
+    for (const h of (json?.hits || [])) {
+      const row = mapHit(h);
+      if (seenIds.has(row.externalId)) continue;
+      seenIds.add(row.externalId);
+      items.push(row);
+    }
+  }
+  if (items.length) { RUN.results.push(radarOkRow('hackernews', items)); return; }
+  if (lastError && !anySearchOk) { RUN.results.push(radarErrorRow('hackernews', lastError)); return; } // every term errored
+  RUN.results.push(radarOkRow('hackernews', [])); // a genuine empty result (search worked, no hits)
 }
 
 const COMMANDS = { radar: cmdRadar };

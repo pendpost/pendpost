@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-05
+
+This release makes Radar honest. A scan now only ever claims what it actually did: a failed run names the lanes it will retry, a stale result reads as "last tried" rather than a live error, and a run cut short by the machine going to sleep says so instead of blaming a timeout. You can scope a scan to named sources or resume just the lanes that did not finish, and Radar learned French and Italian, exclude words, and a minimum score. Alongside Radar, pendpost now catches a dead media link when you approve a post instead of at publish, and the Planner and the approval gate show a post's real state.
+
+### Added
+- Scoped and resumable Radar scans. You can run a scan against named sources only, and after a scan is cut short, for example by the machine sleeping mid-run, "Scan again" re-runs just the lanes that did not finish instead of starting over.
+- Exclude words and a minimum score for Radar. You can tell Radar which words rule a signal out and set the lowest buyer-intent score worth surfacing, and leaving the source list empty now means every engine.
+- Wider language and source coverage. The default scorer reads French and Italian buyer intent, Mastodon, Bluesky, and Hacker News each run one search per keyword so a multi-word query actually returns results, Quora joins as a copy-draft source, and a configurable look-back window lets a scan reach back over several days.
+- An approve-time dead-URL gate. pendpost checks a post's media links when you approve it, so a link that has gone missing is caught at the gate instead of failing at publish, with a one-command fix to re-mirror the media.
+- Instagram carousels and feed images can route through the always-on cloud, off by default, so those posts can publish while your machine is asleep.
+- The note behind a scan is now something you can read in full, as a disclosure rather than a truncated tooltip, and every source row carries a "last tried" timestamp so staleness is visible.
+
+### Changed
+- Radar's daily scan runs in your brand's own timezone, counts only unattended feed scans against the daily budget, and packs its lanes exactly the way a manual run does.
+- A scan tells the research step where to look, which languages count, and what is never a signal, and it fences out lanes that are out of scope so one query's hints cannot steer another.
+- The look-back window fails closed on an undated result: if pendpost cannot tell how old a find is, it drops it rather than surfacing something stale, and the result says so.
+
+### Fixed
+- Radar scans report what actually happened. A run tells a timeout, a crash, and a sleep-interrupted run apart; a stopped run says when the agent last spoke; a never-connected source says "not connected" rather than "expired"; and an idle clean run leaves an honest zero-result note instead of a blank.
+- A scan no longer overstates or double-counts: per-source state is merged rather than overwritten, per-reply refusals are tallied by reason on the job row, and a scan that was refused before it ran can no longer spend the daily budget.
+- Radar holds the computer awake while an agent scan runs, so a scan is no longer silently killed by the machine going to sleep, and the daily scheduler resolves the right brand for each scan and repairs an orphaned running job on its own tick.
+- The Planner shows the real failure reason on a post's status pill and gives an overdue post a short grace window, so a due post does not flash red while it is mid-publish.
+- The approval gate refuses at the control when a post is not ready, and bulk approve and Mastodon publish are bounded so the spinner can never hang.
+- A publish-time media fail-safe with a guarded retry stops the storm of missing-media errors, and a committed but undeployed media mirror now self-heals.
+- A broad Radar accessibility pass: the inline action and the note toggle meet a full 44px tap target, and the stale-row and state glyphs clear WCAG AA contrast in both light and dark.
+- Deployment fixes so preview builds stop erroring and the marketing-site deploy ships only the site rather than archiving the whole repository.
+
+### Dependencies
+- Bumped the app and web dependency groups and several GitHub Actions to current releases.
+
 ## [2.2.0] - 2026-08-24
 
 This release closes the loop on X. pendpost now sees the mentions, replies, likes, follows, and direct messages your posts draw, gathers them into one inbound inbox, and lets you answer without leaving the app. In the same breath it stops the quiet money leak that a metered X account could spring: a lane that runs out of credits now says so honestly instead of pretending to publish, and the daily reading that used to drain those credits is off by default.

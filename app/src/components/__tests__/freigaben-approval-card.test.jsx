@@ -20,6 +20,10 @@ const lintText = vi.fn(() =>
 );
 
 vi.mock('../../lib/api.js', () => ({
+  // A new dependency of the approval card. Reads a mutable holder so most tests fail OPEN
+  // (no content blockers => the button keeps its pre-gate behaviour) while the gate test
+  // below feeds a real over-limit verdict. Mirrors the healthState pattern used here.
+  usePlatformValidate: () => platformValidateState,
   approvePost: (...a) => approvePost(...a),
   rejectPost: (...a) => rejectPost(...a),
   markPosted: (...a) => markPosted(...a),
@@ -33,6 +37,9 @@ vi.mock('../../lib/api.js', () => ({
 // setup=null by default => redditWarmthInputs yields no warmth (the advisory fixture below
 // depends on that) AND unconnectedLanes returns [] (no rows => never guess a lane is broken).
 let healthState = { data: null };
+// The per-post readiness verdict. Default fails OPEN (no data => no blockers). The gate
+// test overrides it with a real over-limit problem, exactly as platform_validate returns.
+let platformValidateState = { data: null };
 
 const CAPTION = 'Spring promo headline line\nThis is the full caption body that reviewers need to read before approving.';
 
@@ -121,6 +128,55 @@ beforeEach(() => {
   rejectPost.mockClear();
   lintText.mockClear();
   healthState = { data: null };
+  platformValidateState = { data: null };
+});
+
+// Content-readiness gate (canon: prevent at the control, not after the click). The engine
+// already refuses an over-limit post at approve; the queue must SAY so up-front and disable
+// the button, rather than let the press fail into a red error dead-end.
+describe('Freigaben approve is gated on content readiness', () => {
+  const overCapMastodon = {
+    id: 'p-mastodon-long',
+    campaign: 'spring',
+    title: 'pendpost 2.2 closes the loop on X.',
+    caption: 'x'.repeat(20),
+    platforms: ['mastodon'],
+    approval: 'pending',
+    derivedState: 'draft',
+    scheduledAt: '2026-08-25T09:35:00Z',
+    type: 'text',
+    image: null,
+    media: { file: null, exists: false, bytes: null, url: null, cover: null, path: null },
+  };
+  const blockedVerdict = {
+    data: {
+      ok: true,
+      platforms: {
+        mastodon: { ready: false, needsSetup: false, problems: ['note text is 501 chars - Mastodon caps at 500 (set a shorter mastodonCaption)'], warnings: [] },
+      },
+    },
+  };
+
+  it('disables Approve and shows the reason up-front when a lane exceeds its cap', () => {
+    platformValidateState = blockedVerdict;
+    renderFreigaben([overCapMastodon]);
+    const approve = screen.getByRole('button', { name: /not ready/i });
+    expect(approve).toBeDisabled();
+    // The reason is rendered proactively (PlatformBlockers), not only after a click.
+    expect(screen.getByText(/Mastodon caps at 500/i)).toBeInTheDocument();
+  });
+
+  it('leaves Approve enabled when the verdict is clean', () => {
+    platformValidateState = { data: { ok: true, platforms: { mastodon: { ready: true, needsSetup: false, problems: [], warnings: [] } } } };
+    renderFreigaben([overCapMastodon]);
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
+  });
+
+  it('a warning-only verdict does NOT block (warnings are advisory)', () => {
+    platformValidateState = { data: { ok: true, platforms: { mastodon: { ready: true, needsSetup: false, problems: [], warnings: ['some advisory'] } } } };
+    renderFreigaben([overCapMastodon]);
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
+  });
 });
 
 // The queue is the surface the operator actually works from, and it was the one the

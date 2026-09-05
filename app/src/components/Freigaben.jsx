@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, LayoutGrid, List, Info, CornerUpLeft, ExternalLink, Wrench, ArrowDown, ArrowUp, Send, Bot, Copy, Check, Link2 } from 'lucide-react';
-import { approvePost, rejectPost, markPosted, useAccounts, usePendpostHealth, useConfig } from '../lib/api.js';
+import { approvePost, rejectPost, markPosted, useAccounts, usePendpostHealth, useConfig, usePlatformValidate, errText } from '../lib/api.js';
 import { fmtFull, fmtStampShort, campaignBaseLabel, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, isActionable, nextActorOf, effectiveLaneText, handOffTarget, isAbsoluteHttpUrl } from '../lib/format.js';
-import { CoverThumb, LinkCardPreview, PlatformIcons, NextActorChip, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl } from './ui.jsx';
+import { CoverThumb, LinkCardPreview, PlatformIcons, NextActorChip, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl, PlatformBlockers } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
 import { PROJECT_CHIP } from './ui/recipes.js';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
@@ -161,6 +161,9 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     const key = e.key.toLowerCase();
     if (key !== 'a' && key !== 'r') return;
+    // Content blocker: the approve button is disabled, so keyboard approve is too
+    // (canon: prevent at the control). Reject stays available as the way out.
+    if (key === 'a' && hasHardBlockers) return;
     const el = e.target;
     const tag = (el?.tagName || '').toUpperCase();
     if (tag === 'INPUT' || tag === 'TEXTAREA' || el?.isContentEditable) return;
@@ -208,6 +211,40 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   // from it) and simply never asked this question, so the queue offered a green Freigeben on
   // a post it could not send - on the very surface the operator works from.
   const offlineLanes = unconnectedLanes(post, setup);
+
+  // Content-readiness gate (canon: prevent at the control, not after the click). The engine
+  // already refuses an over-limit post at approve (setApproval -> not_ready) - e.g. a Mastodon
+  // caption over 500 chars - but the green button used to look approvable and only failed AFTER
+  // the press, dead-ending on a red error. We read the SAME per-platform verdict PostDetail shows
+  // and gate the button up-front. Enabled only for actionable cards (cached, 30s staleTime), and
+  // scoped by the post's own clientId so an all-projects card validates ITS project, not the
+  // active one. Only real `problems` block (warnings stay advisory, matching the engine's
+  // ready = !problems.length); `needsSetup` lanes never carry content problems and are already
+  // owned by the offline-lane swap above, so they never reach here. Loading/ok:false fails OPEN -
+  // a validate hiccup never blocks a genuinely ready post; the server gate is the real fence.
+  const { data: platformValidate } = usePlatformValidate(post.campaign, post.id, actionable, post.rev, post.clientId);
+  const blockerReasons = useMemo(() => {
+    const plats = platformValidate?.ok ? (platformValidate.platforms || {}) : {};
+    return Object.entries(plats)
+      .filter(([, v]) => (v?.problems?.length || 0) > 0 && v?.needsSetup !== true)
+      .map(([platform, v]) => ({ platform, problem: v.problems[0] }));
+  }, [platformValidate]);
+  const hasHardBlockers = blockerReasons.length > 0;
+  // The first blocker as a one-line reason for the disabled button's tooltip/aria-label.
+  const blockedReason = hasHardBlockers ? `${PLATFORM_META[blockerReasons[0].platform]?.label || blockerReasons[0].platform} - ${blockerReasons[0].problem}` : '';
+  // The proactive blocker panel (canon: no dead ends; errors answer what/why/how). Reuses the
+  // SAME PlatformBlockers PostDetail renders, so the queue and the detail speak one language;
+  // it self-hides when clean and only shows here when a hard blocker exists. onFix opens the
+  // editor at the offending field - the one action that recovers.
+  const readinessBlockers = hasHardBlockers ? (
+    <PlatformBlockers
+      platformValidate={platformValidate}
+      showApproval={false}
+      onNavigate={onNavigate}
+      onFix={onEdit ? () => onEdit(post) : undefined}
+      className="mt-1"
+    />
+  ) : null;
 
   // The copy-lane hand-off, right on the card (B2). "Selbst posten" only opened the
   // detail - one more hop before the operator could act. The card now does the whole
@@ -326,6 +363,13 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     <ActionButton
       variant="primary"
       icon={reviewRequired ? Send : CheckCircle2}
+      // Content-readiness gate: a post the engine would refuse (e.g. a Mastodon caption over
+      // 500 chars) shows the button DISABLED with the reason a hover away, instead of letting
+      // the press fail into a red error. The reason itself is rendered proactively below
+      // (readinessBlockers), and reject stays enabled as the way out.
+      disabled={hasHardBlockers}
+      ariaLabel={hasHardBlockers ? t('approvals.card.blockedTip', { reason: blockedReason }) : undefined}
+      title={hasHardBlockers ? t('approvals.card.blockedTip', { reason: blockedReason }) : undefined}
       labels={reviewRequired
         // O2: with review.required on, the operator's approve RELABELS to send for
         // sign-off, so a first-time operator sees the verb tell them the post goes to
@@ -507,6 +551,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
               {clientChip}
             </div>
             {handOffCapture}
+            {readinessBlockers}
             {error ? <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
           </div>
         </>
@@ -625,6 +670,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
             {menu}
           </div>
           {handOffCapture}
+          {readinessBlockers}
           {error ? <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error}</p> : null}
         </div>
       )}
@@ -687,6 +733,10 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
   useEffect(() => { onModeChange?.(mode); }, [mode, onModeChange]);
   const [selected, setSelected] = useState(() => new Set()); // Set of `${campaign}-${id}`
   const [bulkError, setBulkError] = useState(null);
+  // Live per-item progress for a bulk run ({done,total}), or null when idle. Drives the
+  // "{done}/{total}" count in the bulk approve button's loading label so a slow batch reads
+  // as motion instead of a frozen spinner. Ephemeral by design (no persistence).
+  const [bulkProgress, setBulkProgress] = useState(null);
   // Radar-replies facet on the pending tab. EPHEMERAL by design (no localStorage):
   // it is a triage move for the current sitting, not a standing view preference -
   // a persisted narrow filter would silently hide non-radar decision work on the
@@ -957,14 +1007,25 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
     let ok = 0;
     const fails = [];
     const done = [];
-    for (const p of sel) {
-      try {
-        await action(p);
-        ok++;
-        done.push(keyOf(p));
-      } catch (e) {
-        fails.push({ id: p.id, msg: e?.message || 'Error' });
+    setBulkProgress({ done: 0, total: sel.length });
+    try {
+      for (const p of sel) {
+        try {
+          await action(p);
+          ok++;
+          done.push(keyOf(p));
+        } catch (e) {
+          // Localize the reason so the summary states WHY, not just which post: a client
+          // timeout/network error gets its de-CH string, while a server/engine message
+          // (e.g. the clearer Mastodon one) passes through verbatim via errText.
+          fails.push({ id: p.id, msg: errText(e, t, 'approvals.action.error') });
+        }
+        setBulkProgress({ done: ok + fails.length, total: sel.length });
       }
+    } finally {
+      // Always clear, even if the loop itself throws: the button's error/idle labels must
+      // never keep rendering a stale "{done}/{total}".
+      setBulkProgress(null);
     }
     queryClient.invalidateQueries({ queryKey: ['plans'] });
     setSelected((prev) => {
@@ -973,7 +1034,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
       return next;
     });
     if (fails.length) {
-      throw new Error(t('approvals.bulk.summary', { ok, label, failed: fails.length, ids: fails.map((f) => f.id).join(', ') }));
+      throw new Error(t('approvals.bulk.summary', { ok, label, failed: fails.length, ids: fails.map((f) => (f.msg ? `${f.id} (${f.msg})` : f.id)).join(', ') }));
     }
   };
 
@@ -1140,7 +1201,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
           <ActionButton
             variant="success"
             icon={CheckCircle2}
-            labels={{ idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
+            labels={{ idle: t('approvals.action.approve'), loading: bulkProgress && bulkProgress.total > 1 ? t('approvals.action.approvingN', bulkProgress) : t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
             onError={setBulkError}
             onAction={async () => {
               // Approve only the publishable posts; a post whose lane is offline cannot be

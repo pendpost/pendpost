@@ -42,7 +42,7 @@ const { createCampaign, createPost, approvePost, reschedulePost } = await import
 const { runDueExclusive } = await import('../lib/scheduler.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
 const { recordAttempt, MAX_PUBLISH_ATTEMPTS, ATTEMPTS_TAIL_CAP } = await import('../lib/publish-hold.mjs');
-const { classifyMediaProbe } = await import('../lib/public-media.mjs');
+const { classifyMediaProbe, isDeterministicallyDead, MEDIA_URL_DEAD_MARK } = await import('../lib/public-media.mjs');
 
 const getPost = (camp, id) => (loadPlanStore().campaigns.find((c) => c.id === camp)?.posts || []).find((p) => p.id === id);
 const rawAttempts = (camp, id) => getPost(camp, id)?.attempts || [];
@@ -156,6 +156,20 @@ try {
   ok(classifyMediaProbe({ status: 405, contentType: '' }, 'https://x/a.png') === null, 'a HEAD-rejecting host (405) is inconclusive - fail open');
   const diag = classifyMediaProbe({ status: 404, contentType: 'text/html; charset=utf-8' }, 'https://x/a-mono.png');
   ok(typeof diag === 'string' && diag.includes('https://x/a-mono.png') && diag.includes('404'), 'a 404 HTML probe names the URL and what it returned');
+  ok(diag.includes(MEDIA_URL_DEAD_MARK), 'the diagnosis carries the MEDIA_URL_DEAD_MARK tail that parks it on strike 1');
+
+  // ===== (e2) isDeterministicallyDead is STRICTLY narrower than classify - only a
+  // certainly-dead URL blocks the PRE-FIRE gate, so a transient blip never false-blocks
+  // a good publish (the exact objection in the meta engine's probe comment). ==========
+  ok(isDeterministicallyDead({ status: 404, contentType: 'text/html' }) === true, 'a 404 is deterministically dead (blocks the pre-fire)');
+  ok(isDeterministicallyDead({ status: 410, contentType: 'text/html' }) === true, 'a 410 Gone is deterministically dead');
+  ok(isDeterministicallyDead({ status: 200, contentType: 'text/html; charset=utf-8' }) === true, 'a 200 serving HTML (SPA catch-all) is deterministically dead');
+  ok(isDeterministicallyDead({ status: 200, contentType: 'image/png' }) === false, 'a healthy 200 image is NOT dead');
+  ok(isDeterministicallyDead({ status: 200, contentType: 'video/mp4' }) === false, 'a healthy 200 video is NOT dead');
+  ok(isDeterministicallyDead({ status: 503, contentType: 'text/html' }) === false, 'a transient 5xx is INCONCLUSIVE - never blocks the pre-fire');
+  ok(isDeterministicallyDead({ status: 403, contentType: 'text/html' }) === false, 'a 403 is inconclusive - proceed (Meta may still fetch)');
+  ok(isDeterministicallyDead({ status: 405, contentType: '' }) === false, 'a HEAD-rejecting host (405) is inconclusive');
+  ok(isDeterministicallyDead(null) === false, 'a thrown/absent probe is inconclusive - fail open');
 
   // ===== (h) TRANSIENT failures ride out with backoff - they do NOT park at 3 ===
   // 2026-08-16: Instagram's rupload returned ProcessingFailedError (debug_info.
@@ -256,6 +270,16 @@ try {
   const rp2 = { attempts: [] };
   recordAttempt(rp2, xReply(Date.now()));
   ok(rp2.attempts.length === 1 && Boolean(rp2.publishHold), 'a single reply-to-stranger 403 parks the post immediately');
+
+  // a PROBE-CONFIRMED dead media URL (IG mirror-404) is terminal too - it fails Meta's
+  // fetch identically until re-mirrored, so it parks on strike 1 instead of the storm.
+  const deadMsg = classifyMediaProbe({ status: 404, contentType: 'text/html' }, 'https://pendpost.com/media/s1.png');
+  ok(isTerminalRefusal({ ok: false, errorCode: 9004, errorMessage: deadMsg }) === true, 'a confirmed-dead media URL diagnosis is classified a terminal refusal');
+  ok(isTerminalRefusal({ ok: false, errorCode: 9004, errorMessage: 'Only photo or video can be accepted as media type.' }) === false, 'a bare 9004 WITHOUT the dead-URL mark (inconclusive probe) still rides the 3-strike cap');
+  const mp = { attempts: [] };
+  recordAttempt(mp, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-carousel', ok: false, errorCode: 9004, errorMessage: deadMsg });
+  ok(mp.attempts.length === 1 && Boolean(mp.publishHold), 'a single confirmed-dead-URL failure parks the carousel immediately (no 3-strike hammer of Meta)');
+  ok(/re-mirror the render/i.test(mp.publishHold?.message || ''), 'the hold carries the actionable re-mirror diagnosis');
 
   // contrast: a generic refusal still needs the full 3 strikes to park
   const gp = { attempts: [] };

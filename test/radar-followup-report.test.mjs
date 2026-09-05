@@ -48,7 +48,7 @@ try {
     radarReplyTo: { url: 'https://youtube.com/watch?v=vid1', source: 'youtube', externalId: 'vid1', author: 'Buyer_Jane' },
   }];
   fs.writeFileSync(planPath, JSON.stringify(plan, null, 2));
-  await radarIngest({ queryId: 'q1', signals: [{ source: 'x', externalId: 'tw1', url: 'https://x.com/buyer_bob/status/1', author: 'buyer_bob', text: 'anyone know a scheduler?' }], actor: 'agent:claude' });
+  await radarIngest({ queryId: 'q1', signals: [{ source: 'x', ts: new Date().toISOString(), externalId: 'tw1', url: 'https://x.com/buyer_bob/status/1', author: 'buyer_bob', text: 'anyone know a scheduler?' }], actor: 'agent:claude' });
   await markCopyPosted({ source: 'x', externalId: 'tw1', postedUrl: 'https://x.com/pendpost/status/2', actor: 'owner' });
   await markCopyPosted({ source: 'x', externalId: 'tw_orphan', actor: 'owner' }); // no cached signal -> no author snapshot
 

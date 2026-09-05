@@ -198,10 +198,13 @@ try {
   // /api/inbound/events) + reply_to_inbound_event (POST /api/inbound/reply), each a route + tool.
   // 143 routes / 120 tools = +resume_lane on the EXISTING POST /api/state/lane-resume route (mcpTool
   // null -> resume_lane), so tools go 119 -> 120 while routes stay 143.
-  ok(/143 routes, 120 tools.*1 documented UI-only/.test(parityOut),
+  // 144 routes / 120 tools = radar_geo_reset gains its REST twin (S7.3, radar-reliability
+  // 2026-08-31): POST /api/radar/geo-reset + the panel-overflow entry, so the tool leaves
+  // exemptions.tools and routes go 143 -> 144 while tools stay 120.
+  ok(/144 routes, 120 tools.*1 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 143/120 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 144/120 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

@@ -15,6 +15,16 @@ const ok = (c, m) => { assert.ok(c, m); console.log(`  ok - ${m}`); pass += 1; }
 const { gitCheck } = await import('../scripts/dashboard-build.mjs');
 const { readUpdateStatus } = await import('../lib/dashboard.mjs');
 
+// Scrub the git env that git exports to hooks (GIT_DIR/GIT_WORK_TREE/
+// GIT_INDEX_FILE/GIT_PREFIX/GIT_COMMON_DIR). When this test runs under the
+// pre-push hook (via ops/engine-check.mjs) those pin every child git to the
+// REAL site repo, so `cwd` is ignored: the temp-repo commands here — AND the
+// git that gitCheck() shells out to — hit the site repo instead of the tmp
+// repos, red-blocking every guarded push. Deleting them from this process's
+// env makes both the g() helper and gitCheck() resolve the repo from `cwd`,
+// in-hook and standalone alike. Safe: this is a throwaway test process.
+for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_PREFIX', 'GIT_COMMON_DIR']) delete process.env[k];
+
 const ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-gc-'));
 // Per-repo identity + no signing, so the test never depends on global git config.
 const ID = ['-c', 'user.email=t@e', '-c', 'user.name=t', '-c', 'commit.gpgsign=false'];

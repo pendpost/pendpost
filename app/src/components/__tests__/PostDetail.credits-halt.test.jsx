@@ -145,7 +145,7 @@ describe('X 402 credits halt: the card tells the truth', () => {
   it('offers a Resume-lane control that hits lane-resume for the halted lane', async () => {
     const user = userEvent.setup();
     renderDetail(haltedPost);
-    const btn = within(failureBanner()).getByRole('button', { name: /resume lane/i });
+    const btn = within(failureBanner()).getByRole('button', { name: /resume publishing/i });
     await user.click(btn);
     await waitFor(() => expect(resumeLaneMock).toHaveBeenCalledWith('x'));
   });
@@ -162,7 +162,7 @@ describe('X 402 credits halt: the card tells the truth', () => {
   it('does NOT offer a competing "Publish now" button: resume is the one recovery', () => {
     renderDetail(haltedPost);
     // The halted lane fires zero lanes, so publish-now would no-op and lie. The footer
-    // must not carry it - "Lane fortsetzen" in the banner owns the recovery. The footer
+    // must not carry it - "Resume publishing" in the banner owns the recovery. The footer
     // button's accessible name is its aria-label (publishNowTip / tryAgainTip).
     expect(screen.queryByRole('button', { name: /publish this overdue post now/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /clear the block and publish this post again/i })).not.toBeInTheDocument();
@@ -172,7 +172,7 @@ describe('X 402 credits halt: the card tells the truth', () => {
     const user = userEvent.setup();
     resumeLaneMock.mockResolvedValueOnce({ ok: true, platform: 'x', cleared: true, released: 0, published: 0, stillDepleted: true });
     renderDetail(haltedPost);
-    await user.click(within(failureBanner()).getByRole('button', { name: /resume lane/i }));
+    await user.click(within(failureBanner()).getByRole('button', { name: /resume publishing/i }));
     // The recheck re-fired and hit the same 402: the operator must be told, not shown success.
     await waitFor(() => expect(screen.getByText(/credits are still used up/i)).toBeInTheDocument());
   });
@@ -181,7 +181,7 @@ describe('X 402 credits halt: the card tells the truth', () => {
     const user = userEvent.setup();
     resumeLaneMock.mockResolvedValueOnce({ ok: true, platform: 'x', cleared: true, released: 1, published: 1, stillDepleted: false });
     renderDetail(haltedPost);
-    await user.click(within(failureBanner()).getByRole('button', { name: /resume lane/i }));
+    await user.click(within(failureBanner()).getByRole('button', { name: /resume publishing/i }));
     await waitFor(() => expect(resumeLaneMock).toHaveBeenCalledWith('x'));
     expect(screen.queryByText(/credits are still used up/i)).not.toBeInTheDocument();
   });
@@ -209,7 +209,7 @@ describe('X 402 credits halt: the card tells the truth', () => {
     expect(screen.getByText(/tries again on its own/i)).toBeInTheDocument();
     expect(screen.queryByText(/credits are used up/i)).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /top up credits/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /resume lane/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /resume publishing/i })).not.toBeInTheDocument();
     // A per-post (non-halted) failure keeps its manual retry lever (aria-label publishNowTip).
     expect(screen.getByRole('button', { name: /publish this overdue post now/i })).toBeInTheDocument();
   });

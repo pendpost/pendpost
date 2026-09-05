@@ -168,12 +168,11 @@ here. It reaches the platform (open-world) but never writes - picking an asset f
 existing `config_set` write, which has its own parity pair.
 
 `radar_geo_reset` is an owner-only maintenance verb that clears one tenant's polluted Radar GEO
-state (footprint log + derived backlog). It has no REST twin on purpose: it is a rare one-shot
-cleanup, run when a project's AI-visibility state was seeded with another brand's rows, not a
-recurring operator task - a permanent Studio button for it would be a speculative surface that the
-minimalism bar rejects, matching the agent-side, model-free posture of its siblings
-`radar_footprint_log` / `radar_ingest`. The owner invokes it through their agent (or headless)
-when the pollution is diagnosed; the normal path never needs it.
+state (footprint log + derived backlog + dismissed ledger). It began MCP-only, but the
+radar-reliability audit (2026-08-31, S7.3) found the pollution unrecoverable from the Studio, so it
+now carries the full three faces: `POST /api/radar/geo-reset` and a confirm-gated entry in the
+Radar panel's overflow menu (shown only when there is GEO state to drop - no speculative surface).
+The verb itself refuses any non-owner actor, on every face.
 
 `radar_followup_report` (engagement engine, owner decision 4 2026-08-17) is the spawned
 follow-up child's OWN reporting tool and deliberately has no REST twin: it is inert outside the
@@ -226,7 +225,6 @@ the feature - no cloud parity).
   ],
   "tools": [
     "connect_discover",
-    "radar_geo_reset",
     "radar_followup_report"
   ],
   "uiOnly": [

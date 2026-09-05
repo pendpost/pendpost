@@ -198,10 +198,15 @@ export function usePendpostHealth(enabled) {
 // (plan_update_post), which changes the post with no client mutation to hang an
 // invalidateQueries call off at all. staleTime stays: a stale read of the SAME rev is
 // still correct.
-export function usePlatformValidate(campaign, postId, enabled = true, rev = null) {
+// `clientId` (optional, trailing): in the all-projects queue a card may belong to a
+// non-active project, and the GET is scoped by ?clientId= server-side (resolveClientId).
+// Without it the read would validate under the ACTIVE client and describe the wrong post.
+// Folded into the key so two projects' identical campaign/postId can't collide. Mirrors
+// useComments' clientId shape exactly; existing callers omit it and get today's behaviour.
+export function usePlatformValidate(campaign, postId, enabled = true, rev = null, clientId = null) {
   return useQuery({
-    queryKey: ['platform-validate', campaign, postId, rev || null],
-    queryFn: () => getJson(`/api/plans/${campaign}/posts/${postId}/platform-validate`),
+    queryKey: ['platform-validate', campaign, postId, rev || null, clientId || null],
+    queryFn: () => getJson(`/api/plans/${campaign}/posts/${postId}/platform-validate${clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''}`),
     enabled: enabled && Boolean(campaign) && Boolean(postId),
     staleTime: 30_000,
   });
@@ -595,36 +600,89 @@ export function useSetActiveClient() {
 // ['cloud','subscription'] are workspace-wide and must NOT refetch on a client switch).
 const CLIENT_SCOPED_KEYS = ['plans', 'accounts', 'activity', 'insights', 'assets', 'config', 'digest', 'pendpost-health', 'platform-validate', 'validate-media', 'comments', 'commentInbox', 'reviews', 'discover', 'presubmit-check', 'youtube-playlists', 'reddit-flairs', 'pinterest-board-sections', 'pinterest-boards', 'gbp-media', 'gbp-attributes', 'ghost-members', 'ghost-newsletters', 'radar', 'engager', ['cloud', 'events']];
 
-async function sendJson(method, path, body) {
-  const res = await fetch(path, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(data.message || `${path}: HTTP ${res.status}`);
-    err.code = data.code;
-    // The finer discriminator some writes carry alongside a stable code (e.g. spec 06
-    // moderate returns code:'invalid_input' with error:'unsupported_action').
-    if (data.error) err.error = data.error;
-    // A4 archive safety: the archive refusal (needs_confirm) carries the client's
-    // fresh in-flight counts so the UI can re-ask with the server's numbers.
-    if (data.inFlight) err.inFlight = data.inFlight;
-    throw err;
-  }
-  return data;
+// Every write is bounded by an AbortController timeout so a single stalled request
+// can never wedge a button's loading state forever - the bulk-approve "infinite
+// spinner" class of bug. Fast local/metadata writes (approve, reject, reschedule,
+// config, client/campaign admin) use DEFAULT_WRITE_TIMEOUT_MS; the genuinely long
+// operations (synchronous multi-lane publish, agent scans, liveness probes, uploads,
+// platform-posting replies) get LONG_OP_TIMEOUT_MS - bounded, but never truncated.
+// The 10-minute ceiling matches the longest lane budget (YouTube 600s, lib/scheduler.mjs).
+const DEFAULT_WRITE_TIMEOUT_MS = 90_000;
+const LONG_OP_TIMEOUT_MS = 600_000;
+
+// The long-op set is classified centrally BY PATH (not per call site) so no write can
+// silently forget to opt out. Any write that reaches an external platform, spawns an
+// agent, runs a liveness probe, uploads media, or publishes synchronously belongs here.
+const LONG_OP_PREFIXES = [
+  '/api/run/', '/api/insights/', '/api/radar/', '/api/comments/', '/api/reviews/',
+  '/api/inbound/', '/api/agent/', '/api/accounts/', '/api/connect', '/api/disconnect',
+  '/api/health/recheck', '/api/gbp/', '/api/ghost/', '/api/youtube/', '/api/pinterest/',
+  '/api/mastodon/',
+];
+// Post-level platform actions that ride under /api/plans/... but do hit a network.
+const LONG_OP_SUFFIXES = ['/verify', '/edit-published', '/zap', '/discord-event'];
+export function writeTimeoutFor(path) {
+  const p = String(path).split('?')[0];
+  const long = LONG_OP_PREFIXES.some((pre) => p.startsWith(pre))
+    || LONG_OP_SUFFIXES.some((suf) => p.endsWith(suf));
+  return long ? LONG_OP_TIMEOUT_MS : DEFAULT_WRITE_TIMEOUT_MS;
 }
 
-const postJson = (path, body) => sendJson('POST', path, body);
+async function sendJson(method, path, body, { timeoutMs } = {}) {
+  const ctrl = new AbortController();
+  const budget = timeoutMs ?? writeTimeoutFor(path);
+  const timer = setTimeout(() => ctrl.abort(), budget);
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+      signal: ctrl.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(data.message || `${path}: HTTP ${res.status}`);
+      err.code = data.code;
+      // The finer discriminator some writes carry alongside a stable code (e.g. spec 06
+      // moderate returns code:'invalid_input' with error:'unsupported_action').
+      if (data.error) err.error = data.error;
+      // A4 archive safety: the archive refusal (needs_confirm) carries the client's
+      // fresh in-flight counts so the UI can re-ask with the server's numbers.
+      if (data.inFlight) err.inFlight = data.inFlight;
+      throw err;
+    }
+    return data;
+  } catch (err) {
+    // An abort is our timeout firing, never the server: surface code:'timeout' so
+    // errText localizes it. The abort only ended the CLIENT's wait - a long/publish
+    // op may still be completing server-side, so the timeout copy tells the operator
+    // to refresh rather than assume it failed (the caller re-reads ['plans']).
+    if (ctrl.signal.aborted) {
+      const e = new Error(`${path}: timed out after ${Math.round(budget / 1000)}s`);
+      e.code = 'timeout';
+      throw e;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const postJson = (path, body, opts) => sendJson('POST', path, body, opts);
 
 // Humanize an agent-path error BY CODE, never by raw prose (issue 7): the one-job-per-client
 // lock's 409 ('in_flight') and a browser network TypeError (Safari's own message is literally
-// "Load failed") both used to land verbatim on a German-capable surface. Any other error keeps
-// the server's message when present, else the caller's own localized fallback.
+// "Load failed") both used to land verbatim on a German-capable surface. The scan-start
+// refusals get their own lines too: 'disabled' = the daily agent budget is spent (the next
+// scheduled scan runs by itself, nothing is broken) and 'not_configured' = no agent connected
+// (Setup is the fix). Any other error keeps the server's message when present, else the
+// caller's own localized fallback.
 export const errText = (err, t, fallbackKey) => (err?.code === 'in_flight' ? t('radar.error.busy')
-  : err instanceof TypeError ? t('error.network')
-    : (err?.message || t(fallbackKey)));
+  : err?.code === 'disabled' ? t('radar.error.budget')
+    : err?.code === 'not_configured' ? t('radar.error.notConfigured')
+      : err?.code === 'timeout' ? t('error.timeout')
+        : err instanceof TypeError ? t('error.network')
+          : (err?.message || t(fallbackKey)));
 
 // The pendpost UI always acts as the owner - they are its only user. Agents use
 // the MCP face with their own actor strings.
@@ -731,7 +789,7 @@ export const fetchInsights = ({ campaign, scope } = {}) => postJson('/api/insigh
 // keeping a dead helper alive just to satisfy it would fake the third-face gate green - worse
 // than the gap it would hide.
 // Spec 41: "Scan now" as the operator means it - spawn THEIR agent to do real research. It
-// resolves only when the child finishes (minutes; bounded at 10), so the panel never depends
+// resolves only when the child finishes (minutes; bounded at 15), so the panel never depends
 // on this promise to render progress: the job row reads state.radar.jobs from useSignals,
 // which is the same thing an agent or a second tab would see.
 // Accepts an options object { queryId?, scope?, target? }. scope:'geo' runs the standalone
@@ -739,12 +797,15 @@ export const fetchInsights = ({ campaign, scope } = {}) => postJson('/api/insigh
 // {source, externalId} drafts a held-pending reply for exactly that signal (the auto-post
 // badge's tap); omitted, it is the normal signal scan. A bare string arg still works as a
 // queryId for older call sites.
+// `sources` (string[], b9e8c22) scopes the scan to named lanes of the effective scan set - the
+// feed's per-lane retry ("rescan only these sources") rides it; omitted, the scan covers the set.
 export const radarAgentScan = (opts = {}) => {
-  const { queryId, scope, target } = typeof opts === 'string' ? { queryId: opts } : (opts || {});
+  const { queryId, scope, target, sources } = typeof opts === 'string' ? { queryId: opts } : (opts || {});
   const body = { actor: ACTOR };
   if (queryId) body.queryId = queryId;
   if (scope) body.scope = scope;
   if (target) body.target = target;
+  if (Array.isArray(sources) && sources.length) body.sources = sources;
   return postJson('/api/radar/agent-scan', body);
 };
 // Spec 44: check now whether the authors of the threads we replied into have replied back.
@@ -753,6 +814,14 @@ export const radarFollowupCheck = () => postJson('/api/radar/followup', { actor:
 // S8: a job spends the operator's subscription, so there is always a way out before the
 // timeout. Resolves immediately; the scan promise above then settles as failed/stopped.
 export const radarAgentStop = (jobId) => postJson('/api/radar/agent-stop', jobId ? { jobId } : {});
+// S7.3 (radar-reliability 2026-08-31): reset the active client's GEO state in one shot -
+// footprint log + derived comparison backlog + dismissed ledger (POST /api/radar/geo-reset
+// -> lib/writes.mjs radarGeoReset). The recovery for a polluted tenant (seeded with another
+// brand's rows): it is STATE, not config, so no settings edit can clear it. Destructive to
+// agent-logged history and owner-only server-side; the UI always acts as the owner. Resolves
+// { ok, cleared:{footprint,comparisonBacklog,dismissedBacklog} } or throws. The caller
+// invalidates ['radar'].
+export const radarGeoReset = () => postJson('/api/radar/geo-reset', { actor: ACTOR });
 // Spec 42 S7: draft the comparison page one backlog row is asking for. The agent writes the prose;
 // this files it as a DRAFT (never pending, never auto-approved) for the operator to edit.
 export const radarDraftComparison = (backlogKey) => postJson('/api/radar/comparison-draft', { backlogKey, actor: ACTOR });

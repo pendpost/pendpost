@@ -350,15 +350,107 @@ describe('RadarSearches query editor', () => {
     expect(screen.getByRole('button', { name: /help: keywords/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /help: competitors/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /help: sources/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /help: exclude/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /help: minimum score/i })).toBeInTheDocument();
   });
 
-  it('exposes no minimum-intent field', async () => {
+  // The last saved query, as the editor's auto-save wrote it.
+  const savedQuery = (id) => saveConfigMock.mock.calls.at(-1)[1].posting.radar.queries.find((x) => x.id === id);
+
+  it('typing exclude words persists query.excludeKeywords (comma-split)', async () => {
     const user = userEvent.setup();
     configData = radarOn([Q1]);
     renderSearches();
     await user.click(screen.getByRole('button', { name: /edit query/i }));
-    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
-    expect(screen.queryByText(/minimum intent/i)).not.toBeInTheDocument();
+    await user.type(screen.getByRole('textbox', { name: /^exclude$/i }), 'hiring, job offer');
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    expect(savedQuery('q1').excludeKeywords).toEqual(['hiring', 'job offer']);
+  });
+
+  it('typing a minimum score persists query.minScore as a number', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    await user.type(screen.getByRole('spinbutton', { name: /minimum score/i }), '40');
+    await waitFor(() => expect(savedQuery('q1')?.minScore).toBe(40), { timeout: 2000 });
+  });
+
+  it('a saved minScore opens in the field; clearing it persists a query WITHOUT a minScore key', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([{ ...Q1, minScore: 55 }]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    const field = screen.getByRole('spinbutton', { name: /minimum score/i });
+    expect(field).toHaveValue(55);
+    await user.clear(field);
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    expect('minScore' in savedQuery('q1')).toBe(false);
+  });
+
+  it('an out-of-range minimum score never persists a minScore key', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    await user.type(screen.getByRole('spinbutton', { name: /minimum score/i }), '150');
+    // Force one save through an unrelated edit, then check the floor was left out.
+    await user.type(screen.getByRole('textbox', { name: /^label$/i }), '!');
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    const q = savedQuery('q1');
+    expect(q.label).toBe('scheduling!');
+    expect('minScore' in q).toBe(false);
+  });
+
+  // A query saved without sources scans every engine (lib/writes.mjs falls back to all sources).
+  const QALL = { id: 'q9', label: 'all', enabled: true, keywords: ['x'], cadence: 'manual' };
+
+  it('a query with no sources reads "All sources" and stays source-less after an edit (never pinned to defaults)', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([QALL]);
+    renderSearches();
+    expect(screen.getByText(/^all sources$/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    for (const name of ['Reddit', 'Hacker News', 'Mastodon', 'Bluesky']) {
+      expect(screen.getByRole('button', { name, pressed: false })).toBeInTheDocument();
+    }
+    await user.type(screen.getByRole('textbox', { name: /^label$/i }), '!');
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    const q = savedQuery('q9');
+    expect(q.label).toBe('all!');
+    expect('sources' in q).toBe(false);
+  });
+
+  it('an all-sources query offers Subreddits, Hashtags and the Warm up toggle', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([QALL]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    expect(screen.getByPlaceholderText(/SaaS, socialmedia/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/socialmedia, marketing/i)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /warm up/i })).toBeInTheDocument();
+  });
+
+  it('deselecting every source chip persists a query without a sources key', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    await user.click(screen.getByRole('button', { name: 'Reddit', pressed: true }));
+    await user.click(screen.getByRole('button', { name: 'Hacker News', pressed: true }));
+    expect(screen.getByText(/^all sources$/i)).toBeInTheDocument();
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    expect('sources' in savedQuery('q1')).toBe(false);
+  });
+
+  it('a query with explicit sources keeps them unchanged after an unrelated edit', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    await user.type(screen.getByRole('textbox', { name: /^label$/i }), '!');
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    expect(savedQuery('q1').sources).toEqual(['reddit', 'hackernews']);
   });
 
   it('a reddit query shows a Subreddits field and persists query.subreddits (leading r/ stripped)', async () => {

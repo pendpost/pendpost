@@ -241,9 +241,12 @@ try {
   // MCP tool, so both go +2 (141 -> 143 routes, ... -> 119 tools).
   // 143 routes / 120 tools = +resume_lane: the EXISTING POST /api/state/lane-resume route gains an
   // MCP face (mcpTool null -> resume_lane), so tools go 119 -> 120 while routes stay 143.
-  ok(/143 routes, 120 tools/.test(parityOut), `parity is 143 routes / 120 tools: ${parityOut.trim()}`);
+  // 144 routes / 120 tools = radar_geo_reset gains its REST twin (S7.3, radar-reliability
+  // 2026-08-31): POST /api/radar/geo-reset + the panel-overflow entry, so the tool leaves
+  // exemptions.tools and routes go 143 -> 144 while tools stay 120.
+  ok(/144 routes, 120 tools/.test(parityOut), `parity is 144 routes / 120 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 143/120 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 144/120 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

@@ -200,7 +200,7 @@ describe('ReadinessChecklist - halted lane row', () => {
     };
     renderChecklist();
     expect(screen.getByText(/Publishing to X is halted: .*HTTP 402/i)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /resume lane/i }));
+    await user.click(screen.getByRole('button', { name: /resume publishing/i }));
     expect(resumeLaneMock).toHaveBeenCalledWith('x');
   });
 
@@ -215,6 +215,6 @@ describe('ReadinessChecklist - halted lane row', () => {
     };
     renderChecklist();
     expect(screen.getByText(/Publishing to X is halted after a terminal refusal/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /resume lane/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /resume publishing/i })).toBeInTheDocument();
   });
 });

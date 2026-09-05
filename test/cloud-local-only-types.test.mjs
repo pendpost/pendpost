@@ -57,6 +57,20 @@ try {
     && cloudFiresPost({ type: 'image', platforms: ['instagram'] }) === false,
     'the IG feed-image exclusion is platform-conditional, so it is deliberately NOT in the flat type list (its honesty line is a follow-up)');
 
+  // The rollout gate (posting.carouselViaCloud, 2nd arg): OFF -> carousel + IG-image are
+  // local-only (the derived list above); ON -> they cloud-fire. nostr-longform stays local
+  // regardless (a separate companion). Proves the lift is behind the flag, not unconditional.
+  ok(cloudFiresPost({ type: 'carousel', platforms: ['instagram'] }, false) === false
+    && cloudFiresPost({ type: 'carousel', platforms: ['instagram'] }, true) === true,
+    'carouselViaCloud gates carousel cloud-firing (off -> local, on -> cloud)');
+  ok(cloudFiresPost({ type: 'image', platforms: ['instagram'] }, false) === false
+    && cloudFiresPost({ type: 'image', platforms: ['instagram'] }, true) === true,
+    'carouselViaCloud gates the IG feed-image cloud-firing too');
+  ok(cloudFiresPost({ type: 'nostr-longform', platforms: ['nostr'] }, true) === false,
+    'nostr-longform stays local-only even with the carousel gate on (its own companion is separate)');
+  ok(cloudFiresPost({ type: 'reel', platforms: ['instagram'] }, false) === true,
+    'a normal reel is unaffected by the gate (always cloud-fired)');
+
   const { laneCapabilities } = await import('../lib/capabilities.mjs');
   const caps = await laneCapabilities({ fetchImpl: async () => { throw new Error('offline'); } });
   ok(Array.isArray(caps.localOnlyTypes) && caps.localOnlyTypes.includes('carousel'),

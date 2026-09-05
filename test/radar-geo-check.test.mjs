@@ -42,7 +42,7 @@ const cfg = JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], '
 const call = (name, argsObj) => fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: argsObj } }) });
 Promise.all([
-  call('radar_ingest', { actor: 'agent:radar-scan', queryId: 'q1', signals: [{ source: 'web', url: 'https://example.com/t/1', text: 'what scheduler do you all use?' }] }),
+  call('radar_ingest', { actor: 'agent:radar-scan', queryId: 'q1', signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/t/1', text: 'what scheduler do you all use?' }] }),
   call('radar_footprint_log', { actor: 'agent:radar-geo', question: 'best social scheduler', mentioned: false, competitorsMentioned: ['Buffer'] }),
 ]).then(() => process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: 'done' })))
   .catch((e) => { process.stdout.write(JSON.stringify({ type: 'result', is_error: true, result: String(e.message) })); process.exit(1); });

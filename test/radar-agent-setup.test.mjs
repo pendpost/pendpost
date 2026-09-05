@@ -124,6 +124,12 @@ try {
   ok(s.agent.validation.state === 'unproven' && s.agent.connected === false, 'provider chosen but no token => still unproven, not failed');
   ok(s.agent.validation.fix === 'claude setup-token', 'the fix tells the operator exactly what to run');
 
+  // resolveAgentBin runs BEFORE the credential check inside probeAgent, so this probe must
+  // resolve to a bin or it hits the "not installed" branch on any host WITHOUT a real
+  // `claude` on PATH - which is exactly why this test passed locally (claude installed) but
+  // failed in CI (none). Arm the hermetic override now so resolveAgentBin never consults the
+  // host: the no-credential path returns before any spawn, so the stub is never executed.
+  process.env[BIN_VAR] = liarBin;
   const probeNoCred = await probeAgent();
   ok(probeNoCred.ok === null && probeNoCred.skipped === 'no-credential', 'probing without a credential is SKIPPED, not a failure - there is nothing to prove yet');
 

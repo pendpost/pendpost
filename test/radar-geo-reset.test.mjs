@@ -62,7 +62,22 @@ try {
   const again = await asClient(() => radarGeoReset({ actor: 'owner' }));
   ok(again.ok === true && again.cleared.footprint === 0, 'a second reset is a safe no-op (idempotent) - counts are zero');
 
-  console.log(`[radar-geo-reset] OK - owner-only reset clears the per-tenant footprint + derived backlog + dismissed ledger under the bound client, reports the counts, and is idempotent (${pass} assertions).`);
+  // The REST face (S7.3, radar-reliability 2026-08-31): the verb is no longer MCP-only.
+  // Static, like autonomy-ledger's route assertions: the route exists, names its MCP twin
+  // (parity check 1), and forwards body.actor UNCHANGED into radarGeoReset - which means the
+  // owner gate proven above fires for REST callers too: a POST whose body does not carry
+  // actor:'owner' gets the same refusal, with nothing cleared.
+  const apiSrc = fs.readFileSync(new URL('../lib/api.mjs', import.meta.url), 'utf8');
+  ok(/path:\s*'\/api\/radar\/geo-reset',\s*mcpTool:\s*'radar_geo_reset'/.test(apiSrc),
+    'the REST face exists: POST /api/radar/geo-reset names mcpTool radar_geo_reset');
+  ok(/radarGeoReset\(\{\s*clientId:\s*body\.clientId,\s*actor:\s*body\.actor\s*\}\)/.test(apiSrc),
+    'the route dispatches to radarGeoReset with the body actor unmodified - a non-owner REST caller is refused by the verb itself');
+  // The Studio helper acts as the owner, like every other owner write in app/src/lib/api.js.
+  const appSrc = fs.readFileSync(new URL('../app/src/lib/api.js', import.meta.url), 'utf8');
+  ok(/postJson\('\/api\/radar\/geo-reset',\s*\{\s*actor:\s*ACTOR\s*\}\)/.test(appSrc),
+    'the Studio helper posts actor: ACTOR (owner) to the route');
+
+  console.log(`[radar-geo-reset] OK - owner-only reset clears the per-tenant footprint + derived backlog + dismissed ledger under the bound client, reports the counts, is idempotent, and carries its REST + Studio faces (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

@@ -81,12 +81,15 @@ try {
   const rX = await reconcileCopyFollowups(Date.now(), stubHit);
   ok(rX.checked === 0, 'a copy lane with no follow-up parser (x) is skipped');
 
-  // A fetch that throws is fail-soft: the marker is counted checked, nothing crashes, no stamp.
+  // A fetch that throws is fail-soft: nothing crashes, nothing is stamped - and (E9, audit
+  // 2026-08-31) the target is NOT counted checked, so it stays due next pass instead of
+  // reading as "we looked, nothing there". test/radar-followup-throw-honesty.test.mjs pins
+  // the full marker semantics.
   await radarIngest({ queryId: 'q1', signals: [{ source: 'hackernews', externalId: 'hn2', url: 'https://news.ycombinator.com/item?id=2', author: 'buyer_bob', text: 'same problem', score: 70, ts: BEFORE }], actor: 'agent:claude' });
   await markCopyPosted({ source: 'hackernews', externalId: 'hn2', actor: 'owner' });
   const boom = async () => { throw new Error('network down'); };
   const rBoom = await reconcileCopyFollowups(Date.now(), boom);
-  ok(rBoom.checked === 1 && rBoom.replied === 0, 'a throwing fetch is fail-soft (checked, not replied, no crash)');
+  ok(rBoom.checked === 0 && rBoom.replied === 0, 'a throwing fetch is fail-soft AND honest (not counted checked, no crash)');
   ok(!ledgerEntry('hn2').radarReplyState, 'the throwing case leaves the marker unstamped');
 } catch (err) {
   failures += 1;

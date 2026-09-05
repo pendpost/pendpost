@@ -28,7 +28,10 @@ const SOURCE_IDS = ['reddit', 'hackernews', 'bluesky', 'mastodon'];
 const sourceLabel = (t, id) => t(`radar.source.${id}`);
 // A new query pre-selects these (Bluesky excluded: search-only, no Studio connect path).
 const DEFAULT_SOURCE_IDS = ['reddit', 'hackernews', 'mastodon'];
-const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', warmup: false, mention: false };
+// A query with NO sources scans every engine (lib/writes.mjs falls back to all sources when the
+// array is absent or empty), so the draft keeps that as an empty array and never substitutes the
+// defaults on an existing query. Only a brand-new draft pre-selects DEFAULT_SOURCE_IDS.
+const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', excludeKeywords: '', minScore: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', warmup: false, mention: false };
 
 function toDraft(q) {
   return {
@@ -36,7 +39,10 @@ function toDraft(q) {
     label: q.label || '',
     brief: q.brief || '',
     keywords: (q.keywords || []).join(', '),
-    sources: Array.isArray(q.sources) && q.sources.length ? q.sources.filter((s) => SOURCE_IDS.includes(s)) : [...DEFAULT_SOURCE_IDS],
+    excludeKeywords: (q.excludeKeywords || []).join(', '),
+    // The per-query surface floor; kept as a string so the number input can be cleared.
+    minScore: Number.isFinite(q.minScore) ? String(q.minScore) : '',
+    sources: Array.isArray(q.sources) ? q.sources.filter((s) => SOURCE_IDS.includes(s)) : [],
     competitors: (q.competitors || []).join(', '),
     subreddits: (q.subreddits || []).join(', '),
     hashtags: (q.hashtags || []).join(', '),
@@ -45,18 +51,34 @@ function toDraft(q) {
   };
 }
 const splitList = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
+// Does this draft scan the given engine? No sources picked = every engine, so yes.
+const scans = (draft, id) => !draft.sources.length || draft.sources.includes(id);
+// A valid surface floor is an integer 0..100; anything else means "no floor" (key omitted).
+function parseMinScore(value) {
+  if (String(value ?? '').trim() === '') return null;
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0 && n <= 100 ? n : null;
+}
 
 // Build the persisted RadarQuery from the editor draft. enabled/cadence carry forward on an edit
 // (editing a paused query must not silently re-activate it; an agent-set daily cadence must not
 // revert to manual). A new query defaults to enabled + manual.
 function buildQuery(draft, existing) {
+  const minScore = parseMinScore(draft.minScore);
   return {
     id: draft.id,
     label: draft.label.trim(),
     brief: draft.brief.trim(),
     enabled: existing ? existing.enabled !== false : true,
-    sources: draft.sources,
+    // No chips pressed = all engines, expressed by leaving the key out (the engine treats an
+    // absent array as "every source"; an empty one would say the same, but absent is canonical).
+    ...(draft.sources.length ? { sources: draft.sources } : {}),
     keywords: splitList(draft.keywords),
+    // Dropped during the scan (case-insensitive substring), so they never enter the feed.
+    excludeKeywords: splitList(draft.excludeKeywords),
+    // Only a valid 0..100 integer is written; the validator rejects anything else and an absent
+    // key means no floor.
+    ...(minScore == null ? {} : { minScore }),
     competitors: splitList(draft.competitors),
     subreddits: splitList(draft.subreddits).map((s) => s.replace(/^r\//i, '')),
     hashtags: splitList(draft.hashtags).map((s) => s.replace(/^#/, '')),
@@ -64,7 +86,7 @@ function buildQuery(draft, existing) {
     // A warm-up query is a Reddit karma builder, so the flag only means anything when Reddit is
     // one of its sources; drop reddit and the flag goes with it (never a stale true on a query
     // that no longer touches Reddit).
-    warmup: draft.warmup === true && (draft.sources || []).includes('reddit'),
+    warmup: draft.warmup === true && scans(draft, 'reddit'),
     // A brand-mention query works on ANY lane (people name a brand everywhere), so the flag is
     // not source-gated the way warmup is. It steers the agent brief toward reputation events and
     // pins the mention pill/filter on this query's signals.
@@ -190,7 +212,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
           look for comment-worthy threads + non-promo post ideas instead of buying intent, and
           pins the karma pill/filter on this query's signals. A single-feature on/off, so it uses
           the house ToggleRow (Switch), not a set-membership checkbox. */}
-      {draft.sources.includes('reddit') ? (
+      {scans(draft, 'reddit') ? (
         <ToggleRow
           label={t('radar.query.warmup')}
           tip={t('radar.query.warmup.tip')}
@@ -220,6 +242,10 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
           <div className="space-y-1">
             <FieldLabel htmlFor="radar-q-keywords" label={t('radar.query.keywords')} tip={t('radar.query.keywords.tip')} t={t} />
             <input id="radar-q-keywords" className={`${FIELD} w-full`} value={draft.keywords} placeholder={t('radar.query.keywordsPlaceholder')} onChange={(e) => onChange({ ...draft, keywords: e.target.value })} />
+          </div>
+          <div className="space-y-1">
+            <FieldLabel htmlFor="radar-q-exclude" label={t('radar.query.exclude')} tip={t('radar.query.exclude.tip')} t={t} />
+            <input id="radar-q-exclude" className={`${FIELD} w-full`} value={draft.excludeKeywords} placeholder={t('radar.query.excludePlaceholder')} onChange={(e) => onChange({ ...draft, excludeKeywords: e.target.value })} />
           </div>
           <div className="space-y-1">
             <FieldLabel htmlFor="radar-q-competitors" label={t('radar.query.competitors')} tip={t('radar.query.competitors.tip')} t={t} />
@@ -252,19 +278,28 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
                 );
               })}
             </div>
+            {draft.sources.length === 0 ? (
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('radar.query.sources.all')}</p>
+            ) : null}
           </fieldset>
-          {draft.sources.includes('reddit') ? (
+          {scans(draft, 'reddit') ? (
             <div className="space-y-1">
               <FieldLabel htmlFor="radar-q-subreddits" label={t('radar.query.subreddits')} tip={t('radar.query.subreddits.tip')} t={t} />
               <input id="radar-q-subreddits" className={`${FIELD} w-full`} value={draft.subreddits} placeholder={t('radar.query.subredditsPlaceholder')} onChange={(e) => onChange({ ...draft, subreddits: e.target.value })} />
             </div>
           ) : null}
-          {draft.sources.includes('mastodon') || draft.sources.includes('bluesky') ? (
+          {scans(draft, 'mastodon') || scans(draft, 'bluesky') ? (
             <div className="space-y-1">
               <FieldLabel htmlFor="radar-q-hashtags" label={t('radar.query.hashtags')} tip={t('radar.query.hashtags.tip')} t={t} />
               <input id="radar-q-hashtags" className={`${FIELD} w-full`} value={draft.hashtags} placeholder={t('radar.query.hashtagsPlaceholder')} onChange={(e) => onChange({ ...draft, hashtags: e.target.value })} />
             </div>
           ) : null}
+          {/* The per-query surface floor: signals scoring below it stay cached but hidden from
+              the feed. A 3-digit number, so the field stays compact (no w-full). */}
+          <div className="space-y-1">
+            <FieldLabel htmlFor="radar-q-minscore" label={t('radar.query.minScore')} tip={t('radar.query.minScore.tip')} t={t} />
+            <input id="radar-q-minscore" type="number" inputMode="numeric" min={0} max={100} step={1} className={`${FIELD} w-20 tabular-nums`} value={draft.minScore} placeholder="0" onChange={(e) => onChange({ ...draft, minScore: e.target.value })} />
+          </div>
         </div>
       </details>
     </div>
@@ -312,11 +347,11 @@ function SetupPanel({ t, onAddByHand }) {
 // verbinden, um zu antworten" per source) is replaced by the SHARED glyph strip: platform
 // glyphs with a status dot, tooltip + accessible name carrying the sentence, connect
 // deep-link only where a Studio path exists. Same component as the Radar page header.
-function SourceCoverage({ radar, capabilities, accounts, sourceStatus, onNavigate }) {
+function SourceCoverage({ radar, capabilities, accounts, sourceStatus, skippedPlatforms, onNavigate }) {
   // The EFFECTIVE scan set (WP6: Setup-card flags + auto-ready connected lanes), not the
   // per-query union - a query narrows within this set, and each query row already names its
   // own sources, so repeating the narrowing here would be the same fact twice.
-  const used = effectiveRadarSourcesClient(radar, capabilities, accounts, sourceStatus);
+  const used = effectiveRadarSourcesClient(radar, capabilities, accounts, sourceStatus, skippedPlatforms);
   if (!used.length) return null;
   return (
     <RadarSourceGlyphs
@@ -347,7 +382,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
   // The searchable lanes Radar would ACTUALLY scan (Setup-card scan flags + connected lanes),
   // narrowed to the four editor-selectable sources. The per-query chips are drawn from this, so
   // what the form offers matches what a scan touches. Empty while the feed loads -> show all four.
-  const effectiveSearchable = effectiveRadarSourcesClient(radar, feed?.capabilities, accounts, feed?.sources).filter((id) => SOURCE_IDS.includes(id));
+  const effectiveSearchable = effectiveRadarSourcesClient(radar, feed?.capabilities, accounts, feed?.sources, config?.posting?.skippedPlatforms).filter((id) => SOURCE_IDS.includes(id));
   const sourceIds = effectiveSearchable.length ? effectiveSearchable : SOURCE_IDS;
 
   const sectionRef = useRef(null);
@@ -384,11 +419,12 @@ export default function RadarSearches({ focus = false, onNavigate }) {
   };
   const closeEdit = () => { setEditing(null); setDraft(EMPTY_DRAFT); setSaved(false); lastSavedRef.current = null; };
 
-  // Debounced auto-save. Orphan guard: only persist once minimally valid (label + a source), so an
-  // abandoned empty new draft is never written. A new query promotes 'new' -> its id on first save.
+  // Debounced auto-save. Orphan guard: only persist once minimally valid (a label; no sources is
+  // fine, it means all engines), so an abandoned empty new draft is never written. A new query
+  // promotes 'new' -> its id on first save.
   useEffect(() => {
     if (editing == null) return undefined;
-    if (!draft.label.trim() || !draft.sources.length) return undefined;
+    if (!draft.label.trim()) return undefined;
     const existing = (radar.queries || []).find((q) => q.id === draft.id) || null;
     const built = buildQuery(draft, existing);
     const serial = JSON.stringify(built);
@@ -396,7 +432,16 @@ export default function RadarSearches({ focus = false, onNavigate }) {
     const handle = setTimeout(async () => {
       const queries = Array.isArray(radar.queries) ? [...radar.queries] : [];
       const idx = queries.findIndex((q) => q.id === built.id);
-      if (idx >= 0) queries[idx] = { ...queries[idx], ...built }; else queries.push(built);
+      if (idx >= 0) {
+        // The spread keeps old keys alive, so the ones buildQuery omits on purpose (all engines,
+        // no score floor) have to be removed explicitly or the stale value would survive the edit.
+        const merged = { ...queries[idx], ...built };
+        if (!('sources' in built)) delete merged.sources;
+        if (!('minScore' in built)) delete merged.minScore;
+        queries[idx] = merged;
+      } else {
+        queries.push(built);
+      }
       await persistRadar({ ...radar, queries });
       lastSavedRef.current = serial;
       setSaved(true);
@@ -478,9 +523,9 @@ export default function RadarSearches({ focus = false, onNavigate }) {
                         width - the schedule + edit + delete controls stay pinned on one line. */}
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-sm font-semibold">{q.label || q.id}</div>
-                      {(q.sources || []).length ? (
-                        <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">{(q.sources || []).map((s) => (SOURCE_IDS.includes(s) ? sourceLabel(t, s) : s)).join(' · ')}</div>
-                      ) : null}
+                      <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+                        {(q.sources || []).length ? (q.sources || []).map((s) => (SOURCE_IDS.includes(s) ? sourceLabel(t, s) : s)).join(' · ') : t('radar.query.sources.all')}
+                      </div>
                     </div>
                     {/* Comfortable tap targets (36px) kept close together; the destructive delete
                         still sits last, and its confirm is the real guard against a mis-tap. */}
@@ -499,7 +544,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
             ))}
           </ul>
           {hasQueries ? (
-            <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} onNavigate={onNavigate} />
+            <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} skippedPlatforms={config?.posting?.skippedPlatforms} onNavigate={onNavigate} />
           ) : null}
           {/* The Radar AUTONOMY (auto-reply score + X Enterprise) stays in the Autonomy ledger
               (ux-audit R7): one surface for "what may pendpost do without me". The daily research

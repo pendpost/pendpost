@@ -53,6 +53,17 @@ try {
   ok(job.version === PUBLISH_JOB_VERSION && job.version === 'publish-job/1', 'envelope carries version "publish-job/1"');
   ok(job.jobId === 'default:c1:p1:meta', 'jobId is deterministic: clientId:campaign:postId:lane');
   ok(buildPublishJob(basePost, 'meta', metaCtx).jobId === job.jobId, 'the same inputs always yield the same jobId (idempotent)');
+
+  // ---- carousel: the envelope carries the ORDERED, relative slide paths -------
+  ok(Array.isArray(job.payloadRef.mediaItems) && job.payloadRef.mediaItems.length === 0,
+    'a single-media post carries an empty mediaItems (mediaPath is unchanged)');
+  const carouselJob = buildPublishJob(
+    { ...basePost, type: 'carousel', mediaItems: [{ path: 'data/media/s1.png' }, { path: 'data/media/s2.png' }, { path: 'data/media/s3.png' }] },
+    'meta', metaCtx);
+  ok(carouselJob.payloadRef.mediaItems.length === 3
+    && carouselJob.payloadRef.mediaItems[0] === 'data/media/s1.png'
+    && carouselJob.payloadRef.mediaItems[2] === 'data/media/s3.png',
+    'a carousel envelope carries all N slide paths, ordered + relative (what the cloud resolves + presigns)');
   for (const k of ['identity', 'lane', 'engine', 'delivery', 'approval', 'payloadRef']) {
     ok(Object.prototype.hasOwnProperty.call(job, k), `envelope has the required top-level key '${k}'`);
   }

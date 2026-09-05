@@ -73,7 +73,7 @@ import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
-import { effectivePublicUrl, effectiveSlideUrl } from '../lib/public-media.mjs';
+import { effectivePublicUrl, effectiveSlideUrl, deadMediaUrlDiagnosis } from '../lib/public-media.mjs';
 import { envPath } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -669,6 +669,19 @@ async function cmdPublishDue(args) {
       if (cTitle.length > TITLE_LIMIT) { console.log(`[warn] ${post.id}: title is ${cTitle.length} chars (> ${TITLE_LIMIT}) - skipping.`); continue; }
       if (cDesc.length > DESCRIPTION_LIMIT) { console.log(`[warn] ${post.id}: description is ${cDesc.length} chars (> ${DESCRIPTION_LIMIT}) - skipping.`); continue; }
       if (args['dry-run']) { console.log(`[dry] ${post.id}: would create a Pinterest carousel pin of ${slideUrls.length} image urls on board ${bid}.`); continue; }
+      // PRE-FIRE fail-safe (B1): if any slide URL is DETERMINISTICALLY dead, Pinterest's
+      // server-side fetch would fail - skip the doomed call and record one honest failure
+      // that parks the post on strike 1 (the diagnosis tail is MEDIA_URL_DEAD_MARK).
+      // Fail-open: a transient/inconclusive probe proceeds.
+      let deadSlideUrl = null;
+      for (const u of slideUrls) { deadSlideUrl = await deadMediaUrlDiagnosis(u); if (deadSlideUrl) break; }
+      if (deadSlideUrl) {
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'pinterest', action: 'publish', ok: false, errorCode: 9004, errorMessage: deadSlideUrl.slice(0, 300), actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'pinterest', action: 'publish', ok: false, errorCode: 9004, errorMessage: deadSlideUrl.slice(0, 300) });
+        console.error(`[err] ${post.id}: Pinterest carousel not fired - ${deadSlideUrl}`);
+        continue;
+      }
       console.log(`[info] ${post.id}: creating a Pinterest carousel pin (${slideUrls.length} slides) on board ${bid}...`);
       try {
         const body = {
@@ -739,6 +752,22 @@ async function cmdPublishDue(args) {
       if (isVideoPin) console.log(`[dry] ${post.id}: would upload + create a Pinterest VIDEO pin on board ${bid} from ${path.basename(videoPath)} (cover ${url}; title ${title.length} / desc ${desc.length} chars).`);
       else console.log(`[dry] ${post.id}: would create a pin on board ${bid} from ${url} (title ${title.length} / desc ${desc.length} chars).`);
       continue;
+    }
+
+    // PRE-FIRE fail-safe (B1): an image pin publishes from `url`; if it is
+    // DETERMINISTICALLY dead (404/410 or non-image bytes), skip the doomed create-pin
+    // and record one honest failure that parks on strike 1. Fail-open on a
+    // transient/inconclusive probe. (A video pin uploads its own bytes; its cover is
+    // handled by the create-pin path, so only the image-pin url is pre-probed here.)
+    if (!isVideoPin) {
+      const deadPin = await deadMediaUrlDiagnosis(url);
+      if (deadPin) {
+        appendAttempt(post, { ts: new Date().toISOString(), platform: 'pinterest', action: 'publish', ok: false, errorCode: 9004, errorMessage: deadPin.slice(0, 300), actor: ACTOR });
+        await savePlan(abs, plan, [post.id]);
+        RUN.results.push({ postId: post.id, platform: 'pinterest', action: 'publish', ok: false, errorCode: 9004, errorMessage: deadPin.slice(0, 300) });
+        console.error(`[err] ${post.id}: Pinterest pin not fired - ${deadPin}`);
+        continue;
+      }
     }
 
     console.log(`[info] ${post.id}: ${isVideoPin ? 'uploading + creating a Pinterest video pin' : 'creating a Pinterest pin'} on board ${bid}...`);

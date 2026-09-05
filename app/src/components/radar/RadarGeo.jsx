@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  ChevronDown, Check, CircleSlash, FileText, PlugZap, RefreshCw, MoreHorizontal, Power, Bot, Sprout,
+  ChevronDown, Check, CircleSlash, Eraser, FileText, PlugZap, RefreshCw, MoreHorizontal, Power, Bot, Sprout,
 } from 'lucide-react';
 import { fmtRelative, warmthStanding, WARMTH_MIN_KARMA } from '../../lib/format.js';
 import { INNER_SURFACE, EYEBROW } from '../ui.jsx';
@@ -227,11 +227,16 @@ function GeoSection({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, 
 
 // The panel-level overflow (feature altitude): "Turn Radar off" lives here, one step away, not as
 // a loud text link beside the primary Scan (canon: one primary; secondary/destructive in overflow).
-function PanelMenu({ onDisable, t }) {
+function PanelMenu({ onDisable, onGeoReset, t }) {
   const [open, setOpen] = useState(false);
+  // S7.3: the GEO reset is destructive (it drops agent-logged AI-visibility history), so the
+  // menu entry arms an INLINE confirm - the feed's "Erledigt" idiom (question + explicit yes /
+  // cancel), never window.confirm. Confirming swaps in place inside the menu; closing the menu
+  // (click-away / Escape) disarms it.
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open) { setConfirmingReset(false); return undefined; }
     const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
     document.addEventListener('mousedown', onDoc);
@@ -247,6 +252,24 @@ function PanelMenu({ onDisable, t }) {
       </Tip>
       {open ? (
         <div role="menu" className="absolute right-0 z-20 mt-1 min-w-[11rem] rounded-xl bg-white p-1 shadow-lg ring-1 ring-zinc-900/10 dark:bg-zinc-800 dark:ring-white/10">
+          {/* Passed only when there IS GEO state to drop - an entry that resets nothing never renders. */}
+          {onGeoReset ? (
+            confirmingReset ? (
+              <div className="flex flex-wrap items-center gap-1.5 rounded-lg px-2.5 py-1.5">
+                <span className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">{t('radar.geo.reset.confirm')}</span>
+                <button type="button" onClick={() => { setConfirmingReset(false); setOpen(false); onGeoReset(); }} className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-2 py-0.5 text-[11px] font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-200 dark:text-zinc-900">
+                  <Check size={11} aria-hidden="true" /> {t('radar.geo.reset.yes')}
+                </button>
+                <button type="button" onClick={() => setConfirmingReset(false)} className="rounded-lg px-2 py-0.5 text-[11px] font-semibold text-zinc-600 transition hover:bg-zinc-900/5 dark:text-zinc-300 dark:hover:bg-white/5">
+                  {t('radar.signal.doneCancel')}
+                </button>
+              </div>
+            ) : (
+              <button type="button" role="menuitem" onClick={() => setConfirmingReset(true)} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-zinc-700 transition hover:bg-zinc-900/5 dark:text-zinc-200 dark:hover:bg-white/5">
+                <Eraser size={14} className="text-zinc-500" aria-hidden="true" />{t('radar.geo.reset')}
+              </button>
+            )
+          ) : null}
           <button type="button" role="menuitem" onClick={() => { setOpen(false); onDisable(); }} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-zinc-700 transition hover:bg-zinc-900/5 dark:text-zinc-200 dark:hover:bg-white/5">
             <Power size={14} className="text-zinc-500" aria-hidden="true" />{t('radar.disable')}
           </button>

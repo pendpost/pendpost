@@ -62,7 +62,7 @@ function RefreshControl({ fetchFresh, busy, onFree, onEverything, t }) {
         </PopoverTrigger>
         <PopoverContent align="end" className="w-72">
           <div role="menu" className="space-y-0.5">
-            <div className="px-2.5 pb-1 pt-0.5 text-[10px] font-bold uppercase tracking-wide text-zinc-400 dark:text-zinc-500">
+            <div className={`px-2.5 pb-1 pt-0.5 ${EYEBROW}`}>
               {t('insights.refresh.scopeTitle')}
             </div>
             <PopoverClose asChild>

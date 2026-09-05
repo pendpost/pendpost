@@ -35,7 +35,7 @@ const seed = async ({ score = 80 } = {}) => {
   sn += 1;
   const externalId = `19${sn}0000000000000`;
   const url = `https://x.com/someone/status/${externalId}`;
-  const res = await radarIngest({ queryId: 'q1', signals: [{ source: 'x', externalId, url, author: 'stranger', text: 'What is a good Buffer alternative?', score }], actor: 'agent:claude' });
+  const res = await radarIngest({ queryId: 'q1', signals: [{ source: 'x', ts: new Date().toISOString(), externalId, url, author: 'stranger', text: 'What is a good Buffer alternative?', score }], actor: 'agent:claude' });
   assert.ok(res.ok, `ingest ok: ${JSON.stringify(res)}`);
   return { externalId, url };
 };

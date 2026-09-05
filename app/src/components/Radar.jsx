@@ -1,17 +1,17 @@
 import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
-  Radar as RadarIcon, RefreshCw, AlertCircle, Radio, Bot, ChevronDown,
-  MessageSquareReply, Settings as SettingsIcon, HelpCircle, Plus, Loader2, CheckCircle2,
+  Radar as RadarIcon, RefreshCw, AlertCircle, History, Radio, Bot, ChevronDown,
+  MessageSquareReply, Settings as SettingsIcon, HelpCircle, Plus, Loader2, CheckCircle2, Copy, Check,
 } from 'lucide-react';
-import { fmtRelative, fmtTime, effectiveRadarSourcesClient, redditWarmth, signalIsKarma, signalIsPostIdea, signalIsMention } from '../lib/format.js';
-import { useConfig, useSignals, useCommentInbox, useAccounts, saveConfig, radarTriage, radarQueueReply, radarAgentScan, radarAgentStop, approvePost, usePendpostHealth, radarFollowupCheck, errText } from '../lib/api.js';
-import { INNER_SURFACE, Skeleton, Segmented, FilterChip } from './ui.jsx';
+import { fmtRelative, fmtTime, effectiveRadarSourcesClient, isStaleRadarSourceRow, redditWarmth, signalIsKarma, signalIsPostIdea, signalIsMention } from '../lib/format.js';
+import { useConfig, useSignals, useCommentInbox, useAccounts, saveConfig, radarTriage, radarQueueReply, radarAgentScan, radarAgentStop, radarGeoReset, approvePost, usePendpostHealth, radarFollowupCheck, errText } from '../lib/api.js';
+import { INNER_SURFACE, EYEBROW, Skeleton, Segmented, FilterChip } from './ui.jsx';
 import { CHIP, BTN_PRIMARY, BTN_QUIET } from './ui/recipes.js';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
-import { SignalRow, StatFilters, JobRow, tierOf, SOURCE_META, SIGNAL_FILTERS } from './radar/RadarFeed.jsx';
+import { SignalRow, StatFilters, JobRow, AgentNote, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS, INLINE_ACTION } from './radar/RadarFeed.jsx';
 import { GeoStrip, WarmthGauge, PanelMenu } from './radar/RadarGeo.jsx';
 import CommentInbox from './radar/CommentInbox.jsx';
 
@@ -36,6 +36,29 @@ import CommentInbox from './radar/CommentInbox.jsx';
 // `meta` card; hackernews/bluesky/web have no connect path, so a "reconnect" link would dead-end.
 const RADAR_SETUP_LANE = { reddit: 'reddit', mastodon: 'mastodon', x: 'x', youtube: 'youtube', nostr: 'nostr', linkedin: 'linkedin', instagram: 'meta' };
 const SETUP_LANE_FOR_SOURCE = (id) => RADAR_SETUP_LANE[id] || null;
+// H1 (lane honesty, 2026-09-04): the run-outcome reasons an AGENT-ONLY lane row (capabilities
+// search:false - x/youtube/linkedin/instagram/quora/nostr/web) carries. lib/writes.mjs stamps the
+// job's own reason onto every lane it did not finish, so five lanes of one timed-out job used to
+// render as five identical lines. Rows in this class collapse into ONE line per reason.
+// J1: the same list is what lets the newest job row OWN its failed run (RadarFeed.jsx exports
+// it, so the row and the card can never disagree on which reasons are a run outcome).
+const AGENT_LANE_REASONS = JOB_OWNED_LANE_REASONS;
+// The connect class: a setup gap, not a run failure - keeps the Setup deep-link as its control.
+const CONNECT_ERRORS = ['not_connected', 'needs_scope'];
+// H3: bluesky has no Setup lane (RADAR_SETUP_LANE above, deliberately) - its credential is an
+// app password in the .env, read by scripts/bluesky-social.mjs under this exact name. The
+// not_connected line names it and offers the name to the clipboard; a "Connect" that dead-ends
+// or a rescan that cannot mint a password would both be fake moves.
+const BLUESKY_ENV_VAR = 'BLUESKY_APP_PASSWORD';
+// The in-line control on a notice line (Connect / Reconnect / rescan): the ONE inline action
+// primitive the job row's retry uses too (J4 - same accent token in both themes, 44px tap
+// area), disabled while a job runs so a second spend is never one click away.
+const NOTICE_LINK = INLINE_ACTION;
+// Two text stops from the status staircase (DESIGN.md section 3, format.js STAIR): a lane the
+// last scan did NOT deliver reads in the rose "halted" stop; a setup gap (connect class) and a
+// stale row (H6) stay in zinc. Colour is never the sole signal - the copy names the state.
+const NOTICE_LINE = 'flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px]';
+const NOTICE_TONE = { halted: 'text-rose-700 dark:text-rose-300', quiet: 'text-zinc-500 dark:text-zinc-400' };
 
 export default function Radar({ active = true, campaigns = [], allClients = false, allSignals = null, allFailed = [], allLoading = false, allInbox = null, allInboxFailed = [], allInboxLoading = false, onNavigate, onNewPost, onOpenPost }) {
   const t = useT();
@@ -90,6 +113,18 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   // second nudge here.
   const warmth = redditWarmth(health?.setup);
 
+  // H3: the bluesky env-hint copy button's own state - idle | copied | failed (a clipboard
+  // refusal must never read as success; the name still sits in the line to select by hand).
+  const [envCopy, setEnvCopy] = useState('idle');
+  const copyEnvName = async () => {
+    try {
+      await navigator.clipboard.writeText(`${BLUESKY_ENV_VAR}=`);
+      setEnvCopy('copied');
+    } catch {
+      setEnvCopy('failed');
+    }
+    setTimeout(() => setEnvCopy('idle'), 1800);
+  };
   const [checking, setChecking] = useState(false);
   const [checkNote, setCheckNote] = useState(null);
   const [stopping, setStopping] = useState(false);
@@ -135,22 +170,33 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   // itself. There is no fallback to the keyword engine: a scan that cannot use an agent does
   // not run (S5). The await here can last minutes, so it is NOT what drives the UI - the job
   // row renders from the server's own jobs[], which keeps polling even if this tab reloads.
-  const onScan = async () => {
+  // `opts` rides straight into radarAgentScan: {} for the primary, { sources } for a per-lane
+  // retry (H1/C9). The primary keeps its bare onScan so an onClick never leaks the event in.
+  const runScan = async (opts = {}) => {
     setScanning(true);
     setError(null);
     try {
-      await radarAgentScan();
-    } catch {
+      await radarAgentScan(opts);
+    } catch (err) {
       // Stage 1: the POST now returns as soon as the running job row is saved, and the job row
       // (polled by useSignals) is the source of truth for how the scan goes. Any failure HERE is a
-      // failure to START - never surface the browser's raw err.message ("Load failed"); a localized
-      // line is the honest thing, and the row will carry the real reason if one lands.
-      setError(t('radar.error.scan'));
+      // failure to START - route it through errText so the server's code lands as its own honest
+      // line ('in_flight' while a scan visibly runs, 'disabled' when the daily budget is spent,
+      // 'not_configured' with no agent connected) instead of a false "scan failed" next to a
+      // running job. errText also keeps browser network noise ("Load failed") off the surface;
+      // the generic scan-failed string stays the final fallback.
+      setError(errText(err, t, 'radar.error.scan'));
     } finally {
       setScanning(false);
       queryClient.invalidateQueries({ queryKey: ['radar'] });
     }
   };
+
+  const onScan = () => runScan();
+  // H1/C9: rescan ONLY the named lanes (b9e8c22 scopes the agent child to them) - the feed
+  // notice's "rescan only these sources" and the job row's retry after a timeout both use it.
+  const onScanSources = (ids) => runScan(Array.isArray(ids) && ids.length ? { sources: ids } : {});
+  const scanBusy = scanning || jobRunning || !hasQueries;
 
   // The per-card KI-Sichtbarkeit recheck (owner: "scan does it + per-card recheck"). Same spawn
   // path as onScan, scope:'geo' - a cheap check of just the saved buying questions, without a full
@@ -161,10 +207,11 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
     setError(null);
     try {
       await radarAgentScan({ scope: 'geo' });
-    } catch {
-      // Same as onScan: the geo recheck also returns on row-save now, so never show a raw
-      // browser error - the job row carries the real outcome.
-      setError(t('radar.error.scan'));
+    } catch (err) {
+      // Same as onScan: the geo recheck also returns on row-save now, so the start-refusal
+      // code (in_flight / disabled / not_configured) is humanized by errText and never
+      // collapses into a false "scan failed" - the job row carries the real outcome.
+      setError(errText(err, t, 'radar.error.scan'));
     } finally {
       setScanning(false);
       queryClient.invalidateQueries({ queryKey: ['radar'] });
@@ -218,6 +265,26 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
       setError(errText(err, t, 'radar.error.scan'));
     } finally {
       setChecking(false);
+      queryClient.invalidateQueries({ queryKey: ['radar'] });
+    }
+  };
+
+  // S7.3 (radar-reliability 2026-08-31): reset the GEO state - footprint log + derived
+  // comparison backlog + dismissed ledger - for THIS client. The recovery for a polluted
+  // tenant (rows seeded under another brand), which no config edit can clear because it is
+  // state, not config. The deliberate act lives in PanelMenu (inline confirm, the feed's
+  // "Erledigt" idiom); this is the commit half. Success speaks through the existing quiet
+  // receipt line (checkNote), failure through the existing error surface.
+  const onGeoReset = async () => {
+    setError(null);
+    setCheckNote(null);
+    try {
+      const res = await radarGeoReset();
+      const n = (res?.cleared?.footprint || 0) + (res?.cleared?.comparisonBacklog || 0) + (res?.cleared?.dismissedBacklog || 0);
+      setCheckNote(t('radar.geo.reset.done', { n }));
+    } catch (err) {
+      setError(errText(err, t, 'radar.error.save'));
+    } finally {
       queryClient.invalidateQueries({ queryKey: ['radar'] });
     }
   };
@@ -465,18 +532,70 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   // The networks this project's scans cover (WP6): the EFFECTIVE set - Setup-card flags +
   // auto-ready connected lanes - mirroring the server derivation, so the header can never
   // promise a scan the brief does not make.
-  const scanGlyphs = effectiveRadarSourcesClient(radar, feed?.capabilities, accounts, feed?.sources);
+  const scanGlyphs = effectiveRadarSourcesClient(radar, feed?.capabilities, accounts, feed?.sources, config?.posting?.skippedPlatforms);
   // Per-source scan degrades (rate_limited / needs_scope / engine_failure): the source
   // glyphs only convey CONNECT status, so a scan that a source refused is otherwise invisible.
   // Surface it as one quiet notice above the feed - what failed, why (plain reason), and the
   // one move that recovers (reconnect for needs_scope; the others are transient / server-side).
   // Non-fatal by construction: the other sources' signals still render (P9), so this never
   // blocks the feed. Per-client (feed.sources is the active client's), hidden in the overview.
+  // H2 (lane honesty, 2026-09-04): only lanes in the EFFECTIVE scan set (scanGlyphs above -
+  // the same derivation the header and RadarSearches use) can degrade here. A standing row for
+  // a lane the operator flagged scan:false, or never connected, is a lane no scan was ever
+  // asked to reach; reporting it on the feed made the panel say "Reddit: not connected" over
+  // a scan set that never included Reddit.
   const degradedSources = (!allClients && feed?.sources && typeof feed.sources === 'object')
     ? Object.entries(feed.sources)
-        .filter(([id, v]) => v && v.ok === false && SOURCE_META[id])
-        .map(([id, v]) => ({ id, error: v.error || 'engine_failure', scope: v.scope || null }))
+        .filter(([id, v]) => v && v.ok === false && SOURCE_META[id] && scanGlyphs.includes(id))
+        // `detail` carries the engine's raw underlying error text (D1) - it survives as the
+        // tooltip on the notice, never bare on the row. `partial` marks a lane that half
+        // delivered (D6/D8): items landed AND a degrade was recorded, so the notice must not
+        // read as a total outage.
+        .map(([id, v]) => ({
+          id,
+          error: v.error || 'engine_failure',
+          scope: v.scope || null,
+          detail: typeof v.detail === 'string' && v.detail ? v.detail : null,
+          partial: v.partial === true,
+          // H6: WHEN the row was earned (R5 stamps `at` on every write) and whether it is too
+          // old to act on - 48h, the client mirror of the server rule. A stale row reads muted
+          // ("last tried 3 days ago"), never as a live failure.
+          at: typeof v.at === 'string' && !Number.isNaN(Date.parse(v.at)) ? v.at : null,
+          stale: isStaleRadarSourceRow(v),
+        }))
     : [];
+  // H1: split the degrade rows by lane class. Agent-only lanes (capabilities search:false) that
+  // carry a run-outcome reason collapse into ONE line per reason ("Agent research on X, YouTube:
+  // time limit reached"); every other row keeps its own line. `sourceName` is the localized
+  // platform label the notice lines already used.
+  const sourceName = (id) => t(`radar.source.${id}`);
+  const isAgentLaneRow = (d) => feed?.capabilities?.[d.id]?.search === false && AGENT_LANE_REASONS.includes(d.error);
+  // H6: a stale group and a fresh group never share a line (one reads muted, one halted); the
+  // stale line names the newest attempt among its lanes.
+  const agentLaneGroups = Object.values(degradedSources.filter(isAgentLaneRow).reduce((acc, d) => {
+    const key = `${d.error}|${d.stale ? 'stale' : 'fresh'}`;
+    if (!acc[key]) acc[key] = { key, error: d.error, stale: d.stale, ids: [], at: null };
+    acc[key].ids.push(d.id);
+    if (d.at && (!acc[key].at || d.at > acc[key].at)) acc[key].at = d.at;
+    return acc;
+  }, {}));
+  const laneRows = degradedSources.filter((d) => !isAgentLaneRow(d));
+  // J1 (fresh-eyes 2026-09-04): ONE failed run was narrated twice - the red job row ("It ran too
+  // long", "Scan again") AND a grey card line ("Agent research on X, YouTube: time limit
+  // reached", "Rescan only these sources"), two differently worded retries for one event. The
+  // newest job row OWNS its failed run: a group whose reason is that job's own reason, and whose
+  // rows were stamped by that job (or carry no stamp - writes.mjs stamps them as the job ends),
+  // leaves the card and rides the row's reason line + its one lane-scoped retry (C9 narrowing,
+  // now for every owned reason: a lane that delivered never spends twice). A group from an
+  // OLDER run (stamped before this job started - H6 stale) or with a different reason stays on
+  // the card, which keeps the invariant: the outcome is narrated exactly once, with exactly one
+  // retry naming its lanes, whichever surface owns it.
+  const jobOwnsLanes = !!job && (job.state === 'failed' || job.partial === true) && JOB_OWNED_LANE_REASONS.includes(job.reason);
+  const ownedByJob = (g) => jobOwnsLanes && g.error === job.reason
+    && (!g.at || !job.startedAt || Number.isNaN(Date.parse(job.startedAt)) || Date.parse(g.at) >= Date.parse(job.startedAt));
+  const jobLaneIds = agentLaneGroups.filter(ownedByJob).flatMap((g) => g.ids);
+  const cardAgentLaneGroups = agentLaneGroups.filter((g) => !ownedByJob(g));
+  const onRetryJob = () => (jobLaneIds.length ? onScanSources(jobLaneIds) : onScan());
   // One row renderer, reused by the primary list and the collapsed older group.
   const renderRow = (s, { grouped = false } = {}) => {
     // Karma builder: a warm-up-query signal is a karma item; if it points at a subreddit
@@ -580,7 +699,13 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                 <SettingsIcon size={15} aria-hidden="true" />
               </button>
             </Tip>
-            <PanelMenu onDisable={onToggleEnabled} t={t} />
+            {/* S7.3: the GEO reset rides the overflow only when there IS GEO state to drop
+                (footprint log or comparison backlog) - never a menu entry that resets nothing. */}
+            <PanelMenu
+              onDisable={onToggleEnabled}
+              onGeoReset={(feed?.geo?.footprint?.length || feed?.geo?.comparisonBacklog?.length) ? onGeoReset : null}
+              t={t}
+            />
           </div>
         ) : null}
       </div>
@@ -640,13 +765,29 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           && ns.agent.spent >= ns.agent.budget,
         );
         const nextIsAgent = Boolean(nextAt && ns?.agent?.at && Date.parse(ns.agent.at) === nextAt.getTime());
+        // L7 (UI half): the run the budget just counted may still be RUNNING - saying
+        // "Budget aufgebraucht" beside its own live job row reads as a contradiction (the
+        // JobRow already communicates the run), so while a job runs the fragment stays the
+        // plain clock. When the spent phrase does show, it is the one quiet link to the
+        // budget setting - the single move that changes the number, no new UI surface.
+        const showBudget = Boolean(budgetSpent && nextIsAgent && nextAt && !jobRunning);
         const fragments = [
           feed?.lastScan ? t('radar.lastResult', { time: fmtRelative(feed.lastScan) }) : null,
           Number.isFinite(feed?.lastProduced?.drafted) ? t('radar.lastResult.drafted', { n: feed.lastProduced.drafted }) : null,
-          nextAt ? t(budgetSpent && nextIsAgent ? 'radar.nextScan.budgetSpent' : 'radar.nextScan', { time: fmtTime(nextAt.toISOString()) }) : null,
+          nextAt && !showBudget ? t('radar.nextScan', { time: fmtTime(nextAt.toISOString()) }) : null,
         ].filter(Boolean);
-        return fragments.length ? (
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">{fragments.join(' · ')}</p>
+        return (fragments.length || showBudget) ? (
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            {fragments.join(' · ')}
+            {showBudget ? (
+              <>
+                {fragments.length ? ' · ' : ''}
+                <button type="button" onClick={() => onNavigate?.('settings', 'radar')} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                  {t('radar.nextScan.budgetSpent', { time: fmtTime(nextAt.toISOString()) })}
+                </button>
+              </>
+            ) : null}
+          </p>
         ) : null;
       })() : null}
 
@@ -694,27 +835,84 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               a job - an empty card explaining that nothing has run yet would be furniture. The
               job row is per-client, so it is hidden in the all-projects overview. */}
           {!allClients ? (
-            <JobRow job={job} queries={radar.queries || []} onStop={onStop} stopping={stopping} t={t} onNavigate={onNavigate} onRetry={onScan} retryBusy={scanning || jobRunning || !hasQueries} />
+            <JobRow job={job} queries={radar.queries || []} onStop={onStop} stopping={stopping} t={t} onNavigate={onNavigate} onRetry={onRetryJob} retryBusy={scanBusy} laneNames={jobLaneIds.map(sourceName)} />
           ) : null}
 
           {/* Per-source scan degrade: one quiet notice (never a loud red banner - the other
-              sources still delivered). Each line names the source, the plain reason, and the
-              recovery: needs_scope gets a Reconnect deep-link (the one move that fixes it);
-              rate_limited / engine_failure are transient/server-side, so they state the reason
-              without a fake button. Mirrors the all-projects load-failed notice pattern. */}
-          {degradedSources.length ? (
+              sources still delivered). H1: every line carries exactly ONE control - the move
+              that recovers it. Connect class (not_connected / needs_scope) keeps the Setup
+              deep-link; every run failure (an agent-lane group, engine_failure, rate_limited)
+              offers a rescan scoped to just those lanes. The eyebrow names what the card is,
+              now that its lines are heterogeneous. Mirrors the all-projects load-failed notice. */}
+          {cardAgentLaneGroups.length || laneRows.length ? (
             <div role="status" className={`space-y-1 rounded-xl px-4 py-2.5 ${INNER_SURFACE}`}>
-              {degradedSources.map(({ id, error }) => (
-                <p key={id} className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-                  <AlertCircle size={12} className="text-amber-600 dark:text-amber-500" aria-hidden="true" />
-                  <span>{t(`radar.source.degraded.${error === 'needs_scope' || error === 'rate_limited' ? error : 'engine_failure'}`, { platform: t(`radar.source.${id}`) })}</span>
-                  {error === 'needs_scope' && SETUP_LANE_FOR_SOURCE(id) ? (
-                    <button type="button" onClick={() => onNavigate?.('setup', SETUP_LANE_FOR_SOURCE(id))} className="font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
-                      {t('radar.source.degraded.reconnect')}
-                    </button>
-                  ) : null}
+              <span className={`block ${EYEBROW}`}>{t('radar.source.card.title')}</span>
+              {cardAgentLaneGroups.map(({ key, error, ids, stale, at }) => (
+                <p key={`agent-${key}`} className={`${NOTICE_LINE} ${stale ? NOTICE_TONE.quiet : NOTICE_TONE.halted}`}>
+                  {/* H6: a stale group is old news - the History glyph + muted stop + "last tried"
+                      say so; a row with no usable stamp keeps its reason copy, still muted. */}
+                  {stale
+                    ? <History size={12} className="text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                    : <AlertCircle size={12} className="text-rose-400" aria-hidden="true" />}
+                  <span>
+                    {stale && at
+                      ? t('radar.source.agentLane.stale', { platforms: ids.map(sourceName).join(', '), time: fmtRelative(at) })
+                      : t('radar.source.agentLane', { platforms: ids.map(sourceName).join(', '), reason: t(`radar.source.agentLane.reason.${error}`) })}
+                  </span>
+                  <button type="button" onClick={() => onScanSources(ids)} disabled={scanBusy} className={NOTICE_LINK}>
+                    {t('radar.source.agentLane.retry')}
+                  </button>
                 </p>
               ))}
+              {laneRows.map(({ id, error, detail, partial, stale, at }) => {
+                const connectClass = CONNECT_ERRORS.includes(error);
+                return (
+                  <p key={id} className={`${NOTICE_LINE} ${connectClass || stale ? NOTICE_TONE.quiet : NOTICE_TONE.halted}`}>
+                    {stale
+                      ? <History size={12} className="text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                      : <AlertCircle size={12} className={connectClass ? 'text-amber-700 dark:text-amber-500' : 'text-rose-400'} aria-hidden="true" />}
+                    {/* L4: a source that NEVER had credentials is not "expired" - not_connected
+                        says so plainly and the same Setup deep-link reads "Connect", while
+                        needs_scope keeps its expired/reconnect copy. D1: when the engine kept the
+                        underlying error text it rides as the tooltip (the raw words survive
+                        without widening the row); D6: a half-delivered lane says "Partial:" so a
+                        recorded degrade next to real items reads as such. */}
+                    <Tip label={detail}>
+                      <span className={detail ? 'cursor-help' : undefined}>
+                        {partial ? `${t('radar.source.partial')} ` : ''}
+                        {stale && at
+                          ? t('radar.source.stale', { platform: sourceName(id), time: fmtRelative(at) })
+                          : error === 'not_connected'
+                            ? t('radar.source.notConnected', { platform: sourceName(id) })
+                            : t(`radar.source.degraded.${error === 'needs_scope' || error === 'rate_limited' ? error : 'engine_failure'}`, { platform: sourceName(id) })}</span>
+                    </Tip>
+                    {id === 'bluesky' && error === 'not_connected' ? (
+                      // H3: the way out for bluesky is the .env, not a Setup card.
+                      <>
+                        <span>{t('radar.source.bluesky.envHint', { name: '' }).trimEnd()}</span>
+                        <code className="rounded bg-zinc-900/5 px-1 font-mono text-[11px] text-zinc-700 dark:bg-white/10 dark:text-zinc-200">{BLUESKY_ENV_VAR}</code>
+                        <button type="button" onClick={copyEnvName} className={NOTICE_LINK} aria-live="polite">
+                          {envCopy === 'copied'
+                            ? <><Check size={11} className="inline" aria-hidden="true" /> {t('radar.source.bluesky.copied')}</>
+                            : envCopy === 'failed'
+                              ? t('radar.source.bluesky.copyFailed')
+                              : <><Copy size={11} className="inline" aria-hidden="true" /> {t('radar.source.bluesky.copy')}</>}
+                        </button>
+                      </>
+                    ) : connectClass && SETUP_LANE_FOR_SOURCE(id) ? (
+                      <button type="button" onClick={() => onNavigate?.('setup', SETUP_LANE_FOR_SOURCE(id))} className={NOTICE_LINK}>
+                        {t(error === 'not_connected' ? 'radar.source.notConnected.connect' : 'radar.source.degraded.reconnect')}
+                      </button>
+                    ) : (
+                      // No Setup lane to send the operator to (or a run failure): the one move
+                      // left is another pass over exactly this lane.
+                      <button type="button" onClick={() => onScanSources([id])} disabled={scanBusy} className={NOTICE_LINK}>
+                        {t('radar.source.retry')}
+                      </button>
+                    )}
+                  </p>
+                );
+              })}
             </div>
           ) : null}
 
@@ -872,12 +1070,20 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
                 <div className="max-w-md space-y-2">
                   <Radio size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
-                  <p className="text-sm font-bold">{t('radar.empty')}</p>
+                  {/* K3 (fresh-eyes round 2): the empty state never repeats a CTA the header already
+                      shows. Newest run failed -> "No signals from this run." and NO second retry
+                      (the job row above owns it). No agent connected -> "No signals yet." with a
+                      muted pointer to the header primary, never its text. Agent live -> the
+                      existing "Press Scan now" hint (the same predicate the header primary uses). */}
+                  <p className="text-sm font-bold">{t(job?.state === 'failed' ? 'radar.empty.failedRun' : agentLive ? 'radar.empty' : 'radar.empty.none')}</p>
                   {/* WS2: the agent's OWN verdict answers "why nothing?" - promote it over the generic
-                      hint. It was truncated in a tooltip on the job row; here it leads. */}
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    {job?.state === 'done' && job?.tail ? job.tail : t('radar.empty.agentHint')}
-                  </p>
+                      hint. H4: the same disclosure as the job row, so a long verdict is readable
+                      here too, under the agent's byline. */}
+                  {job?.state === 'done' && job?.tail
+                    ? <AgentNote text={job.tail} t={t} className="mx-auto max-w-md text-left" />
+                    : job?.state === 'failed'
+                      ? null
+                      : <p className="text-xs text-zinc-500 dark:text-zinc-400">{t(agentLive ? 'radar.empty.agentHint' : 'radar.empty.connectHint')}</p>}
                   {/* WS2: suggested searches turn the dead end into a next action - one click adds
                       the query. No dead ends (canon). */}
                   {/* WS2: suggested searches turn the dead end into a next action - one click adds

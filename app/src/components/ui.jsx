@@ -323,7 +323,13 @@ export function PostStatusPill({ post }) {
   // no `status.tip.<x>` key, so t() returns the raw key and we set no title.
   const tipKey = `status.tip.${key}`;
   const tip = t(tipKey);
-  const title = tip === tipKey ? undefined : tip;
+  // A failed post's ACTUAL reason (post.lastFailure.message - e.g. "...re-mirror the render
+  // or set imageUrl") is more useful than the generic "open it for the reason" tip, so
+  // surface it right on the pill: the operator reads WHY on the row without opening the
+  // drawer (the reason was previously only in PostDetail). Other buckets keep the generic tip.
+  const title = (key === 'publish-failed' && post.lastFailure?.message)
+    ? post.lastFailure.message
+    : (tip === tipKey ? undefined : tip);
   // The green 'approved' bucket has no status.<key> label (it is not a Status-filter
   // bucket) - it resolves from approval.approved ("Freigegeben"), the same word the
   // detail/approval surfaces use. Every other bucket keeps its status.<key> label.

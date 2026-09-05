@@ -15,6 +15,9 @@ import { I18nProvider } from '../../lib/i18n.js';
 // The status axis was already handled (pending mode passes [] for statusFilter), so
 // these cover the two axes that still lied: platform and type.
 vi.mock('../../lib/api.js', () => ({
+  // A new dependency of the approval card: fail OPEN in tests (no content blockers) so
+  // the approve button keeps its pre-gate behaviour here; blocking is covered in its own test.
+  usePlatformValidate: () => ({ data: null }),
   approvePost: vi.fn(() => Promise.resolve({ ok: true })),
   rejectPost: vi.fn(() => Promise.resolve({ ok: true })),
   lintText: vi.fn(() => Promise.resolve({ ok: true, clean: true, errors: 0, warnings: 0, findings: [] })),

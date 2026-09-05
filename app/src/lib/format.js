@@ -1709,17 +1709,67 @@ export function scannableRadarSources(accounts, sources) {
 // lanes default ON, agent-found reply lanes default ON when connected (accounts evidence, or
 // a persisted ok scan for .env-only bluesky). Driven by the SERVER's capability table
 // (feed.capabilities) so the client never hardcodes one. `web` is never a scan target.
-export function effectiveRadarSourcesClient(radar, capabilities, accounts, sourceStatus) {
+// A lane in posting.skippedPlatforms ("I do not use this platform") is OFF by default, exactly
+// as on the server (lib/radar.mjs radarSourceSkipped): skippedPlatforms speaks SETUP ids, so
+// instagram follows the `meta` card. An explicit scan flag still wins either way.
+export function effectiveRadarSourcesClient(radar, capabilities, accounts, sourceStatus, skippedPlatforms = []) {
   const flags = radar && radar.sources && typeof radar.sources === 'object' ? radar.sources : {};
+  const skipped = Array.isArray(skippedPlatforms) ? skippedPlatforms.map((p) => String(p || '').toLowerCase()) : [];
   return Object.keys(capabilities || {}).filter((id) => {
     if (id === 'web') return false;
     const f = flags[id];
     const flag = f && typeof f === 'object' ? f.scan : undefined;
     if (flag === false) return false;
     if (flag === true) return true;
+    if (skipped.includes(id === 'instagram' ? 'meta' : id)) return false;
     if (capabilities[id]?.search === true) return true;
     return platformConnected(id, accounts) || sourceStatus?.[id]?.ok === true;
   });
+}
+
+// H6 (lane honesty, 2026-09-04): is this degrade row too old to act on? A client mirror of
+// lib/radar.mjs isStaleSourceRow (never imported - server code stays server-side): true for an
+// ok:false row whose `at` is missing (a pre-stamp row, age unknowable, so stale rather than
+// fresh) or older than maxAgeMs (48h: two daily slots have had the chance to refresh it). An
+// ok row is never stale. Pure; `now` accepts a Date, ms number or ISO string.
+export const RADAR_SOURCE_ROW_MAX_AGE_MS = 48 * 3600 * 1000;
+export function isStaleRadarSourceRow(row, now = Date.now(), maxAgeMs = RADAR_SOURCE_ROW_MAX_AGE_MS) {
+  if (!row || typeof row !== 'object' || row.ok !== false) return false;
+  const t = Date.parse(row.at);
+  if (Number.isNaN(t)) return true;
+  const n = now instanceof Date ? now.getTime() : (typeof now === 'number' ? now : Date.parse(now));
+  return n - t > maxAgeMs;
+}
+
+// K5 (fresh-eyes round 2, 2026-09-04): the wall-clock cap one agent research job may run
+// before pendpost stops it, in MINUTES - the figure the job row's reason line quotes ("Stopped
+// at the 15-minute limit on X, YouTube ..."), so "time limit" always says WHOSE limit. Derived
+// from lib/agent-runner.mjs AGENT_TIMEOUT_MS (900_000 ms = 15 min); the server constant is the
+// source of truth, this mirror exists so the copy changes in exactly one place on the client.
+export const AGENT_JOB_CAP_MINUTES = 15;
+
+// H4 (lane honesty, 2026-09-04): the agent's closing words are the CLI's own voice - on a
+// German surface they are usually English. A cheap, honest tell for the byline: on a de-*
+// locale, a note with no umlaut and none of the commonest German function words is not German.
+// Anything else (an en locale, an umlaut, an "und") reads as the surface's own language.
+// Pure; never a translation, only a label.
+const GERMAN_FUNCTION_WORDS = /\b(und|oder|der|die|das|nicht|ist|sind|ein|eine|mit|ich|wir|auch|noch|sich|wurde|wurden)\b/i;
+export function agentNoteIsForeign(text, locale) {
+  if (typeof text !== 'string' || !text.trim()) return false;
+  if (!String(locale || '').toLowerCase().startsWith('de')) return false;
+  if (/[äöüÄÖÜ]/.test(text)) return false;
+  return !GERMAN_FUNCTION_WORDS.test(text);
+}
+
+// H4: the first ~max characters of a note, cut at a word, for a disclosure summary. Returns
+// { excerpt, truncated }; a note that fits is returned whole (no ellipsis, no disclosure).
+export function agentNoteExcerpt(text, max = 120) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  if (s.length <= max) return { excerpt: s, truncated: false };
+  const cut = s.slice(0, max + 1);
+  const at = cut.lastIndexOf(' ');
+  const head = (at > max * 0.6 ? cut.slice(0, at) : s.slice(0, max)).replace(/[\s,;:.-]+$/, '');
+  return { excerpt: `${head}…`, truncated: true };
 }
 
 // The connect state of ONE Radar source, for the per-source rows: 'keyless' (no credential

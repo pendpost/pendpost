@@ -1,4 +1,4 @@
-import { Globe, Radio, Check, Plus, Copy } from 'lucide-react';
+import { Globe, Radio, Check, Plus, Copy, MessageCircleQuestion } from 'lucide-react';
 import { radarSourceState } from '../lib/format.js';
 import { PLATFORM_META } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
@@ -22,6 +22,9 @@ const GLYPH_META = {
   nostr: PLATFORM_META.nostr,
   linkedin: PLATFORM_META.linkedin,
   instagram: PLATFORM_META.instagram,
+  // Quora has no pendpost publish lane and no brand mark - a question glyph, mirroring the
+  // signal-row glyph in radar/RadarFeed.jsx so the two renderings can never disagree.
+  quora: { Icon: MessageCircleQuestion, color: 'text-rose-600' },
   web: { Icon: Globe, color: 'text-sky-500' },
 };
 // Sources with an in-Studio Setup card to deep-link to. Bluesky creds are .env-only and HN
