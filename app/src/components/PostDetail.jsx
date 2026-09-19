@@ -264,6 +264,9 @@ function PostExtras({ post, extras, t }) {
     else if (key === 'emailSegment' && post.emailSegment) rows.push({ key, label: t('postDetail.field.emailSegment'), value: emailSegmentSummary(post.emailSegment, t) });
     else if (key === 'emailOnly' && post.emailOnly === true) rows.push({ key, label: t('postDetail.field.emailOnly'), check: true });
     else if (key === 'publishAsDraft' && post.publishAsDraft === true) rows.push({ key, label: t('postDetail.field.publishAsDraft'), check: true });
+    // LinkedIn author target: show a review row only for the non-default 'member' (personal
+    // profile). An organization/unset post shows no row - byte-identical to before.
+    else if (key === 'liAuthor' && post.liAuthor === 'member') rows.push({ key, label: t('postDetail.field.liAuthor'), value: t('postDetail.field.liAuthorMember') });
     else if (key === 'tgCta' && post.tgCta) rows.push({ key, label: t('postDetail.field.tgCta'), value: tgCtaSummary(post.tgCta, t) });
     else if (key === 'dcEmbed' && post.dcEmbed) rows.push({ key, label: t('postDetail.field.dcEmbed'), value: dcEmbedSummary(post.dcEmbed) });
     else if (key === 'ttInteraction' && post.ttInteraction) rows.push({ key, label: t('postDetail.field.ttInteraction'), value: ttInteractionSummary(post.ttInteraction, t) });

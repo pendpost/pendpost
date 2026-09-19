@@ -118,7 +118,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 1. **Create the app** - Create a LinkedIn developer app and associate it with the Company Page you will publish for. You must hold an admin role on that Page for organization posting to work.
 2. **Request the products** - Under the Products tab, request the "Community Management API" plus "Share on LinkedIn" and "Sign In with LinkedIn". Organization (Company Page) posting requires the Community Management API; member posting needs Share on LinkedIn. Some products require review and may stay pending until approved.
 3. **Record the organization URN** - Find the Company Page ID and form its URN as urn:li:organization:<digits>. This is the target the engine posts to. _(sets identifier `linkedinOrgUrn`)_
-4. **Run the OAuth flow** - Run the CLI below to complete the OAuth authorization in the browser and store the access + refresh tokens. The token exchange happens in the CLI - this dashboard never sees the raw token.
+4. **Run the OAuth flow** - Run the CLI below to complete the OAuth authorization in the browser and store the access + refresh tokens. The token exchange happens in the CLI - this dashboard never sees the raw token. With "Share on LinkedIn" + "Sign In with LinkedIn" granted, the flow also captures your personal-profile URN automatically, unlocking the per-post "Personal profile" option in the composer (the default stays the Company Page).
    ```bash
    node scripts/linkedin-social.mjs auth --client <client-id>
    ```
@@ -127,6 +127,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 
 - _Organization posts are rejected with an authorization error._ The authorizing member is not an admin of the Company Page. **Fix:** Grant the member a page admin role on the Company Page, then re-run the auth flow.
 - _The requested scope is denied at authorization time._ The Community Management API product is still pending review or not added. **Fix:** Add and wait for approval of the Community Management API product, then re-authorize.
+- _A post set to publish on the personal profile is blocked ("member posting needs a captured person URN")._ The token was minted before member posting was set up, so no personal-profile URN was captured (w_member_social + Sign In with LinkedIn not both granted at auth time). **Fix:** Re-run the auth flow with "Share on LinkedIn" and "Sign In with LinkedIn" granted; the flow captures the person URN and the block clears.
 - _Posts succeed but appear under the wrong organization (or 404)._ The configured org URN points at the wrong Company Page. **Fix:** Verify LINKEDIN_ORG_URN is urn:li:organization:<digits> for the intended Page.
 
 ## X
