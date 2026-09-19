@@ -73,10 +73,33 @@ for (const k of OVERRIDES) {
   });
 }
 
+// --- 3. liAuthor (LinkedIn per-post author target) write/read + validation ----
+check('normalizePost surfaces liAuthor=member', () => assert.equal(
+  normalizePost(planEntry, plan, { id: 'li-m', type: 'text', platforms: ['linkedin'], liAuthor: 'member' }).liAuthor,
+  'member',
+));
+check('normalizePost defaults liAuthor to organization when absent', () => assert.equal(
+  normalizePost(planEntry, plan, { id: 'li-d', type: 'text', platforms: ['linkedin'] }).liAuthor,
+  'organization',
+));
+check('normalizePost normalizes a bogus liAuthor back to organization', () => assert.equal(
+  normalizePost(planEntry, plan, { id: 'li-b', type: 'text', platforms: ['linkedin'], liAuthor: 'nonsense' }).liAuthor,
+  'organization',
+));
+check('validateFieldValues accepts organization|member|empty for liAuthor', () => {
+  for (const v of ['organization', 'member', '']) assert.equal(validateFieldValues({ liAuthor: v }), null, `liAuthor=${v} should pass`);
+});
+check('validateFieldValues rejects an unknown liAuthor value', () => {
+  const bad = validateFieldValues({ liAuthor: 'someone' });
+  assert.ok(bad, 'expected an error body');
+  assert.equal(bad.code, 'invalid_input');
+  assert.match(bad.message, /liAuthor must be one of/);
+});
+
 if (failures) {
   console.error(`[platform-override-fields] FAIL - ${failures} assertion(s) failed`);
   process.exit(1);
 }
-console.log('[platform-override-fields] OK - the six lane overrides survive the write/read seam.');
+console.log('[platform-override-fields] OK - the six lane overrides + liAuthor survive the write/read seam.');
 // writes.mjs pulls the lib graph (no top-level timers); force a clean exit.
 process.exit(0);

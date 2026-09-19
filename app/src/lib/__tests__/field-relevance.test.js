@@ -104,6 +104,15 @@ describe('fieldRelevance', () => {
     expect(r.link).toBe(false);
   });
 
+  it('liAuthor (member vs Company Page target) is LinkedIn-only, across post types', () => {
+    expect(fieldRelevance(['linkedin'], 'text').liAuthor).toBe(true);
+    expect(fieldRelevance(['linkedin'], 'video').liAuthor).toBe(true);
+    expect(fieldRelevance(['instagram', 'facebook'], 'reel').liAuthor).toBe(false);
+    expect(fieldRelevance(['x'], 'text').liAuthor).toBe(false);
+    // a multi-lane post that INCLUDES linkedin still exposes the LinkedIn-only target
+    expect(fieldRelevance(['linkedin', 'x'], 'text').liAuthor).toBe(true);
+  });
+
   it('an IG story exposes interactive stickers + hashtags, not the first comment', () => {
     const r = fieldRelevance(['instagram'], 'story');
     expect(r.interactiveStory).toBe(true);

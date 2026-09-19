@@ -1346,6 +1346,9 @@ const FIELD_PLATFORMS = {
   // Spec 27: draft/pending-review publish status - hand off to a native
   // WordPress draft or the TikTok inbox for a human to finish + publish.
   publishAsDraft: ['wordpress', 'ghost', 'tiktok'],
+  // LinkedIn per-post author target (Company Page vs the member's personal
+  // profile). LinkedIn-exclusive - the engine reads liAuthor only on that lane.
+  liAuthor: ['linkedin'],
   // Spec 14: rich link/CTA - Telegram inline buttons + link-preview/format
   // control, and a Discord rich embed card. Each is lane-exclusive (one
   // structured object per lane, never shared).
@@ -1471,6 +1474,8 @@ export function fieldRelevance(platforms = [], type = 'reel') {
     // or the TikTok inbox upload. Approval (§H.2) is untouched; this only
     // changes the destination status once the engine is already allowed to act.
     publishAsDraft: has('wordpress') || has('ghost') || has('tiktok'),
+    // LinkedIn per-post author target - shown only when LinkedIn is a target lane.
+    liAuthor: has('linkedin'),
     // Spec 14: rich link/CTA - Telegram inline CTA buttons + link-preview/
     // format control; Discord rich embed card. Not type-gated (both lanes'
     // sendMessage/webhook accept them regardless of type).
@@ -1567,7 +1572,7 @@ const EDITABLE_FIELDS = [
 // established boolean pattern (publishAsDraft/emailOnly are authored in the Composer and
 // reviewed read-only here - ContentField only renders text controls). Net-simplify: no
 // second edit surface for the same flag.
-const EXTRA_FIELDS = ['link', 'image', 'imageUrl', 'redditUrl', 'redditFlairId', 'redditSubreddit', 'isPromo', 'pinBoardSection', 'canonicalUrl', 'blogSlug', 'ghostEmail', 'newsletter', 'emailSegment', 'emailOnly', 'hashtags', 'gbp', 'interactiveStory', 'publishAsDraft', 'tgCta', 'dcEmbed', 'ttInteraction', 'xReplySettings', 'poll'];
+const EXTRA_FIELDS = ['link', 'image', 'imageUrl', 'redditUrl', 'redditFlairId', 'redditSubreddit', 'isPromo', 'pinBoardSection', 'canonicalUrl', 'blogSlug', 'ghostEmail', 'newsletter', 'emailSegment', 'emailOnly', 'hashtags', 'gbp', 'interactiveStory', 'publishAsDraft', 'liAuthor', 'tgCta', 'dcEmbed', 'ttInteraction', 'xReplySettings', 'poll'];
 
 // The platforms (in PLATFORMS order) that `field` feeds on THIS post — its
 // declared platform set intersected with the post's targets.

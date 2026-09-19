@@ -27,6 +27,7 @@ fs.writeFileSync(path.join(WS, '.env'), [
   'META_PAGE_ID=PAGE_OWNER',
   'MASTODON_HANDLE=mybot@my.instance',
   'LINKEDIN_ORG_URN=urn:li:organization:99',
+  'LINKEDIN_PERSON_URN=urn:li:person:MEMBER99',
 ].join('\n') + '\n');
 
 const NOW = Date.parse('2026-08-09T12:00:00.000Z');
@@ -78,7 +79,8 @@ try {
   ok(isOwnAuthor('mastodon', { author: 'mybot' }) === true, 'mastodon: bare local-part is own');
   ok(isOwnAuthor('mastodon', { author: 'someone@else.social' }) === false, 'mastodon: a stranger acct is not own');
   ok(isOwnAuthor('linkedin', { author: 'urn:li:organization:99' }) === true, 'linkedin: our org urn is own');
-  ok(isOwnAuthor('linkedin', { author: 'urn:li:person:xyz' }) === false, 'linkedin: a person urn is not own');
+  ok(isOwnAuthor('linkedin', { author: 'urn:li:person:MEMBER99' }) === true, 'linkedin: our CONFIGURED person urn (member posting) is own');
+  ok(isOwnAuthor('linkedin', { author: 'urn:li:person:xyz' }) === false, 'linkedin: a DIFFERENT person urn is not own');
   ok(isOwnAuthor('telegram', { author: 'anyone', authorId: 'x' }) === false, 'a lane with no stored own-id passes through (fail-open)');
 
   // ---- isOwnHousekeepingComment unit (owner decision 5, 2026-08-17) --------

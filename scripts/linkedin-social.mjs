@@ -58,7 +58,11 @@ const ENV_PATH = envPath();
 
 const REST = 'https://api.linkedin.com/rest';
 const OAUTH = 'https://www.linkedin.com/oauth/v2';
-const SCOPES = 'w_organization_social r_organization_social';
+// w_member_social + openid/profile added for spec: per-post `liAuthor:'member'` publishes to the
+// connected member's PERSONAL profile. openid/profile let the auth ceremony read the member's
+// person URN (userinfo `sub`); w_member_social authorizes posting as that member. Org posting is
+// unchanged - it uses the same token and the org scopes.
+const SCOPES = 'w_organization_social r_organization_social w_member_social openid profile';
 const DEFAULT_PORT = 8089;
 const DEFAULT_ORG_URN = '';
 const DEFAULT_API_VERSION = '202605'; // YYYYMM; LinkedIn ships monthly, supported >= 1 year
@@ -66,6 +70,13 @@ const DEFAULT_API_VERSION = '202605'; // YYYYMM; LinkedIn ships monthly, support
 // org urn + api version are constants, overridable by env (mirrors meta-social hardcoding GRAPH).
 const orgUrn = () => readEnv('LINKEDIN_ORG_URN') || DEFAULT_ORG_URN;
 const apiVersion = () => readEnv('LINKEDIN_API_VERSION') || DEFAULT_API_VERSION;
+
+// The connected member's personal-profile URN (urn:li:person:<sub>), captured at auth from OpenID
+// userinfo. Empty until the owner re-runs `auth` with the member scopes granted.
+const personUrn = () => readEnv('LINKEDIN_PERSON_URN') || '';
+// Which identity a post publishes as: the Company Page by default, or the member's personal profile
+// when the post carries liAuthor:'member'. Used for both the share author and every media owner.
+const authorUrnFor = (post) => (post && post.liAuthor === 'member' ? personUrn() : orgUrn());
 
 // ---------- env helpers (same shape as meta-social.mjs) ----------
 
@@ -127,6 +138,22 @@ function persistTokens(data) {
   if (data.refresh_token) vars.LINKEDIN_REFRESH_TOKEN = data.refresh_token;
   writeEnv(vars);
   return vars;
+}
+
+// Capture the connected member's person URN (urn:li:person:<sub>) from OpenID userinfo so a post
+// with liAuthor:'member' can publish to the personal profile. Best-effort and never throws into the
+// auth flow: it needs the openid scope, and without it the member lane simply stays unavailable
+// (org posting is entirely unaffected). Same userinfo read cmdDiscover already uses for identity.
+async function captureMemberIdentity(token) {
+  try {
+    const res = await fetch('https://api.linkedin.com/v2/userinfo', { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return;
+    const info = await res.json();
+    if (info && info.sub) {
+      writeEnv({ LINKEDIN_PERSON_URN: `urn:li:person:${info.sub}` });
+      console.log(`[ok] Member identity captured (urn:li:person:${info.sub}) - personal-profile posting available.`);
+    }
+  } catch { /* userinfo needs the openid scope; org posting is unaffected */ }
 }
 
 function tokenTail(t) {
@@ -199,13 +226,13 @@ async function api(method, pathname, { query, body, token, extraHeaders } = {}) 
 
 // ---------- video upload (multipart, straight from local disk, HD byte-for-byte) ----------
 
-async function uploadVideo(localPath, token, thumbnailPath = null) {
+async function uploadVideo(localPath, token, thumbnailPath = null, owner = orgUrn()) {
   const buf = fs.readFileSync(localPath);
   const fileSizeBytes = buf.length;
 
   const { data: init } = await api('POST', '/videos', {
     query: { action: 'initializeUpload' },
-    body: { initializeUploadRequest: { owner: orgUrn(), fileSizeBytes, uploadCaptions: false, uploadThumbnail: Boolean(thumbnailPath) } },
+    body: { initializeUploadRequest: { owner, fileSizeBytes, uploadCaptions: false, uploadThumbnail: Boolean(thumbnailPath) } },
     token,
   });
   const { video, uploadInstructions, uploadToken, thumbnailUploadUrl } = init.value || {};
@@ -290,14 +317,14 @@ async function pollVideo(videoUrn, token, timeoutMs = 5 * 60 * 1000) {
 // share without a thumbnail on any failure - a missing/broken hero must never
 // block the article post (LinkedIn then falls back to its JS-less crawl, which
 // is blank for our SPA /blog/* URLs, but the title still renders explicitly).
-async function uploadArticleThumbnail(imageUrl, token) {
+async function uploadArticleThumbnail(imageUrl, token, owner = orgUrn()) {
   const imgRes = await fetch(imageUrl);
   if (!imgRes.ok) throw new Error(`thumbnail download HTTP ${imgRes.status} (${imageUrl})`);
   const bytes = Buffer.from(await imgRes.arrayBuffer());
 
   const { data: init } = await api('POST', '/images', {
     query: { action: 'initializeUpload' },
-    body: { initializeUploadRequest: { owner: orgUrn() } },
+    body: { initializeUploadRequest: { owner } },
     token,
   });
   const { uploadUrl, image } = init.value || {};
@@ -313,11 +340,11 @@ async function uploadArticleThumbnail(imageUrl, token) {
 // Spec 05: register a LOCAL image file as a LinkedIn digital-media-asset and return its
 // urn:li:image, for use as a multiImage carousel slide. Same Images API single-PUT flow
 // as uploadArticleThumbnail, but reads the bytes off disk instead of fetching a URL.
-async function uploadLocalImage(localPath, token) {
+async function uploadLocalImage(localPath, token, owner = orgUrn()) {
   const bytes = fs.readFileSync(localPath);
   const { data: init } = await api('POST', '/images', {
     query: { action: 'initializeUpload' },
-    body: { initializeUploadRequest: { owner: orgUrn() } },
+    body: { initializeUploadRequest: { owner } },
     token,
   });
   const { uploadUrl, image } = init.value || {};
@@ -354,7 +381,7 @@ function linkedinPollDuration(minutes) {
 
 async function createPost(post, videoUrn, token, thumbnailUrn = null, imageUrns = null) {
   const body = {
-    author: orgUrn(),
+    author: authorUrnFor(post),
     commentary: escapeCommentary(post.caption),
     visibility: 'PUBLIC',
     distribution: { feedDistribution: 'MAIN_FEED', targetEntities: [], thirdPartyDistributionChannels: [] },
@@ -581,6 +608,7 @@ async function cmdAuth(args) {
           redirect_uri: redirectUri,
         });
         const vars = persistTokens(data);
+        await captureMemberIdentity(data.access_token); // best-effort: enables personal-profile posting
         res.writeHead(200, { 'Content-Type': 'text/html' });
         res.end('<h2>pendpost: LinkedIn connected.</h2><p>You can close this tab and return to the terminal.</p>');
         const exp = new Date(Number(vars.LINKEDIN_TOKEN_EXPIRES_AT)).toLocaleString('en-US');
@@ -746,16 +774,27 @@ async function cmdPublishDue(args) {
       }
     }
 
-    if (args['dry-run']) {
-      if (pollPost) console.log(`[dry] ${post.id}: would create a PUBLISHED poll org post for ${orgUrn()} (${pollOptions(post).length} options).`);
-      else if (carouselPost) console.log(`[dry] ${post.id}: would upload ${carouselPaths.length} images + create a PUBLISHED multiImage org post for ${orgUrn()}.`);
-      else console.log(textPost
-        ? `[dry] ${post.id}: would create a PUBLISHED text/article org post for ${orgUrn()}${post.image ? ` with thumbnail ${post.image}` : ' (no thumbnail)'}${post.description ? ' + card description' : ''}.`
-        : `[dry] ${post.id}: would upload ${path.basename(mediaPath)} + create a PUBLISHED org post for ${orgUrn()}.`);
+    // Per-post author: the Company Page by default, or the member's personal profile when
+    // liAuthor:'member'. Fail closed BEFORE any media upload - a member post with no captured
+    // person URN would otherwise upload assets under the wrong owner then 403 at share time.
+    const author = authorUrnFor(post);
+    const authorLabel = post.liAuthor === 'member' ? 'personal profile' : 'Company Page';
+    if (post.liAuthor === 'member' && !personUrn()) {
+      console.log(`[warn] ${post.id}: liAuthor=member but LINKEDIN_PERSON_URN is not set - reconnect LinkedIn (auth) to grant member posting; skipping.`);
+      RUN.results.push({ postId: post.id, platform: 'linkedin', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: 'liAuthor=member requires LINKEDIN_PERSON_URN - reconnect LinkedIn with the member scope (node scripts/linkedin-social.mjs auth)' });
       continue;
     }
 
-    console.log(`[info] ${post.id}: publishing ${pollPost ? 'poll post' : (carouselPost ? 'multiImage post' : (textPost ? 'text/article post' : 'HD render'))} to ${orgUrn()}...`);
+    if (args['dry-run']) {
+      if (pollPost) console.log(`[dry] ${post.id}: would create a PUBLISHED poll post for ${author} (${authorLabel}, ${pollOptions(post).length} options).`);
+      else if (carouselPost) console.log(`[dry] ${post.id}: would upload ${carouselPaths.length} images + create a PUBLISHED multiImage post for ${author} (${authorLabel}).`);
+      else console.log(textPost
+        ? `[dry] ${post.id}: would create a PUBLISHED text/article post for ${author} (${authorLabel})${post.image ? ` with thumbnail ${post.image}` : ' (no thumbnail)'}${post.description ? ' + card description' : ''}.`
+        : `[dry] ${post.id}: would upload ${path.basename(mediaPath)} + create a PUBLISHED post for ${author} (${authorLabel}).`);
+      continue;
+    }
+
+    console.log(`[info] ${post.id}: publishing ${pollPost ? 'poll post' : (carouselPost ? 'multiImage post' : (textPost ? 'text/article post' : 'HD render'))} to ${author} (${authorLabel})...`);
     try {
       // Article-card thumbnail: download the remote hero (post.image) + register it
       // as a LinkedIn image asset. Fail-soft - on any error the share still posts,
@@ -763,19 +802,19 @@ async function cmdPublishDue(args) {
       let thumbnailUrn = null;
       if (textPost && post.image) {
         try {
-          thumbnailUrn = await uploadArticleThumbnail(post.image, token);
+          thumbnailUrn = await uploadArticleThumbnail(post.image, token, author);
           console.log(`[info]   article thumbnail registered (${thumbnailUrn}).`);
         } catch (thumbErr) {
           console.log(`[warn] ${post.id}: thumbnail upload failed (${thumbErr.message}) - posting article share without a thumbnail.`);
         }
       }
-      const videoUrn = (textPost || pollPost || carouselPost) ? null : await uploadVideo(mediaPath, token, resolveCoverPath(post, mediaPath));
+      const videoUrn = (textPost || pollPost || carouselPost) ? null : await uploadVideo(mediaPath, token, resolveCoverPath(post, mediaPath), author);
       // Spec 05: register each carousel slide IN ORDER; a slide failure throws -> the
       // catch below pushes a structured ok:false row and NO post is created (fail-closed).
       let imageUrns = null;
       if (carouselPost) {
         imageUrns = [];
-        for (const slide of carouselPaths) imageUrns.push(await uploadLocalImage(slide, token));
+        for (const slide of carouselPaths) imageUrns.push(await uploadLocalImage(slide, token, author));
       }
       const postUrn = await createPost(post, videoUrn, token, thumbnailUrn, imageUrns);
 

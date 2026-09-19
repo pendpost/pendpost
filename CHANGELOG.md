@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-09-19
+
+This release lets you publish to LinkedIn as yourself, not only as your Company Page. A LinkedIn post can now go out from your personal profile, chosen per post, so a personal brand can use the lane the same way a company page does. Everything else about the lane, drafts, approvals, and plans, stays the same.
+
+### Added
+- LinkedIn member posting. A post can publish to your personal LinkedIn profile instead of only a Company Page. Pick "Personal profile" per post in the composer; the default stays the Company Page. Reconnect LinkedIn once so the token carries the member scope, and pendpost captures your profile id for you at sign-in. This answers a community request (pendpost/pendpost#6).
+
 ## [2.4.1] - 2026-09-19
 
 This release is about telling you the truth at publish time. When a post goes out, or does not, pendpost now shows the reason on the card and a short toast while the post is in flight, so you are never left guessing. YouTube got more reliable in the same breath: an approved Short is never silently skipped, and a post that fell behind ships late instead of being dropped. And when a YouTube read fails because an API is switched off in your Google Cloud project, pendpost points you at enabling that API rather than sending you to reconnect an account that was never the problem.

@@ -1252,6 +1252,8 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // still gates whether the engine may act at all; this only changes the
   // destination status once that gate has passed.
   const [publishAsDraft, setPublishAsDraft] = useState(isEdit ? post.publishAsDraft === true : false);
+  // LinkedIn per-post author target: Company Page (default) or the member's personal profile.
+  const [liAuthor, setLiAuthor] = useState(isEdit && post.liAuthor === 'member' ? 'member' : 'organization');
   const [canonicalUrl, setCanonicalUrl] = useState(isEdit ? post.canonicalUrl || '' : '');
   const [ghostEmail, setGhostEmail] = useState(isEdit ? post.ghostEmail === true : false);
   // Spec 01: Ghost newsletter refinements, nested under the ghostEmail opt-in -
@@ -1362,6 +1364,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     wpCategories: isEdit ? post.wpCategories || '' : '',
     featureImageAlt: isEdit ? post.featureImageAlt || '' : '',
     publishAsDraft: isEdit ? post.publishAsDraft === true : false,
+    liAuthor: isEdit && post.liAuthor === 'member' ? 'member' : 'organization',
     canonicalUrl: isEdit ? post.canonicalUrl || '' : '',
     ghostEmail: isEdit ? post.ghostEmail === true : false,
     newsletter: isEdit ? post.newsletter || '' : '',
@@ -1518,11 +1521,11 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     () => JSON.stringify({
       campaign, id: idEdited ? id : '', type, platforms, scheduledIso, caption, firstComment, altText, title,
       link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug,
-      body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent,
+      body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent,
       ttInteraction, spoilerText, xReplySettings, poll,
       stickers, hashtagsMode, hashtags,
     }) !== initialSnapshot,
-    [campaign, id, idEdited, type, platforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
+    [campaign, id, idEdited, type, platforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
   );
 
   // Report dirtiness upward so App's client-switch guard (lib/clientSwitchGuard.js)
@@ -1866,6 +1869,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           wpCategories: wpCategories || null,
           featureImageAlt: featureImageAlt || null,
           publishAsDraft: publishAsDraft === true ? true : null,
+          liAuthor: liAuthor === 'member' ? 'member' : null,
           canonicalUrl: canonicalUrl || null,
           ghostEmail: ghostEmail === true ? true : null,
           newsletter: newsletter || null,
@@ -1928,6 +1932,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           wpCategories: wpCategories || undefined,
           featureImageAlt: featureImageAlt || undefined,
           publishAsDraft: publishAsDraft === true ? true : undefined,
+          liAuthor: liAuthor === 'member' ? 'member' : undefined,
           canonicalUrl: canonicalUrl || undefined,
           ghostEmail: ghostEmail === true ? true : undefined,
           newsletter: newsletter || undefined,
@@ -2509,6 +2514,30 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 {t('composer.field.publishAsDraft')}
               </label>
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.publishAsDraftHint')}</p>
+            </div>
+          ) : null}
+
+          {/* LinkedIn per-post author target: the Company Page (default) or the connected
+              member's personal profile. Shown only when LinkedIn is a target lane. */}
+          {rel.liAuthor ? (
+            <div className="space-y-1.5">
+              <span className={EYEBROW}>{t('composer.field.liAuthor')}</span>
+              <div className="flex gap-2" role="radiogroup" aria-label={t('composer.field.liAuthor')}>
+                {[{ v: 'organization', label: t('composer.field.liAuthorOrg') }, { v: 'member', label: t('composer.field.liAuthorMember') }].map((opt) => (
+                  <label key={opt.v} className={`flex cursor-pointer items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold ${INNER_SURFACE} ${liAuthor === opt.v ? 'ring-1 ring-brand' : ''}`}>
+                    <input
+                      type="radio"
+                      name="composer-liauthor"
+                      value={opt.v}
+                      checked={liAuthor === opt.v}
+                      onChange={() => setLiAuthor(opt.v)}
+                      className="h-3.5 w-3.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.liAuthorHint')}</p>
             </div>
           ) : null}
 
