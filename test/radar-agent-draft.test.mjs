@@ -156,9 +156,10 @@ try {
         replyVoiceDefault: 'Dry, Swiss, never salesy.',
         queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['schedule'] }],
         agent: { provider: 'claude-code', maxPerRun: 20 },
-        // THE OWNER'S DECISION: agent drafts may auto-post on this lane.
-        autoReply: { enabled: true, lanes: ['reddit'], requireLintClean: true },
       },
+      // THE OWNER'S DECISION: agent drafts may auto-post on this lane (owner Q2: the arming lives
+      // in the auto-approve object now, as autoApprove.radarReplies).
+      autoApprove: { radarReplies: { enabled: true, lanes: ['reddit'], requireLintClean: true } },
     } },
   }));
 

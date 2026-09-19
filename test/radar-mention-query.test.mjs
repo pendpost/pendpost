@@ -22,7 +22,7 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.strin
 
 const { getConfig, setConfig } = await import('../lib/config.mjs');
 const setRadar = (radar, actor = 'owner') => setConfig({ ifRev: getConfig().rev, actor, set: { posting: { radar } } });
-const mentionQuery = { id: 'brand-mentions', label: 'Brand mentions', sources: ['reddit', 'mastodon'], keywords: ['pendpost'], brief: 'people talking about us by name', cadence: 'daily', mention: true };
+const mentionQuery = { id: 'brand-mentions', label: 'Brand mentions', sources: ['reddit', 'mastodon'], keywords: ['pendpost'], brief: 'people talking about us by name', mention: true };
 
 try {
   // ---- (a) shape ----
@@ -38,7 +38,7 @@ try {
 
   // ---- (c) still a normal query ----
   const q2 = getConfig().posting.radar.queries.find((x) => x.id === 'brand-mentions');
-  ok(q2.enabled !== false && q2.sources[0] === 'reddit' && q2.keywords[0] === 'pendpost' && q2.cadence === 'daily', '(c) a mention query keeps every ordinary query field');
+  ok(q2.enabled !== false && q2.sources[0] === 'reddit' && q2.keywords[0] === 'pendpost', '(c) a mention query keeps every ordinary query field');
 
   // ---- (d) mention + warmup are independent flags ----
   const both = setRadar({ enabled: true, queries: [{ ...mentionQuery, warmup: true }] });

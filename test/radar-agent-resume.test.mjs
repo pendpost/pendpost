@@ -76,8 +76,8 @@ try {
 
   // x + youtube forced INTO the scan set (nothing is connected in a hermetic run); linkedin left out.
   await cfg({
-    enabled: true, dailyAt: '00:00',
-    queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'], cadence: 'daily' }],
+    enabled: true, dailyEnabled: true, dailyAt: '00:00',
+    queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'] }],
     agent: { provider: 'claude-code', dailyBudget: 3 },
     sources: { x: { scan: true }, youtube: { scan: true } },
   });

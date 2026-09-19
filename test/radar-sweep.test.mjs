@@ -1,10 +1,10 @@
 // radar-sweep.test.mjs - the Radar (beta) daily sweep + GEO layer (spec 35), mock-mode.
 //
 // Proofs:
-//   (a) dailyRadarScan() is a NO-OP (byte-unchanged) when Radar is off, and when there is
-//       no cadence:'daily' query - so an enabled:false project's tick is untouched.
+//   (a) dailyRadarScan() is a NO-OP (byte-unchanged) when Radar is off, and when the global
+//       dailyEnabled switch is off - so an enabled:false project's tick is untouched.
 //   (b) it POPULATES state.radar.signals + stamps lastDailyScan + refreshes the GEO
-//       comparison backlog when enabled + a daily query exists; at-most-once per LOCAL day
+//       comparison backlog when enabled + dailyEnabled + an enabled query; at-most-once per LOCAL day
 //       on the posting.radar.dailyAt clock (pinned to 00:00 here so the suite passes at any
 //       wall-clock time - the default 09:00 would fail a pre-9am run).
 //   (c) comparisonBacklog() clusters alternative-seeking/competitor-mention signals + dedupes.
@@ -45,7 +45,10 @@ try {
     { source: 'hackernews', url: 'https://hn/3', text: 'Hootsuite vs Sprout - which is better for a small team?', intentTags: ['alternative-seeking'] },
     { source: 'reddit', url: 'https://r/4', text: 'just posted my lunch pic', intentTags: [] }, // chatter - ignored (no tag)
   ];
-  const backlog = comparisonBacklog(sigs);
+  // Mining is scoped to the tenant's DECLARED rivals now (an off-topic "X vs Y" no longer
+  // mints a page), so the pure-derivation cases pass the competitor list the E2E config carries.
+  const RIVALS = ['Buffer', 'Hootsuite', 'Sprout', 'Müllertool'];
+  const backlog = comparisonBacklog(sigs, [], [], { competitors: RIVALS });
   const bufferAlt = backlog.find((b) => /buffer alternative/i.test(b.title));
   ok(bufferAlt, 'comparisonBacklog clusters "alternative to Buffer" into a "Buffer alternative" item');
   ok(bufferAlt && bufferAlt.examples.length === 2, 'the two "alternative to Buffer" signals DEDUPE into one item with both example threads');
@@ -57,10 +60,10 @@ try {
   const selfB = comparisonBacklog([{ source: 'reddit', url: 'https://r/9', text: 'is there an alternative to pendpost?', intentTags: ['alternative-seeking'] }]);
   ok(!selfB.some((b) => /pendpost alternative/i.test(b.title)), 'review #5: "alternative to pendpost" never mints a self-referential "pendpost alternative" item');
   // review #6: a vs-CHAIN keeps EVERY competitor (the third is not dropped).
-  const chainB = comparisonBacklog([{ source: 'hn', url: 'https://hn/9', text: 'Buffer vs Hootsuite vs Sprout - thoughts?', intentTags: ['alternative-seeking'] }]);
+  const chainB = comparisonBacklog([{ source: 'hn', url: 'https://hn/9', text: 'Buffer vs Hootsuite vs Sprout - thoughts?', intentTags: ['alternative-seeking'] }], [], [], { competitors: RIVALS });
   ok(['Buffer', 'Hootsuite', 'Sprout'].every((c) => chainB.some((b) => new RegExp(`pendpost vs ${c}`, 'i').test(b.title))), 'review #6: "Buffer vs Hootsuite vs Sprout" yields all THREE comparison ideas (the chain drops nothing)');
   // review #7: a non-ASCII competitor clusters (broadened to a Unicode letter class).
-  const uniB = comparisonBacklog([{ source: 'reddit', url: 'https://r/10', text: 'looking for an alternative to Müllertool', intentTags: ['alternative-seeking'] }]);
+  const uniB = comparisonBacklog([{ source: 'reddit', url: 'https://r/10', text: 'looking for an alternative to Müllertool', intentTags: ['alternative-seeking'] }], [], [], { competitors: RIVALS });
   ok(uniB.some((b) => /Müllertool alternative/i.test(b.title)), 'review #7: a non-ASCII competitor (Müllertool) clusters (Unicode letter class)');
 
   // ---- (d) footprintMentionRate (pure) --------------------------------------
@@ -69,19 +72,20 @@ try {
   ok(footprintMentionRate([]).rate === 0 && footprintMentionRate([]).checks === 0, 'footprintMentionRate([]) is 0/0');
 
   // ---- (a) NO-OP when disabled (byte-unchanged): no state write -------------
-  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: false, queries: [{ id: 'q1', label: 'x', sources: ['reddit'], cadence: 'daily' }] } }));
+  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: false, dailyEnabled: true, queries: [{ id: 'q1', label: 'x', sources: ['reddit'] }] } }));
   const stateBefore = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf8') : null;
   const off = await dailyRadarScan();
   ok(off === null, 'dailyRadarScan() is a NO-OP (null) when Radar is disabled');
   const stateAfter = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf8') : null;
   ok(stateBefore === stateAfter, 'a disabled project\'s dailyRadarScan writes NOTHING to state.json (byte-unchanged tick)');
 
-  // ---- (a) NO-OP when enabled but NO cadence:'daily' query -------------------
-  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, competitorsDefault: ['Buffer'], queries: [{ id: 'q1', label: 'x', sources: ['reddit'], cadence: 'manual' }] } }));
-  ok((await dailyRadarScan()) === null, 'dailyRadarScan() is a NO-OP when enabled but no cadence:"daily" query exists');
+  // ---- (a) NO-OP when enabled but the global daily switch is OFF ------------
+  // Arming is now ONE flag (dailyEnabled), not a per-query cadence. Off => on-demand only.
+  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, dailyEnabled: false, competitorsDefault: ['Buffer'], queries: [{ id: 'q1', label: 'x', sources: ['reddit'] }] } }));
+  ok((await dailyRadarScan()) === null, 'dailyRadarScan() is a NO-OP when enabled but dailyEnabled is off (on-demand only)');
 
-  // ---- (b) RUNS when enabled + a daily query --------------------------------
-  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, dailyAt: '00:00', competitorsDefault: ['Buffer'], queries: [{ id: 'q1', label: 'scheduling', sources: ['reddit', 'hackernews'], competitors: ['Buffer'], cadence: 'daily' }] } }));
+  // ---- (b) RUNS when enabled + dailyEnabled + an enabled query --------------
+  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, dailyEnabled: true, dailyAt: '00:00', competitorsDefault: ['Buffer'], queries: [{ id: 'q1', label: 'scheduling', sources: ['reddit', 'hackernews'], competitors: ['Buffer'] }] } }));
   const ran = await dailyRadarScan();
   ok(ran && ran.ok === true, 'dailyRadarScan() runs when enabled + a daily query exists');
   const st = JSON.parse(fs.readFileSync(statePath, 'utf8'));
@@ -112,17 +116,17 @@ try {
   const geoView = await listRadar({ view: 'geo' });
   ok(geoView.view === 'geo' && geoView.geo.footprintRate.checks === 2, 'listRadar honors view:"geo" (the geo body rides every response)');
 
-  // ---- (review #2) the daily sweep scans ONLY cadence:'daily' queries ---------
-  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, competitorsDefault: ['Buffer'], queries: [
-    { id: 'daily', label: 'd', sources: ['reddit'], competitors: ['Buffer'], cadence: 'daily' },
-    { id: 'manual', label: 'm', sources: ['mastodon'], competitors: ['Buffer'], cadence: 'manual' },
+  // ---- a scan covers EVERY enabled query; a PAUSED query is excluded ----------
+  // Cadence is now the global dailyEnabled switch, not a per-query knob, so both the daily
+  // sweep and a manual scan run the same set: every enabled query. enabled:false pauses one.
+  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, dailyEnabled: true, competitorsDefault: ['Buffer'], queries: [
+    { id: 'a', label: 'a', sources: ['reddit'], competitors: ['Buffer'] },
+    { id: 'b', label: 'b', sources: ['mastodon'], competitors: ['Buffer'] },
+    { id: 'paused', label: 'p', sources: ['reddit'], competitors: ['Buffer'], enabled: false },
   ] } }));
-  const dailyOnly = await runRadarScan({ cadence: 'daily' });
-  ok(dailyOnly.scanned === 3, 'review #2: runRadarScan({cadence:"daily"}) scans ONLY the daily query (reddit: 3 fresh) - the manual query (mastodon) is NOT scanned (would be 6)');
-  ok(!(await listRadar({})).items.some((s) => s.source === 'mastodon'), 'the manual (mastodon) query was never scanned by the daily sweep - no mastodon signals in the feed');
-  // A MANUAL scan (no cadence) DOES run every enabled query, incl. the manual one.
-  const manualScan = await runRadarScan({});
-  ok(manualScan.scanned === 6, 'a manual radar_scan (no cadence) runs BOTH queries (reddit + mastodon: 6 fresh)');
+  const scan = await runRadarScan({});
+  ok(scan.scanned === 6, 'a scan covers every ENABLED query (reddit 3 + mastodon 3 = 6); the paused query is excluded');
+  ok((await listRadar({})).items.some((s) => s.source === 'mastodon'), 'the second enabled (mastodon) query WAS scanned - its signals are in the feed');
 
   // ---- (review #3) panel (listRadar) and digest read the SAME persisted backlog ----
   const persisted = loadState().radar.geo.comparisonBacklog; // what the digest reads

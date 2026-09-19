@@ -5,15 +5,13 @@ import { useClients, useClientsOverview, createClient, updateClient, archiveClie
 import { useCloud, useCloudClients, setClientAlwaysOn } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
 import { validateAccent, DEFAULT_ACCENT, clientAccent } from '../lib/theme.js';
-import { INNER_SURFACE, FIELD_SURFACE, EYEBROW, Skeleton } from './ui.jsx';
+import { INNER_SURFACE, EYEBROW, Skeleton } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 import Input from './ui/Input.jsx';
 import { ReviewSection } from './ReviewLink.jsx';
 
-const FIELD = `w-full rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
-const FIELD_ERR = `w-full rounded-xl border-0 px-3 py-2 text-sm ${INNER_SURFACE} ring-1 ring-red-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500`;
 const BTN = 'rounded-xl px-3 py-2 text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand';
 const BTN_BRAND = `${BTN} bg-brand text-white dark:bg-brand-light dark:text-zinc-900`;
 const BTN_GHOST = `${BTN} text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60`;

@@ -80,6 +80,31 @@ describe('inbound-events inbox (spec 23)', () => {
     expect(screen.getByText('🔥')).toBeInTheDocument();
   });
 
+  it('renders an "open the post" link ONLY for an event that carries a permalink', () => {
+    // The row must offer the same glyph-only open-post affordance the comment inbox
+    // carries, so a reply/mention/reaction that landed on a post is one click from the
+    // original. evt_1 (Alex, instagram comment) has a permalink; evt_2 (jordan, discord
+    // reaction) has permalink:null and must show NO link.
+    inboundState.data = { ok: true, events: EVENTS };
+    renderActivity();
+    const openLinks = screen.getAllByRole('link', { name: /open the post/i });
+    expect(openLinks).toHaveLength(1);
+    expect(openLinks[0]).toHaveAttribute('href', 'https://instagram.com/p/abc');
+    expect(openLinks[0]).toHaveAttribute('target', '_blank');
+    expect(openLinks[0]).toHaveAttribute('rel', expect.stringContaining('noopener'));
+  });
+
+  it('refuses a non-http(s) permalink scheme (no javascript:/data: href reaches the DOM)', () => {
+    // permalink is external, attacker-influenced data. A javascript: URI in an href executes
+    // on click (XSS), so the scheme is gated by isAbsoluteHttpUrl - such a row renders NO link.
+    inboundState.data = { ok: true, events: [
+      { eventId: 'evt_x', type: 'comment', platform: 'instagram', clientId: 'default', postId: 'p1', externalPostId: 'ig_x', author: { id: 'u1', handle: 'evil', displayName: 'Evil E.' }, text: 'click me', reaction: null, parentId: null, permalink: 'javascript:alert(document.domain)', ts: '2026-07-11T09:00:00.000Z' },
+    ] };
+    renderActivity();
+    expect(screen.getByText('Evil E.')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /open the post/i })).not.toBeInTheDocument();
+  });
+
   it('shows the neutral empty state when there are no inbound events (the honest state pre-cloud-receiver)', () => {
     inboundState.data = { ok: true, events: [] };
     renderActivity();

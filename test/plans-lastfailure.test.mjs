@@ -25,7 +25,7 @@ fs.mkdirSync(path.join(WS, 'data', 'plans'), { recursive: true });
 fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
 
 const { normalizePost } = await import('../lib/plans.mjs');
-const { recordLaneBlock, clearLaneBlock } = await import('../lib/state.mjs');
+const { recordLaneBlock, clearLaneBlock, loadState, saveState } = await import('../lib/state.mjs');
 
 // A past-due X post whose last attempt failed with the 402 credits code. lane
 // resolves to the failing attempt's platform ('x'); cloud is untouched here.
@@ -64,6 +64,37 @@ try {
   n = normalizePost(planEntry, plan, failingPost());
   ok(n.lastFailure.halted === false, 'clearing the block -> halted:false again');
   ok(n.lastFailure.haltCode === null, 'clearing the block -> haltCode:null again');
+
+  // ===== activity-feed fallback: a SKIP reason (no attempts) surfaces on the card =====
+  // A schedule-time skip (bad status, missing media, caption over-cap) records its reason
+  // on the activity feed, NOT post.attempts. lastFailureFor must still surface it so the
+  // planner shows WHY a post is stuck instead of a bare "overdue" pill.
+  clearLaneBlock('x');
+  const skipPost = () => ({
+    id: 'p2', type: 'video', platforms: ['youtube'], approval: 'approved',
+    scheduledAt: '2020-01-01T00:00:00Z', title: 'a short honest title', // no attempts: a skip is not an attempt
+  });
+  const skipMsg = 'media not found (clip.mp4) - re-render or re-attach the video';
+  let st = loadState();
+  st.activity = [
+    { ts: '2020-01-01T00:02:00Z', campaign: 'camp', postId: 'p2', platform: 'youtube', action: 'schedule-native', ok: false, errorCode: 'invalid_media', errorMessage: skipMsg },
+  ];
+  saveState();
+  n = normalizePost(planEntry, plan, skipPost());
+  ok(n.lastFailure, 'a skip recorded only on the activity feed still surfaces lastFailure (no attempts needed)');
+  ok(n.lastFailure.message === skipMsg, `the card shows the engine skip reason (got '${n.lastFailure && n.lastFailure.message}')`);
+  ok(n.lastFailure.lane === 'youtube', 'lastFailure.lane is the skip row platform');
+  ok(n.lastFailure.code === 'invalid_media', 'lastFailure.code carries the skip errorCode');
+
+  // A NEWER success row for the same post supersedes the skip - no stale failure.
+  st = loadState();
+  st.activity = [
+    { ts: '2020-01-01T00:05:00Z', campaign: 'camp', postId: 'p2', platform: 'youtube', action: 'schedule-native', ok: true, errorCode: null, errorMessage: null },
+    ...st.activity,
+  ];
+  saveState();
+  n = normalizePost(planEntry, plan, skipPost());
+  ok(n.lastFailure === null, 'a newer success row supersedes the skip - no stale failure on the card');
 
   console.log(`\n${pass} assertions passed`);
 } catch (e) {

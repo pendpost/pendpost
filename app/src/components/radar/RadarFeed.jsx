@@ -3,12 +3,15 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   ExternalLink, Reply, CircleSlash, Pencil, Radio, Globe, Pin, Bot, ChevronDown,
   Search, Check, FileText, Loader2, MessageSquareReply, MoreHorizontal, Copy, Sprout, AtSign, Link2,
-  MessageCircleQuestion,
+  MessageCircleQuestion, Clock, CircleDashed, Undo2, AlertTriangle, Pause, Ban,
+  X, RefreshCw, Trash2,
 } from 'lucide-react';
-import { fmtRelative, mastodonThreadUrl, isAbsoluteHttpUrl, agentNoteIsForeign, agentNoteExcerpt, AGENT_JOB_CAP_MINUTES } from '../../lib/format.js';
-import { radarBacklogTriage, radarMarkCopyPosted, radarDraftComparison, markPosted, errText } from '../../lib/api.js';
-import { PLATFORM_META, INNER_SURFACE, FIELD, FIELD_MULTILINE, EYEBROW, FilterChip } from '../ui.jsx';
-import { PILL_BASE, PILL_TONES, BTN_PRIMARY, BTN_QUIET, BTN_GHOST, PROJECT_CHIP } from '../ui/recipes.js';
+import { fmtRelative, fmtTime, mastodonThreadUrl, isAbsoluteHttpUrl, agentNoteIsForeign, agentNoteExcerpt, AGENT_JOB_CAP_MINUTES } from '../../lib/format.js';
+import { radarBacklogTriage, radarMarkCopyPosted, radarDraftComparison, markPosted, engageCancel, engageUndo, engageCommunityRecheck, errText } from '../../lib/api.js';
+import { PLATFORM_META, INNER_SURFACE, FIELD, FIELD_MULTILINE, EYEBROW, FilterChip, Segmented } from '../ui.jsx';
+import { MultiSelectDropdown } from '../ui/MultiSelectDropdown.jsx';
+import { PILL_BASE, PILL_TONES, BTN_PRIMARY, BTN_QUIET, BTN_GHOST, PROJECT_CHIP, TAP_TARGET, MENU_ITEM, MENU_ITEM_HEIGHT, MENU_ITEM_TONES } from '../ui/recipes.js';
+import { DISABLED_PRIMARY } from '../ui/tokens.js';
 import { ClientAvatar } from '../ClientSwitcher.jsx';
 import { Tip } from '../ui/Tooltip.jsx';
 import LinkCaptureRow from '../ui/LinkCaptureRow.jsx';
@@ -158,7 +161,7 @@ function CopyOpenBtn({ signal, accounts, text, t }) {
       <span className="inline-flex flex-wrap items-center gap-2">
         <span className={cls}><Check size={13} aria-hidden="true" />{t('radar.copyPosted.done')}</span>
         {reveal ? linkRow : (
-          <button type="button" onClick={() => setReveal(true)} className={BTN_GHOST}>
+          <button type="button" onClick={() => setReveal(true)} className={`${BTN_GHOST} ${TAP_TARGET}`}>
             <Link2 size={13} aria-hidden="true" />{t('radar.copyPosted.addLink')}
           </button>
         )}
@@ -205,7 +208,7 @@ function AttachAnswerLink({ replied, t }) {
   };
   if (!reveal) {
     return (
-      <button type="button" onClick={() => setReveal(true)} className={BTN_GHOST}>
+      <button type="button" onClick={() => setReveal(true)} className={`${BTN_GHOST} ${TAP_TARGET}`}>
         <Link2 size={13} aria-hidden="true" />{t('radar.copyPosted.addLink')}
       </button>
     );
@@ -771,6 +774,123 @@ function StatFilters({ counts, value, onChange, sortBy, onSort, t }) {
   );
 }
 
+// The five relative "found when" windows. 'all' is the no-filter anchor; the rest are the
+// hour/day grains the owner asked for ("from date found so and so or hours even"). One
+// Segmented, single choice - the finest grain the feed can honestly answer, since foundAt is
+// stamped per signal.
+export const WHEN_WINDOWS_MS = { '1h': 3600e3, '6h': 6 * 3600e3, '24h': 24 * 3600e3, '7d': 7 * 24 * 3600e3 };
+const WHEN_KEYS = ['all', '1h', '6h', '24h', '7d'];
+export const EMPTY_DIM_FILTERS = { platforms: [], priorities: [], queries: [], when: 'all', latestRun: false };
+export const dimFiltersActive = (v) => v.platforms.length > 0 || v.priorities.length > 0 || v.queries.length > 0 || v.when !== 'all' || v.latestRun === true;
+
+// The granular filter row (owner ask: slice the feed by platform / priority / search / when,
+// and "new results = the last run"). It sits UNDER the status chips - the status chips pick the
+// worklist state, this row narrows within it. Each dimension is ONE control (a multi-select
+// dropdown or a segmented), so the whole row is one decision point well under Hick's seven.
+// Long lists (platforms, searches) collapse into MultiSelectDropdown; the two closed sets
+// (priority, when) stay visible. Latest-run is a single toggle, disabled with a reason when no
+// scan has run yet. Value/onChange is a plain patch merge so the parent owns the state.
+export function DimensionFilters({ options, value, onChange, latestRunAvailable, latestRunTip, t }) {
+  const toggle = (dim, key) => {
+    const cur = value[dim];
+    onChange({ [dim]: cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key] });
+  };
+  const whenOptions = WHEN_KEYS.map((k) => ({ key: k, label: t(`radar.when.${k}`) }));
+  return (
+    <div role="group" aria-label={t('radar.dim.label')} className="flex flex-wrap items-center gap-1.5">
+      {options.platforms.length > 1 ? (
+        <MultiSelectDropdown label={t('radar.dim.platform')} options={options.platforms} selected={value.platforms} onToggle={(k) => toggle('platforms', k)} />
+      ) : null}
+      <MultiSelectDropdown label={t('radar.dim.priority')} options={options.priorities} selected={value.priorities} onToggle={(k) => toggle('priorities', k)} />
+      {options.queries.length > 1 ? (
+        <MultiSelectDropdown label={t('radar.dim.query')} options={options.queries} selected={value.queries} onToggle={(k) => toggle('queries', k)} />
+      ) : null}
+      <Segmented label={t('radar.dim.when')} value={value.when} options={whenOptions} onChange={(k) => onChange({ when: k })} />
+      {/* Latest run = the freshest scan's finds (foundAt >= that scan's start). This is the
+          owner's "new results = last run". A single toggle; when no scan has run it is inert
+          and the hover says why (canon: prevent at the control, never a dead option). */}
+      {latestRunAvailable ? (
+        <FilterChip active={value.latestRun} onClick={() => onChange({ latestRun: !value.latestRun })} icon={RefreshCw} label={t('radar.dim.latestRun')} />
+      ) : (
+        <Tip label={latestRunTip}>
+          <span className="inline-flex cursor-help items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-bold text-zinc-400 ring-1 ring-zinc-900/5 dark:text-zinc-500 dark:ring-white/10">
+            <RefreshCw size={12} aria-hidden="true" />{t('radar.dim.latestRun')}
+          </span>
+        </Tip>
+      )}
+    </div>
+  );
+}
+
+// The applied-filters strip: one removable pill per active dimension value + a Clear-all, and
+// the honest "N of TOTAL shown" count. It renders only when a filter is on, so the calm default
+// carries no chrome. Removing a pill re-widens exactly that dimension (recognition over recall:
+// what is applied is visible, not remembered).
+export function ActiveFilterStrip({ value, options, onChange, shown, total, t }) {
+  if (!dimFiltersActive(value)) return null;
+  const labelFor = (dim, key) => (options[dim].find((o) => o.key === key) || {}).label || key;
+  const pill = (dim, key, text) => (
+    <button
+      key={`${dim}:${key}`}
+      type="button"
+      onClick={() => onChange(dim === 'when' ? { when: 'all' } : dim === 'latestRun' ? { latestRun: false } : { [dim]: value[dim].filter((k) => k !== key) })}
+      className={`inline-flex items-center gap-1 rounded-full bg-brand/10 px-2 py-0.5 text-[11px] font-bold text-brand ring-1 ring-brand/30 transition hover:bg-brand/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light/10 dark:text-brand-light dark:ring-brand-light/30 ${TAP_TARGET}`}
+    >
+      <span className="max-w-[10rem] truncate">{text}</span>
+      <X size={11} aria-hidden="true" />
+    </button>
+  );
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">{t('radar.filters.shown', { n: shown, total })}</span>
+      {value.platforms.map((k) => pill('platforms', k, labelFor('platforms', k)))}
+      {value.priorities.map((k) => pill('priorities', k, labelFor('priorities', k)))}
+      {value.queries.map((k) => pill('queries', k, labelFor('queries', k)))}
+      {value.when !== 'all' ? pill('when', value.when, t(`radar.when.${value.when}`)) : null}
+      {value.latestRun ? pill('latestRun', 'on', t('radar.dim.latestRun')) : null}
+      <button type="button" onClick={() => onChange(EMPTY_DIM_FILTERS)} className={`rounded-full px-2 py-0.5 text-[11px] font-bold text-zinc-500 underline-offset-2 transition hover:text-zinc-700 hover:underline dark:text-zinc-400 dark:hover:text-zinc-200 ${TAP_TARGET}`}>
+        {t('radar.filters.clear')}
+      </button>
+    </div>
+  );
+}
+
+// The "By search" lens (owner ask: "a lot of results are low quality - let me see which query
+// found them"). Instead of a flat feed, ONE row per saved search, most-signals-first, so a
+// junk-producing query is obvious by its volume. Each row closes the loop: SHOW its signals in
+// the feed, TUNE it in Settings, or DISMISS all of them at once (watched are never swept). This
+// turns "hide bad rows one by one" into "fix the source of the noise".
+export function QueryQualityList({ groups, onShow, onTune, onDismissAll, clearing, t }) {
+  if (!groups.length) return <p className="px-1 py-3 text-xs text-zinc-500 dark:text-zinc-400">{t('radar.byQuery.empty')}</p>;
+  return (
+    <ol className="space-y-2">
+      {groups.map((g) => {
+        const clearable = g.signals.filter((s) => s.watched !== true).length;
+        return (
+          <li key={g.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl p-3 ring-1 ring-zinc-900/5 transition hover:bg-zinc-900/[0.02] dark:ring-white/10 dark:hover:bg-white/[0.03]">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <Search size={13} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                <span className="truncate text-sm font-bold">{g.label}</span>
+              </div>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.byQuery.count', { n: g.signals.length })}</span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {g.tunable ? <button type="button" onClick={() => onShow(g.id)} className={`${BTN_QUIET} ${TAP_TARGET}`}>{t('radar.byQuery.filter')}</button> : null}
+              {g.tunable ? <button type="button" onClick={() => onTune(g.id)} className={`${BTN_GHOST} ${TAP_TARGET}`}>{t('radar.byQuery.tune')}</button> : null}
+              {clearable ? (
+                <button type="button" disabled={clearing} onClick={() => onDismissAll(g.signals)} className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 transition hover:bg-red-500/10 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-red-300 ${TAP_TARGET}`}>
+                  <Trash2 size={12} aria-hidden="true" />{t('radar.byQuery.dismissAll', { n: clearable })}
+                </button>
+              ) : null}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 // The intent score, rendered as a quiet tier WORD, not a loud number. The feed is sorted by
 // priority, so ORDER carries the ranking; the tier word is a calm secondary cue and the exact
 // figure (plus whether an agent actually READ the thread) lives in the chip's tooltip. This is
@@ -785,13 +905,161 @@ function tierOf(score) {
   return 'low';
 }
 
+// ---- S5: what "Respond for me" did or will do with this signal (spec 50 §4) --------------
+// The closed vocabularies the screen may render. A kind or a reason outside them is NEVER
+// printed raw: kinds fall away, an unknown skip reason degrades to "no reason given". The
+// enum names in the store are internal words and stay there.
+const ENGAGE_KINDS = ['reply', 'like', 'upvote', 'follow', 'repost', 'dm', 'post', 'undo'];
+const ENGAGE_SKIP_REASONS = ['outrage', 'promo_spam', 'already_answered', 'target_gone', 'community_rule', 'unrelated', 'below_threshold', 'owner'];
+const kindWords = (kinds, t) => (Array.isArray(kinds) ? kinds : []).filter((k) => ENGAGE_KINDS.includes(k)).map((k) => t(`radar.engage.kind.${k}`));
+const skipWord = (reason, t) => t(`radar.engage.skipReason.${ENGAGE_SKIP_REASONS.includes(reason) ? reason : 'unknown'}`);
+const clock = (iso) => { try { return iso ? fmtTime(iso) : ''; } catch { return ''; } };
+
+// One row's engage state, resolved to ONE line of visible text plus the facts that belong in
+// the focus-reachable detail. Every waiting reason, every outcome and every skip has its own
+// words (the canon check's "state legibility" finding); nothing here is hover-only and
+// nothing is carried by colour alone - each state ships an icon AND a word.
+function engageStateOf(signal, t) {
+  const e = signal.engage || null;
+  const decision = signal.decision || null;
+  const platform = sourceLabel(t, signal.source);
+  // A skip decision never becomes an action row, so the decision itself carries the state.
+  if (!e) {
+    if (decision && decision.kind === 'skip') {
+      return decision.reason === 'owner'
+        ? { Icon: CircleSlash, text: t('radar.signal.engage.skipped.byYou'), detail: [] }
+        : { Icon: CircleSlash, text: t('radar.signal.engage.skipped', { reason: skipWord(decision.reason, t) }), detail: [], communityRule: decision.reason === 'community_rule' };
+    }
+    return null;
+  }
+  const kinds = kindWords(e.kinds, t);
+  const detail = [];
+  if (kinds.length) detail.push(t('radar.signal.engage.detail.kinds', { kinds: kinds.join(', ') }));
+  if (e.releaseAt) detail.push(t('radar.signal.engage.detail.releaseAt', { time: clock(e.releaseAt) }));
+  if (Number.isFinite(Number(e.rung)) && Number(e.rung) > 1) {
+    detail.push(t('radar.signal.engage.detail.tried', { what: t('radar.signal.engage.detail.attempts', { n: e.rung }) }));
+  }
+
+  if (e.waitingOn) {
+    const time = clock(e.releaseAt);
+    const byReason = {
+      cap: () => t('radar.signal.engage.waiting.cap', { time }),
+      hours: () => t('radar.signal.engage.waiting.hours', { time }),
+      catchup: () => t('radar.signal.engage.waiting.catchup', { time }),
+      chrome: () => t('radar.signal.engage.waiting.chrome'),
+      lane: () => t('radar.signal.engage.waiting.lane'),
+      lanePaused: () => t('radar.signal.engage.waiting.lanePaused', { time }),
+      paused: () => t('radar.signal.engage.waiting.paused'),
+    };
+    if (byReason[e.waitingOn]) {
+      return { Icon: e.waitingOn === 'paused' ? Pause : Clock, text: byReason[e.waitingOn](), detail };
+    }
+  }
+  switch (e.status) {
+    case 'releasing':
+      return { Icon: Loader2, spin: true, text: t('radar.signal.engage.postingNow'), detail };
+    case 'posting_soon': {
+      const min = e.graceUntil ? Math.max(0, Math.round((Date.parse(e.graceUntil) - Date.now()) / 60000)) : 0;
+      return { Icon: Clock, text: t('radar.signal.engage.postingSoon', { min }), detail };
+    }
+    case 'done': {
+      const extra = kinds.filter((_, i) => (e.kinds || [])[i] !== 'reply');
+      return {
+        Icon: Check,
+        text: t('radar.signal.engage.done', { time: clock(e.doneAt || e.releaseAt) }),
+        extra: extra.length ? t('radar.signal.engage.done.extra', { kinds: extra.join(', ') }) : null,
+        href: e.result?.permalink || null,
+        detail: [...detail, t('radar.signal.engage.detail.done', { time: clock(e.doneAt || e.releaseAt) })],
+      };
+    }
+    case 'dry_run':
+      // D19: a browser row is only "would have replied" when the post box was actually
+      // reached. Anything else says what really happened - a hollow mark, never a claim.
+      return {
+        Icon: CircleDashed,
+        text: e.result?.composerFound === false
+          ? t('radar.signal.engage.dryRun.noComposer', { platform })
+          : t('radar.signal.engage.dryRun'),
+        detail: [...detail, t('radar.signal.engage.detail.dryRun')],
+      };
+    case 'skipped':
+      return e.reason === 'owner' || decision?.reason === 'owner'
+        ? { Icon: CircleSlash, text: t('radar.signal.engage.skipped.byYou'), detail }
+        : {
+          Icon: CircleSlash,
+          text: t('radar.signal.engage.skipped', { reason: skipWord(e.reason || decision?.reason, t) }),
+          detail,
+          communityRule: (e.reason || decision?.reason) === 'community_rule',
+        };
+    case 'cancelled':
+      return { Icon: Ban, text: t('radar.signal.engage.cancelled'), detail };
+    case 'undone':
+      return { Icon: Undo2, text: t('radar.signal.engage.undone', { time: clock(e.undoneAt || e.releaseAt) }), detail };
+    case 'failed':
+      return { Icon: AlertTriangle, text: t('radar.signal.engage.handed', { platform }), href: e.askUrl || null, detail };
+    case 'queued':
+    default:
+      return { Icon: Clock, text: t('radar.signal.engage.queued', { kinds: kinds.join(', '), time: clock(e.releaseAt) }), detail };
+  }
+}
+
+// The status itself: icon + words, with the facts one focus away. aria-describedby points at
+// a visually hidden node so the detail reaches a keyboard and a screen reader, not only a
+// mouse; the same text rides the house Tip for pointer users.
+function EngageStatus({ signal, t, onRecheckRules, recheckBusy }) {
+  const state = engageStateOf(signal, t);
+  if (!state) return null;
+  const { Icon } = state;
+  const id = `engage-detail-${encodeURIComponent(`${signal.source} ${signal.externalId}`)}`;
+  const detailText = (state.detail || []).join(' · ');
+  const body = (
+    <span
+      tabIndex={0}
+      aria-describedby={detailText ? id : undefined}
+      className="inline-flex items-center gap-1 rounded-full text-[11px] text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300"
+    >
+      <Icon size={11} aria-hidden="true" className={state.spin ? 'animate-spin' : undefined} />
+      {state.text}
+      {state.href ? <ExternalLink size={10} aria-hidden="true" /> : null}
+    </span>
+  );
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <Tip label={detailText || undefined}>
+        {state.href
+          ? <a href={state.href} target="_blank" rel="noreferrer" aria-describedby={detailText ? id : undefined} className="inline-flex items-center gap-1 rounded-full text-[11px] text-zinc-600 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300">
+            <Icon size={11} aria-hidden="true" />{state.text}<ExternalLink size={10} aria-hidden="true" />
+          </a>
+          : body}
+      </Tip>
+      {detailText ? <span id={id} className="sr-only">{detailText}</span> : null}
+      {state.extra ? <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{state.extra}</span> : null}
+      {state.communityRule && onRecheckRules ? (
+        // No dead end: a cached "this community bans automation" rule can be re-checked.
+        <button type="button" onClick={onRecheckRules} disabled={recheckBusy} className={`${BTN_GHOST} ${TAP_TARGET}`}>
+          {t('radar.signal.engage.checkRules')}
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
 // The per-row overflow menu, one deliberate step away from the primary action (canon: one primary
 // per row, secondary collapses into the overflow). Closes on outside-click or Escape.
+// The trigger paints a 16px glyph and hits like a 44x44 button (recipes.js TAP_TARGET): the
+// canon's tap-target floor is met by the hit box, not by the row, so nothing here got taller.
 // The SIGNAL row surfaces "Erledigt" (mark processed) as a first-class quiet action instead, so it
 // passes `showDismiss={false}` and this menu carries Watch alone. A GEO backlog row reuses it with
 // `onWatch` OMITTED - a backlog entry has no thread to pin - so its overflow carries Dismiss alone.
-function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, t }) {
+// `extraItems` (spec 50 rows 5 + 11): Cancel for a row that has not gone out yet, Undo for
+// one that has. Both are secondary by definition, so the overflow is where they live - the
+// same place every other row's secondary actions do.
+// Each item is a real 44px-tall row (recipes.js MENU_ITEM, shared with ui/RowMenu.jsx) with its
+// own focus-visible ring, and the popover flips above the trigger when a row near the fold would
+// otherwise push it off-screen - the same MENU_ITEM_HEIGHT feeds the class and that arithmetic.
+function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, extraItems = [], t }) {
   const [open, setOpen] = useState(false);
+  const [dropUp, setDropUp] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
@@ -804,20 +1072,43 @@ function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, t }) {
   return (
     <div ref={ref} className="relative">
       <Tip label={t('radar.signal.more')}>
-        <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('radar.signal.more')} onClick={() => setOpen((v) => !v)} className={`${BTN_GHOST} px-1.5`}>
+        <button
+          type="button"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label={t('radar.signal.more')}
+          onClick={() => setOpen((v) => {
+            const next = !v;
+            if (next && ref.current && typeof window !== 'undefined') {
+              const r = ref.current.getBoundingClientRect();
+              const count = (onWatch ? 1 : 0) + extraItems.length + (showDismiss ? 1 : 0);
+              const estimate = count * MENU_ITEM_HEIGHT + 16; // + the popover's p-1 and mt-1
+              const below = window.innerHeight - r.bottom;
+              setDropUp(below < estimate && r.top > below);
+            }
+            return next;
+          })}
+          className={`${BTN_GHOST} px-1.5 ${TAP_TARGET}`}
+        >
           <MoreHorizontal size={16} aria-hidden="true" />
         </button>
       </Tip>
       {open ? (
-        <div role="menu" className="absolute right-0 z-20 mt-1 min-w-[10rem] rounded-xl bg-white p-1 shadow-lg ring-1 ring-zinc-900/10 dark:bg-zinc-800 dark:ring-white/10">
+        <div role="menu" className={`absolute right-0 z-20 ${dropUp ? 'bottom-full mb-1' : 'top-full mt-1'} min-w-[10rem] rounded-xl bg-white p-1 shadow-lg ring-1 ring-zinc-900/10 dark:bg-zinc-800 dark:ring-white/10`}>
           {onWatch ? (
-            <button type="button" role="menuitem" onClick={() => { setOpen(false); onWatch(); }} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-zinc-700 transition hover:bg-zinc-900/5 dark:text-zinc-200 dark:hover:bg-white/5">
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); onWatch(); }} className={`${MENU_ITEM} ${MENU_ITEM_TONES.default}`}>
               <Pin size={14} className={watched ? 'text-brand dark:text-brand-light' : 'text-zinc-500'} aria-hidden="true" />
               {watched ? t('radar.signal.watching') : t('radar.signal.watch')}
             </button>
           ) : null}
+          {extraItems.map((item) => (
+            <button key={item.key} type="button" role="menuitem" onClick={() => { setOpen(false); item.onClick(); }} className={`${MENU_ITEM} ${MENU_ITEM_TONES.default}`}>
+              <item.Icon size={14} className="text-zinc-500" aria-hidden="true" />
+              {item.label}
+            </button>
+          ))}
           {showDismiss ? (
-            <button type="button" role="menuitem" onClick={() => { setOpen(false); onDismiss(); }} className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm text-red-600 transition hover:bg-red-500/10 dark:text-red-400">
+            <button type="button" role="menuitem" onClick={() => { setOpen(false); onDismiss(); }} className={`${MENU_ITEM} ${MENU_ITEM_TONES.danger}`}>
               <CircleSlash size={14} aria-hidden="true" />
               {t('radar.signal.dismiss')}
             </button>
@@ -843,14 +1134,10 @@ function RowMenu({ watched, onWatch, onDismiss, showDismiss = true, t }) {
 // The intent-tag vocabulary the fact row can humanize (lib/radar.mjs spec 32 §4); an
 // unknown tag renders nothing rather than a raw enum (canon: humanize machine labels).
 const SIGNAL_TAGS = ['buying-question', 'alternative-seeking', 'competitor-mention', 'pain-described'];
-function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, replyIncapable, copyCapable, isKarma = false, isPostIdea = false, isMention = false, campaigns, autoReply, draftMinScore = 30, queryLabel, onQueueReply, onApproveDraft, onDismiss, onWatch, onNavigate, onNewPost, onOpenPost, onDraftNow, draftingNow = false, draftFailed = false, agentBusy = false, agentReady = false, t }) {
+function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, replyIncapable, copyCapable, isKarma = false, isPostIdea = false, isMention = false, campaigns, radarReplies, draftMinScore = 30, queryLabel, onQueueReply, onApproveDraft, onDismiss, onWatch, onNavigate, onNewPost, onOpenPost, onDraftNow, draftingNow = false, draftFailed = false, agentBusy = false, agentReady = false, t }) {
   const src = SOURCE_META[signal.source] || { Icon: Radio, color: '' };
   const SrcIcon = src.Icon;
   const [replyOpen, setReplyOpen] = useState(false);
-  // "Erledigt" (mark processed) is a deliberate act: dismissing drops the signal for good (the
-  // server seen-ledger blocks any re-surface), so a prominent one-tap needs a confirm guard,
-  // mirroring the comment inbox's mark-handled pattern (canon: forgiveness).
-  const [confirmingDone, setConfirmingDone] = useState(false);
   // The card's OVERVIEW state (the owner: "click on an item and see everything"). Collapsed, the
   // quote clamps to three lines; expanded, the full quote + the full draft + every action is on
   // one card - never a separate screen or modal (canon: reuse the surface).
@@ -866,6 +1153,12 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   const [queuedAs, setQueuedAs] = useState(null);
   const [replyError, setReplyError] = useState(null);
   const [showDraft, setShowDraft] = useState(false); // the suggested-reply block: collapsed by default
+  // Spec 50 row 11: Undo deletes something that is already public, so the row asks first,
+  // in place - "Delete this reply on X? [Delete] [Keep]" - before any reverse action runs.
+  const [undoOpen, setUndoOpen] = useState(false);
+  const [engageBusy, setEngageBusy] = useState(false);
+  const [engageError, setEngageError] = useState(null);
+  const queryClient = useQueryClient();
   // R11: when set, the inline editor is a ROUND-2 reply threaded under the author's follow-up
   // comment (this id), not a fresh root reply. Null = the ordinary "Draft reply" path.
   const [threadTo, setThreadTo] = useState(null);
@@ -937,9 +1230,20 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   // drafted on a reply-capable source -> Draft reply; otherwise (replied / already-cleared /
   // surface-only) opening the thread IS the move.
   const primaryIsApprove = draftPending;
+  // Spec 50 S5: what "Respond for me" is doing with this row. Read HERE rather than beside its
+  // controls further down, because the primary-action resolution just below depends on it.
+  const engageRow = signal.engage || null;
+  // Spec 50 P5a coherence fix. "Respond for me" OWNS this row the moment it has a live engage
+  // state: it drafted, queued, posted or is about to post the answer itself. Offering "Draft
+  // reply" beside that would be two hands on the same thread, and the copy-by-hand hint below
+  // ("reply by hand, drafts land here as copy text") would be flatly untrue - the whole point
+  // of the feature is that the owner does not do that any more. Only the three states where
+  // the policy GAVE UP - it failed, the owner cancelled it, or an undo reversed it - hand the
+  // row back, and those are exactly the states where a human move is the right offer again.
+  const engageHandles = Boolean(engageRow) && !['failed', 'cancelled', 'undone'].includes(engageRow.status);
   // `replied`, not `repliedUrl`: an answered signal whose reply has no provable link (a
   // manual mark) must still never re-offer "Draft reply" as if it were unanswered.
-  const primaryIsDraft = !hasDraft && !replied && !replyIncapable;
+  const primaryIsDraft = !hasDraft && !replied && !replyIncapable && !engageHandles;
   const primaryIsOpen = !primaryIsApprove && !primaryIsDraft;
 
   // Expanding the card is "show me everything": the draft opens with it, and collapsing
@@ -965,12 +1269,12 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   // Suppressed once the agent examined the thread and declined to reply (signal.agentDeclined) -
   // a badge promising an auto-post the agent already refused was a live contradiction.
   const willAutoPost = primaryIsDraft
-    && autoReply?.enabled === true
-    && Array.isArray(autoReply?.lanes) && autoReply.lanes.includes(signal.source)
+    && radarReplies?.enabled === true
+    && Array.isArray(radarReplies?.lanes) && radarReplies.lanes.includes(signal.source)
     && signal.scoredBy === 'agent'
     && !signal.agentDeclined
-    && Number.isFinite(autoReply?.minScore)
-    && Number(signal.intentScore) >= autoReply.minScore;
+    && Number.isFinite(radarReplies?.minScore)
+    && Number(signal.intentScore) >= radarReplies.minScore;
   // UX issue 10: the split status pill (zone 1) and its paired "Jetzt entwerfen" action (the
   // action bar) must appear and disappear TOGETHER - both only when willAutoPost is the header's
   // actual state, i.e. neither the busy spinner nor the failed-draft outcome already owns that
@@ -978,6 +1282,30 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   // failed-draft card would show BOTH "Nochmal versuchen" and "Jetzt entwerfen" - two controls
   // for the same retry.
   const showAutoPostAction = willAutoPost && !draftingNow && !draftFailed;
+
+  // --- Spec 50 S5: the engage row's own controls -------------------------------------
+  const engageKind = kindWords(engageRow?.kinds, t)[0] || t('radar.engage.kind.reply');
+  const enginePlatform = sourceLabel(t, signal.source);
+  const runEngage = async (fn, fallbackKey) => {
+    setEngageBusy(true);
+    setEngageError(null);
+    try {
+      await fn();
+      queryClient.invalidateQueries({ queryKey: ['radar'] });
+      queryClient.invalidateQueries({ queryKey: ['engage'] });
+    } catch (err) {
+      setEngageError(t(fallbackKey, { reason: errText(err, t, 'radar.error.save') }));
+    } finally { setEngageBusy(false); }
+  };
+  const canCancel = Boolean(engageRow?.actionId) && (engageRow.status === 'queued' || engageRow.status === 'posting_soon');
+  const canUndo = Boolean(engageRow?.actionId) && engageRow.status === 'done';
+  // Never a fake undo: where the platform cannot recall the kind, the row says so and the
+  // Delete control is absent (data honesty, spec §13 risk 5).
+  const noRecall = engageRow?.result?.recallable === false;
+  const engageMenuItems = [
+    ...(canCancel ? [{ key: 'engage-cancel', label: t('radar.engage.cancel'), Icon: Ban, onClick: () => runEngage(() => engageCancel(engageRow.actionId), 'radar.engage.cancel.error') }] : []),
+    ...(canUndo ? [{ key: 'engage-undo', label: t('radar.undo.action'), Icon: Undo2, onClick: () => setUndoOpen(true) }] : []),
+  ];
 
   return (
     // The DOM id is the jump target for the transcript's "finding reported" lines
@@ -1064,7 +1392,27 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
         {signal.foundAt && signal.foundAt !== signal.ts ? (
           <span className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.signal.foundAt', { time: fmtRelative(signal.foundAt) })}</span>
         ) : null}
-        <div className="ml-auto flex items-center gap-1.5">
+        {/* Which saved search surfaced this (owner ask: "so much low-quality, let me see which
+            query found it"). A quiet muted chip on the collapsed row, glyph + the search's LABEL
+            (never the raw matchedQuery id); the hover spells it out. This is the per-row twin of
+            the "By search" view - the operator can spot a junk-producing query at a glance. */}
+        {signal.matchedQuery ? (
+          <Tip label={t('radar.signal.query.tip', { query: queryLabel ? queryLabel(signal.matchedQuery) : signal.matchedQuery })}>
+            <span className="inline-flex max-w-[10rem] cursor-help items-center gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+              <Search size={11} aria-hidden="true" />
+              <span className="truncate">{queryLabel ? queryLabel(signal.matchedQuery) : signal.matchedQuery}</span>
+            </span>
+          </Tip>
+        ) : null}
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5">
+          {/* Spec 50 S5: what "Respond for me" did or will do with this signal, as visible
+              text in the row's existing status slot - never a hover, never colour alone. */}
+          <EngageStatus
+            signal={signal}
+            t={t}
+            recheckBusy={engageBusy}
+            onRecheckRules={signal.community ? () => runEngage(() => engageCommunityRecheck(signal.source, signal.community), 'radar.signal.engage.checkRules.error') : null}
+          />
           {draftingNow ? (
             // The tap's busy state: the agent is writing this signal's reply right now. The
             // spinner is not colour-only (word + motion), and the finished draft arrives on
@@ -1088,7 +1436,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             // action can happen). Tapping used to double as the drafting trigger; that action now
             // lives as its own named BTN_QUIET ("Jetzt entwerfen") in the card's action bar below,
             // so a status and a control no longer share one body.
-            <Tip label={t('radar.signal.willAutoPost.tip', { score: signal.intentScore, min: autoReply?.minScore })}>
+            <Tip label={t('radar.signal.willAutoPost.tip', { score: signal.intentScore, min: radarReplies?.minScore })}>
               <span className={`${PILL_BASE} ${PILL_TONES.attention}`}>
                 <Bot size={11} aria-hidden="true" />{t('radar.signal.willAutoPost')}
               </span>
@@ -1177,7 +1525,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             onClick={toggleExpanded}
             aria-expanded={expanded}
             aria-label={t(expanded ? 'radar.signal.collapse' : 'radar.signal.expand')}
-            className={`${BTN_GHOST} px-1`}
+            className={`${BTN_GHOST} px-1 ${TAP_TARGET}`}
           >
             <ChevronDown size={14} className={`transition ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
           </button>
@@ -1301,7 +1649,9 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
             {replied?.via === 'manual' && !replied.url && replied.postId ? (
               <AttachAnswerLink replied={replied} t={t} />
             ) : null}
-            {copyCapable && !hasDraft && !replied ? (
+            {copyCapable && !hasDraft && !replied && !engageHandles ? (
+              // Hidden while the policy handles this row (above): the hint tells the owner to
+              // go and paste the answer themselves, which is the exact chore engage removed.
               <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('radar.copy.byHand', { source: t(`radar.source.${signal.source}`) })}</span>
             ) : null}
           </>
@@ -1333,29 +1683,44 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
         {/* Right cluster: mark-processed (first-class, quiet, mirrors the inbox's "Als erledigt
             markieren") + the overflow (Watch only, since Erledigt lives out here). */}
         <div className="ml-auto flex items-center gap-2">
-          {confirmingDone ? (
-            <span className="inline-flex items-center gap-1.5">
-              <span className="text-[11px] font-bold text-zinc-600 dark:text-zinc-300">{t('radar.signal.doneConfirm')}</span>
-              <button type="button" onClick={() => { setConfirmingDone(false); onDismiss(signal); }} className="inline-flex items-center gap-1 rounded-lg bg-zinc-800 px-2 py-0.5 text-[11px] font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-zinc-200 dark:text-zinc-900">
-                <Check size={11} aria-hidden="true" /> {t('radar.signal.doneYes')}
-              </button>
-              <button type="button" onClick={() => setConfirmingDone(false)} className={BTN_GHOST}>
-                {t('radar.signal.doneCancel')}
-              </button>
-            </span>
-          ) : (
-            <Tip label={t('radar.signal.done.tip')}>
-              {/* UX issue 10: "Erledigt" is a named, deliberate secondary action, not a
-                  tertiary/overflow affordance - it now wears the quiet ring tier (BTN_QUIET),
-                  no longer visually indistinguishable from the muted status text beside it. */}
-              <button type="button" onClick={() => setConfirmingDone(true)} className={BTN_QUIET}>
-                <Check size={13} aria-hidden="true" /> {t('radar.signal.done')}
-              </button>
-            </Tip>
-          )}
-          <RowMenu watched={watched} onWatch={() => onWatch(signal)} onDismiss={() => onDismiss(signal)} showDismiss={false} t={t} />
+          {/* Owner ask: "Erledigt" is ONE tap - no confirm guard in the way. The row leaves
+              instantly; forgiveness comes from the Undo toast the handler fires (onDismiss),
+              not a two-step confirm, mirroring the comment inbox's one-click mark-handled. */}
+          <Tip label={t('radar.signal.done.tip')}>
+            <button type="button" onClick={() => onDismiss(signal)} className={`${BTN_QUIET} ${TAP_TARGET}`}>
+              <Check size={13} aria-hidden="true" /> {t('radar.signal.done')}
+            </button>
+          </Tip>
+          <RowMenu watched={watched} onWatch={() => onWatch(signal)} onDismiss={() => onDismiss(signal)} showDismiss={false} extraItems={engageMenuItems} t={t} />
         </div>
       </div>
+
+      {/* Row 11: the inline undo confirm. Deleting a public reply is irreversible, so the
+          question is asked here, in the row, before anything runs - and where the platform
+          cannot recall the action at all, the row says so and offers no Delete. */}
+      {undoOpen ? (
+        <div role="group" aria-label={t('radar.undo.action')} className="flex flex-wrap items-center gap-2 text-[11px]">
+          {noRecall ? (
+            <span className="font-bold text-zinc-600 dark:text-zinc-300">{t('radar.undo.noRecall', { platform: enginePlatform })}</span>
+          ) : (
+            <>
+              <span className="font-bold text-zinc-600 dark:text-zinc-300">{t('radar.undo.confirm', { kind: engageKind, platform: enginePlatform })}</span>
+              <button
+                type="button"
+                disabled={engageBusy}
+                onClick={() => runEngage(() => engageUndo(engageRow.actionId), 'radar.undo.error').then(() => setUndoOpen(false))}
+                className={`inline-flex items-center gap-1 rounded-lg bg-red-600 px-2 py-0.5 text-[11px] font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${DISABLED_PRIMARY} ${TAP_TARGET}`}
+              >
+                {t('radar.undo.delete')}
+              </button>
+            </>
+          )}
+          <button type="button" onClick={() => { setUndoOpen(false); setEngageError(null); }} className={`${BTN_GHOST} ${TAP_TARGET}`}>
+            {t('radar.undo.keep')}
+          </button>
+        </div>
+      ) : null}
+      {engageError ? <p role="alert" className="text-xs text-red-600 dark:text-red-400">{engageError}</p> : null}
 
       {/* The inline draft editor - the "Draft reply" (new reply) path only; reused verbatim. An
           existing draft is edited in Freigaben (its full editor), so no duplicate reply is queued. */}
@@ -1410,4 +1775,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
 }
 
 
-export { SignalRow, StatFilters, JobRow, AgentNote, BacklogRow, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS, INLINE_ACTION };
+// RowMenu + sourceLabel are exported for the "Needs you" strip (spec 50 P5a): an ask row and a
+// signal row must carry the SAME overflow and the same platform words, and a second copy of
+// either is how two surfaces drift apart.
+export { SignalRow, StatFilters, JobRow, AgentNote, BacklogRow, EngageStatus, RowMenu, sourceLabel, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS, INLINE_ACTION };

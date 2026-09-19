@@ -96,8 +96,7 @@ describe('confirm/prompt "don\'t show again"', () => {
   });
 
   it('resetDialogSkips brings every silenced dialog back', async () => {
-    let result;
-    render(<ConfirmProvider><ConfirmHarness opts={{ title: 'Sure?', confirmLabel: 'Go', rememberKey: 'x.act' }} onResult={(r) => { result = r; }} /></ConfirmProvider>, wrap);
+    render(<ConfirmProvider><ConfirmHarness opts={{ title: 'Sure?', confirmLabel: 'Go', rememberKey: 'x.act' }} onResult={() => {}} /></ConfirmProvider>, wrap);
     fireEvent.click(screen.getByText('Ask'));
     await screen.findByRole('dialog');
     fireEvent.click(screen.getByRole('checkbox'));

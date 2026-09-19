@@ -367,7 +367,19 @@ function coverChips(post, t) {
   return chips;
 }
 
-export default function PostDetail({ post, posts = [], triage = null, triageIndex = -1, posting, onClose, onEdit, onNavigate, onOpenPost }) {
+// The missing-post guard lives in this thin wrapper, NOT inside the body. It used to
+// sit mid-body as `if (!post) return null`, which meant every hook after it (useConfig
+// for the review config, ~370 lines down) was skipped on a null post: a conditional
+// hook call, so React's hook order was not stable across renders (react-hooks/
+// rules-of-hooks). Guarding here keeps the body's hooks unconditional and in one fixed
+// order, and it makes the null case actually reach its `return null` instead of
+// throwing on the first `post.` read.
+export default function PostDetail(props) {
+  if (!props.post) return null;
+  return <PostDetailBody {...props} />;
+}
+
+function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, posting, onClose, onEdit, onNavigate, onOpenPost }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: accounts } = useAccounts();
@@ -556,7 +568,6 @@ export default function PostDetail({ post, posts = [], triage = null, triageInde
     return () => document.removeEventListener('keydown', onKey);
   }, []);
 
-  if (!post) return null;
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['plans'] });
 

@@ -320,6 +320,37 @@ describe('Activity error remediation', () => {
     expect(screen.queryByRole('button', { name: /fix in setup/i })).toBeNull();
     expect(screen.getByRole('button', { name: /open c \/ p/i })).toBeInTheDocument();
   });
+
+  // spec-15 follow-on: a disabled API (the YouTube Data/Analytics API off in the GCP
+  // project) is NOT a missing scope. It must route to the Cloud console to ENABLE the
+  // API, never to a Setup reconnect that fixes nothing.
+  it('an api_disabled row opens the Cloud console (its own helpUrl), never a Setup reconnect', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'profile-update', ok: false, platform: 'youtube', error: 'api_disabled', errorMessage: 'YouTube Data API has not been used in project 449370365247 before or it is disabled.', helpUrl: 'https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247' },
+    ];
+    renderActivity({ onNavigate });
+    await user.click(screen.getByRole('button', { name: /enable the api/i }));
+    expect(openSpy).toHaveBeenCalledWith('https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247', '_blank', 'noopener,noreferrer');
+    expect(onNavigate).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+
+  it('the daily "youtube api_disabled" sweep summary routes to the console (generic fallback, no helpUrl)', async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    feed.activity = [
+      { ts: '2026-06-16T09:00:00.000Z', action: 'insights-fetch', ok: false, errorCode: 'engine_failure', errorMessage: '1 fetch(es) failed: youtube api_disabled', actor: 'pendpost' },
+    ];
+    renderActivity({ onNavigate });
+    await user.click(screen.getByRole('button', { name: /enable the api/i }));
+    expect(openSpy).toHaveBeenCalledWith('https://console.cloud.google.com/apis/library', '_blank', 'noopener,noreferrer');
+    expect(onNavigate).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
 });
 
 // UX round 4 (2026-07-21): the DEFAULT feed answers "what happened to my

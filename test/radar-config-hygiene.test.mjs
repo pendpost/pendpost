@@ -55,6 +55,15 @@ try {
   const badBrief = set({ enabled: true, queries: [{ id: 'q1', label: 'x', brief: 42, sources: ['reddit'] }] });
   ok(badBrief.code === 'invalid_input', 'config_set REFUSES a non-string brief');
 
+  // ===== (1c) the per-query `lang` field: a BCP-47 tag round-trips, a bad one is refused =====
+  // The DE/FR search-language override. Agent-writable (a per-query field, not a radar-subtree key),
+  // validated exactly like posting.locale/contentLanguage (isLocaleTag).
+  const withLang = set({ enabled: true, queries: [{ id: 'q1', label: 'x', lang: 'de-CH', keywords: ['k'] }] });
+  ok(withLang.ok === true, 'a query carrying lang:"de-CH" is accepted');
+  ok(radarOf().queries[0].lang === 'de-CH', 'the query lang round-trips intact');
+  const badLang = set({ enabled: true, queries: [{ id: 'q1', label: 'x', lang: 'german', keywords: ['k'] }] });
+  ok(badLang.code === 'invalid_input', 'config_set REFUSES lang:"german" - it must be a BCP-47 tag like de or de-CH');
+
   // ===== (2) autoScan is gone from the schema AND from every read =====
   ok(!('autoScan' in radarOf()), 'a fresh read carries NO autoScan: nothing reads it, so nothing should present it');
   const withAutoScan = set({ autoScan: { enabled: true, cadence: 'daily', maxPerRun: 20 } });
@@ -99,17 +108,92 @@ try {
   ok(radarOf().dailyAt === '07:30', 'a refused dailyAt write leaves the stored value untouched');
 
   // ===== (6) the refusal message tells the WHOLE truth: it names every allowed radar key =====
-  // The old string omitted sources/dailyAt-siblings xEnterprise/geo/autoReply/agent - a caller
+  // The old string omitted sources/dailyAt-siblings xEnterprise/geo/agent - a caller
   // refused for a typo was handed a shape that itself would be refused for missing keys.
+  // (autoReply is retired - the arming moved to autoApprove.radarReplies - so it is no longer named.)
   {
     const refused = set({ nope: true });
     ok(refused.code === 'invalid_input', 'an unknown radar key is refused');
-    for (const k of ['enabled', 'competitorsDefault', 'replyVoiceDefault', 'queries', 'sources', 'dailyAt', 'xEnterprise', 'geo', 'brand', 'autoReply', 'agent', 'drafting']) {
+    for (const k of ['enabled', 'competitorsDefault', 'replyVoiceDefault', 'queries', 'sources', 'dailyAt', 'xEnterprise', 'geo', 'brand', 'agent', 'drafting']) {
       ok(String(refused.message || '').includes(k), `the radar refusal message names '${k}' (honest allowed-key list)`);
     }
+    ok(!String(refused.message || '').includes('autoReply'), 'the refusal message no longer names the retired autoReply key');
   }
 
-  console.log(`[radar-config-hygiene] OK - sources is enum-validated like cadence, the retired autoScan + agent.daily keys are refused and stripped on load, dailyAt is shape-checked, the refusal message names every allowed key, and an install carrying legacy values can still save through the read-modify-write the Studio performs (${pass} assertions).`);
+  // ===== (8) the retired posting.radar.autoReply key: refused, migrated + stripped =====
+  // Arming moved to posting.autoApprove.radarReplies (owner Q2). A NEW write of radar.autoReply is
+  // refused; a PERSISTED one migrates into radarReplies on read and is stripped from the radar
+  // subtree - the autoScan precedent, reading the old value before dropping it.
+  {
+    ok(set({ autoReply: { enabled: true, lanes: ['reddit'] } }).code === 'invalid_input',
+      'config_set REFUSES posting.radar.autoReply (retired - use posting.autoApprove.radarReplies)');
+    // Reset radar to a clean known state, then hand-persist the legacy autoReply an older build wrote.
+    set({ enabled: true, queries: [] });
+    const storedAR = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    storedAR.radar.autoReply = { enabled: true, lanes: ['reddit', 'mastodon'], requireLintClean: true, minScore: 55 };
+    fs.writeFileSync(configPath, JSON.stringify(storedAR, null, 2));
+    const cfg = getConfig().posting;
+    ok(!('autoReply' in cfg.radar), 'a PERSISTED radar.autoReply is stripped from the radar subtree on load');
+    const rr = cfg.autoApprove.radarReplies;
+    ok(rr && rr.enabled === true && rr.lanes.join() === 'reddit,mastodon' && rr.minScore === 55,
+      'the legacy autoReply migrated into autoApprove.radarReplies (enabled + lanes + minScore carried across)');
+    // The Studio read-modify-write of the radar subtree still saves after the strip (no brick).
+    const echo = setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: cfg.radar } } });
+    ok(echo.ok === true, 'echoing the migrated radar subtree back still SAVES - no bricked install');
+  }
+
+  // ===== (7) cadence collapsed to ONE global dailyEnabled flag =====
+  // The validator accepts a boolean dailyEnabled and refuses anything else.
+  {
+    const okDaily = set({ enabled: true, dailyEnabled: true, queries: [{ id: 'q1', label: 'x', keywords: ['k'] }] });
+    ok(okDaily.ok === true && radarOf().dailyEnabled === true, 'dailyEnabled:true is accepted and round-trips');
+    ok(set({ dailyEnabled: 'yes' }).code === 'invalid_input', 'config_set REFUSES a non-boolean dailyEnabled');
+    ok(radarOf().dailyEnabled === true, 'a refused dailyEnabled write leaves the stored value untouched');
+  }
+
+  // THE MIGRATION: a config persisted by an older build (per-query cadence, no global flag) is
+  // read as dailyEnabled:true with the per-query cadence stripped - an install that scanned daily
+  // keeps scanning daily, and the retired per-query knob is gone. This is the autoScan strip
+  // precedent, except it READS the old value before dropping it.
+  {
+    set({ enabled: true, dailyEnabled: false, queries: [{ id: 'q1', label: 'x', keywords: ['k'] }] });
+    const storedC = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    delete storedC.radar.dailyEnabled;
+    storedC.radar.queries = [
+      { id: 'q1', label: 'daily one', keywords: ['k'], cadence: 'daily', enabled: true },
+      { id: 'q2', label: 'manual one', keywords: ['m'], cadence: 'manual', enabled: true },
+    ];
+    fs.writeFileSync(configPath, JSON.stringify(storedC, null, 2));
+    const migrated = radarOf();
+    ok(migrated.dailyEnabled === true, 'a persisted cadence:"daily" query migrates to global dailyEnabled:true');
+    ok(migrated.queries.every((q) => !('cadence' in q)), 'the retired per-query cadence is stripped from every query on load');
+    const echoC = setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: migrated } } });
+    ok(echoC.ok === true, 'echoing the migrated subtree back still SAVES - no bricked install');
+  }
+
+  // IDEMPOTENCY: an explicitly persisted dailyEnabled WINS over the cadence derivation, so a
+  // headless install that never opens the Studio never flip-flops. dailyEnabled:false with a
+  // lingering cadence:"daily" query stays false.
+  {
+    const storedD = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    storedD.radar.dailyEnabled = false;
+    storedD.radar.queries = [{ id: 'q1', label: 'x', keywords: ['k'], cadence: 'daily', enabled: true }];
+    fs.writeFileSync(configPath, JSON.stringify(storedD, null, 2));
+    ok(radarOf().dailyEnabled === false, 'a persisted dailyEnabled:false wins over a lingering cadence:"daily" query (idempotent)');
+  }
+
+  // DEPRECATION WINDOW: a query write still ACCEPTS cadence for one release (an older client/agent
+  // never 400s), but it is stripped on read - the config now says what the engine actually does.
+  {
+    const withCad = set({ enabled: true, dailyEnabled: false, queries: [{ id: 'q1', label: 'x', keywords: ['k'], cadence: 'daily' }] });
+    ok(withCad.ok === true, 'a query write carrying cadence is still accepted (deprecation window)');
+    ok(!('cadence' in radarOf().queries[0]), 'but the accepted cadence is stripped on read (retired)');
+  }
+
+  // The refusal message names the new dailyEnabled key too (honest allowed-key list).
+  ok(String(set({ nope: true }).message || '').includes('dailyEnabled'), "the radar refusal message names 'dailyEnabled'");
+
+  console.log(`[radar-config-hygiene] OK - sources is enum-validated like cadence, the retired autoScan + agent.daily keys are refused and stripped on load, per-query cadence collapses to the global dailyEnabled flag (migrated, idempotent, deprecation-accepted), dailyAt is shape-checked, the refusal message names every allowed key, and an install carrying legacy values can still save through the read-modify-write the Studio performs (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

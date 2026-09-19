@@ -158,6 +158,11 @@ async function api(method, pathname, { query, body, token } = {}) {
     const e = data.error || {};
     const reason = e.errors?.[0]?.reason || '';
     const err = new Error(`YouTube ${method} ${pathname}: HTTP ${res.status} ${reason} - ${e.message || text || ''}`);
+    // The activation URL Google hands back on an accessNotConfigured/SERVICE_DISABLED
+    // 403 (errors[0].extendedHelp - "Enable it by visiting <url>") rides the error so
+    // an api_disabled row can point the operator straight at the Cloud console rather
+    // than at a useless reconnect (the project id is already in e.message).
+    err.helpUrl = e.errors?.[0]?.extendedHelp || '';
     // Status AND reason ride the error object (mirrors fetchYtWatchTime's own
     // thrown error below) so a 403 can be classified needs_scope (P9) without
     // re-parsing the message text - the playlist verbs (spec 15) are the first
@@ -292,6 +297,15 @@ function appendAttempt(post, entry) {
 export const RUN = { results: [], blocked368: false };
 let JSON_MODE = false;
 let ACTOR = 'cli';
+
+// A schedule-time SKIP carries its reason back to the scheduler as a result row, so a
+// dispatched-but-not-uploaded post is NEVER the reason-less "engine returned no result"
+// (RC1/RC2). It is activity-only (no appendAttempt) - a skip is not a publish attempt, so
+// it never counts toward the publishHold cap. The scheduler de-dupes identical standing
+// rows, so a persistently-skipped post logs its reason once, not every 60s tick.
+function skipRow(post, reason, code = 'skipped') {
+  return { postId: post.id, platform: 'youtube', action: 'schedule-native', ok: false, errorCode: code, errorMessage: reason };
+}
 
 function resolveMediaPath(plan, post) {
   // Relative paths anchor at the workspace root (PENDPOST_ROOT), NOT process.cwd():
@@ -636,34 +650,51 @@ async function cmdSchedule(args) {
     if (args.only && post.id !== args.only) continue;
     if (!isYouTube(post)) continue;
     if (post.executionMode !== 'fully-scheduled') continue;
-    // Self-heal the poisoned "scheduled but nothing exists" state: a status of
-    // 'scheduled' WITHOUT a ytVideoId means a prior handoff was reverted (e.g. a
-    // cleared mock id) - nothing is actually scheduled on YouTube, so treat it as
-    // plannable instead of silently skipping it (the silent skip surfaced as the
-    // daemon's reason-less "engine returned no result" failure).
-    if (post.status !== 'planned') {
-      if (post.status === 'scheduled' && !post.ytVideoId) {
-        console.log(`[info] ${post.id}: status is "scheduled" but no ytVideoId exists - re-scheduling it.`);
-      } else {
-        continue;
-      }
+    // Plannable = an authoring/handoff status that still owes an upload, as a POSITIVE
+    // allowlist (NOT "anything but posted"): a post can carry a TERMINAL status
+    // (cancelled/failed/skipped/dismissed) that must never fire. 'draft' is included
+    // because an approved post can reach here still stamped 'draft' - some plan writers
+    // bypass createPost's status:'planned' default, and approval alone did not promote it
+    // (writes.mjs setApproval now does, but this is the engine-side backstop). 'scheduled'
+    // WITHOUT a ytVideoId is the poisoned "handoff reverted" state (e.g. a cleared mock id):
+    // nothing is actually on YouTube, so re-schedule it. Refusing any of these silently was
+    // the daemon's reason-less "engine returned no result" (RC1).
+    const plannable = post.status === 'planned' || post.status === 'draft'
+      || (post.status === 'scheduled' && !post.ytVideoId);
+    if (!plannable) {
+      const reason = `status is "${post.status}" - only a plannable post (planned/draft/scheduled-without-id) schedules`;
+      console.log(`[skip] ${post.id}: ${reason}.`);
+      RUN.results.push(skipRow(post, reason, 'not_plannable'));
+      continue;
+    }
+    if (post.status === 'scheduled') {
+      console.log(`[info] ${post.id}: status is "scheduled" but no ytVideoId exists - re-scheduling it.`);
     }
     // Publish hold (lib/publish-hold.mjs): the failure cap is spent - never re-fire on
     // its own. Backstop for direct CLI runs; the scheduler's lanesOwed already drops a
     // held post from the fire loop. Reschedule or edit clears the hold.
     if (post.publishHold) {
-      console.log(`[skip] ${post.id}: publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry.`);
+      const reason = `publish hold after repeated failures (${post.publishHold.code ?? post.publishHold.message ?? 'unknown'}) - reschedule or edit the post to retry`;
+      console.log(`[skip] ${post.id}: ${reason}.`);
+      RUN.results.push(skipRow(post, reason, 'publish_hold'));
       continue;
     }
     // Fail-closed approval (SS-01): missing field = draft = never publish.
     if ((post.approval || 'draft') !== 'approved') {
-      console.log(`[skip] ${post.id}: approval is "${post.approval || 'draft'}" - only approved posts publish.`);
+      const reason = `approval is "${post.approval || 'draft'}" - only approved posts publish`;
+      console.log(`[skip] ${post.id}: ${reason}.`);
+      RUN.results.push(skipRow(post, reason, 'not_approved'));
       continue;
     }
     if (post.ytVideoId) { console.log(`[skip] ${post.id}: already has ytVideoId ${post.ytVideoId}.`); continue; }
 
     const dueMs = Date.parse(post.scheduledAt);
-    if (Number.isNaN(dueMs)) { console.log(`[warn] ${post.id}: unparseable scheduledAt "${post.scheduledAt}" - skipping.`); continue; }
+    if (Number.isNaN(dueMs)) {
+      const reason = `unparseable scheduledAt "${post.scheduledAt}"`;
+      console.log(`[warn] ${post.id}: ${reason} - skipping.`);
+      RUN.results.push(skipRow(post, reason, 'invalid_input'));
+      continue;
+    }
     // An OVERDUE approved post still publishes: YouTube refuses a past publishAt,
     // so clamp to the nearest valid future moment instead of silently skipping
     // (the old skip left "Try again" on an overdue post as a reason-less dead end).
@@ -674,8 +705,18 @@ async function cmdSchedule(args) {
     }
 
     const mediaPath = resolveMediaPath(plan, post);
-    if (!mediaPath) { console.log(`[warn] ${post.id}: media not found (${post.path || post.file}) - skipping.`); continue; }
-    if (!/\.(mp4|mov)$/i.test(mediaPath)) { console.log(`[warn] ${post.id}: not a video file - skipping.`); continue; }
+    if (!mediaPath) {
+      const reason = `media not found (${post.path || post.file}) - re-render or re-attach the video`;
+      console.log(`[warn] ${post.id}: ${reason}.`);
+      RUN.results.push(skipRow(post, reason, 'invalid_media'));
+      continue;
+    }
+    if (!/\.(mp4|mov)$/i.test(mediaPath)) {
+      const reason = `not a video file (${path.basename(mediaPath)}) - YouTube needs an .mp4/.mov`;
+      console.log(`[warn] ${post.id}: ${reason} - skipping.`);
+      RUN.results.push(skipRow(post, reason, 'invalid_media'));
+      continue;
+    }
     // Fresh-bytes caption backstop: YouTube caps a description at 5000 chars
     // (lib/caption.mjs). Checks post.description - the field buildMeta actually sends
     // (NOT post.caption) - so the backstop guards the real upload. Refuse an over-cap
@@ -963,11 +1004,22 @@ async function cmdDemographics() {
       const err = new Error(`YouTube Analytics GET /reports: HTTP ${res.status} ${reason} - ${e.message || text || ''}`);
       err.status = res.status;
       err.reason = reason;
+      err.helpUrl = e.errors?.[0]?.extendedHelp || '';
       throw err;
     }
     RUN.results.push(accountRow({ ok: true, demographics: parseYtDemographics(data) }));
     console.log('[ok] demographics fetched.');
   } catch (err) {
+    // spec-15 follow-on: a disabled-API 403 (accessNotConfigured / SERVICE_DISABLED
+    // - the live 60s-news case: the YouTube Analytics API not enabled in the GCP
+    // project) is NOT a missing scope. Surface it as api_disabled with the console
+    // activation URL, so the owner ENABLES the API rather than pointlessly
+    // reconnecting the account.
+    if (ytApiDisabled(err)) {
+      RUN.results.push(accountRow({ ...ytApiDisabledRow(err), scope: 'yt-analytics.readonly' }));
+      console.log(`[warn] demographics: YouTube Analytics API is disabled in the GCP project - enable it, then retry. ${err.helpUrl || ''}`.trim());
+      return;
+    }
     // spec-15 quota mislabel fix: a quota/rate-limit 403 is NOT "reconnect to
     // authorize" (ytNeedsScope excludes it) - it reads engine_failure with the
     // real message instead.
@@ -1277,8 +1329,36 @@ async function cmdProbe() {
 // "wait" (or raise the quota). EXCLUDE the quota reasons so those read
 // engine_failure (with the real message) instead.
 const YT_QUOTA_REASONS = new Set(['quotaExceeded', 'rateLimitExceeded', 'dailyLimitExceeded']);
+// spec-15 follow-on (60s-news 2026-09-19 live diagnosis): a 403 can ALSO be
+// Google's "this API is DISABLED in your GCP project" signal - reason
+// `accessNotConfigured` on the Data API host, or `SERVICE_DISABLED` on the
+// Analytics host (cmdDemographics' accessNotConfigured for the YouTube Analytics
+// API not being enabled in project 449370365247 was the live case). That is NOT a
+// missing OAuth scope: reconnecting the account changes NOTHING - the owner has to
+// ENABLE the API in the Cloud console. Classifying it as needs_scope sent
+// debugging down a re-auth dead end. So it gets its OWN class (api_disabled) and
+// is EXCLUDED from ytNeedsScope, exactly like the quota reasons.
+const YT_API_DISABLED_REASONS = new Set(['accessNotConfigured', 'SERVICE_DISABLED']);
+function ytApiDisabled(err) {
+  return Boolean(err) && err.status === 403 && YT_API_DISABLED_REASONS.has(err.reason);
+}
 function ytNeedsScope(err) {
-  return Boolean(err) && err.status === 403 && !YT_QUOTA_REASONS.has(err.reason);
+  return Boolean(err) && err.status === 403
+    && !YT_QUOTA_REASONS.has(err.reason) && !YT_API_DISABLED_REASONS.has(err.reason);
+}
+// The structured fields an api_disabled degrade adds to a result row: the distinct
+// `api_disabled` label (NEVER needs_scope), the real Google message (it names the
+// disabled API + the GCP project id) and the Cloud-console activation URL when
+// Google supplied one. Merge onto each verb's own { platform, action, ... } row so
+// the surfaced errorCode/reason is truthful and actionable across every read/write
+// path (demographics/profile/edit/playlists/probe).
+function ytApiDisabledRow(err) {
+  return {
+    ok: false,
+    error: 'api_disabled',
+    errorMessage: String(err.message || err).slice(0, 300),
+    ...(err.helpUrl ? { helpUrl: err.helpUrl } : {}),
+  };
 }
 
 export async function cmdProfile(args) {
@@ -1297,8 +1377,13 @@ export async function cmdProfile(args) {
       const handleMatches = expected ? expected === ch.id : null;
       RUN.results.push({ platform: 'youtube', action: 'profile-probe', ok: true, tier: 'permitted', channelId: ch.id, expectedChannelId: expected, handleMatches, detail: `${ch.snippet?.title || 'Channel'} (${ch.id})${expected ? ` (expected ${expected}${handleMatches ? '' : ' - MISMATCH'})` : ''}` });
     } catch (err) {
-      const tier = ytNeedsScope(err) ? 'blocked' : 'error';
-      RUN.results.push({ platform: 'youtube', action: 'profile-probe', ok: false, tier, detail: String(err.message || err).slice(0, 300) });
+      // api_disabled (the API is off in the GCP project) is neither a blocked scope
+      // nor a generic error - it reads as its own tier so the probe's detail tells
+      // the operator to enable the API, not to reconnect.
+      const tier = ytApiDisabled(err) ? 'api_disabled' : (ytNeedsScope(err) ? 'blocked' : 'error');
+      // Carry the Cloud-console activation URL on an api_disabled probe (same as every
+      // other api_disabled row) so the Setup card can link straight to enabling the API.
+      RUN.results.push({ platform: 'youtube', action: 'profile-probe', ok: false, tier, detail: String(err.message || err).slice(0, 300), ...(tier === 'api_disabled' && err.helpUrl ? { helpUrl: err.helpUrl } : {}) });
     }
     return;
   }
@@ -1355,6 +1440,11 @@ export async function cmdProfile(args) {
     RUN.results.push({ platform: 'youtube', action: 'profile-update', ok: true, channelId: channel.id });
     console.error(`[ok] channel ${channel.id}: branding updated.`);
   } catch (err) {
+    if (ytApiDisabled(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'profile-update', ...ytApiDisabledRow(err), scope: 'youtube' });
+      console.error(`[err] profile-update: the YouTube Data API is disabled in the GCP project - enable it, then retry. ${err.helpUrl || ''}`.trim());
+      return;
+    }
     if (ytNeedsScope(err)) {
       RUN.results.push({ platform: 'youtube', action: 'profile-update', ok: false, error: 'needs_scope', scope: 'youtube', errorMessage: String(err.message || err).slice(0, 300) });
       console.error(`[err] profile update needs the youtube (write) scope - ${err.message}`);
@@ -1543,6 +1633,11 @@ export async function cmdEdit(args) {
       console.log(`[ok] ${post.id}: video ${post.ytVideoId} snippet updated.`);
       edited += 1;
     } catch (err) {
+      if (ytApiDisabled(err)) {
+        RUN.results.push({ postId: post.id, platform: 'youtube', action: 'edit', ...ytApiDisabledRow(err), scope: 'youtube' });
+        console.log(`[warn] ${post.id}: edit failed - the YouTube Data API is disabled in the GCP project. Enable it, then retry. ${err.helpUrl || ''}`.trim());
+        continue;
+      }
       if (ytNeedsScope(err)) {
         RUN.results.push({ postId: post.id, platform: 'youtube', action: 'edit', ok: false, error: 'needs_scope', scope: 'youtube' });
         console.log(`[warn] ${post.id}: edit needs the youtube (or youtube.force-ssl) write scope - reconnect to grant it.`);
@@ -1586,6 +1681,11 @@ async function cmdPlaylistsList() {
     RUN.results.push({ platform: 'youtube', action: 'playlists-list', ok: true, playlists });
     console.log(`[ok] playlists-list: ${playlists.length} playlist(s).`);
   } catch (err) {
+    if (ytApiDisabled(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'playlists-list', ...ytApiDisabledRow(err), scope: 'youtube' });
+      console.log(`[warn] playlists-list: the YouTube Data API is disabled in the GCP project - enable it, then retry. ${err.helpUrl || ''}`.trim());
+      return;
+    }
     if (ytNeedsScope(err)) {
       RUN.results.push({ platform: 'youtube', action: 'playlists-list', ok: false, error: 'needs_scope', scope: 'youtube' });
       console.log('[warn] playlists-list: needs the youtube (or youtube.force-ssl) scope - reconnect to grant it.');
@@ -1617,6 +1717,11 @@ async function cmdPlaylistCreate(args) {
     RUN.results.push({ platform: 'youtube', action: 'playlist-create', ok: true, id: data.id, title: data.snippet?.title || args.title });
     console.log(`[ok] playlist-create: "${data.snippet?.title || args.title}" (${data.id}).`);
   } catch (err) {
+    if (ytApiDisabled(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'playlist-create', ...ytApiDisabledRow(err), scope: 'youtube' });
+      console.log(`[warn] playlist-create: the YouTube Data API is disabled in the GCP project - enable it, then retry. ${err.helpUrl || ''}`.trim());
+      return;
+    }
     if (ytNeedsScope(err)) {
       RUN.results.push({ platform: 'youtube', action: 'playlist-create', ok: false, error: 'needs_scope', scope: 'youtube' });
       console.log('[warn] playlist-create: needs the youtube (or youtube.force-ssl) write scope - reconnect to grant it.');
@@ -1688,6 +1793,11 @@ async function cmdPlaylistAdd(args) {
       await savePlan(abs, plan, [post.id]);
     }
   } catch (err) {
+    if (ytApiDisabled(err)) {
+      RUN.results.push({ platform: 'youtube', action: 'playlist-add', ...ytApiDisabledRow(err), scope: 'youtube' });
+      console.log(`[warn] playlist-add: the YouTube Data API is disabled in the GCP project - enable it, then retry. ${err.helpUrl || ''}`.trim());
+      return;
+    }
     if (ytNeedsScope(err)) {
       RUN.results.push({ platform: 'youtube', action: 'playlist-add', ok: false, error: 'needs_scope', scope: 'youtube' });
       console.log('[warn] playlist-add: needs the youtube (or youtube.force-ssl) write scope - reconnect to grant it.');
@@ -1827,3 +1937,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 // spawning the CLI or the real Data API - YouTube's API host is a hardcoded literal (not
 // env-overridable), so a live-local-server proof (like the Mastodon lane) is not feasible here.
 export { postComment };
+
+// Test-only exports (spec-15 follow-on): the pure 403 classifiers, so a unit test
+// can prove accessNotConfigured/SERVICE_DISABLED -> api_disabled, a real
+// missing-scope 403 (e.g. insufficientPermissions) -> needs_scope, and a quota 403
+// -> neither, WITHOUT spawning the CLI or a live Data API. Both are pure over
+// err.status/err.reason.
+export { ytNeedsScope, ytApiDisabled };

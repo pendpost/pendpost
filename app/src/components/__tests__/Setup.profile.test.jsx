@@ -210,6 +210,21 @@ describe('Setup — cross-lane profile edit (spec 28)', () => {
     expect(await within(region).findByText('Authorize profile edit')).toBeInTheDocument();
   });
 
+  // spec-15 follow-on: a disabled API is a DIFFERENT fix than a missing scope. A probe
+  // tier 'api_disabled' must name that state and link to the Cloud console (never the
+  // "Authorize profile edit" reconnect, which fixes nothing when the API is off).
+  it('api_disabled: a YouTube probe links to enabling the API, not a reconnect', async () => {
+    youtubeUpdateProfileMock.mockResolvedValueOnce({ ok: true, results: [{ platform: 'youtube', action: 'profile-probe', ok: false, tier: 'api_disabled', detail: 'YouTube Data API has not been used in project 449370365247 before or it is disabled.', helpUrl: 'https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247' }] });
+    const user = userEvent.setup();
+    renderSetup();
+    const region = await expandProfilePanel(user, 'YouTube');
+    await user.click(within(region).getByRole('button', { name: 'Check access' }));
+    expect(await within(region).findByText('The API is turned off in Google Cloud')).toBeInTheDocument();
+    const link = within(region).getByRole('link', { name: /enable the api in google cloud/i });
+    expect(link).toHaveAttribute('href', 'https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247');
+    expect(within(region).queryByText('Authorize profile edit')).not.toBeInTheDocument();
+  });
+
   it('error state: a rejected Apply shows the server error message inline', async () => {
     youtubeUpdateProfileMock.mockRejectedValueOnce(Object.assign(new Error('refusing to edit profile: wrong channel'), { code: 'engine_failure' }));
     const user = userEvent.setup();

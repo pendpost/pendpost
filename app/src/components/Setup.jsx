@@ -20,7 +20,7 @@ import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, 
 import { usePendpostHealth, useConfig, saveConfig, recheckHealth, recheckAgent, connectAgent, adoptAgent, radarAgentScan, connectPlatform, connectStatus, useAccounts, useSignals, setMetaLane, disconnectPlatform, useDiscover, useGbpMedia, useGbpAttributes, gbpMediaAdd, gbpAttributesSet, mastodonUpdateProfile, nostrUpdateProfile, telegramUpdateProfile, youtubeUpdateProfile, useBoards, usePinterestBoardSections, createPinterestBoard, createPinterestBoardSection, useGhostMembers, useGhostNewsletters, ghostNewsletterUpdate } from '../lib/api.js';
 import { useCapabilities } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
-import { fmtFull, fmtInt, platformEnabled, WARMTH_MIN_AGE_DAYS, WARMTH_MIN_KARMA } from '../lib/format.js';
+import { fmtFull, fmtInt, platformEnabled, isAbsoluteHttpUrl, GCP_APIS_CONSOLE_URL, WARMTH_MIN_AGE_DAYS, WARMTH_MIN_KARMA } from '../lib/format.js';
 import { AGENT_CONNECT, AGENT_CONNECT_JSON } from '../lib/agent-connect.js';
 import { INNER_SURFACE, FIELD_SURFACE, FIELD, Skeleton, EYEBROW, PLATFORM_META } from './ui.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
@@ -2422,7 +2422,26 @@ function ProfileEdit({ platformId }) {
           </div>
           {!dirty ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('setup.profile.nothing')}</p> : null}
           {probeRow && !probeRow.ok ? (
-            <IconBadge icon={Lock} tone="warn" text={t('setup.profile.needsScope')} label={probeRow.detail || ''} />
+            // A disabled API in the GCP project (YouTube probe tier 'api_disabled') is a
+            // DIFFERENT fix than a missing scope: enable the API in the Cloud console, not
+            // reconnect. So it names that state and links straight to the console (the
+            // probe's helpUrl when Google supplied one, else the APIs library) instead of
+            // the misleading "Authorize profile edit".
+            probeRow.tier === 'api_disabled' ? (
+              <div className="space-y-1">
+                <IconBadge icon={AlertCircle} tone="warn" text={t('setup.profile.apiDisabled')} label={probeRow.detail || ''} />
+                <a
+                  href={isAbsoluteHttpUrl(probeRow.helpUrl) ? probeRow.helpUrl : GCP_APIS_CONSOLE_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-0.5 text-[11px] font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+                >
+                  <ExternalLink size={11} aria-hidden="true" /> {t('setup.profile.apiDisabledCta')}
+                </a>
+              </div>
+            ) : (
+              <IconBadge icon={Lock} tone="warn" text={t('setup.profile.needsScope')} label={probeRow.detail || ''} />
+            )
           ) : null}
           {error ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{error}</p> : null}
         </div>

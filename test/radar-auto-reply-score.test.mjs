@@ -30,6 +30,8 @@ const { getConfig, setConfig } = await import('../lib/config.mjs');
 
 const CAMP = 'radar';
 const setRadar = (radar) => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar } } });
+// The auto-reply trust scope now lives in the auto-approve object (owner Q2).
+const setRadarReplies = (rr) => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { autoApprove: { radarReplies: rr } } } });
 const QUERY = { id: 'q1', label: 'q', sources: ['reddit'], keywords: ['schedule', 'scheduler'] };
 
 // Seed ONE signal (agent- or engine-scored) via the real ingest, so queueRadarReply's cached
@@ -52,14 +54,15 @@ try {
   await createCampaign({ id: CAMP, note: 'radar replies', timezone: 'UTC', actor: 'owner' });
 
   // ---- threshold UNSET first (a fresh config): pre-existing behavior preserved -------
-  // The radar autonomy subtree deep-merges one level (config.mjs), so minScore, once set, can only
+  // The radarReplies sub-scope deep-merges one level (config.mjs), so minScore, once set, can only
   // be changed - not dropped by a partial write. So the "unset" case must run before any is set.
-  setRadar({ enabled: true, queries: [QUERY], autoReply: { enabled: true, lanes: ['reddit'] } });
+  setRadar({ enabled: true, queries: [QUERY] });
+  setRadarReplies({ enabled: true, lanes: ['reddit'] });
   const legacy = await seed({ score: null });
   ok((await queue(legacy)).approval === 'approved', 'minScore unset -> legacy behavior preserved (enabled+lane auto-approves)');
 
   // ---- threshold SET to 70, auto-reply on for reddit --------------------------------
-  setRadar({ enabled: true, queries: [QUERY], autoReply: { enabled: true, lanes: ['reddit'], minScore: 70 } });
+  setRadarReplies({ enabled: true, lanes: ['reddit'], minScore: 70 });
 
   const hi = await seed({ score: 80 });
   ok((await queue(hi)).approval === 'approved', 'agent-scored 80 >= threshold 70 -> auto-approved');

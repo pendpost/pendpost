@@ -81,7 +81,8 @@ try {
     // Merge: the same rival in signal text AND the footprint clusters into ONE entry.
     const sigs = [{ source: 'reddit', url: 'https://r/1', text: 'looking for an alternative to Buffer', intentTags: ['alternative-seeking'] }];
     const fp = [miss('best scheduler?', ['Buffer']), miss('q2', ['Buffer'])];
-    const out = comparisonBacklog(sigs, [], fp);
+    // Buffer is a declared rival, so the signal side mines it (the bridge side always does).
+    const out = comparisonBacklog(sigs, [], fp, { competitors: ['Buffer'] });
     ok(out.filter((b) => b.key === 'buffer').length === 1, 'signal-derived and bridge-derived clusters MERGE on the competitor key (one entry, not two)');
     const entry = out.find((b) => b.key === 'buffer');
     ok(entry.buyerPhrases.some((p) => /alternative to Buffer/i.test(p)) && entry.buyerPhrases.some((p) => p.startsWith('AI assistants name')), 'the merged entry keeps both the real buyer phrase and the source marker');
@@ -105,7 +106,8 @@ try {
       { source: 'reddit', url: 'https://r/2', text: 'Hootsuite vs Buffer which is better', intentTags: ['competitor-mention'] },
     ];
     const fp = [miss('q', ['Buffer', 'Later']), miss('q2', ['Buffer'])];
-    const sov = shareOfVoice(sigs, fp);
+    // Buffer + Hootsuite are declared rivals, so the signal side of the tally counts them.
+    const sov = shareOfVoice(sigs, fp, { competitors: ['Buffer', 'Hootsuite'] });
     ok(Array.isArray(sov) && sov.length === 3, 'tallies every distinct rival across signals + footprint');
     ok(sov[0].name === 'Buffer' && sov[0].count === 4, 'most-frequent-first: Buffer counted in 2 signals + 2 checks = 4');
     ok(sov.find((r) => r.name === 'Hootsuite')?.count === 1 && sov.find((r) => r.name === 'Later')?.count === 1, 'each source contributes one count per rival per item');
@@ -113,7 +115,7 @@ try {
   }
   {
     const sigs = [{ source: 'reddit', url: 'https://r/1', text: 'alternative to Buffer or maybe an alternative to Buffer', intentTags: ['alternative-seeking'] }];
-    const sov = shareOfVoice(sigs, []);
+    const sov = shareOfVoice(sigs, [], { competitors: ['Buffer'] });
     ok(sov.length === 1 && sov[0].count === 1, 'a rival repeated within ONE signal counts once');
   }
   {

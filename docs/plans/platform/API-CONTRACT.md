@@ -174,6 +174,16 @@ now carries the full three faces: `POST /api/radar/geo-reset` and a confirm-gate
 Radar panel's overflow menu (shown only when there is GEO state to drop - no speculative surface).
 The verb itself refuses any non-owner actor, on every face.
 
+`POST /api/radar/restore` (granular filters) is the UNDO for a Radar dismiss - single or bulk - and
+has NO MCP tool BY DESIGN, so it is listed in `routes`. A `dismiss` REMOVES the signal object from
+the cache and records it in the seen ledger, so undo must RE-INSERT the exact objects the GUI just
+dismissed and clear their seen entries; the Studio is the only face that holds those objects at the
+moment of the undo. An agent has no such transient hand-back state: it composes the same end result
+from primitives it already has (re-run the scan/ingest, or never dismiss in the first place), so a
+`radar_restore` tool would be a face for a workflow no agent follows. The paired bulk-dismiss it
+undoes, `radar_triage_bulk` -> `POST /api/radar/triage-bulk`, DOES ship both faces. This is a design
+decision, not a tracked gap.
+
 `radar_followup_report` (engagement engine, owner decision 4 2026-08-17) is the spawned
 follow-up child's OWN reporting tool and deliberately has no REST twin: it is inert outside the
 follow-up fence a followup-scope agent job arms (fail-closed - a chat agent, the Studio, or an
@@ -199,6 +209,20 @@ link/unlink twins), so they carry a full GUI face and need no exemption. All fiv
 `clientId` (per-brand scoping); the person-graph is local-only and never leaves the disk (that is
 the feature - no cloud parity).
 
+"Needs you" (spec 50 P5a, §7.7) ships four verbs with matching REST twins:
+`engage_asks_list` -> `GET /api/engage/asks` (the read the strip above the Radar feed renders,
+open in every mode including off), `engage_answer` -> `POST /api/engage/answer` (the owner's
+one-line answer; it spawns the drafting agent, so it is the one slow route in the set),
+`engage_confirm` -> `POST /api/engage/confirm` (post a held reply, grace skipped) and
+`engage_dismiss` -> `POST /api/engage/dismiss` (skip it; the signal records `skip / owner`).
+All three writes are OWNER-ONLY: an Ask exists precisely because the engine judged that a
+machine may not decide this one, so an agent answering its own ask would hand back the autonomy
+the owner declined. There is deliberately NO fourth write for the other two ask kinds: a
+`handoff` resolves through the EXISTING `radar_mark_copy_posted` with the posted url (marking
+the copy posted IS the answer), and `login` / `switchAccount` close themselves when
+`engage_probe` next finds the platform usable. Two verbs that would have restated an existing
+one, not added.
+
 ```json
 {
   "routes": [
@@ -221,7 +245,8 @@ the feature - no cloud parity).
     "/api/cloud/checkout",
     "/api/cloud/billing-portal",
     "/api/cloud/spend-cap",
-    "/api/cloud/sign-out"
+    "/api/cloud/sign-out",
+    "/api/radar/restore"
   ],
   "tools": [
     "connect_discover",
@@ -234,12 +259,14 @@ the feature - no cloud parity).
     "/api/radar/draft-comparison": "The spawned child's own tool: the operator presses Draft it (which is /api/radar/comparison-draft, GUI-reachable), their agent writes the page, and calls this to file it. Its required argument is the page body, so a human calling it directly would already have written the page and would want the composer instead. It exists as its own tool, rather than plan_create_post, so that auto-approve cannot match a post seeded by untrusted threads.",
     "/api/radar/scan": "Spec 41 made Studio scanning AGENT-ONLY: Scan now spawns the operator's own agent (POST /api/radar/agent-scan), and a scan that cannot use an agent does not run rather than falling back to a keyword match pretending to be research. radar_scan / runLaneRadar stay SHIPPED for agents and headless callers that still want the credentialed keyword scan - deleting that machinery is its own net-simplify diff, not a rider on this feature. Until then it is genuinely agent-only, and a dead GUI helper kept alive to satisfy this check would fake the gate green.",
     "/api/preview": "Read-only publish dry-run (C3): reports which due posts would fire, on which lanes, in which mode, with what blockers. The operator's equivalent is the Planner itself, which shows the same state in situ; a second read-only mirror of it would be a duplicate surface, and the net-simplify bar rejects that. Agents need it because they cannot see the Planner.",
+    "/api/radar/engage-report": "Spec 50 P1: the auto-engage TRIAGE report. It is the spawned triage child's own reporting tool - the child decides act/skip/ask for the signals pendpost itself picked, and this is how that judgement comes back. The operator's face for the same decisions is the Radar feed (each signal renders its decision in the existing status slot) and the Needs-you strip for the asks, both of which READ what this writes; there is nothing for a human to type here, because a human deciding a thread simply acts on it in the feed. Unlike radar_followup_report it does get a REST twin: it is NOT fail-closed outside a spawn (a decision on a stored signal is a legitimate thing for an operator's own agent to record over HTTP), and every hard rule (spec 50 §7.4) lives inside the verb, so the route cannot be the softer of the two faces.",
     "/api/radar/footprint": "Radar GEO footprint logging is agent-only BY DESIGN and this is load-bearing: pendpost never calls an LLM and never holds a model key (spec 39 invariant 1, model-free/key-free). The agent runs the buying question against its OWN model access and reports the result; a GUI button here would imply pendpost has model access, which is exactly the property the product promises it does not have. app/src/components/Radar.jsx:564 states the same rule at the surface that renders the trend.",
     "/api/radar/ingest": "Signal ingest is agent-only for the SAME model-free reason as /api/radar/footprint above: searching the open web is judgement work that needs a model, and pendpost has none. What pendpost can do itself it does - Radar's own scan searches each CONNECTED source's API on a button (Scan now) or daily on its own scheduler, and that is the whole GUI story. What it cannot do, an agent does through this tool with its own model access, and the signal lands in the same ranked feed. The GUI face this once had was a prompt to copy into a chat window and a box to paste JSON back into: a clipboard round-trip that made the operator the transport between two programs that can already talk to each other. It is removed, not replaced - an operator whose agent holds pendpost's tools asks the agent, and an operator with no agent uses the sources they connected. This is a DESIGN DECISION, not a tracked gap.",
     "/api/mastodon/follow": "Social-graph follow/unfollow (spec 31) is deliberately MCP-only. app/src/lib/api.js:591 records the decision in prose: 'follow/unfollow and the Nostr relay/list actions are MCP-only - no GUI face, so no helper here.' Following is a relationship action an agent performs while working a lane, not something the operator does from a publishing dashboard.",
     "/api/nostr/relay-list": "NIP-65 relay list (spec 31), MCP-only by the same decision as /api/mastodon/follow - see app/src/lib/api.js:591. Relay plumbing is identity configuration an agent manages; surfacing raw `r` tags in the Studio would add a screen that no operator task needs.",
     "/api/nostr/list": "NIP-51 lists - mute/pin/bookmark sets (spec 31), MCP-only by the same decision as /api/mastodon/follow - see app/src/lib/api.js:591. These are REPLACEABLE events whose whole-list semantics are hostile to a casual GUI edit; an agent composing the full list is the safer face. This is the POST (set) face.",
     "/api/nostr/list/": "NIP-51 list READ (spec 31). Declared separately from the POST because this route is registered with `prefix:` (the kind is a path segment), so its key carries the trailing slash. Same rationale: MCP-only by the decision recorded at app/src/lib/api.js:591.",
+    "/api/engage/queue": "The raw auto-engage action list (spec 50) is an AGENT read. The operator never wants a second list of rows: every row is already visible where it belongs, joined onto the Radar signal it answers (listRadar's `engage` badge, rendered inside the existing signal-row status slot as \"Reply, like · 14:05\" or \"Tomorrow 08:00 · daily limit\"), and the ledger row summarises the day. GET /api/engage - the summary the ledger and the platform list DO render - is the operator's face for the same store. An agent has no feed to look at, so it needs the rows themselves. Adding a queue screen would be the exact duplicate surface spec 50's net-simplify bar (D17) forbids.",
     "/api/accounts/x/profile": "GAP, NOT A DESIGN DECISION - do not read this entry as a rule. X profile edit is the ONLY lane whose profile edit has no GUI face: spec 28 generalized 'the shipped X profile-edit pattern' to mastodon/nostr/telegram/youtube and shipped an app/src/lib/api.js helper for each of those four (mastodonUpdateProfile, nostrUpdateProfile, telegramUpdateProfile, youtubeUpdateProfile), while the lane the pattern originated from was left agent-only. Nothing about X argues for that asymmetry. Exempted only to keep the gate green while the gap is tracked; closing it means an xUpdateProfile helper plus the Setup surface that calls it, sized as its own change."
   }
 }

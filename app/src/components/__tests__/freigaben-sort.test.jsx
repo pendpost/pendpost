@@ -6,7 +6,7 @@
 // direction is the operator's, persisted PER TAB, because one shared key would let a
 // choice made on the archive silently reorder the work queue.
 
-import { render, screen, within } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';

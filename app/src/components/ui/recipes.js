@@ -42,6 +42,37 @@ export const BTN_PRIMARY = `inline-flex items-center gap-1.5 rounded-xl bg-brand
 export const BTN_QUIET = `inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 disabled:opacity-50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5 ${FOCUS_RING}`;
 export const BTN_GHOST = `inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 transition hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 ${FOCUS_RING}`;
 
+// e. TAP TARGET - the 44px floor (WCAG 2.5.5, Apple HIG; canon Tier 2 "tap targets >= 44px").
+// A row control is deliberately small to look at: the Radar feed and the "Needs you" strip live
+// in the Stripe/Linear density band, and a 44px glyph would blow the row open. So the HIT area
+// and the PAINTED area are separated. The control keeps its own box, and an invisible
+// ::after box, centred on it, carries the finger: 44px tall, at least 44px wide, and never
+// narrower than the control it belongs to. Nothing is added to the layout, so the glyph size,
+// the row height and the alignment of every neighbour are exactly what they were.
+//
+// Append it to any recipe (BTN_GHOST, BTN_QUIET, or a hand-rolled glyph button); it needs no
+// padding of its own and it does not fight the base recipe's spacing utilities. The 8px it
+// reaches past a 28px glyph button is the `gap-2` between row controls, so two neighbouring
+// targets meet without overlapping and neither steals the other's clicks.
+export const TAP_TARGET = "relative after:absolute after:left-1/2 after:top-1/2 after:h-11 after:w-full after:min-w-11 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']";
+
+// f. MENU ITEM - one row inside an overflow menu (ui/RowMenu.jsx, and the Radar-local RowMenu in
+// radar/RadarFeed.jsx). Unlike a row control, a menu item has no density to protect: the popover
+// is transient and owns its own space, so here the 44px floor is PAINTED rather than hidden behind
+// a TAP_TARGET pseudo-box. `min-h-11` is that floor as real height (canon Tier 2, WCAG 2.5.5), the
+// padding only centres the label inside it, and the text size is the one it always had.
+//
+// MENU_ITEM_HEIGHT is the same 44 as a number, because RowMenu decides its drop direction by
+// sizing the popover from the item count BEFORE it is painted. Both menus take the class and the
+// number from here, so the two cannot drift - and that drift is exactly what made the flip-up
+// decision wrong while the items rendered ~28px tall against arithmetic that assumed 44.
+export const MENU_ITEM_HEIGHT = 44;
+export const MENU_ITEM = `flex min-h-11 w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`;
+export const MENU_ITEM_TONES = {
+  default: 'text-zinc-700 hover:bg-zinc-900/5 dark:text-zinc-200 dark:hover:bg-white/5',
+  danger: 'text-red-600 hover:bg-red-500/10 dark:text-red-400',
+};
+
 // Tier usage rules (enforced by review, one line each):
 // - One BTN_PRIMARY per card/surface (canon #4).
 // - BTN_QUIET for every named secondary action ("Erledigt", "Bearbeiten", "Stoppen", Open pill).
@@ -49,3 +80,6 @@ export const BTN_GHOST = `inline-flex items-center gap-1 rounded-lg px-2 py-1 te
 //   trigger, transcript disclosure, "add a link"), never for an action with a consequence.
 // - Destructive: a red menu item inside RowMenu/overflow, or a two-step inline confirm;
 //   never a red standalone button on a card.
+// - Any control whose painted box is under 44px in either axis carries TAP_TARGET. That is
+//   every glyph-only trigger and every text-tier button in a dense row.
+// - A menu item is the one exception: it uses MENU_ITEM, which is 44px tall for real.

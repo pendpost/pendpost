@@ -54,8 +54,9 @@ try {
 
   await asClient(() => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: {
     enabled: true,
+    dailyEnabled: true,
     dailyAt: '00:00',
-    queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'], cadence: 'daily' }],
+    queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'] }],
     agent: { provider: 'claude-code' },
   } } } }));
 

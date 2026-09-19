@@ -2,18 +2,23 @@ import { useState, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Radar as RadarIcon, RefreshCw, AlertCircle, History, Radio, Bot, ChevronDown,
-  MessageSquareReply, Settings as SettingsIcon, HelpCircle, Plus, Loader2, CheckCircle2, Copy, Check,
+  MessageSquareReply, Settings as SettingsIcon, HelpCircle, Plus, Loader2, CheckCircle2, Copy, Check, Pause, Play, Clock,
+  Zap, ShieldCheck, ExternalLink, CircleCheck, CircleSlash, Trash2,
 } from 'lucide-react';
 import { fmtRelative, fmtTime, effectiveRadarSourcesClient, isStaleRadarSourceRow, redditWarmth, signalIsKarma, signalIsPostIdea, signalIsMention } from '../lib/format.js';
-import { useConfig, useSignals, useCommentInbox, useAccounts, saveConfig, radarTriage, radarQueueReply, radarAgentScan, radarAgentStop, radarGeoReset, approvePost, usePendpostHealth, radarFollowupCheck, errText } from '../lib/api.js';
+import { useConfig, useSignals, useCommentInbox, useAccounts, useActiveClient, useEngage, saveConfig, fetchConfig, radarTriage, radarTriageBulk, radarRestore, radarQueueReply, radarAgentScan, radarAgentStop, radarGeoReset, approvePost, usePendpostHealth, radarFollowupCheck, engagePause, engageProbe, errText } from '../lib/api.js';
 import { INNER_SURFACE, EYEBROW, Skeleton, Segmented, FilterChip } from './ui.jsx';
-import { CHIP, BTN_PRIMARY, BTN_QUIET } from './ui/recipes.js';
+import { CHIP, BTN_PRIMARY, BTN_QUIET, TAP_TARGET, PILL_BASE, PILL_TONES } from './ui/recipes.js';
+import { useConfirm } from './ui/confirm.jsx';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
-import { SignalRow, StatFilters, JobRow, AgentNote, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS, INLINE_ACTION } from './radar/RadarFeed.jsx';
+import { SignalRow, StatFilters, DimensionFilters, ActiveFilterStrip, QueryQualityList, WHEN_WINDOWS_MS, EMPTY_DIM_FILTERS, dimFiltersActive, JobRow, AgentNote, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS, INLINE_ACTION } from './radar/RadarFeed.jsx';
 import { GeoStrip, WarmthGauge, PanelMenu } from './radar/RadarGeo.jsx';
 import CommentInbox from './radar/CommentInbox.jsx';
+import NeedsYou from './radar/NeedsYou.jsx';
+import LaneReadinessLine, { SETUP_LANE } from './radar/LaneReadinessLine.jsx';
+import { showToast } from './AppToast.jsx';
 
 // The Radar (beta) Studio panel (spec 32, Pattern P4-read + P9). A distinct read: a
 // ranked, deduped feed of EXTERNAL buyer conversations scored by buying intent - unlike
@@ -50,6 +55,16 @@ const CONNECT_ERRORS = ['not_connected', 'needs_scope'];
 // not_connected line names it and offers the name to the clipboard; a "Connect" that dead-ends
 // or a rescan that cannot mint a password would both be fake moves.
 const BLUESKY_ENV_VAR = 'BLUESKY_APP_PASSWORD';
+// The lanes an armed radar reply may post to WITHOUT a human read - a mirror of the
+// server allow-list (lib/config.mjs RADAR_AUTO_REPLY_LANES), which the validator clamps
+// autoApprove.radarReplies.lanes to. Kept client-side like REPLY_LANE_ORDER / ENGAGE_LANES
+// (the app never imports repo-root lib/). It is narrower than "reply-capable":
+// youtube/nostr can draft replies but never auto-post, so they stay out of the auto-reply
+// control and live in the ledger detail instead.
+const RADAR_AUTO_REPLY_LANES = ['reddit', 'mastodon', 'bluesky', 'x'];
+// Copy-only lanes worth NAMING in the auto-reply strip when connected, so a connected
+// account that can only draft (never auto-reply) says so instead of looking eligible.
+const COPY_ONLY_REPLY_LANES = ['x', 'linkedin', 'instagram'];
 // The in-line control on a notice line (Connect / Reconnect / rescan): the ONE inline action
 // primitive the job row's retry uses too (J4 - same accent token in both themes, 44px tap
 // area), disabled while a job runs so a second spend is never one click away.
@@ -87,6 +102,62 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
     ? (Array.isArray(allInbox) ? allInbox.reduce((n, g) => n + (g.unanswered || 0), 0) : 0)
     : (inbox?.unanswered || 0);
   const { data: accounts } = useAccounts();
+  const { activeClient } = useActiveClient();
+  const clientName = activeClient?.displayName || '';
+  // Spec 50: "Respond for me". The mode is the owner's INTENT (config); this read carries what
+  // is happening right now - the pause flag the header glyph mirrors and how many actions are
+  // waiting on Chrome. Absent (route not reachable) simply means neither surface renders.
+  const { data: engageRuntime } = useEngage(active && enabled && !allClients);
+  const engageMode = config?.posting?.radar?.engage?.mode || 'off';
+  const engagePaused = (engageRuntime?.paused ?? config?.posting?.radar?.engage?.paused) === true;
+  const engageArmed = engageMode === 'dry_run' || engageMode === 'live';
+  const waitingForChrome = Number(engageRuntime?.waitingForChrome) || 0;
+  // Spec 50 automation strip + scope summary (this page's own activator, so the owner never has
+  // to hunt for the buried Settings row). Intent from config, reality from GET /api/engage.
+  const confirm = useConfirm();
+  const engageCfg = config?.posting?.radar?.engage || {};
+  const engageLanes = engageRuntime?.lanes || {};
+  const engageToday = engageRuntime?.today || {};
+  // usable = a lane the engine can actually act on right now (API creds present, or a browser lane
+  // probed + confirmed). It is what "is anything connected?" means, and API lanes count without any
+  // Chrome connect at all. enabled = the owner's per-lane intent switch.
+  const engageUsableCount = Object.values(engageLanes).filter((l) => l && l.usable === true).length;
+  // Owner complaint (the four-switch deadlock): one click must arm auto-reply for the
+  // CONNECTED reply channels, name the rest, and never sit disabled waiting on a probe nobody
+  // runs. "Connected" is the credential fact (account_status.live.ok, the same read the ledger
+  // uses) OR an engage probe that already said ready - NOT the runtime `usable` the old strip
+  // gated on (a connected-but-unprobed lane is never `usable` until a probe runs, and nothing
+  // auto-probes, so gating on it was the deadlock). Turn-on itself kicks the probe.
+  const laneConnected = (lane) => {
+    const rt = engageLanes[lane];
+    if (rt && (rt.usable === true || rt.reason === 'ready')) return true;
+    const acctId = SETUP_LANE[lane] || lane; // bluesky has no Setup card -> runtime only
+    return accounts?.[acctId]?.live?.ok === true;
+  };
+  // The reply-capable auto-reply lanes (reddit/mastodon/bluesky, plus x under Enterprise), each
+  // rendered with its own live state + one recovering action. Capability truth from the feed:
+  // reply===true means it can actually auto-reply here.
+  const autoReplyRows = RADAR_AUTO_REPLY_LANES
+    .filter((lane) => feed?.capabilities?.[lane]?.reply === true)
+    .map((lane) => ({ lane, connected: laneConnected(lane) }));
+  // What one click arms: the reply-capable auto-reply lanes that are connected right now.
+  const armReplyLanes = autoReplyRows.filter((r) => r.connected).map((r) => r.lane);
+  // Connected accounts that can only DRAFT (never auto-reply): X without Enterprise, LinkedIn,
+  // Instagram. Named so a connected account never looks eligible when it is not. Skip any lane
+  // already shown as an auto-reply row (x under Enterprise).
+  const copyOnlyRows = COPY_ONLY_REPLY_LANES.filter(
+    (lane) => feed?.capabilities?.[lane]?.reply !== true
+      && feed?.capabilities?.[lane]?.copyDraft === true
+      && laneConnected(lane),
+  );
+  const engageCaps = engageCfg.caps || {};
+  const engageMinScore = Number.isFinite(engageCfg.minScore) ? engageCfg.minScore : 30;
+  const engageSensitiveAsk = (engageCfg.ask?.sensitiveConfirm ?? true) === true;
+  const engageDisclosure = String(engageCfg.disclosure?.line || '');
+  const engageOriginalPosts = (engageCfg.originalPosts?.enabled ?? true) === true;
+  const [engageBusy, setEngageBusy] = useState(false);
+  const [engageErr, setEngageErr] = useState(null);
+  const [scopeOpen, setScopeOpen] = useState(false);
   // S5: the scan control must never claim it will use an agent until the probe says live.
   const { data: health } = usePendpostHealth();
   // Spec 41: whether the SCAN control renders no longer depends on credentialed sources at
@@ -129,11 +200,34 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   const [checkNote, setCheckNote] = useState(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState(null);
+  const [pausing, setPausing] = useState(false);
+  // Row 12: immediate, no confirmation popover, one toast that carries Resume back. Pause is
+  // resumable and distinct from a platform "cooling down" - two different words, on purpose.
+  const togglePause = async (next) => {
+    setPausing(true);
+    try {
+      await engagePause(next);
+      queryClient.invalidateQueries({ queryKey: ['engage'] });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+      if (next) showToast({ text: t('radar.pause.toast'), action: { label: t('radar.resume'), onClick: () => togglePause(false) } });
+    } catch (err) {
+      setError(t('radar.pause.error', { reason: errText(err, t, 'radar.error.save') }));
+    } finally { setPausing(false); }
+  };
   // Feed filter. Lands on 'new' - the OPEN worklist (everything not yet handled), not 'all':
   // opening Radar on the full feed put the signals the operator already cleared right back on
   // screen. keys: new (open worklist, default) | all | repliedToYou | actionable | done | karma
   // | mention | watched.
   const [signalFilter, setSignalFilter] = useState('new');
+  // Granular dimension filters (owner ask): platform / priority tier / saved-search / found-when
+  // + a "latest run" toggle, all narrowing WITHIN the status filter above. Derived client-side -
+  // the whole feed already ships to the client, so no server round-trip and no data-model change.
+  // A patch-merge updater so each control writes only its own slice.
+  const [dimFilters, setDimFilters] = useState(EMPTY_DIM_FILTERS);
+  const patchDimFilters = (patch) => setDimFilters((prev) => ({ ...prev, ...patch }));
+  // "By search" lens (owner ask): flip the whole feed to one row per saved search to spot and
+  // purge a low-quality query at its source. 'feed' (the ranked signal list) is the default.
+  const [feedView, setFeedView] = useState('feed');
   const [sortBy, setSortBy] = useState(() => {
     // priority (intent-ranked) | found (radar ingest time) | posted (the post's own time).
     // Migrate the retired 'newest' key to 'posted' (its post-time recency behaviour).
@@ -165,6 +259,98 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
 
   const onEnable = () => persistRadar({ ...radar, enabled: true });
   const onToggleEnabled = () => persistRadar({ ...radar, enabled: !enabled });
+
+  // A lane verb (probe / confirm-handle / resume) changes what the lane's line says: re-pull
+  // the engage runtime AND the config the rev comes from, so the screen matches the engine and
+  // the next owner-only save is not refused on a stale rev.
+  const refreshEngage = () => {
+    queryClient.invalidateQueries({ queryKey: ['engage'] });
+    queryClient.invalidateQueries({ queryKey: ['config'] });
+  };
+
+  // Write ONLY the engage subtree, with the stale-rev retry the owner-only config verbs need (the
+  // same shape AutonomyLedger uses). The server deep-merges engage one level down, so writing just
+  // { mode } leaves caps, "sensitive -> ask me" and the rest of the engage subtree untouched.
+  const writeEngageConfig = (engagePartial) => {
+    const set = { posting: { radar: { engage: engagePartial } } };
+    return saveConfig(config.rev, set).catch((err) => {
+      if (err?.code !== 'stale_write') throw err;
+      return fetchConfig().then((fresh) => saveConfig(fresh.rev, set));
+    });
+  };
+
+  // "Go full auto" (spec 50): the page's own primary activator. Live now, safety rails kept.
+  //   1. no platform connected yet  -> route to the connect/ledger flow, do not flip a dead system
+  //   2. first activation           -> one confirm (posting for real, on every connected platform)
+  //   3. flip mode to live          -> daily caps and sensitive->ask stay on as the fallbacks
+  //      (the deep-merge preserves them); Pause is one click away in the strip.
+  const goFullAuto = async () => {
+    if (!config) return;
+    // No connected reply channel: the inline list below already NAMES what to connect, so there
+    // is nothing to bounce to - the button is disabled in this state (works with >=1 connected).
+    if (armReplyLanes.length === 0) return;
+    const ok = await confirm({
+      title: t('radar.engage.auto.confirm.title'),
+      body: t('radar.engage.auto.confirm.body', { n: armReplyLanes.length }),
+      confirmLabel: t('radar.engage.auto.confirm.confirm'),
+    });
+    if (!ok) return;
+    setEngageBusy(true);
+    setEngageErr(null);
+    try {
+      if (!enabled) await persistRadar({ ...radar, enabled: true });
+      // ONE atomic write orchestrating all three intent layers the four-switch deadlock spread
+      // across two surfaces: the engine goes live (drafts, queues, paces), EACH connected reply
+      // lane's per-lane intent is enabled, AND those lanes are TRUSTED to post unread
+      // (autoApprove.radarReplies). Read-modify-write the lanes map: setConfig replaces a written
+      // lane object wholesale, so a bare { enabled:true } would drop a browser lane's confirmed
+      // handle - re-supply the existing lane and only flip enabled. Caps and "ask before
+      // sensitive" stay on (deep-merge preserves them); paused:false also resumes after a pause.
+      const curLanes = config.posting?.radar?.engage?.lanes || {};
+      const nextLanes = { ...curLanes };
+      for (const lane of armReplyLanes) nextLanes[lane] = { ...(curLanes[lane] || {}), enabled: true };
+      const set = {
+        posting: {
+          radar: { engage: { mode: 'live', paused: false, lanes: nextLanes } },
+          autoApprove: { radarReplies: { enabled: true, lanes: armReplyLanes } },
+        },
+      };
+      await saveConfig(config.rev, set).catch((err) => {
+        if (err?.code !== 'stale_write') throw err;
+        return fetchConfig().then((fresh) => saveConfig(fresh.rev, set));
+      });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+      queryClient.invalidateQueries({ queryKey: ['engage'] });
+      // Kick each armed lane's probe: enabling a lane never auto-probes it (the tick does not),
+      // so without this the lane sits at reason:'checking' and the pacer holds every row. Fire
+      // after the write so the probe reads the live policy; non-blocking, and a probe failure
+      // never blocks arming (its named gap simply shows on the lane's line).
+      Promise.allSettled(armReplyLanes.map((lane) => engageProbe(lane)))
+        .then(() => queryClient.invalidateQueries({ queryKey: ['engage'] }));
+      showToast({ text: t('radar.engage.auto.onToast') });
+    } catch (err) {
+      setEngageErr(errText(err, t, 'radar.error.save'));
+    } finally {
+      setEngageBusy(false);
+    }
+  };
+
+  // Turn automation OFF from the strip (mode -> off). Distinct from Pause (which holds a live
+  // system): this is the owner standing it down entirely.
+  const turnAutomationOff = async () => {
+    if (!config) return;
+    setEngageBusy(true);
+    setEngageErr(null);
+    try {
+      await writeEngageConfig({ mode: 'off' });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+      queryClient.invalidateQueries({ queryKey: ['engage'] });
+    } catch (err) {
+      setEngageErr(errText(err, t, 'radar.error.save'));
+    } finally {
+      setEngageBusy(false);
+    }
+  };
 
   // Spec 41: Scan now spawns the OPERATOR'S OWN agent, which researches and calls radar_ingest
   // itself. There is no fallback to the keyword engine: a scan that cannot use an agent does
@@ -228,7 +414,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
     const taken = new Set(existing.map((q) => q.id));
     let id = base;
     for (let n = 2; taken.has(id); n += 1) id = `${base}-${n}`;
-    const query = { id, label: s.label, enabled: true, cadence: 'manual', keywords: Array.isArray(s.keywords) ? s.keywords : [] };
+    const query = { id, label: s.label, enabled: true, keywords: Array.isArray(s.keywords) ? s.keywords : [] };
     await persistRadar({ ...radar, queries: [...existing, query] });
   };
   // The agent's refined-search suggestions from the last run, minus any already saved (adding one
@@ -312,8 +498,56 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
       setError(errText(err, t, 'radar.error.save'));
     }
   };
-  const onDismiss = (signal) => triage(signal, 'dismiss');
+  // Undo a dismiss (single or bulk). `dismiss` REMOVES the signal object from the feed, so
+  // clearing the seen ledger alone cannot bring it back - we re-insert the exact objects the
+  // row held. clientId scopes a foreign-project signal's undo in the all-projects overview.
+  const restore = async (list, clientId) => {
+    const items = (Array.isArray(list) ? list : [list]).filter(Boolean);
+    if (!items.length) return;
+    setError(null);
+    try {
+      await radarRestore(items, clientId);
+      queryClient.invalidateQueries({ queryKey: ['radar'] });
+    } catch (err) {
+      setError(errText(err, t, 'radar.error.save'));
+    }
+  };
+  // "Erledigt" is now ONE tap with no confirm guard (owner ask): the row leaves immediately and
+  // a transient toast carries Undo back for a moment (canon forgiveness without a modal). The
+  // toast reuses AppToast's action affordance - the same pattern Pause/Resume rides.
+  const onDismiss = (signal) => {
+    triage(signal, 'dismiss');
+    showToast({ text: t('radar.done.toast'), action: { label: t('radar.done.undo'), onClick: () => restore(signal, signal.clientId) } });
+  };
   const onWatch = (signal) => triage(signal, signal.watched === true ? 'clear' : 'watch');
+  // Bulk "dismiss all shown" (owner ask: "delete all the radar signals currently displayed so I
+  // don't have 300+ to work through"). It clears exactly the currently displayed set (the active
+  // status + dimension filters), EXCLUDING watched signals - those are pinned on purpose. Unlike
+  // one-tap done, a 200-row clear is not one-step re-creatable, so it keeps a single count-named
+  // confirm (canon forgiveness), then the same Undo toast restores every dismissed row.
+  const [clearingShown, setClearingShown] = useState(false);
+  const onClearShown = async (shownSignals) => {
+    const clearable = shownSignals.filter((s) => s.watched !== true);
+    if (!clearable.length) return;
+    const watchedShown = shownSignals.length - clearable.length;
+    const ok = await confirm({
+      title: t('radar.bulk.confirm.title', { n: clearable.length }),
+      body: watchedShown ? t('radar.bulk.confirm.bodyWatched', { n: clearable.length, w: watchedShown }) : t('radar.bulk.confirm.body', { n: clearable.length }),
+      confirmLabel: t('radar.bulk.confirm.yes'),
+      cancelLabel: t('radar.bulk.confirm.cancel'),
+      danger: true,
+    });
+    if (!ok) return;
+    setClearingShown(true);
+    setError(null);
+    try {
+      await radarTriageBulk(clearable.map((s) => ({ source: s.source, externalId: s.externalId })), 'dismiss');
+      queryClient.invalidateQueries({ queryKey: ['radar'] });
+      showToast({ text: t('radar.bulk.toast', { n: clearable.length }), action: { label: t('radar.done.undo'), onClick: () => restore(clearable) } });
+    } catch (err) {
+      setError(errText(err, t, 'radar.bulk.error'));
+    } finally { setClearingShown(false); }
+  };
 
   // Spec 34: queue an approval-gated reply to a signal's external thread. It creates the reply-post
   // and does NOT post; the planner carries it from there.
@@ -443,6 +677,54 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
             : effectiveFilter === 'mention'
               ? signals.filter((s) => signalIsMention(s, radar))
               : signals;
+  // queryLabel: the saved-search's human label for a matchedQuery id (the raw id never reaches
+  // the screen - humanize machine labels). One helper, reused by the options, the strip + the row.
+  const queryLabelOf = (id) => (radar.queries || []).find((q) => q && q.id === id)?.label || id;
+  // Dimension-filter options, derived from the CURRENT feed so we never offer a platform or
+  // search with zero signals (recognition over recall, no dead options). Priority is the fixed
+  // tier vocabulary; 'latest run' needs a scan start to compare foundAt against.
+  const presentSources = [...new Set(signals.map((s) => s.source).filter(Boolean))];
+  const presentQueryIds = [...new Set(signals.map((s) => s.matchedQuery).filter(Boolean))];
+  const dimOptions = {
+    platforms: presentSources.map((id) => ({ key: id, label: t(`radar.source.${id}`) })),
+    priorities: ['high', 'medium', 'low'].map((k) => ({ key: k, label: t(`radar.signal.tier.${k}`) })),
+    queries: presentQueryIds.map((id) => ({ key: id, label: queryLabelOf(id) })),
+  };
+  const latestRunSince = (scanJob?.startedAt && !Number.isNaN(Date.parse(scanJob.startedAt))) ? Date.parse(scanJob.startedAt) : null;
+  // The dimension filters compose ONTO the status-filtered base (never fork the status chain):
+  // platform AND priority-tier AND search AND found-window AND latest-run all narrow together.
+  const dimFiltered = visibleBase.filter((s) => {
+    if (dimFilters.platforms.length && !dimFilters.platforms.includes(s.source)) return false;
+    if (dimFilters.priorities.length && !dimFilters.priorities.includes(tierOf(s.intentScore))) return false;
+    if (dimFilters.queries.length && !dimFilters.queries.includes(s.matchedQuery)) return false;
+    if (dimFilters.when !== 'all') {
+      const found = Date.parse(s.foundAt || s.ts);
+      if (Number.isNaN(found) || (Date.now() - found) > WHEN_WINDOWS_MS[dimFilters.when]) return false;
+    }
+    if (dimFilters.latestRun) {
+      if (latestRunSince == null) return false;
+      const found = Date.parse(s.foundAt);
+      if (Number.isNaN(found) || found < latestRunSince) return false;
+    }
+    return true;
+  });
+  const dimActive = dimFiltersActive(dimFilters);
+  // "By search" groups: one bucket per saved search (plus a "no search" bucket for agent-ingested
+  // signals carrying no matchedQuery), most-signals-first so the noisiest query leads. Grouped
+  // over the whole LIVE feed, not the filtered view - the point is each query's real volume.
+  const byQueryGroups = (() => {
+    const map = new Map();
+    for (const s of signals) {
+      const id = s.matchedQuery || '__none__';
+      let g = map.get(id);
+      if (!g) { g = { id, label: id === '__none__' ? t('radar.byQuery.none') : queryLabelOf(id), tunable: id !== '__none__', signals: [] }; map.set(id, g); }
+      g.signals.push(s);
+    }
+    return [...map.values()].sort((a, b) => b.signals.length - a.signals.length);
+  })();
+  // "Show these" from a query row: widen the status filter to all, filter the feed to that one
+  // search, and flip back to the feed - so its signals are guaranteed on screen (recognition).
+  const onShowQuery = (id) => { setSignalFilter('all'); setDimFilters({ ...EMPTY_DIM_FILTERS, queries: [id] }); setFeedView('feed'); };
   // Sort: 'priority' keeps the server's ranked order (watched -> intent -> recency), with ONE
   // stable partition on top: author-replied signals lead the feed - the conversation is LIVE,
   // which outranks any intent score (owner decision 4). Server rank is preserved within each
@@ -461,10 +743,10 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   const foundAtOf = (s) => { const n = Date.parse(s?.foundAt || s?.ts); return Number.isNaN(n) ? -Infinity : n; };
   const watchedRank = (s) => (s?.watched === true ? 1 : 0);
   const visibleSignals = sortBy === 'found'
-    ? [...visibleBase].sort((a, b) => watchedRank(b) - watchedRank(a) || foundAtOf(b) - foundAtOf(a))
+    ? [...dimFiltered].sort((a, b) => watchedRank(b) - watchedRank(a) || foundAtOf(b) - foundAtOf(a))
     : sortBy === 'posted'
-      ? [...visibleBase].sort((a, b) => watchedRank(b) - watchedRank(a) || postedOf(b) - postedOf(a))
-      : [...visibleBase.filter((s) => s.authorReplied), ...visibleBase.filter((s) => !s.authorReplied)];
+      ? [...dimFiltered].sort((a, b) => watchedRank(b) - watchedRank(a) || postedOf(b) - postedOf(a))
+      : [...dimFiltered.filter((s) => s.authorReplied), ...dimFiltered.filter((s) => !s.authorReplied)];
   // Demote low-intent / stale rows into a collapsed group so a 599-day-old or near-zero signal
   // never sits as a peer of a fresh, high-intent one. Only in the unfiltered "all" view under the
   // priority sort; a watched or actionable signal is never demoted (Date.now is fine here - this
@@ -612,7 +894,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
     // chrome (border + padding) so the "Also on" strip lands INSIDE the same boundary, and the
     // lead renders bare to avoid a card-in-a-card.
     return (
-      <SignalRow key={signalKey} signal={s} accounts={accounts} watched={s.watched === true} grouped={grouped} isNew={isNewSignal(s)} replyIncapable={feed?.capabilities?.[s.source]?.reply !== true || isPostIdea} copyCapable={feed?.capabilities?.[s.source]?.copyDraft === true} isKarma={isKarma} isPostIdea={isPostIdea} isMention={isMention} campaigns={campaigns} autoReply={radar.autoReply} draftMinScore={Number.isFinite(radar.drafting?.minScore) ? radar.drafting.minScore : 30} queryLabel={(id) => (radar.queries || []).find((q) => q && q.id === id)?.label || id} onQueueReply={onQueueReply} onApproveDraft={onApproveDraft} onDismiss={onDismiss} onWatch={onWatch} onNavigate={onNavigate} onNewPost={onNewPost} onOpenPost={onOpenPost} onDraftNow={onDraftNow} draftingNow={runningDraftOne?.target === signalKey} draftFailed={draftFailed} agentBusy={jobRunning} agentReady={agentLive} t={t} />
+      <SignalRow key={signalKey} signal={s} accounts={accounts} watched={s.watched === true} grouped={grouped} isNew={isNewSignal(s)} replyIncapable={feed?.capabilities?.[s.source]?.reply !== true || isPostIdea} copyCapable={feed?.capabilities?.[s.source]?.copyDraft === true} isKarma={isKarma} isPostIdea={isPostIdea} isMention={isMention} campaigns={campaigns} radarReplies={config?.posting?.autoApprove?.radarReplies} draftMinScore={Number.isFinite(radar.drafting?.minScore) ? radar.drafting.minScore : 30} queryLabel={(id) => (radar.queries || []).find((q) => q && q.id === id)?.label || id} onQueueReply={onQueueReply} onApproveDraft={onApproveDraft} onDismiss={onDismiss} onWatch={onWatch} onNavigate={onNavigate} onNewPost={onNewPost} onOpenPost={onOpenPost} onDraftNow={onDraftNow} draftingNow={runningDraftOne?.target === signalKey} draftFailed={draftFailed} agentBusy={jobRunning} agentReady={agentLive} t={t} />
     );
   };
 
@@ -678,6 +960,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                 </button>
               </Tip>
             ) : null}
+            {/* Spec 50: the "Respond for me" kill switch and its status now live in the dedicated
+                automation strip above the feed (one place, and it keeps this icon row from
+                crowding at 375px), not as a second header glyph. */}
             {/* ONE control, two honest states (spec 41), and the page's PRIMARY. With no agent
                 proven live it becomes "Connect your agent" and leads to Setup - no fallback scan. */}
             {agentLive ? (
@@ -926,6 +1211,136 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
             </div>
           ) : null}
 
+          {/* Spec 50: the AUTOMATION strip - this page's own clear activator, so "go full auto"
+              is one control in Radar, not a collapsed row buried in Settings. Per-client only
+              (the all-projects overview has no single account to act as). Off => one CTA that
+              flips straight to Live (keeping the caps/ask rails); On => the live status
+              with Pause and a read-only scope summary of what may be posted. */}
+          {!allClients ? (
+            <div className={`rounded-xl p-3 ${INNER_SURFACE}`}>
+              {!engageArmed ? (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-brand/10 text-brand dark:text-brand-light" aria-hidden="true"><Zap size={16} /></span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold">{t('radar.engage.auto.title')}</p>
+                      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                        {armReplyLanes.length > 0
+                          ? t('radar.engage.auto.body.ready', { n: armReplyLanes.length })
+                          : t('radar.engage.auto.body.connect')}
+                      </p>
+                    </div>
+                    <button type="button" onClick={goFullAuto} disabled={engageBusy || armReplyLanes.length === 0} className={BTN_PRIMARY}>
+                      {engageBusy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <Zap size={14} aria-hidden="true" />}
+                      {t('radar.engage.auto.turnOn')}
+                    </button>
+                  </div>
+                  {/* NAME each reply channel inline (kill the four-switch deadlock): each auto-reply
+                      lane shows its live state + the ONE action that moves it (Connect / Check /
+                      Yes-No), and each connected copy-only account says "draft only" so it never
+                      looks eligible. Turn-on arms the connected ones and kicks their probes; the
+                      per-lane fix lives right here, not a Settings bounce. Deeper policy (caps,
+                      warm-up, per-lane disable) stays one "Manage lanes" tap away (DRY). */}
+                  {(autoReplyRows.length || copyOnlyRows.length) ? (
+                    <ul className="space-y-1 border-l-2 border-zinc-200/70 pl-3 dark:border-zinc-700/60">
+                      {autoReplyRows.map((r) => (
+                        <li key={r.lane} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
+                          <span className="w-16 shrink-0 font-semibold text-zinc-600 dark:text-zinc-300">{t(`radar.source.${r.lane}`)}</span>
+                          {r.connected ? (
+                            // Connected: one click turns it on and probes it. "Ready" mirrors the
+                            // body's "N ready lanes" - the lanes this control will arm.
+                            <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400"><CircleCheck size={11} aria-hidden="true" />{t('radar.engage.auto.lane.ready')}</span>
+                          ) : (
+                            // Not connected: the actionable named gap (Connect deep-link for the API
+                            // lanes, env-var hint for bluesky) - never a dead "Not ready" line.
+                            <span className="min-w-0 flex-1 text-zinc-500 dark:text-zinc-400">
+                              <LaneReadinessLine lane={r.lane} label={t(`radar.source.${r.lane}`)} runtime={{ reason: 'no_credential' }} clientName={clientName} onNavigate={onNavigate} onRefresh={refreshEngage} />
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                      {copyOnlyRows.map((lane) => (
+                        <li key={lane} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
+                          <span className="w-16 shrink-0 font-semibold text-zinc-600 dark:text-zinc-300">{t(`radar.source.${lane}`)}</span>
+                          <span className="min-w-0 flex-1 text-zinc-500 dark:text-zinc-400">
+                            <LaneReadinessLine lane={lane} label={t(`radar.source.${lane}`)} copyOnly />
+                          </span>
+                        </li>
+                      ))}
+                      <li>
+                        <button type="button" onClick={() => onNavigate?.('settings', 'engage')} className={`inline-flex items-center gap-1 text-[11px] font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light ${TAP_TARGET}`}>
+                          <ExternalLink size={11} aria-hidden="true" />{t('radar.engage.auto.manageLanes')}
+                        </button>
+                      </li>
+                    </ul>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <span className={`${PILL_BASE} ${engagePaused ? PILL_TONES.neutral : PILL_TONES.accent}`}>
+                      {engagePaused ? <CircleSlash size={12} aria-hidden="true" /> : <CircleCheck size={12} aria-hidden="true" />}
+                      {engagePaused ? t('radar.engage.auto.paused') : t(`autonomy.engage.mode.${engageMode}`)}
+                    </span>
+                    <span className="min-w-0 flex-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                      {t('radar.engage.auto.on.summary', {
+                        n: engageUsableCount,
+                        k: engageMode === 'dry_run' ? (engageToday.wouldPost || 0) : (engageToday.posted || 0),
+                      })}
+                      {waitingForChrome > 0 ? ` · ${t('radar.engage.auto.waiting', { n: waitingForChrome })}` : ''}
+                    </span>
+                    <Tip label={engagePaused ? t('radar.resume') : t('radar.pause')}>
+                      <button type="button" onClick={() => togglePause(!engagePaused)} disabled={pausing} aria-label={engagePaused ? t('radar.resume') : t('radar.pause')} className={`inline-flex items-center justify-center rounded-xl p-1.5 text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 disabled:opacity-50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5 ${TAP_TARGET}`}>
+                        {engagePaused ? <Play size={14} aria-hidden="true" /> : <Pause size={14} aria-hidden="true" />}
+                      </button>
+                    </Tip>
+                    <button type="button" onClick={() => setScopeOpen((v) => !v)} aria-expanded={scopeOpen} className={`${BTN_QUIET} ${TAP_TARGET}`}>
+                      <ChevronDown size={13} aria-hidden="true" className={`transition-transform ${scopeOpen ? 'rotate-180' : ''}`} />
+                      {t('radar.engage.scope.title')}
+                    </button>
+                    <button type="button" onClick={turnAutomationOff} disabled={engageBusy} className={`${BTN_QUIET} ${TAP_TARGET}`}>
+                      {t('radar.engage.auto.turnOff')}
+                    </button>
+                  </div>
+                  {scopeOpen ? (
+                    <div className="space-y-1.5 border-l-2 border-zinc-200/70 pl-3 text-[11px] text-zinc-600 dark:border-zinc-700/60 dark:text-zinc-300">
+                      <p><span className="font-semibold">{t('radar.engage.scope.platforms')}:</span>{' '}
+                        {engageUsableCount > 0
+                          ? Object.entries(engageLanes).filter(([, l]) => l && l.usable === true).map(([lane]) => t(`radar.source.${lane}`)).join(', ')
+                          : t('radar.engage.scope.none')}</p>
+                      <p className="flex flex-wrap items-center gap-1">
+                        <span className="font-semibold">{t('radar.engage.scope.actions')}:</span>
+                        {['reply', 'like', 'upvote', 'follow', 'repost', 'dm', 'post'].filter((k) => Number(engageCaps[k]) > 0).map((k) => (
+                          <span key={k} className={CHIP}>{t(`radar.engage.kind.${k}`)}</span>
+                        ))}
+                        {engageOriginalPosts ? <span className={CHIP}>{t('radar.engage.kind.originalPost')}</span> : null}
+                      </p>
+                      <p><span className="font-semibold">{t('radar.engage.scope.threshold')}:</span> {t('radar.engage.scope.threshold.value', { score: engageMinScore })}</p>
+                      <p className="flex items-center gap-1.5">
+                        <ShieldCheck size={12} aria-hidden="true" className={engageSensitiveAsk ? 'text-brand dark:text-brand-light' : 'text-zinc-400'} />
+                        {engageSensitiveAsk ? t('radar.engage.scope.sensitive.on') : t('radar.engage.scope.sensitive.off')}
+                      </p>
+                      {engageDisclosure ? <p><span className="font-semibold">{t('radar.engage.scope.disclosure')}:</span> {engageDisclosure}</p> : null}
+                      <button type="button" onClick={() => onNavigate?.('settings', 'engage')} className={`inline-flex items-center gap-1 font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light ${TAP_TARGET}`}>
+                        <ExternalLink size={12} aria-hidden="true" />{t('radar.engage.scope.manage')}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+              {engageErr ? (
+                <p role="alert" className="mt-2 text-[11px] font-bold text-red-600 dark:text-red-300">{engageErr}</p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {/* Spec 50 S3: everything that genuinely needs the OWNER, above the feed - a question
+              the agent could not answer, a reply it wants read first, a post it could not make,
+              a platform that logged us out. It renders NOTHING when there is nothing open,
+              which is the state it is meant to spend most of its life in, so a calm Radar page
+              stays byte-identical to the one before this feature. */}
+          <NeedsYou enabled={!allClients && enabled && engageArmed} t={t} />
+
           {/* The ranked feed: no-queries / loading / empty / success. The searches editor moved to
               Settings, so a Radar page with no queries yet says so and points there - never a dead
               blank, and never the old cold-start editor that made config the first thing you saw. */}
@@ -963,8 +1378,57 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
             </div>
           ) : signals.length ? (
             <div className="space-y-2">
+              {/* Row 7e: browser-lane actions wait for the owner's Chrome. ONE line for the
+                  whole feed, never a repeat on every affected row, and never a push (D2). */}
+              {waitingForChrome > 0 ? (
+                <p role="status" className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  <Clock size={12} aria-hidden="true" />
+                  {t('radar.feed.waitingChrome', { n: waitingForChrome })}
+                </p>
+              ) : null}
+              {/* Feed vs. By-search lens (owner ask): flip the whole list to one row per saved
+                  search to purge low-quality queries at the source. Single-client only. */}
+              {stats && !allClients ? (
+                <Segmented
+                  label={t('radar.view.label')}
+                  value={feedView}
+                  options={[{ key: 'feed', label: t('radar.view.feed') }, { key: 'byQuery', label: t('radar.view.byQuery') }]}
+                  onChange={setFeedView}
+                />
+              ) : null}
+              {feedView === 'byQuery' && !allClients ? (
+                <QueryQualityList groups={byQueryGroups} onShow={onShowQuery} onTune={() => onNavigate?.('settings', 'radar')} onDismissAll={onClearShown} clearing={clearingShown} t={t} />
+              ) : (
+              <>
               {/* The counts are filters: all / to-act / watched, sitting with the list they scope. */}
               {stats ? <StatFilters counts={stats} value={effectiveFilter} onChange={setSignalFilter} sortBy={sortBy} onSort={setSortBy} t={t} /> : null}
+              {/* Granular filters sit WITH the list they scope, under the status chips: platform,
+                  priority, search, found-when, latest-run - each one control. The applied-filters
+                  strip shows what is on (removable) and the honest "N of TOTAL shown" count. */}
+              {stats ? (
+                <div className="space-y-1.5">
+                  <DimensionFilters
+                    options={dimOptions}
+                    value={dimFilters}
+                    onChange={patchDimFilters}
+                    latestRunAvailable={!allClients && latestRunSince != null}
+                    latestRunTip={latestRunSince == null ? t('radar.dim.latestRun.none') : t('radar.dim.latestRun.tip', { time: fmtRelative(scanJob.startedAt) })}
+                    t={t}
+                  />
+                  <ActiveFilterStrip value={dimFilters} options={dimOptions} onChange={patchDimFilters} shown={visibleSignals.length} total={visibleBase.length} t={t} />
+                  {/* Clear the whole displayed set in one move (owner ask). Quiet by default,
+                      reddening on hover; watched rows are never swept. Confirm + Undo carry the
+                      forgiveness. Single-client only - a bulk call binds one workspace root. */}
+                  {!allClients && visibleSignals.length ? (
+                    <div className="flex justify-end">
+                      <button type="button" onClick={() => onClearShown(visibleSignals)} disabled={clearingShown} className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 transition hover:bg-red-500/10 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-red-300 ${TAP_TARGET}`}>
+                        {clearingShown ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Trash2 size={12} aria-hidden="true" />}
+                        {t('radar.bulk.clearShown', { n: visibleSignals.filter((s) => s.watched !== true).length })}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {visibleSignals.length ? (
                 <>
                   <ol className="space-y-2">
@@ -1018,6 +1482,22 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                     </div>
                   ) : null}
                 </>
+              ) : dimActive ? (
+                // The granular filters narrowed the list to nothing. This is NOT an all-clear
+                // (the status view still has rows) and NOT a dead end - the one move out is to
+                // drop the filters, offered right here.
+                <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
+                  <div className="max-w-sm space-y-2">
+                    <CircleSlash size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                    <p className="text-sm font-bold">{t('radar.filters.empty.title')}</p>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.filters.empty.body')}</p>
+                    <div className="pt-1">
+                      <button type="button" onClick={() => setDimFilters(EMPTY_DIM_FILTERS)} className={BTN_QUIET}>
+                        {t('radar.filters.clear')}
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : effectiveFilter === 'new' ? (
                 // The open worklist is empty: everything the scan found is handled. An honest
                 // "all clear" - deliberately NOT a silent fall-back to the full feed (that would
@@ -1049,6 +1529,8 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                    rows exist). Kept so a future filter/count divergence degrades to an honest
                    sentence instead of a blank region. */
                 <p className="px-1 py-3 text-xs text-zinc-500 dark:text-zinc-400">{t('radar.filter.empty')}</p>
+              )}
+              </>
               )}
               {/* KI-Sichtbarkeit, minimal: one quiet line at the foot of the feed. Per-client
                   (feed.geo is the active client's), so hidden in the all-projects overview. */}

@@ -129,9 +129,19 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
             </span>
           ) : null}
         </div>
-        <p className="line-clamp-2 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300">
-          {post.caption.split('\n')[0]}
-        </p>
+        {post.lastFailure?.message ? (
+          // A failed/skipped post shows WHY right on the card. The reason was previously
+          // only a hover title on the pill and a banner in the drawer - invisible on the
+          // overview and on touch. It reuses the caption-snippet slot (no extra height):
+          // for a post that did not go out, knowing why matters more than the caption.
+          <p className="line-clamp-2 text-[11px] font-medium leading-snug text-red-700 dark:text-red-300">
+            {post.lastFailure.message}
+          </p>
+        ) : (
+          <p className="line-clamp-2 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300">
+            {post.caption.split('\n')[0]}
+          </p>
+        )}
       </div>
     </button>
       {/* ⋯ overlay: a light glyph on a dark scrim so it reads over any cover; top-left so it
@@ -457,7 +467,7 @@ export function MonthView({ posts, monthAnchor, onSelect, onMoveToDay, loading, 
 // surface): day-grouped, dense full-width rows, primary title/time over muted
 // meta. Two sibling affordances per row (no nested buttons): the time opens an
 // inline reschedule picker (non-published posts only), the rest opens the detail.
-function ListRow({ post, posts = [], onSelect, onEdit, lane }) {
+function ListRow({ post, posts = [], onSelect, onEdit }) {
   const t = useT();
   const reschedule = useReschedule();
   // The overview action set (Freigeben / Ablehnen / Parken / Prüfen / Löschen, + Editor
@@ -558,7 +568,7 @@ function ListRow({ post, posts = [], onSelect, onEdit, lane }) {
   );
 }
 
-export function ListView({ posts, onSelect, onEdit, loading, lane, showAllDays = false }) {
+export function ListView({ posts, onSelect, onEdit, loading, showAllDays = false }) {
   const t = useT();
   const dated = useMemo(
     () => posts.filter((p) => p.scheduledAt).sort(comparePostDate),
@@ -622,7 +632,7 @@ export function ListView({ posts, onSelect, onEdit, loading, lane, showAllDays =
     <section key={g.key}>
       <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{fmtDayAria(g.date)}</h3>
       <ul className="space-y-1">
-        {g.posts.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} onEdit={onEdit} lane={lane} />)}
+        {g.posts.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} onEdit={onEdit} />)}
       </ul>
     </section>
   );
@@ -647,7 +657,7 @@ export function ListView({ posts, onSelect, onEdit, loading, lane, showAllDays =
         <section>
           <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{t('planner.list.noSchedule')}</h3>
           <ul className="space-y-1">
-            {undated.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} onEdit={onEdit} lane={lane} />)}
+            {undated.map((post) => <ListRow key={`${post.campaign}-${post.id}`} post={post} posts={posts} onSelect={selectInList} onEdit={onEdit} />)}
           </ul>
         </section>
       ) : null}

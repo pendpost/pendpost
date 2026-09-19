@@ -8,6 +8,7 @@
 // keyboard-reachable. Mirrors the app's tokens (rounded-full, brand, ring-brand).
 import { Loader2, HelpCircle } from 'lucide-react';
 import { Tip } from './Tooltip.jsx';
+import { TAP_TARGET } from './recipes.js';
 import { useT } from '../../lib/i18n.js';
 
 export function Switch({
@@ -29,7 +30,7 @@ export function Switch({
       aria-busy={busy || undefined}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 disabled:opacity-50 ${
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 disabled:opacity-50 ${TAP_TARGET} ${
         checked ? 'bg-brand dark:bg-brand-light' : 'bg-zinc-300 dark:bg-zinc-600'
       }`}
     >

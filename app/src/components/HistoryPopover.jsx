@@ -7,7 +7,7 @@ import {
 import { fmtRelative } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, DISABLED_PRIMARY } from './ui.jsx';
 import { useT } from '../lib/i18n.js';
-import { forgetEngager, unforgetEngager, linkEngagers, unlinkEngagers, dismissLinkGuess } from '../lib/api.js';
+import { forgetEngager, linkEngagers, unlinkEngagers, dismissLinkGuess } from '../lib/api.js';
 
 // HistoryPopover (spec 49 R12, §5.2): the accreted exchanges for one person, disclosed on
 // demand behind the HistoryChip. It is a READING surface first - the exchanges lead; the

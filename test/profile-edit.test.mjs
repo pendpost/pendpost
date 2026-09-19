@@ -481,6 +481,46 @@ try {
       `youtube apply: 403 quotaExceeded -> engine_failure, NOT needs_scope (got ${JSON.stringify(quotaRow)})`);
     ok(/quotaExceeded|Quota exceeded/.test(quotaRow?.errorMessage || ''), `youtube quota 403: errorMessage carries the real quota message (got ${JSON.stringify(quotaRow)})`);
 
+    // (e3) api DISABLED, NOT scope: a 403 with reason accessNotConfigured (the API
+    // is turned off in the GCP project) reads api_disabled - NEVER needs_scope -
+    // and carries the console activation URL so the owner ENABLES the API rather
+    // than pointlessly reconnecting (spec-15 follow-on, 60s-news 2026-09-19).
+    const ACTIVATION_URL = 'https://console.developers.google.com/apis/api/youtube.googleapis.com/overview?project=449370365247';
+    globalThis.fetch = (url, init) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com/token')) return jsonRes({ access_token: 'tok' });
+      if (u.includes('/channels') && (init?.method === 'PUT')) {
+        return jsonRes({ error: { errors: [{ reason: 'accessNotConfigured', extendedHelp: ACTIVATION_URL, message: 'YouTube Data API v3 has not been used in project 449370365247 before or it is disabled.' }], message: 'YouTube Data API v3 has not been used in project 449370365247 before or it is disabled.' } }, { status: 403, ok: false });
+      }
+      if (u.includes('/channels')) return jsonRes({ items: [{ id: 'UC123', snippet: { title: 'My Channel' }, brandingSettings: { channel: {} }, localizations: {} }] });
+      return jsonRes({ error: { message: 'unexpected' } }, { status: 500, ok: false });
+    };
+    reset();
+    await cmdProfile({ description: 'x', actor: 'owner' });
+    const disabledRow = RUN.results.find((r) => r.action === 'profile-update');
+    ok(disabledRow?.ok === false && disabledRow.error === 'api_disabled' && disabledRow.errorCode !== 'engine_failure',
+      `youtube apply: 403 accessNotConfigured -> api_disabled, NOT needs_scope/engine_failure (got ${JSON.stringify(disabledRow)})`);
+    ok(disabledRow?.error !== 'needs_scope', 'youtube api_disabled is never mislabeled needs_scope (the whole point of this fix)');
+    ok(disabledRow?.helpUrl === ACTIVATION_URL, `youtube api_disabled row carries the console activation URL (got ${JSON.stringify(disabledRow?.helpUrl)})`);
+    ok(/has not been used in project 449370365247|disabled/.test(disabledRow?.errorMessage || ''), `youtube api_disabled: errorMessage names the disabled API + project id (got ${JSON.stringify(disabledRow)})`);
+
+    // (e4) a GENUINE missing-scope 403 (reason insufficientPermissions) still reads
+    // needs_scope - the api_disabled branch must not swallow real scope failures.
+    globalThis.fetch = (url, init) => {
+      const u = String(url);
+      if (u.includes('oauth2.googleapis.com/token')) return jsonRes({ access_token: 'tok' });
+      if (u.includes('/channels') && (init?.method === 'PUT')) {
+        return jsonRes({ error: { errors: [{ reason: 'insufficientPermissions', message: 'Request had insufficient authentication scopes.' }], message: 'Request had insufficient authentication scopes.' } }, { status: 403, ok: false });
+      }
+      if (u.includes('/channels')) return jsonRes({ items: [{ id: 'UC123', snippet: { title: 'My Channel' }, brandingSettings: { channel: {} }, localizations: {} }] });
+      return jsonRes({ error: { message: 'unexpected' } }, { status: 500, ok: false });
+    };
+    reset();
+    await cmdProfile({ description: 'x', actor: 'owner' });
+    const insufficientRow = RUN.results.find((r) => r.action === 'profile-update');
+    ok(insufficientRow?.ok === false && insufficientRow.error === 'needs_scope' && insufficientRow.scope === 'youtube',
+      `youtube apply: 403 insufficientPermissions -> needs_scope (a real scope 403 still routes to reconnect) (got ${JSON.stringify(insufficientRow)})`);
+
     // (f) happy apply: merges onto the EXISTING branding (never clobbers untouched fields).
     let putBody = null;
     globalThis.fetch = (url, init) => {

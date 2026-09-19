@@ -29,6 +29,8 @@ const { effectiveRadarCapabilities, radarReplySources, radarCopyDraftSources } =
 
 const CAMP = 'radar';
 const setRadar = (radar, actor = 'owner') => setConfig({ ifRev: getConfig().rev, actor, set: { posting: { radar } } });
+// The auto-reply trust scope moved to autoApprove.radarReplies (owner Q2).
+const setRadarReplies = (rr, actor = 'owner') => setConfig({ ifRev: getConfig().rev, actor, set: { posting: { autoApprove: { radarReplies: rr } } } });
 
 let sn = 0;
 const seed = async ({ score = 80 } = {}) => {
@@ -70,9 +72,10 @@ try {
   ok(feed.capabilities.x.reply === true, '(c) listRadar ships the per-client effective capability table to the panel');
 
   // ---- (d) auto-reply fails closed without the flag ----
-  const arm = setRadar({ xEnterprise: false, autoReply: { enabled: true, lanes: ['x'], requireLintClean: true } });
+  setRadar({ xEnterprise: false });
+  const arm = setRadarReplies({ enabled: true, lanes: ['x'], requireLintClean: true });
   assert.ok(arm.ok, JSON.stringify(arm));
-  ok(getConfig().posting.radar.autoReply.lanes.includes('x'), "(d) lanes:['x'] is shape-valid (the stored policy survives)");
+  ok(getConfig().posting.autoApprove.radarReplies.lanes.includes('x'), "(d) lanes:['x'] is shape-valid (the stored policy survives)");
   const s3 = await seed();
   const r3 = await queue(s3);
   // Flag off again => x is BACK on the copy path; nothing can auto-fire (copy drafts never post).

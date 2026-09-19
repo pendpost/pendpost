@@ -22,7 +22,7 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.strin
 
 const { getConfig, setConfig } = await import('../lib/config.mjs');
 const setRadar = (radar, actor = 'owner') => setConfig({ ifRev: getConfig().rev, actor, set: { posting: { radar } } });
-const warmupQuery = { id: 'warmup-reddit', label: 'Warm up', sources: ['reddit'], subreddits: ['mcp', 'selfhosted'], brief: 'threads I can help in, not sales', cadence: 'daily', warmup: true };
+const warmupQuery = { id: 'warmup-reddit', label: 'Warm up', sources: ['reddit'], subreddits: ['mcp', 'selfhosted'], brief: 'threads I can help in, not sales', warmup: true };
 
 try {
   // ---- (a) shape ----
@@ -38,7 +38,7 @@ try {
 
   // ---- (c) still a normal query ----
   const q2 = getConfig().posting.radar.queries.find((x) => x.id === 'warmup-reddit');
-  ok(q2.enabled !== false && q2.sources[0] === 'reddit' && q2.subreddits.length === 2 && q2.cadence === 'daily', '(c) a warmup query keeps every ordinary query field');
+  ok(q2.enabled !== false && q2.sources[0] === 'reddit' && q2.subreddits.length === 2, '(c) a warmup query keeps every ordinary query field');
 
   console.log(`\n[radar-warmup-query] OK - warmup is a shape-checked, agent-writable, otherwise-ordinary query flag (${pass} assertions).`);
 } finally {

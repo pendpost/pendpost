@@ -104,8 +104,8 @@ try {
   setConfig({
     ifRev: getConfig().rev, actor: 'owner',
     set: { posting: { defaultTimezone: 'Europe/Zurich', radar: {
-      enabled: true, dailyAt: '07:30',
-      queries: [{ id: 'q1', label: 'S', enabled: true, cadence: 'daily', keywords: ['schedule'] }],
+      enabled: true, dailyEnabled: true, dailyAt: '07:30',
+      queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['schedule'] }],
       agent: { provider: 'claude-code', dailyBudget: 3 },
     } } },
   });
@@ -128,7 +128,7 @@ try {
   ok(feed.ok === true && feed.nextScan && typeof feed.nextScan === 'object', 'listRadar carries nextScan');
   const ns = feed.nextScan;
   ok(ns.timezone === 'Europe/Zurich' && ns.dailyAt === '07:30', 'nextScan carries { timezone, dailyAt } from config');
-  ok(ns.agent.armed === true, 'agent.armed: provider connected AND an enabled daily query');
+  ok(ns.agent.armed === true, 'agent.armed: provider connected AND dailyEnabled on AND an enabled query');
   ok(typeof ns.agent.at === 'string' && Number.isFinite(Date.parse(ns.agent.at)), 'agent.at is an ISO time');
   ok(ns.agent.lastAt === '2026-08-16T05:30:00Z', 'agent.lastAt echoes the lastAgentScan stamp');
   ok(ns.agent.budget === 3 && ns.agent.spent === 0, 'agent.{budget,spent} state the honest unattended spend (old jobs are outside the 24h window)');
@@ -143,11 +143,12 @@ try {
     && feed.lastProduced.finishedAt === '2026-08-16T05:40:00Z',
     'lastProduced carries { jobId, finishedAt, state, partial, reason, accepted, drafted, autoPosted }');
 
-  // Un-armed when no daily query: nextScan still present (the times are derivable) but armed:false.
-  setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: { queries: [{ id: 'q1', label: 'S', enabled: true, cadence: 'manual', keywords: ['schedule'] }] } } } });
+  // Un-armed when the global daily switch is off: nextScan still present (the times are
+  // derivable) but armed:false.
+  setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: { dailyEnabled: false } } } });
   const feed2 = await listRadar({});
   ok(feed2.nextScan.agent.armed === false && feed2.nextScan.keyword.armed === false,
-    'with no daily-cadence query both clocks read armed:false - no scan is promised that will not fire');
+    'with dailyEnabled off both clocks read armed:false - no scan is promised that will not fire');
 
   console.log(`\n[radar-next-scan] OK - nextDueDailyAt agrees with the scheduler gate by property, the closed-form branches and fallbacks hold, and listRadar carries the exact nextScan + lastProduced shape (${pass} assertions).`);
 } finally {
