@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-09-19
+
+This release is about telling you the truth at publish time. When a post goes out, or does not, pendpost now shows the reason on the card and a short toast while the post is in flight, so you are never left guessing. YouTube got more reliable in the same breath: an approved Short is never silently skipped, and a post that fell behind ships late instead of being dropped. And when a YouTube read fails because an API is switched off in your Google Cloud project, pendpost points you at enabling that API rather than sending you to reconnect an account that was never the problem.
+
+### Added
+- Honest publish feedback. The Activity feed and the post card now carry the real reason a publish did or did not happen, and a short toast shows while a post is in flight, so a post is never a silent success or a silent failure.
+
+### Changed
+- The marketing site is simpler: one clear call to action on the home page, sentence-case navigation, a tighter type scale, and a pricing grid with a single highlighted plan. pendpost is also listed on the Glama and PulseMCP registries.
+
+### Fixed
+- Approved YouTube Shorts are never silently skipped, and a Short that is overdue ships late instead of being dropped. An overdue post is a warning at pre-flight, not a block.
+- A YouTube read that fails because the API is switched off in your Google Cloud project now reads as exactly that. pendpost names the disabled API and links you straight to enabling it in the Cloud console, instead of sending you to reconnect the account, which never fixes a disabled API. The honest state shows up wherever the lane's health does: in Activity, on the Setup card, and in Insights.
+
+### Dependencies
+- Cleared every open dependency advisory across the app, website, and video toolchains with non-breaking updates. None of these reach the published engine, which has no runtime dependencies.
+
 ## [2.3.0] - 2026-09-05
 
 This release makes Radar honest. A scan now only ever claims what it actually did: a failed run names the lanes it will retry, a stale result reads as "last tried" rather than a live error, and a run cut short by the machine going to sleep says so instead of blaming a timeout. You can scope a scan to named sources or resume just the lanes that did not finish, and Radar learned French and Italian, exclude words, and a minimum score. Alongside Radar, pendpost now catches a dead media link when you approve a post instead of at publish, and the Planner and the approval gate show a post's real state.
