@@ -48,6 +48,12 @@ covers/
 # the tracked data/clients/default/ (the negation above would otherwise expose it).
 reviewers.json
 
+# Spec 51: the per-client ed25519 signing key (private half). Path-anywhere so it is
+# ignored inside EVERY client subtree, including the tracked data/clients/default/
+# (the !data/clients/default/ re-include below would otherwise commit it), and at the
+# repo root for the un-migrated single-workspace fallback.
+attest-key.json
+
 # --- Multi-client tenant boundary -------------------------------------------
 # Per-client subtrees hold real credentials + campaign content. Only the shipped
 # generic 'default' demo client is tracked; every NAMED tenant (e.g.

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench, Star, Send, CornerDownRight, AlertCircle, ShieldAlert, Info, ExternalLink } from 'lucide-react';
+import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench, Star, Send, CornerDownRight, AlertCircle, ShieldAlert, ShieldCheck, Info, ExternalLink } from 'lucide-react';
 import { useActivity, useReviews, replyToReview, replyToInboundEvent } from '../lib/api.js';
 import { useInboundEvents } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
@@ -185,6 +185,21 @@ const ACTION_NOTE = {
   'media-missing-defer': 'activity.note.mediaMissingDefer',
 };
 
+// Maps an entry's errorCode to the i18n key for its NOTE body (data, not UI
+// text), like ACTION_NOTE above but keyed by the more specific errorCode - one
+// action id can carry several distinct failure reasons, only some of which are
+// a known, translatable class. 'publish-refused' (spec 51 split fence,
+// lib/scheduler.mjs) is the case in point: a buildPublishJob refusal carries a
+// dynamic, load-bearing errorMessage (kept raw, like the radar/defer rows
+// above), but a TRUE approved-vs-disk mismatch always carries errorCode
+// 'stale_content' with the SAME fixed message (lib/receipts.mjs) - so that one
+// is worth a real translation instead of leaking English into the de-CH UI.
+// Checked before ACTION_NOTE below (and before the raw errorMessage fallback)
+// so a matched errorCode always wins over the raw message.
+const ERROR_NOTE = {
+  stale_content: 'activity.error.stale_content',
+};
+
 // C7: a SMALL fixed set of action GROUPS (curated, like STATUS_FILTERS) that
 // fold the ~30 ACTION_LABEL ids above into one chip each. Data, not UI - the
 // labels resolve through t() at render via the activity.action.group.* keys.
@@ -271,14 +286,18 @@ function dayHeader(iso, t) {
 function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
   const t = useT();
   const meta = entry.platform ? PLATFORM_META[entry.platform] : null;
-  // Note body: a mapped action code resolves to a localized note (so the de-CH UI
-  // never leaks raw English); otherwise fall back to the raw errorMessage (with its
-  // code prefix) so unmapped/error notes still show rather than going blank.
-  const noteText = ACTION_NOTE[entry.action]
-    ? t(ACTION_NOTE[entry.action])
-    : entry.errorMessage
-      ? `${entry.errorCode ? `${entry.errorCode}: ` : ''}${entry.errorMessage}`
-      : null;
+  // Note body: a mapped errorCode wins first (a known, translatable failure
+  // reason - see ERROR_NOTE above), then a mapped action code (ACTION_NOTE);
+  // either resolves to a localized note so the de-CH UI never leaks raw
+  // English. Otherwise fall back to the raw errorMessage (with its code
+  // prefix) so unmapped/error notes still show rather than going blank.
+  const noteText = ERROR_NOTE[entry.errorCode]
+    ? t(ERROR_NOTE[entry.errorCode])
+    : ACTION_NOTE[entry.action]
+      ? t(ACTION_NOTE[entry.action])
+      : entry.errorMessage
+        ? `${entry.errorCode ? `${entry.errorCode}: ` : ''}${entry.errorMessage}`
+        : null;
   // A failed row with a specific, actionable fix shows a single amber wrench CTA
   // (jumps straight to the fix); the row is then a plain div - the wrench is the
   // only interactive control, so no nesting. Generic failures keep the
@@ -326,6 +345,18 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
       <div className="min-w-0 flex-1">
         <p className="text-xs font-bold">
           {ACTION_LABEL[entry.action] ? t(ACTION_LABEL[entry.action]) : entry.action}
+          {/* Spec 51 (D2): a signed-receipt glyph after the action label when this row
+              carries attest.kid (stamped by lib/receipts.mjs onto the publish row).
+              Icon + text tooltip, never colour-only. No new filter/group. */}
+          {entry.attest ? (
+            <span
+              className="ml-1.5 inline-flex align-middle text-emerald-600 dark:text-emerald-300"
+              title={t('activity.attest.title', { kid: entry.attest.kid })}
+              aria-label={t('activity.attest.title', { kid: entry.attest.kid })}
+            >
+              <ShieldCheck size={13} aria-hidden="true" />
+            </span>
+          ) : null}
           {/* All-projects overview: which project this row belongs to. Stamped by App
               only in that mode (single-client mode never sets clientName, so nothing
               renders - the row is byte-identical). The avatar carries the accent, the

@@ -343,6 +343,35 @@ function platformVerify(post, platform, t) {
   return { tone: 'warn', label: t('postDetail.verify.notConfirmed'), permalink: v.permalink || null };
 }
 
+// Spec 51 (D2): the per-platform signed-receipt glyph. STATIC - it renders purely
+// from post.receipt[platform] (from plan_get, no extra call) and, when a verify_post
+// result is already on screen, overlays that platform's provenance. No standing
+// chip, no "Check receipt" action. Icon + text tooltip, never colour-only.
+export function ReceiptGlyph({ receipt, provenance }) {
+  const t = useT();
+  if (!receipt) return null;
+  const prov = provenance?.provenance || null; // overlay from a verify_post result, if run
+  if (prov === 'none') return null;
+  let tone = 'ok';
+  let label = t('postDetail.receipt.tooltip', { kid: receipt.kid || '' });
+  if (prov === 'verified') { tone = 'ok'; label = t('postDetail.receipt.verified'); }
+  else if (prov === 'content-changed') { tone = 'warn'; label = t('postDetail.receipt.contentChanged'); }
+  else if (prov === 'invalid') { tone = 'err'; label = t('postDetail.receipt.invalid'); }
+  const Icon = tone === 'err' ? ShieldX : tone === 'warn' ? ShieldAlert : ShieldCheck;
+  // Same inline-Tailwind tone idiom as the verify row two lines below (and
+  // Activity.jsx) - never a bespoke class with no CSS backing it.
+  const toneCls = tone === 'err'
+    ? 'text-red-600 dark:text-red-300'
+    : tone === 'warn'
+      ? 'text-amber-700 dark:text-amber-300'
+      : 'text-emerald-600 dark:text-emerald-300';
+  return (
+    <span title={label} aria-label={label}>
+      <Icon size={13} className={toneCls} aria-hidden="true" />
+    </span>
+  );
+}
+
 const ACTION_BTN = 'flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50';
 
 // The Composer's form-field surface, mirrored for the quick-edit controls so the
@@ -465,6 +494,10 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   const fileInputRef = useRef(null);
   const [error, setError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
+  // Spec 51 (D2): the last verify_post response, held only long enough to overlay its
+  // per-platform { signed, provenance } onto the static ReceiptGlyph row below - it is
+  // result-shape only (never persisted to post.verify), so nothing else can source it.
+  const [verifyResult, setVerifyResult] = useState(null);
   // The inbound-engagement (inbox) thread panel is opened from the ⋯ menu on a
   // posted, comment-capable post (spec 02, Pattern P6) - no new screen.
   const [showComments, setShowComments] = useState(false);
@@ -521,6 +554,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
     setFlairDraft({ id: post?.redditFlairId || '', text: post?.redditFlairText || '' });
     setMastodonPinBlocked(false);
     setMastodonPinAnnounce('');
+    // PostDetail is never remounted between posts (goPrev/goNext swap the `post`
+    // prop on the same instance, no `key` in App.jsx) - so a verify_post overlay
+    // from the PRIOR post must be cleared here too, or it leaks onto the next
+    // post's ReceiptGlyph row for a shared platform name.
+    setVerifyResult(null);
     // Re-seed on identity/rev change only (rev bumps on every server write); the
     // field list is derived from the same post, so it is intentionally not a dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -774,6 +812,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   const onVerify = async () => {
     setError(null);
     const res = await verifyPost(post.campaign, post.id);
+    setVerifyResult(res); // Spec 51 (D2): overlay the returned per-platform provenance on the row
     refresh();
     // Only a real live read-back is a success. verify_post returns ok:true even
     // when the post reads back NOT live (liveCount 0) - throw so the ActionButton
@@ -1679,6 +1718,16 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                     {state.tier === 'warn' ? <span className="sr-only">{t('postDetail.platform.warnSr')}: </span> : null}
                     {blocked ? t('postDetail.delivery.blocked', { platform: meta.label }) : state.text}
                   </span>
+                  {/* Spec 51 (D2): the static signed-receipt glyph, sourced from
+                      post.receipt[p] (plan_get, no new call). Once the operator runs
+                      the existing Verify action, the SAME response overlays its
+                      provenance onto this same row - no new tool, chip, or call. */}
+                  {post.receipt?.[p] ? (
+                    <ReceiptGlyph
+                      receipt={post.receipt[p]}
+                      provenance={verifyResult?.verify?.platforms?.[p]}
+                    />
+                  ) : null}
                   {/* One control per job: the wrench yields when the
                       Before-publishing card already offers the labelled
                       "Set up <lane>" link for this same lane. */}
