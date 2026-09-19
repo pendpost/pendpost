@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-19
+
+This release adds signed publish receipts, so you can prove a post went out exactly as you approved it, without taking pendpost's word for it.
+
+### Added
+- Signed publish receipts. When pendpost fires an approved post, it signs a receipt that binds what actually published to what you approved, and records the platform's own post id against it. A verify command, `node scripts/attest.mjs verify`, checks any receipt against your public key, so you, or anyone you hand the public key to, can prove a post went out exactly as approved without taking pendpost's word for it. The signing key is per client, generated on first use, kept at 0600 beside your other local secrets, and never leaves your machine. The post detail view shows a shield on a signed platform and reports "verified", "content changed since", or "signature invalid" when you run Verify.
+
+### Changed
+- A post whose saved content no longer matches what you approved now waits for a fresh approval instead of publishing. This catches an edit made to the plan file outside the app. A missing signing key, or a post approved before content fingerprints existed, never blocks a publish: the post still goes out, it simply carries no receipt. If you are upgrading with posts approved on an older build, run `node scripts/migrate-attest-baseline.mjs --apply` once to retire their older-format fingerprints, so those approvals keep publishing (without a receipt) instead of asking for a re-approval. Every approval made from this release on carries a receipt.
+
 ## [2.5.0] - 2026-09-19
 
 This release lets you publish to LinkedIn as yourself, not only as your Company Page. A LinkedIn post can now go out from your personal profile, chosen per post, so a personal brand can use the lane the same way a company page does. Everything else about the lane, drafts, approvals, and plans, stays the same.

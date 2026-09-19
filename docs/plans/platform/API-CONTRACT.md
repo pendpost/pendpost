@@ -113,6 +113,15 @@ is `PLATFORM_ENV_KEYS` in `lib/config.mjs`), returning the lane to `incomplete`.
 connect it handles a credential surface and so is deliberately NOT an agent tool (no
 `mcpTool`); it is fail-closed on `confirm: true` and never echoes a cleared value.
 
+`scripts/attest.mjs pubkey` / `verify` (spec 51) are OPERATOR-ONLY CLI ceremonies with NO
+MCP tool and NO API route: exporting the public signing key is a ceremony, like credential
+handling (threat-model.md sec 6.3). Verification is NOT a new machine surface to exempt -
+it rides the EXISTING `verify_post` result (additive per-platform `{ signed, provenance }`)
+and this CLI's `verify`; there is no `verify_receipt` tool or route. There is no `rotate`
+verb in v1 (single keypair, D1/D4). Because neither verb is registered in `lib/api.mjs`
+`ROUTES` or `lib/mcp.mjs` `TOOLS`, `test/parity-check.mjs` never sees them and no entry in
+the `routes` / `tools` JSON lists below is needed; this paragraph is the exemption record.
+
 The `POST /api/cloud/*` routes (`connect`, `heal`, `enabled`, `push`, `eject`, `hand-tokens`,
 `migrate`, `enable/start`, `clients/always-on`, `checkout`, `billing-portal`, `spend-cap`) are the OPTIONAL managed-cloud (pendpost-cloud) operator
 ceremonies. They are operator-only and deliberately NOT agent tools: connecting,
