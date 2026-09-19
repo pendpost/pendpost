@@ -85,7 +85,7 @@ describe('I18nProvider live locale switch', () => {
   it('carries the verify-failed tips + overdueUnpublished blocker in BOTH packs (they were missing, so the tooltip rendered undefined and the blocker its raw key)', () => {
     for (const locale of ['en', 'de-CH']) {
       let captured;
-      function KeyProbe() {
+      const KeyProbe = () => {
         const t = useT();
         captured = {
           statusTip: t('status.tip.verify-failed'),
@@ -93,7 +93,7 @@ describe('I18nProvider live locale switch', () => {
           blocker: t('blocker.overdueUnpublished', { postId: 'reel-01', reason: 'not found' }),
         };
         return null;
-      }
+      };
       render(
         <I18nProvider locale={locale}>
           <KeyProbe />

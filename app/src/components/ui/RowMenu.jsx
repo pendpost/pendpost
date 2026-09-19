@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { MoreHorizontal } from 'lucide-react';
-import { BTN_GHOST } from './recipes.js';
+import { BTN_GHOST, TAP_TARGET, MENU_ITEM, MENU_ITEM_HEIGHT, MENU_ITEM_TONES } from './recipes.js';
 import { Tip } from './Tooltip.jsx';
 
 // The ONE overflow (three-dots) menu for a card or row - the generic, items-driven shell
@@ -14,11 +14,19 @@ import { Tip } from './Tooltip.jsx';
 //
 // Accessibility: aria-haspopup/aria-expanded on the trigger, role=menu / role=menuitem on
 // the list, an aria-label on the icon-only trigger, closes on outside-click or Escape, and
-// each item is a real >=44px-tall button. It is a sibling of any open-detail control, never
+// each item is a real >=44px-tall button (recipes.js MENU_ITEM, `min-h-11`) with its own
+// focus-visible ring. The 16px glyph trigger looks the same size it always
+// did and carries a 44x44 hit area (recipes.js TAP_TARGET), so the canon's tap-target floor is
+// met without the row growing. It is a sibling of any open-detail control, never
 // nested inside it (the interactive-nesting contract the cards already honour).
 //
 // items: [{ key, label, Icon, danger?, disabled?, reason?, run }]. `run` fires on click
 // (the menu closes first). A falsy entry is skipped, so callers can inline `cond && {...}`.
+
+// The popover's own furniture around the item stack: `p-1` top and bottom (8px) plus the
+// `mt-1`/`mb-1` offset from the trigger (4px), rounded up so the estimate never lands short.
+const MENU_CHROME = 16;
+
 export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right', stopPropagation = true, triggerClassName }) {
   const [open, setOpen] = useState(false);
   // Open upward when the trigger sits low in the viewport (e.g. the ⋯ at the bottom of a
@@ -53,8 +61,14 @@ export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right
               // Decide the drop direction from the room below the trigger at open time.
               if (next && ref.current && typeof window !== 'undefined') {
                 const r = ref.current.getBoundingClientRect();
-                const estimate = Math.min(visible.length * 44 + 16, 320);
-                setDropUp(window.innerHeight - r.bottom < estimate);
+                // MENU_ITEM_HEIGHT is the SAME 44 the items are painted at (recipes.js
+                // MENU_ITEM, `min-h-11`), plus the popover's own p-1 and the mt-1 offset.
+                const estimate = visible.length * MENU_ITEM_HEIGHT + MENU_CHROME;
+                const below = window.innerHeight - r.bottom;
+                // Flip up only when the menu does not fit below AND there is more room above:
+                // a 6-item menu opened near the fold flips, one opened near the top does not
+                // trade a clipped bottom for a clipped top.
+                setDropUp(below < estimate && r.top > below);
               }
               return next;
             });
@@ -62,7 +76,7 @@ export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right
           // Default: a quiet ghost glyph on a solid surface. `triggerClassName` overrides it
           // for an over-cover overlay (a light glyph on a dark scrim) where BTN_GHOST's zinc
           // would vanish against arbitrary cover art.
-          className={triggerClassName || `${BTN_GHOST} px-1.5 py-1.5`}
+          className={`${triggerClassName || `${BTN_GHOST} px-1.5 py-1.5`} ${TAP_TARGET}`}
         >
           <MoreHorizontal size={16} aria-hidden="true" />
         </button>
@@ -79,11 +93,7 @@ export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right
                 role="menuitem"
                 disabled={disabled}
                 onClick={(e) => { swallow(e); setOpen(false); run?.(); }}
-                className={`flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${
-                  danger
-                    ? 'text-red-600 hover:bg-red-500/10 dark:text-red-400'
-                    : 'text-zinc-700 hover:bg-zinc-900/5 dark:text-zinc-200 dark:hover:bg-white/5'
-                }`}
+                className={`${MENU_ITEM} ${danger ? MENU_ITEM_TONES.danger : MENU_ITEM_TONES.default}`}
               >
                 {Icon ? <Icon size={14} className="shrink-0" aria-hidden="true" /> : null}
                 <span className="min-w-0 flex-1 truncate">{itemLabel}</span>

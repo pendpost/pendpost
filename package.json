@@ -1,6 +1,6 @@
 {
   "name": "pendpost",
-  "version": "2.3.0",
+  "version": "2.4.1",
   "description": "pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, and Nostr, plus long-form blogs on WordPress and Ghost, with Reddit, Pinterest, TikTok, and Google Business Profile in beta, all behind a human approval gate you control.",
   "type": "module",
   "license": "MIT",
@@ -57,6 +57,14 @@
     "SECURITY.md",
     "AGENTS.md"
   ],
+  "pendpost": {
+    "browserServer": {
+      "package": "@playwright/mcp",
+      "version": "0.0.80",
+      "launchedBy": "npx -y @playwright/mcp@<version>",
+      "note": "Spec 50 P4 / L3. The engage child's browser MCP server, PINNED to an exact version. It is deliberately NOT a runtime dependency: pendpost stays zero-dep (NFR-LIC-01, test/supply-chain.test.mjs) and nothing is installed into the engine. The child's own --mcp-config launches it through npx at this exact version, so a background npm release can never change what a spawned child may do to a live account. lib/engage-browser.mjs PLAYWRIGHT_MCP_VERSION must equal the version above; test/engage-browser.test.mjs asserts it."
+    }
+  },
   "scripts": {
     "start": "node bin/pendpost.mjs",
     "dev": "node --watch server.mjs",

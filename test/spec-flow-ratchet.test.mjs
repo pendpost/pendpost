@@ -37,7 +37,17 @@ const ok = (c, m) => { assert.ok(c, m); console.log(`  ok - ${m}`); pass += 1; }
 // greenfield spec ("no running instance exists") that pre-names verify-relationship-
 // memory.cjs. The feature is unbuilt, so the flow cannot be authored yet; drop this
 // back to 17 (and add the flow) the moment relationship-memory ships a UI to drive.
-const MISSING_BASELINE = 18;
+// Raised 18 -> 19 on 2026-09-09 for spec 50 (radar-auto-engage): a design-only greenfield
+// spec that pre-names walk-engage-ledger.cjs and walk-engage-needs-you.cjs. (The measured
+// count before spec 50 was 17, so the two new names land at 19.) Drop this back by two
+// (and add the flows) the moment auto-engage ships its ledger row and Needs-you strip.
+// Lowered 19 -> 17 on 2026-09-09, same day, because that moment arrived: spec 50's P5a
+// landed the ledger row and the "Needs you" strip, and both flows are now written and green
+// twice consecutively against the seeded `engage-live` scenario. The proof is committed at
+// docs/specs/platform-capabilities/ui-proof/engage/ (the flows themselves cannot be - the
+// .claude/ tree is gitignored, which is the same reason this check skips itself on a fresh
+// clone). 17 is the pre-spec-50 measured count, so the backlog is exactly where it was.
+const MISSING_BASELINE = 17;
 
 const SPEC_DIRS = [
   path.join(REPO, 'docs', 'specs', 'platform-capabilities', 'specs'),

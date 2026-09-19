@@ -335,6 +335,38 @@ export function useSignals(enabled = true, forcePoll = false) {
   });
 }
 
+// Spec 50 "Respond for me" RUNTIME, from GET /api/engage (client-scoped like the other
+// radar routes). The owner's INTENT (mode, per-platform on/off, handle) lives in config
+// (posting.radar.engage); this read carries what is actually TRUE right now - per platform
+// usable/reason/pausedUntil, today's counters, and how many actions wait on Chrome. Two
+// objects on purpose (spec 3.1): the switch shows intent, the state line shows reality.
+// A pure read, so it always resolves with a structured body; `retry:false` keeps a 404
+// (engine side not landed yet) from thrashing, and the ledger degrades to "Checking…".
+export function useEngage(enabled = true) {
+  return useQuery({
+    queryKey: ['engage'],
+    queryFn: () => getJson('/api/engage'),
+    enabled,
+    retry: false,
+    staleTime: 15_000,
+  });
+}
+
+// Spec 50 S3: what still needs a HUMAN, from GET /api/engage/asks - the strip above the Radar
+// feed. Client-scoped like every other radar read. Only OPEN asks: a resolved one has already
+// left the strip, and keeping it in the payload would only invite a surface that re-litigates
+// decisions the owner made. `retry:false` for the same reason as useEngage above: a 404 while
+// the engine side is older than the app must degrade to an unrendered strip, never a thrash.
+export function useEngageAsks(enabled = true) {
+  return useQuery({
+    queryKey: ['engage-asks'],
+    queryFn: () => getJson('/api/engage/asks?status=open'),
+    enabled,
+    retry: false,
+    staleTime: 15_000,
+  });
+}
+
 // Connected-account discovery (spec 22, Pattern P4-read): who a connected lane
 // authenticates as + which assets it can manage, from GET /api/accounts/<platform>/discover
 // (lib/writes.mjs connectDiscover). Always resolves 200 with a structured body
@@ -598,7 +630,7 @@ export function useSetActiveClient() {
 // whole namespace - is correct (spec 23: the inbound-events feed is client-scoped, but
 // its cloud.js siblings ['cloud'], ['cloud','clients'], ['cloud','capabilities'],
 // ['cloud','subscription'] are workspace-wide and must NOT refetch on a client switch).
-const CLIENT_SCOPED_KEYS = ['plans', 'accounts', 'activity', 'insights', 'assets', 'config', 'digest', 'pendpost-health', 'platform-validate', 'validate-media', 'comments', 'commentInbox', 'reviews', 'discover', 'presubmit-check', 'youtube-playlists', 'reddit-flairs', 'pinterest-board-sections', 'pinterest-boards', 'gbp-media', 'gbp-attributes', 'ghost-members', 'ghost-newsletters', 'radar', 'engager', ['cloud', 'events']];
+const CLIENT_SCOPED_KEYS = ['plans', 'accounts', 'activity', 'insights', 'assets', 'config', 'digest', 'pendpost-health', 'platform-validate', 'validate-media', 'comments', 'commentInbox', 'reviews', 'discover', 'presubmit-check', 'youtube-playlists', 'reddit-flairs', 'pinterest-board-sections', 'pinterest-boards', 'gbp-media', 'gbp-attributes', 'ghost-members', 'ghost-newsletters', 'radar', 'engage', 'engage-asks', 'engager', ['cloud', 'events']];
 
 // Every write is bounded by an AbortController timeout so a single stalled request
 // can never wedge a button's loading state forever - the bulk-approve "infinite
@@ -615,7 +647,7 @@ const LONG_OP_TIMEOUT_MS = 600_000;
 // agent, runs a liveness probe, uploads media, or publishes synchronously belongs here.
 const LONG_OP_PREFIXES = [
   '/api/run/', '/api/insights/', '/api/radar/', '/api/comments/', '/api/reviews/',
-  '/api/inbound/', '/api/agent/', '/api/accounts/', '/api/connect', '/api/disconnect',
+  '/api/inbound/', '/api/engage/', '/api/agent/', '/api/accounts/', '/api/connect', '/api/disconnect',
   '/api/health/recheck', '/api/gbp/', '/api/ghost/', '/api/youtube/', '/api/pinterest/',
   '/api/mastodon/',
 ];
@@ -774,6 +806,30 @@ export const clearMetaBlock = () => postJson('/api/state/meta-block', { blockedU
 // Generic lane breaker resume (non-Meta lanes, e.g. the X credits halt): clears the
 // lane block AND releases the publishHolds its failure streak parked server-side.
 export const resumeLane = (platform) => postJson('/api/state/lane-resume', { platform, actor: ACTOR });
+// Spec 50 "Respond for me" owner verbs (REST twins of the MCP engage_* verbs). Each one is
+// a deliberate click on a control the owner can see, never a poll: pause/resume the whole
+// policy (row 12), re-check one platform (row 2e), answer the inline handle confirm (2e2),
+// cancel a queued or posting-soon action (row 5), undo a done one after the inline Delete /
+// Keep confirm (row 11), and clear ONE cached community rule so its skipped signals are
+// triaged again (row 7e5). The caller invalidates ['engage'] (and ['radar'] where a signal
+// row's state changes).
+export const engagePause = (paused) => postJson('/api/engage/pause', { paused: paused === true, actor: ACTOR });
+export const engageProbe = (lane) => postJson('/api/engage/probe', { lane, actor: ACTOR });
+export const engageConfirmHandle = (lane, ok) => postJson('/api/engage/confirm-handle', { lane, ok: ok === true, actor: ACTOR });
+export const engageCancel = (actionId) => postJson('/api/engage/cancel', { actionId, actor: ACTOR });
+export const engageUndo = (actionId) => postJson('/api/engage/undo', { actionId, confirm: true, actor: ACTOR });
+export const engageCommunityRecheck = (lane, community) => postJson('/api/engage/community-recheck', { lane, community, actor: ACTOR });
+// Spec 50 P5a: the "Needs you" strip (S3/S4). Each ask is one thing the policy could not
+// decide alone, and each has exactly ONE resolution: answer a question in one line (the agent
+// writes the reply from it, so this call is the slow one - it spawns), post a held reply
+// (grace skipped, the owner just read it), or skip it (the signal records "skipped by you").
+// A hand-off resolves through the EXISTING radarMarkCopyPosted instead, and a login /
+// switch-account ask closes itself when engageProbe next finds the platform usable - which is
+// why there are three writes here and not five. Callers invalidate ['engage-asks'] (plus
+// ['radar'] and ['engage'], since answering changes a signal's row).
+export const engageAnswer = (askId, text) => postJson('/api/engage/answer', { askId, text, actor: ACTOR });
+export const engageConfirmAsk = (askId, text = null) => postJson('/api/engage/confirm', { askId, ...(text == null ? {} : { text }), actor: ACTOR });
+export const engageDismiss = (askId) => postJson('/api/engage/dismiss', { askId, actor: ACTOR });
 // Metric refresh. `scope` gates the metered lanes (X, which bills per API read):
 // 'free' (the default) reads only the free lanes and spends nothing; 'all' also
 // reads X and costs credits, so its call site pairs it with a cost confirm. The
@@ -835,6 +891,19 @@ export const radarDraftComparison = (backlogKey) => postJson('/api/radar/compari
 // action on a foreign-project signal lands in ITS workspace, never the active one.
 // Single-client mode passes undefined and the write binds the active client.
 export const radarTriage = (source, externalId, action, clientId) => postJson('/api/radar/triage', { source, externalId, action, actor: ACTOR, clientId });
+// Granular filters: BULK dismiss a LIST of cached signals in one call (POST
+// /api/radar/triage-bulk -> triageSignalsBulk). Backs "delete all displayed" and
+// "dismiss all from this query". `ids` = [{ source, externalId }]. A WATCHED signal is
+// NEVER dismissed (engine guard) and unknown sources are skipped, so the call is
+// non-fatal; it resolves { ok, dismissed, skippedWatched, skippedInvalid }. Single-client
+// only (one call binds one client root), so clientId scopes the active workspace.
+export const radarTriageBulk = (ids, action = 'dismiss', clientId) => postJson('/api/radar/triage-bulk', { ids, action, actor: ACTOR, clientId });
+// Granular filters: UNDO a dismiss - single OR bulk (POST /api/radar/restore ->
+// restoreSignals). `dismiss` REMOVES the signal object from the feed, so the seen-ledger
+// clear alone cannot bring it back; the GUI holds the objects it dismissed and passes them
+// here to re-insert + clear their seen entries. GUI-only (no MCP twin by design). clientId
+// scopes a foreign-project signal's undo in the all-projects overview. Resolves { ok, restored }.
+export const radarRestore = (signals, clientId) => postJson('/api/radar/restore', { signals, actor: ACTOR, clientId });
 // G8 (ux-audit 2026-08-04): the SAME triage route also declines one GEO comparison-backlog
 // entry, identified by backlogKey instead of source+externalId. dismiss = drop it durably
 // (the dismissedBacklog ledger; a re-scan never re-mints it), clear = undo. The caller
@@ -1044,6 +1113,11 @@ export const setMetaLane = (body) => postJson('/api/state/meta-lane', { ...body,
 // Edit non-secret config (identifiers -> .env, posting vars -> config.json).
 // Secrets are display-only and never sent. set = { identifiers?, posting? }.
 export const saveConfig = (ifRev, set) => postJson('/api/config', { ifRev, set, actor: ACTOR });
+// A one-shot READ of the config, outside React Query. The ledger's platform verbs (a probe, a
+// handle confirm, a lane resume) write config server-side, so the rev a cached read is holding
+// can be stale by the time the owner touches the next control. The caller re-reads the rev with
+// this and re-sends the SAME value once, which is a refusal the owner should never have to see.
+export const fetchConfig = () => getJson('/api/config');
 
 // Operator-only connect ceremony (POST /api/connect). Kicks off the engine's connect
 // command for one platform against the active client; the ENGINE writes the .env (the

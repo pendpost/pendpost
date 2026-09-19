@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Plus, Pencil, Trash2, AlertCircle, Check, X, HelpCircle, ChevronDown } from 'lucide-react';
+import { Plus, Pencil, Trash2, AlertCircle, Check, X, HelpCircle, ChevronDown, Pause } from 'lucide-react';
 import { ToggleRow } from './ui/Switch.jsx';
 import { effectiveRadarSourcesClient } from '../lib/format.js';
 import { useConfig, useAccounts, useSignals, saveConfig, errText } from '../lib/api.js';
@@ -31,7 +31,7 @@ const DEFAULT_SOURCE_IDS = ['reddit', 'hackernews', 'mastodon'];
 // A query with NO sources scans every engine (lib/writes.mjs falls back to all sources when the
 // array is absent or empty), so the draft keeps that as an empty array and never substitutes the
 // defaults on an existing query. Only a brand-new draft pre-selects DEFAULT_SOURCE_IDS.
-const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', excludeKeywords: '', minScore: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', warmup: false, mention: false };
+const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', excludeKeywords: '', minScore: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', warmup: false, mention: false, paused: false };
 
 function toDraft(q) {
   return {
@@ -48,6 +48,10 @@ function toDraft(q) {
     hashtags: (q.hashtags || []).join(', '),
     warmup: q.warmup === true,
     mention: q.mention === true,
+    // A paused search keeps all its config but is skipped by every scan (enabled:false). The
+    // pause toggle lives in the editor now that cadence is global - a single search's only
+    // per-query axis is on/paused.
+    paused: q.enabled === false,
   };
 }
 const splitList = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -60,16 +64,20 @@ function parseMinScore(value) {
   return Number.isInteger(n) && n >= 0 && n <= 100 ? n : null;
 }
 
-// Build the persisted RadarQuery from the editor draft. enabled/cadence carry forward on an edit
-// (editing a paused query must not silently re-activate it; an agent-set daily cadence must not
-// revert to manual). A new query defaults to enabled + manual.
-function buildQuery(draft, existing) {
+// Build the persisted RadarQuery from the editor draft. The paused state round-trips through the
+// draft (toDraft reads q.enabled===false into draft.paused; the pause toggle edits it), so editing
+// a paused search never silently re-activates it. Cadence is not written per query any more - it is
+// the global posting.radar.dailyEnabled switch. A new query defaults to active (enabled).
+function buildQuery(draft) {
   const minScore = parseMinScore(draft.minScore);
   return {
     id: draft.id,
     label: draft.label.trim(),
     brief: draft.brief.trim(),
-    enabled: existing ? existing.enabled !== false : true,
+    // The editor now owns the on/paused axis (the pause toggle). A paused draft writes
+    // enabled:false; anything else is active. Cadence is retired - it is the global
+    // posting.radar.dailyEnabled switch, so it is never written per query.
+    enabled: draft.paused !== true,
     // No chips pressed = all engines, expressed by leaving the key out (the engine treats an
     // absent array as "every source"; an empty one would say the same, but absent is canonical).
     ...(draft.sources.length ? { sources: draft.sources } : {}),
@@ -82,7 +90,6 @@ function buildQuery(draft, existing) {
     competitors: splitList(draft.competitors),
     subreddits: splitList(draft.subreddits).map((s) => s.replace(/^r\//i, '')),
     hashtags: splitList(draft.hashtags).map((s) => s.replace(/^#/, '')),
-    cadence: existing && existing.cadence ? existing.cadence : 'manual',
     // A warm-up query is a Reddit karma builder, so the flag only means anything when Reddit is
     // one of its sources; drop reddit and the flag goes with it (never a stale true on a query
     // that no longer touches Reddit).
@@ -134,6 +141,7 @@ function DailyRunBlock({ radar, config, onNavigate, setError, t }) {
   const queryClient = useQueryClient();
   const agent = radar.agent || {};
   const agentConnected = Boolean(agent.provider);
+  const dailyEnabled = radar.dailyEnabled === true;
   const dailyAt = typeof radar.dailyAt === 'string' && radar.dailyAt ? radar.dailyAt : '09:00';
   const dailyBudget = Number.isInteger(agent.dailyBudget) ? agent.dailyBudget : 1;
   const saveRadar = (partial) => {
@@ -146,29 +154,45 @@ function DailyRunBlock({ radar, config, onNavigate, setError, t }) {
   return (
     <div className={`space-y-2 rounded-xl p-3 ${INNER_SURFACE}`}>
       <SectionHeading title={t('settings.radar.dailyRun.title')} />
-      {!agentConnected ? (
-        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
-          {t('settings.radar.dailyRun.needsAgent')}{' '}
-          {onNavigate ? (
-            <button type="button" onClick={() => onNavigate('setup')} className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">{t('settings.radar.dailyRun.needsAgent.link')}</button>
+      {/* THE one cadence decision (owner: decide it once). On => every active search is swept
+          daily at the time below; off => Radar only searches when you press Scan now. The old
+          per-query Off/On-demand/Daily selector is gone; a single search is paused in its own
+          editor, not given its own cadence. */}
+      <ToggleRow
+        label={t('settings.radar.autoScan.label')}
+        tip={t('settings.radar.autoScan.tip')}
+        checked={dailyEnabled}
+        onChange={(next) => saveRadar({ dailyEnabled: next })}
+      />
+      {dailyEnabled ? (
+        <>
+          {!agentConnected ? (
+            <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+              {t('settings.agentDaily.needsAgent')}{' '}
+              {onNavigate ? (
+                <button type="button" onClick={() => onNavigate('setup')} className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">{t('settings.radar.dailyRun.needsAgent.link')}</button>
+              ) : null}
+            </p>
           ) : null}
-        </p>
-      ) : null}
-      <label className="flex items-center justify-between gap-3">
-        <TipLabel label={t('settings.radar.dailyAt.label')} tip={t('settings.radar.dailyAt.tip')} t={t} />
-        <input type="time" aria-label={t('settings.radar.dailyAt.label')} value={dailyAt} onChange={(e) => { if (/^([01]\d|2[0-3]):[0-5]\d$/.test(e.target.value)) saveRadar({ dailyAt: e.target.value }); }} className={`${FIELD} w-auto tabular-nums`} />
-      </label>
-      <label className="flex items-center justify-between gap-3">
-        <TipLabel label={t('settings.radar.budget.label')} tip={t('settings.radar.budget.tip')} t={t} />
-        <Select aria-label={t('settings.radar.budget.label')} value={String(dailyBudget)} onChange={(e) => saveRadar({ agent: { ...agent, dailyBudget: Number(e.target.value) } })} wrapClassName="w-auto" className={`${FIELD} w-auto tabular-nums`}>
-          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-            <option key={n} value={String(n)}>{t('settings.radar.budget.option', { n })}</option>
-          ))}
-        </Select>
-      </label>
-      {/* D3 consequence sentence: the daily scan consumes budget 1, so unattended x/youtube
-          follow-up checks need at least 2 - stated where the knob lives. */}
-      <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.radar.budget.consequence')}</p>
+          <label className="flex items-center justify-between gap-3">
+            <TipLabel label={t('settings.radar.dailyAt.label')} tip={t('settings.radar.dailyAt.tip')} t={t} />
+            <input type="time" aria-label={t('settings.radar.dailyAt.label')} value={dailyAt} onChange={(e) => { if (/^([01]\d|2[0-3]):[0-5]\d$/.test(e.target.value)) saveRadar({ dailyAt: e.target.value }); }} className={`${FIELD} w-auto tabular-nums`} />
+          </label>
+          <label className="flex items-center justify-between gap-3">
+            <TipLabel label={t('settings.radar.budget.label')} tip={t('settings.radar.budget.tip')} t={t} />
+            <Select aria-label={t('settings.radar.budget.label')} value={String(dailyBudget)} onChange={(e) => saveRadar({ agent: { ...agent, dailyBudget: Number(e.target.value) } })} wrapClassName="w-auto" className={`${FIELD} w-auto tabular-nums`}>
+              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                <option key={n} value={String(n)}>{t('settings.radar.budget.option', { n })}</option>
+              ))}
+            </Select>
+          </label>
+          {/* D3 consequence sentence: the daily scan consumes budget 1, so unattended x/youtube
+              follow-up checks need at least 2 - stated where the knob lives. */}
+          <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.radar.budget.consequence')}</p>
+        </>
+      ) : (
+        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.radar.autoScan.offHint')}</p>
+      )}
     </div>
   );
 }
@@ -229,6 +253,17 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
         tip={t('radar.query.mention.tip')}
         checked={draft.mention === true}
         onChange={() => onChange({ ...draft, mention: !(draft.mention === true) })}
+      />
+
+      {/* Pause: the search keeps all its keywords + sources but is skipped by every scan
+          (enabled:false). Cadence is decided once, globally (Automatic daily scan), so on/paused
+          is a single search's only per-query axis - it lives here in the editor, not as its own
+          cadence control on the row. */}
+      <ToggleRow
+        label={t('radar.query.pause.label')}
+        tip={t('radar.query.pause.tip')}
+        checked={draft.paused === true}
+        onChange={() => onChange({ ...draft, paused: !(draft.paused === true) })}
       />
 
       {/* Structured narrowing, one disclosure down (canon: config never stacks on the intent it
@@ -303,29 +338,6 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
         </div>
       </details>
     </div>
-  );
-}
-
-// The per-query schedule, as ONE self-labeling control. A switch plus a separate "search daily"
-// checkbox sat side by side and left it unclear what each did; a single picker whose current state
-// is always spelled out is unambiguous. Off = paused (never searched); On demand = searched when you
-// hit "Scan now"; Daily = also swept once a day (the digest + GEO-refresh pipeline). "Daily" is
-// ALWAYS a real choice (owner round 3): picking it IS the arming - the keyword sweep runs on its
-// own, and the agent research joins in as soon as a provider is connected. No second toggle.
-function ScanScheduleControl({ q, onSetSchedule, t }) {
-  const value = q.enabled === false ? 'off' : (q.cadence === 'daily' ? 'daily' : 'manual');
-  return (
-    <Select
-      aria-label={t('radar.query.schedule.label')}
-      value={value}
-      onChange={(e) => onSetSchedule(q, e.target.value)}
-      wrapClassName="w-auto"
-      className={`${FIELD} w-auto`}
-    >
-      <option value="off">{t('radar.query.schedule.off')}</option>
-      <option value="manual">{t('radar.query.schedule.manual')}</option>
-      <option value="daily">{t('radar.query.schedule.daily')}</option>
-    </Select>
   );
 }
 
@@ -415,7 +427,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
     setDraft(d);
     setEditing(q.id);
     setSaved(false);
-    lastSavedRef.current = JSON.stringify(buildQuery(d, q));
+    lastSavedRef.current = JSON.stringify(buildQuery(d));
   };
   const closeEdit = () => { setEditing(null); setDraft(EMPTY_DRAFT); setSaved(false); lastSavedRef.current = null; };
 
@@ -425,8 +437,7 @@ export default function RadarSearches({ focus = false, onNavigate }) {
   useEffect(() => {
     if (editing == null) return undefined;
     if (!draft.label.trim()) return undefined;
-    const existing = (radar.queries || []).find((q) => q.id === draft.id) || null;
-    const built = buildQuery(draft, existing);
+    const built = buildQuery(draft);
     const serial = JSON.stringify(built);
     if (serial === lastSavedRef.current) return undefined;
     const handle = setTimeout(async () => {
@@ -465,17 +476,6 @@ export default function RadarSearches({ focus = false, onNavigate }) {
     if (!ok) return;
     persistRadar({ ...radar, queries: (radar.queries || []).filter((x) => x.id !== q.id) });
   };
-  // Off keeps the existing cadence (so pausing then resuming a daily search does not silently forget
-  // it); On demand / Daily set enabled + cadence explicitly.
-  const setScheduleFor = (q, mode) => persistRadar({
-    ...radar,
-    queries: (radar.queries || []).map((x) => {
-      if (x.id !== q.id) return x;
-      if (mode === 'off') return { ...x, enabled: false };
-      return { ...x, enabled: true, cadence: mode === 'daily' ? 'daily' : 'manual' };
-    }),
-  });
-
   return (
     <section ref={sectionRef} className="space-y-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
       <SectionHeading
@@ -513,24 +513,39 @@ export default function RadarSearches({ focus = false, onNavigate }) {
             <SetupPanel t={t} onAddByHand={startAdd} />
           ) : null}
           <ul className="space-y-2">
-            {(radar.queries || []).map((q) => (
+            {(radar.queries || []).map((q) => {
+              const querySources = (q.sources || []).length
+                ? (q.sources || []).map((s) => (SOURCE_IDS.includes(s) ? sourceLabel(t, s) : s)).join(' · ')
+                : t('radar.query.sources.all');
+              return (
               <li key={q.id}>
                 {editing === q.id ? (
                   <QueryForm draft={draft} onChange={setDraft} onClose={closeEdit} saved={saved} sourceIds={sourceIds} t={t} />
                 ) : (
-                  <div className="flex items-center gap-3 rounded-xl px-3 py-2 ring-1 ring-zinc-900/5 dark:ring-white/10">
-                    {/* Title + source list stack and TRUNCATE, so the row never wraps at any column
-                        width - the schedule + edit + delete controls stay pinned on one line. */}
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold">{q.label || q.id}</div>
-                      <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                        {(q.sources || []).length ? (q.sources || []).map((s) => (SOURCE_IDS.includes(s) ? sourceLabel(t, s) : s)).join(' · ') : t('radar.query.sources.all')}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl px-3 py-2 ring-1 ring-zinc-900/5 dark:ring-white/10">
+                    {/* Title + source list stack and TRUNCATE; the full text is one tooltip away.
+                        Two things keep the card inside a 375px viewport, where it used to hold a
+                        510px min-content box: the row WRAPS (below ~425px the controls drop to a
+                        second line instead of squeezing the text to nothing), and the stack is
+                        inline-size CONTAINED, so a nowrap ellipsis line - a long saved label, a
+                        four-source list - can no longer dictate the whole card's min-content. */}
+                    <Tip label={`${q.label || q.id} · ${querySources}`} align="start">
+                      <div className="min-w-0 flex-1 basis-48 [contain:inline-size]">
+                        <div className="truncate text-sm font-semibold">{q.label || q.id}</div>
+                        <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">{querySources}</div>
                       </div>
-                    </div>
+                    </Tip>
+                    {/* A paused search is skipped by every scan; the chip says so on the row (icon +
+                        text, neutral - a paused search is "not in motion", not an error). Un-pause it
+                        from its editor. */}
+                    {q.enabled === false ? (
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold text-zinc-500 ring-1 ring-zinc-300/60 dark:text-zinc-400 dark:ring-zinc-600/60">
+                        <Pause size={11} aria-hidden="true" />{t('radar.query.paused')}
+                      </span>
+                    ) : null}
                     {/* Comfortable tap targets (36px) kept close together; the destructive delete
                         still sits last, and its confirm is the real guard against a mis-tap. */}
                     <div className="flex shrink-0 items-center gap-0.5">
-                      <ScanScheduleControl q={q} onSetSchedule={setScheduleFor} t={t} />
                       <button type="button" onClick={() => startEdit(q)} aria-label={t('radar.query.edit')} className="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-900/5 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-white/10 dark:hover:text-zinc-200">
                         <Pencil size={14} aria-hidden="true" />
                       </button>
@@ -541,7 +556,8 @@ export default function RadarSearches({ focus = false, onNavigate }) {
                   </div>
                 )}
               </li>
-            ))}
+              );
+            })}
           </ul>
           {hasQueries ? (
             <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} skippedPlatforms={config?.posting?.skippedPlatforms} onNavigate={onNavigate} />

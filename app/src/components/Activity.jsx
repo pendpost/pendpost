@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench, Star, Send, CornerDownRight, AlertCircle, ShieldAlert, Info } from 'lucide-react';
+import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench, Star, Send, CornerDownRight, AlertCircle, ShieldAlert, Info, ExternalLink } from 'lucide-react';
 import { useActivity, useReviews, replyToReview, replyToInboundEvent } from '../lib/api.js';
 import { useInboundEvents } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
@@ -9,7 +9,7 @@ import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { PROJECT_CHIP } from './ui/recipes.js';
 import { ClientAvatar } from './ClientSwitcher.jsx';
-import { dayKey, fmtTime, dateLocale, X_PORTAL_URL } from '../lib/format.js';
+import { dayKey, fmtTime, dateLocale, X_PORTAL_URL, GCP_APIS_CONSOLE_URL, isAbsoluteHttpUrl } from '../lib/format.js';
 
 // Map a FAILED activity entry to a one-click fix (data, not UI - like ACTION_LABEL
 // above). The source of truth for the setup-class strings is platformValidate()'s
@@ -30,6 +30,16 @@ function resolveRemediation(entry) {
   // until the operator tops up the account. The one actionable fix is the top-up portal.
   if (code === 'credits' || /HTTP 402/.test(msg)) {
     return { kind: 'credits', ctaKey: 'action.topUpCredits' };
+  }
+  // A disabled API in the GCP project (the YouTube Data / Analytics API not enabled -
+  // Google 403 accessNotConfigured / SERVICE_DISABLED, carried as api_disabled by the
+  // engine). This is NOT a missing scope or a dead token, so a reconnect fixes nothing:
+  // the fix is to ENABLE the API in the Cloud console. Route there (the row carries the
+  // exact activation URL in helpUrl when Google supplied one; the daily insights-fetch
+  // summary "youtube api_disabled" carries only the class string -> generic fallback).
+  // Checked BEFORE the needsSetup class below so its message never mis-routes to Setup.
+  if (code === 'api_disabled' || entry.error === 'api_disabled' || /\bapi_disabled\b|accessNotConfigured|SERVICE_DISABLED|has not been used in project .* or it is disabled/i.test(msg)) {
+    return { kind: 'apiDisabled', ctaKey: 'activity.fix.apiDisabled' };
   }
   // needsSetup class: a missing credential/identifier or an unconnected lane.
   if (/not connected|not authenticated|not configured|credentials not configured|is not set|not set \(|no signing key|nicht verbunden|nicht eingerichtet/i.test(msg)) {
@@ -67,6 +77,13 @@ const ACTION_LABEL = {
   // topped up and lifted a halted lane (e.g. X HTTP 402 credits), so parked
   // posts re-enter the fire loop. The visible counterpart to circuit-breaker.
   'lane-resumed': 'activity.action.laneResumed',
+  // Spec 50 P3: the "Respond for me" circuit breaker cooled a lane down after a rate
+  // limit or three failed actions (lib/engage.mjs), and resume_lane later ended that
+  // cool-down (lib/writes.mjs). The same lane-halt lifecycle as lane-resumed, so both
+  // file into the meta-block group. Their reason is dynamic (the halt class), so NO
+  // ACTION_NOTE - the raw message renders underneath.
+  'engage-lane-cooldown': 'activity.action.engageLaneCooldown',
+  'engage-lane-resumed': 'activity.action.engageLaneResumed',
   'asset-upload': 'activity.action.assetUpload',
   reschedule: 'activity.action.reschedule',
   unschedule: 'activity.action.unschedule',
@@ -202,7 +219,7 @@ export const ACTION_GROUPS = [
   // real publishes - so one chip isolates/hides the throttle noise.
   // 'lane-resumed' is the generic lane breaker's resume - it files with the
   // block/unblock actions (the same lane-halt lifecycle) and stays in the feed.
-  { key: 'meta-block', label: 'activity.action.group.metaBlock', actions: ['circuit-breaker', 'meta-block', 'meta-unblock', 'lane-resumed', 'cadence-defer'] },
+  { key: 'meta-block', label: 'activity.action.group.metaBlock', actions: ['circuit-breaker', 'meta-block', 'meta-unblock', 'lane-resumed', 'engage-lane-cooldown', 'engage-lane-resumed', 'cadence-defer'] },
   { key: 'campaign', label: 'activity.action.group.campaign', actions: ['campaign-create', 'campaign-activate', 'campaign-deactivate'] },
   // The inbound-engagement (inbox) bucket (spec 02, Pattern P6): the cross-post reply
   // feed. Specs 06 (moderation) + 24 (reactions) file their actions into THIS group;
@@ -274,6 +291,10 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
     // Credits halt: open the X top-up portal (a new tab, same as the PostDetail link).
     // The lane resumes from the readiness strip / PostDetail once the balance is back.
     else if (remediation?.kind === 'credits') window.open(X_PORTAL_URL, '_blank', 'noopener,noreferrer');
+    // api_disabled: open the Cloud console straight at the API to enable (the row's own
+    // activation URL when it has one, else the APIs library). A reconnect in Setup would
+    // be the wrong door, so this never routes there.
+    else if (remediation?.kind === 'apiDisabled') window.open(isAbsoluteHttpUrl(entry.helpUrl) ? entry.helpUrl : GCP_APIS_CONSOLE_URL, '_blank', 'noopener,noreferrer');
     else onNavigate?.('setup', remediation?.kind === 'metaCadence' ? 'facebook' : entry.platform);
   };
   // US-ACT-10: an entry that carries a post is a clickable row that opens it (no
@@ -687,6 +708,16 @@ function InboundEventRow({ event, onReply, onNavigate, t }) {
           {fmtTime(event.ts)}
           {meta ? ` · ${meta.label}` : ''}
         </p>
+        {/* Open the post this reply/mention/reaction landed on - the same glyph-only affordance
+            the comment inbox carries (CommentInbox.jsx). The inbound event already carries its
+            permalink end-to-end. isAbsoluteHttpUrl gates the scheme: a permalink is external,
+            attacker-influenced data, so a non-http(s) value (javascript:/data:) must never reach
+            an href - a missing or unsafe url just renders no link. */}
+        {isAbsoluteHttpUrl(event.permalink) ? (
+          <a href={event.permalink} target="_blank" rel="noopener noreferrer" className="mt-0.5 shrink-0 text-zinc-500 transition hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-brand-light" aria-label={t('comments.inbox.openPost')}>
+            <ExternalLink size={13} aria-hidden="true" />
+          </a>
+        ) : null}
       </div>
       {repliable ? <InboundReplyBox event={event} onReply={onReply} onNavigate={onNavigate} t={t} /> : null}
     </li>

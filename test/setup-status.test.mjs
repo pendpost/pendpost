@@ -167,6 +167,30 @@ try {
   const bad = setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { skippedPlatforms: 'x' } } });
   ok(bad && bad.code === 'invalid_input', 'a non-array skippedPlatforms is rejected (invalid_input)');
 
+  // ===== (11) spec 50 S7: the owner-push hint, a SIBLING that never moves `ready` =====
+  // Three states, because the owner needs to know WHICH half is missing: no Telegram lane at
+  // all, a lane with no owner chat, and both. None of them may change readiness - a phone push
+  // is a courtesy on top of the Studio strip, not a publishing prerequisite.
+  const readyBefore = setupStatus().ready;
+  setEnv(['LINKEDIN_ACCESS_TOKEN=ey_fake_li_token', 'LINKEDIN_ORG_URN=urn:li:organization:1', 'META_PAGE_TOKEN=fake_page_token', 'META_PAGE_ID=12345']);
+  let n = setupStatus().notify.telegram;
+  ok(n.status === 'incomplete' && n.laneConnected === false, 'with no Telegram lane the push hint is incomplete');
+  ok(/telegram-social\.mjs auth/.test(n.fix), 'and the fix names connecting the lane first, not the owner-chat ceremony');
+
+  setEnv(['LINKEDIN_ACCESS_TOKEN=ey_fake_li_token', 'LINKEDIN_ORG_URN=urn:li:organization:1', 'META_PAGE_TOKEN=fake_page_token', 'META_PAGE_ID=12345', 'TELEGRAM_BOT_TOKEN=123:AA-fake', 'TELEGRAM_CHANNEL_ID=@brand']);
+  n = setupStatus().notify.telegram;
+  ok(n.laneConnected === true && n.chatConfigured === false && n.status === 'incomplete', 'a connected lane with no owner chat is still incomplete');
+  ok(/owner-chat --client/.test(n.fix), 'and NOW the fix is the owner-chat ceremony, named with its client flag');
+  ok(setupStatus().ready === readyBefore, 'a missing push never changes ready (it is a hint, not a lane)');
+
+  const wrote = setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { notify: { telegramChatId: '987654321' } } } });
+  assert.ok(wrote.ok, `setConfig notify: ${JSON.stringify(wrote)}`);
+  n = setupStatus().notify.telegram;
+  ok(n.status === 'connected' && n.connected === true && n.fix === null, 'both halves present = connected, with nothing left to fix');
+  ok(!JSON.stringify(n).includes('987654321'), 'the hint reports PRESENCE only - the owner chat id is never echoed back');
+  ok(setupStatus().ready === readyBefore, 'and a connected push does not make an unready instance ready either');
+  ok(pendpostHealth().setup.notify.telegram.status === 'connected', 'pendpost_health carries the hint, so the agent can offer the ceremony');
+
   console.log(`[setup-status] OK - per-platform status + nested validation (live|failed|unproven|skipped|blocked), live-gated ready, summary.validated, missing+CLI action, config_set skip, pendpost_health embed (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });

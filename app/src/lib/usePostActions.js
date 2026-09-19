@@ -39,6 +39,14 @@ export function usePostActions(post, { onEdit } = {}) {
   const t = useT();
   const clientId = post?.clientId; // set only by the all-projects merge (App.jsx)
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['plans'] });
+  // A publish settles a beat after the call returns (the daemon writes the native id /
+  // failure to state.json just after acking). The list otherwise polls every 30s, so the
+  // card can look unchanged for up to half a minute after a Publish Now. A couple of quick
+  // follow-up invalidations pull the real outcome onto the card within seconds.
+  const refreshSoon = () => {
+    refresh();
+    [1500, 4000].forEach((ms) => setTimeout(() => queryClient.invalidateQueries({ queryKey: ['plans'] }), ms));
+  };
 
   const approve = async () => {
     try {
@@ -151,6 +159,11 @@ export function usePostActions(post, { onEdit } = {}) {
       danger: true,
     });
     if (!ok) return;
+    // Immediate, persistent in-flight notice: the row menu has already closed, and a
+    // native YouTube upload runs several seconds, so without this the click reads as dead
+    // air until the outcome lands. The progress toast holds until the success/error toast
+    // below replaces it (single-slot).
+    showToast({ kind: 'progress', text: t('postActions.publishNow.toastStarting') });
     try {
       if (heldRetry) {
         // Clear the hold FIRST, or the run below fires zero lanes (lanesOwed skips a held
@@ -191,7 +204,7 @@ export function usePostActions(post, { onEdit } = {}) {
     } catch (err) {
       showToast({ kind: 'error', text: err?.message || t('postDetail.error.generic') });
     } finally {
-      refresh();
+      refreshSoon();
     }
   };
 

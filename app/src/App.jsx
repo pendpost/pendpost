@@ -1260,7 +1260,7 @@ export default function App() {
               ) : view === 'month' ? (
                 <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} onMoveToDay={moveToDay} loading={isLoading} lane={lane} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
               ) : (
-                <ListView posts={posts} onSelect={openPost} onEdit={editComposer} loading={isLoading} lane={lane} showAllDays={statusFilter.length > 0} />
+                <ListView posts={posts} onSelect={openPost} onEdit={editComposer} loading={isLoading} showAllDays={statusFilter.length > 0} />
               )}
             </div>
           </main>

@@ -6,13 +6,18 @@ import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 
 // Mandate G: the List view defaults to TODAY-onwards (the owner's attention starts
-// where the work is), with past items collapsed behind a "Show earlier" reveal —
+// where the work is), with past items collapsed behind a "Show earlier" reveal,
 // EXCEPT when there is nothing upcoming (e.g. the sidebar Overdue jump filters to
 // past-dated rows), where the past must stay visible so the jump is not empty.
 // (The STATUS filter itself already ships upstream and is out of scope here.)
 
+// A media-less post previews its OWN caption inside the (decorative, aria-hidden)
+// thumb, so a fixture whose caption REPEATS the title would render that string
+// twice per row and every getByText(title) below would hit two nodes. Real posts
+// carry a caption distinct from the title, so the fixture does too: the title
+// stays the single unique handle on a row.
 const mk = (id, title, scheduledAt) => ({
-  id, title, campaign: 'acme', caption: title, type: 'reel',
+  id, title, campaign: 'acme', caption: `caption for ${title.toLowerCase()}`, type: 'reel',
   platforms: ['instagram'], derivedState: 'posted', approval: 'approved',
   media: null, image: '', scheduledAt,
 });

@@ -1107,6 +1107,14 @@ export const PLATFORMS = ['facebook', 'instagram', 'linkedin', 'youtube', 'x', '
 // and mirrors that value. Keep the two in step if X ever moves the portal.
 export const X_PORTAL_URL = 'https://developer.x.com/en/portal/dashboard';
 
+// The Google Cloud "APIs & Services" library, where the owner ENABLES a disabled
+// API (the YouTube Data / Analytics API being off in the GCP project - the fix for
+// an `api_disabled` degrade, which a reconnect never resolves). Used only as the
+// fallback for a surface whose row carries no exact activation URL (the engine
+// attaches the precise `helpUrl` - errors[0].extendedHelp - whenever Google supplies
+// one; e.g. the daily insights-fetch summary row has only the class string).
+export const GCP_APIS_CONSOLE_URL = 'https://console.cloud.google.com/apis/library';
+
 // The authorable post formats, in menu order. Shared by the Composer's format
 // select and the PostDetail quick-edit select so the two lists can never drift.
 // 'poll' (spec 10) is a media-less native poll offered only on the seven poll lanes.

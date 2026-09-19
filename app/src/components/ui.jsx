@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText, PlugZap, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
-import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, postDisplayStatusKey, rowStatusKey, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtFull, fmtStampShort } from '../lib/format.js';
+import { STATE_META, APPROVAL_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, rowStatusKey, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtFull, fmtStampShort } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
 import { MediaLightbox } from './ui/MediaLightbox.jsx';
 import { CarouselPreview } from './ui/CarouselPreview.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW, FIELD, FIELD_ERR, FIELD_MULTILINE } from './ui/tokens.js';
+import { TAP_TARGET } from './ui/recipes.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
 
@@ -978,16 +979,20 @@ export function Skeleton({ className = '' }) {
 // Published.jsx (it used it for the view + range controls) so Radar's Discovered / On your
 // posts toggle reuses the SAME control rather than a second visual answer to one job. Each
 // option is { key, label, Icon? }; aria-pressed marks the active segment on the button itself.
-export function Segmented({ label, value, options, onChange }) {
+// `disabled` (spec 50 row 1e): the whole control is inert while the system behind it
+// cannot act (Radar off). aria-disabled marks the group for assistive tech and each
+// segment is really disabled, so the choice is never offered where it would do nothing.
+export function Segmented({ label, value, options, onChange, disabled = false }) {
   return (
-    <div className="flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={label}>
+    <div className={`flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60 ${disabled ? 'opacity-50' : ''}`} role="group" aria-label={label} aria-disabled={disabled || undefined}>
       {options.map((o) => (
         <button
           key={o.key}
           type="button"
           onClick={() => onChange(o.key)}
+          disabled={disabled}
           aria-pressed={value === o.key}
-          className={`flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+          className={`flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${TAP_TARGET} ${
             value === o.key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
           }`}
         >

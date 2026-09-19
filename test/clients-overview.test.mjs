@@ -244,9 +244,15 @@ try {
   // 144 routes / 120 tools = radar_geo_reset gains its REST twin (S7.3, radar-reliability
   // 2026-08-31): POST /api/radar/geo-reset + the panel-overflow entry, so the tool leaves
   // exemptions.tools and routes go 143 -> 144 while tools stay 120.
-  ok(/144 routes, 120 tools/.test(parityOut), `parity is 144 routes / 120 tools: ${parityOut.trim()}`);
+  // 145 routes / 121 tools = +radar_engage_report (spec 50 P1): the triage child's report verb
+  // and its REST twin POST /api/radar/engage-report, so both go +1.
+  // 152 routes / 127 tools = +spec 50 P2's six owner verbs with their REST twins, plus the
+  // tool-less GET /api/engage overview: routes +7, tools +6.
+  // 157 routes / 132 tools = +spec 50 P3's engage_undo and POST /api/engage/undo (+1 each) and P5a's four Needs you verbs with their REST twins (+4 each).
+  // 159 routes / 133 tools = +radar_triage_bulk with its REST twin POST /api/radar/triage-bulk (+1 each) and the GUI-only POST /api/radar/restore (undo, no MCP twin, routes exemption): routes +2, tools +1.
+  ok(/159 routes, 133 tools/.test(parityOut), `parity is 159 routes / 133 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 144/120 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 159/133 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, BarChart3, ChevronDown, ChevronRight, ArrowUp, ArrowDown, AlertTriangle, Copy, Download, MapPin, SlidersHorizontal, ExternalLink } from 'lucide-react';
 import { useInsights, useDigest, fetchInsights, useConfig, usePendpostHealth, usePlans, saveConfig } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { prettyCampaign, dateLocale, fmtInt, X_PORTAL_URL } from '../lib/format.js';
+import { prettyCampaign, dateLocale, fmtInt, X_PORTAL_URL, GCP_APIS_CONSOLE_URL, isAbsoluteHttpUrl } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, Skeleton, EYEBROW } from './ui.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
@@ -31,6 +31,18 @@ function classifyXFetch(results) {
   if (/\b402\b|credit|depleted|guthaben/i.test(msg)) return 'credits';
   if (/needs_scope|\b401\b|\b403\b|scope|unauthor|not authenticated|token|expired/i.test(msg)) return 'needs_scope';
   return 'error';
+}
+
+// A YouTube analytics read fails when the API is DISABLED in the GCP project (the live
+// 60s-news case: the YouTube Analytics API not enabled). The engine labels that row
+// error:'api_disabled' and carries the Cloud-console activation URL. Unlike an expired
+// scope, a reconnect fixes nothing here - the fix is to ENABLE the API - so this is
+// classified apart and surfaced with an "enable" link, never the reconnect copy. Returns
+// the activation URL (or '' when the row carried none) so the caller can render, or null.
+function apiDisabledHelp(results) {
+  const row = (results || []).find((r) => r && r.ok === false && r.error === 'api_disabled');
+  if (!row) return null;
+  return typeof row.helpUrl === 'string' ? row.helpUrl : '';
 }
 
 // The scope split control: the primary button refreshes the FREE lanes (no X, no cost);
@@ -613,6 +625,10 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
   const { data: health } = usePendpostHealth(active);
   const { data: plans } = usePlans();
   const [xFetchState, setXFetchState] = useState(null); // credits | needs_scope | error | in_flight | null
+  // The Cloud-console activation URL when the last refresh hit a disabled API (YouTube
+  // analytics off in the GCP project); '' = api_disabled with no URL; null = no such
+  // failure. A free-lane failure, so it is set on BOTH scopes, unlike the X status above.
+  const [apiDisabledUrl, setApiDisabledUrl] = useState(null);
   const [allBusy, setAllBusy] = useState(false);
   const [xToggleBusy, setXToggleBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -639,12 +655,16 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
   // (in_flight, HTTP 423) is surfaced as its own transient note, not a false success.
   const runFetch = async (scope) => {
     setXFetchState(null);
+    setApiDisabledUrl(null);
     setSettingsError(null);
     try {
       const res = await fetchInsights({ scope });
       queryClient.invalidateQueries({ queryKey: ['insights'] });
       queryClient.invalidateQueries({ queryKey: ['digest'] });
       if (scope === 'all') setXFetchState(classifyXFetch(res?.results));
+      // A disabled API is a free-lane (YouTube analytics) failure, so it is read on both
+      // scopes - never a silent missing block (this page never shows a stale/absent figure).
+      setApiDisabledUrl(apiDisabledHelp(res?.results));
     } catch (err) {
       if (err?.code === 'in_flight') { setXFetchState('in_flight'); throw { canceled: true }; }
       throw err;
@@ -804,6 +824,24 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
           the all-projects overview the metered opt-in is per-client, so it hides here. */}
       {!allClients ? (
         <XStatusNote state={xFetchState} xConnected={xConnected} xOptedIn={xOptedIn} portalUrl={xPortalUrl} onNavigate={onNavigate} t={t} />
+      ) : null}
+
+      {/* Disabled-API status (YouTube analytics off in the GCP project): the honest
+          reason the audience block is missing, with a link straight to enabling the API -
+          NOT a reconnect, which fixes nothing here. Muted single line, like the X status. */}
+      {!allClients && apiDisabledUrl !== null ? (
+        <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+          <AlertTriangle size={12} className="text-amber-500" aria-hidden="true" />
+          <span>{t('insights.apiDisabled.note')}</span>
+          <a
+            href={isAbsoluteHttpUrl(apiDisabledUrl) ? apiDisabledUrl : GCP_APIS_CONSOLE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-0.5 font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
+          >
+            <ExternalLink size={11} aria-hidden="true" /> {t('insights.apiDisabled.cta')}
+          </a>
+        </p>
       ) : null}
 
       {/* All-projects overview: one quiet inline notice per project whose insights read

@@ -95,8 +95,14 @@ try {
     && /lanes\.push\('wordpress-release'\)/.test(schedulerSrc) && /future-overdue/.test(schedulerSrc)
     && /lanes\.push\('ghost-release'\)/.test(schedulerSrc) && /scheduled-overdue/.test(schedulerSrc),
     'lanesFor owes the recovery lanes (verify-evidence-gated for wp/ghost, id-gated for mastodon)');
-  ok(/NATIVE_ANYTIME_LANES = new Set\(\['mastodon', 'wordpress', 'ghost'\]\)/.test(schedulerSrc),
-    'lanesFor fires the three native lanes both ahead of due (hand-off) and past due (immediate publish)');
+  ok(/NATIVE_ANYTIME_LANES = new Set\(\[[^\]]*'mastodon'[^\]]*'wordpress'[^\]]*'ghost'[^\]]*\]\)/.test(schedulerSrc),
+    'lanesFor fires the text/blog native lanes both ahead of due (hand-off) and past due (immediate publish)');
+  // Owner decision 2026-09-19 (RC3): youtube joined the native-anytime set so an OVERDUE
+  // approved Short auto-ships late (the engine clamps publishAt) instead of being silently
+  // dropped from the fire loop - the old `due > now` gate stranded missed uploads forever.
+  ok(/NATIVE_ANYTIME_LANES = new Set\(\[[^\]]*'youtube'[^\]]*\]\)/.test(schedulerSrc)
+    && !/if \(lane === 'youtube'\) return due > now/.test(schedulerSrc),
+    'lanesFor owes the youtube upload lane whenever due (overdue Shorts auto-ship late), not only ahead of due');
   ok(/'mastodon-resolve': \['mastodon'\]/.test(schedulerSrc) && /'wordpress-release': \['wordpress'\]/.test(schedulerSrc) && /'ghost-release': \['ghost'\]/.test(schedulerSrc),
     'LANE_PLATFORMS maps the recovery lanes to their platforms');
   const owedBody = schedulerSrc.slice(schedulerSrc.indexOf('export function lanesOwed'), schedulerSrc.indexOf('function lanesFor'));

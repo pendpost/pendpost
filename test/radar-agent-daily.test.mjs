@@ -1,12 +1,12 @@
 // test/radar-agent-daily.test.mjs - the DAILY agent research job (spec 41 S7).
 //
 // This is the only Radar path that spends the operator's money while NOBODY IS WATCHING, so
-// every gate is fail-closed and every one is proved here. Arming is DERIVED (owner round 3):
-// a connected provider + a cadence:'daily' query IS the daily research - there is no
-// separate agent.daily toggle any more (the validator refuses the retired key, readPosting
-// strips it from old configs).
+// every gate is fail-closed and every one is proved here. Arming is a connected provider + the
+// global posting.radar.dailyEnabled switch + at least one enabled query - there is no separate
+// agent.daily toggle any more (the validator refuses the retired key, readPosting strips it
+// from old configs).
 //   (a) OFF by default - an untouched project's tick is inert (no job, no spawn, no spend);
-//   (b) each gate independently blocks: Radar off / no provider / no daily query;
+//   (b) each gate independently blocks: Radar off / no provider / dailyEnabled off;
 //   (c) at most one per LOCAL day (posting.radar.dailyAt clock, pinned to 00:00 here so the
 //       suite is wall-clock independent); a manual scan must not suppress the daily one;
 //   (d) dailyBudget is respected, and it binds the SCHEDULER, not the operator - a human
@@ -80,9 +80,9 @@ try {
 
   // dailyAt pinned to 00:00: every local wall clock is past midnight, so the suite's clock
   // assertions hold at any time of day (the default 09:00 would fail a pre-9am CI run).
-  await cfg({ enabled: true, dailyAt: '00:00', queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'], cadence: 'daily' }] });
-  ok(await asClient(() => dailyAgentScan()) === null, '(b) Radar on but NO provider connected => inert (nothing to spawn, nothing to spend)');
-  ok(jobCount() === 0, 'still no job - a daily query alone must not spawn anything');
+  await cfg({ enabled: true, dailyEnabled: true, dailyAt: '00:00', queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'] }] });
+  ok(await asClient(() => dailyAgentScan()) === null, '(b) Radar on + dailyEnabled but NO provider connected => inert (nothing to spawn, nothing to spend)');
+  ok(jobCount() === 0, 'still no job - an enabled query alone must not spawn anything');
 
   // ===== (e) an agent can never arm it =====
   const sneaky = await asClient(() => setConfig({ ifRev: getConfig().rev, actor: 'agent:claude', set: { posting: { radar: { agent: { provider: 'claude-code' } } } } }));
@@ -94,13 +94,13 @@ try {
 
   await cfg({ agent: { provider: 'claude-code' } });
 
-  // ===== (b) no DAILY query =====
-  await cfg({ queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'], cadence: 'manual' }] });
-  ok(await asClient(() => dailyAgentScan()) === null, '(b) a manual-cadence query is NOT swept - cadence means what it says');
-  ok(jobCount() === 0, 'no job for a manual query');
+  // ===== (b) the global daily switch is OFF =====
+  await cfg({ dailyEnabled: false, queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'] }] });
+  ok(await asClient(() => dailyAgentScan()) === null, '(b) dailyEnabled off => NOT swept, even with a provider + an enabled query (on-demand only)');
+  ok(jobCount() === 0, 'no job while the global daily switch is off');
 
   // ===== the happy path =====
-  await cfg({ queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'], cadence: 'daily' }] });
+  await cfg({ dailyEnabled: true, queries: [{ id: 'q1', label: 'S', enabled: true, keywords: ['x'] }] });
   const first = await asClient(() => dailyAgentScan());
   ok(first && first.job && first.job.state === 'done', 'S7: all four gates open => ONE agent job runs');
   ok(jobCount() === 1, 'exactly one job row');
@@ -165,7 +165,7 @@ try {
   ok(!JSON.stringify(acts).includes('sk-ant-oat01-fake'), 'no credential reaches the Activity log');
 
   assert.ok(failures === 0, `${failures} assertion(s) failed`);
-  console.log(`[radar-agent-daily] OK - off by default, derived arming (provider + daily query), one per local day on the dailyAt clock, budget bounds the SCHEDULER not the operator, Activity logs it (${pass} assertions).`);
+  console.log(`[radar-agent-daily] OK - off by default, arming (provider + global dailyEnabled + an enabled query), one per local day on the dailyAt clock, budget bounds the SCHEDULER not the operator, Activity logs it (${pass} assertions).`);
 } catch (err) {
   console.error(`[radar-agent-daily] FAIL - ${err.stack || err.message}`);
   process.exitCode = 1;

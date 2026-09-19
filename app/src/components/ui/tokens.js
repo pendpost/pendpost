@@ -38,8 +38,13 @@ export const EYEBROW = 'text-[11px] font-bold tracking-tight text-zinc-500 dark:
 // string). Fixed height so inputs, selects and time pickers align on a row.
 // Width is the ONLY per-use modifier: `w-full` text, `w-24` numeric, `w-auto`
 // select/time.
-export const FIELD = `h-9 rounded-xl border-0 px-3 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
+//
+// The height is `h-11` = 44px, the canon Tier 2 tap-target floor (WCAG 2.5.5). A field is the
+// one control that cannot borrow recipes.js's TAP_TARGET trick: an <input> and a <select> are
+// replaced elements with no ::after box to hang a hit area on, so for them the floor has to be
+// real height. It was h-9 (36px), which failed that floor on every entry field in the app.
+export const FIELD = `h-11 rounded-xl border-0 px-3 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;
 export const FIELD_ERR = `${FIELD} ring-red-500/60 focus-visible:ring-red-500`;
 // Textareas: FIELD minus the fixed height (a textarea's height comes from `rows`
-// or `resize-y`, not h-9).
+// or `resize-y`, not h-11).
 export const FIELD_MULTILINE = `rounded-xl border-0 px-3 py-2 text-sm ${FIELD_SURFACE} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`;

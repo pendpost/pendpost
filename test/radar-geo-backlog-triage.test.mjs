@@ -41,12 +41,15 @@ try {
     { source: 'reddit', url: 'https://r/1', text: 'looking for an alternative to Buffer for scheduling', intentTags: ['alternative-seeking'] },
     { source: 'reddit', url: 'https://r/2', text: 'looking for an alternative to Hootsuite', intentTags: ['alternative-seeking'] },
   ];
-  const full = comparisonBacklog(sigs);
+  // Mining is scoped to the tenant's declared rivals (off-topic "X vs Y" no longer mints);
+  // the pure-derivation cases pass the competitor list the E2E config below carries.
+  const RIVALS = ['Buffer', 'Hootsuite'];
+  const full = comparisonBacklog(sigs, [], [], { competitors: RIVALS });
   ok(full.some((b) => b.key === 'buffer') && full.some((b) => b.key === 'hootsuite'), 'baseline: both competitors cluster into backlog entries');
-  const filtered = comparisonBacklog(sigs, [{ key: 'buffer', at: new Date().toISOString() }]);
+  const filtered = comparisonBacklog(sigs, [{ key: 'buffer', at: new Date().toISOString() }], [], { competitors: RIVALS });
   ok(!filtered.some((b) => b.key === 'buffer'), 'comparisonBacklog(signals, dismissed) excludes a dismissed key at derivation');
   ok(filtered.some((b) => b.key === 'hootsuite'), 'a dismissed key never drags an undismissed sibling out with it');
-  ok(comparisonBacklog(sigs, []).length === full.length, 'an empty dismissed ledger changes nothing (byte-compatible default)');
+  ok(comparisonBacklog(sigs, [], [], { competitors: RIVALS }).length === full.length, 'an empty dismissed ledger changes nothing (byte-compatible default)');
 
   // ---- (b) end-to-end: a mock scan populates the persisted backlog ------------
   fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, competitorsDefault: ['Buffer'], queries: [{ id: 'q1', label: 'scheduling', sources: ['reddit'], competitors: ['Buffer'], cadence: 'manual' }] } }));

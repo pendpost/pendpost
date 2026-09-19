@@ -7,7 +7,9 @@
 //      child was not briefed on gets no operator, so nothing invites it to wander);
 //   2. one explicit rejection line - SEO posts, listicles, roundups, vendor pages, press releases
 //      are never signals; only a person asking, complaining or comparing in a thread counts;
-//   3. one language fence - German, French, Italian or English only.
+//   3. the language directive (was a passive "German/French/Italian/English only" fence, now a
+//      COMMAND to search each query IN its own language + prefer regional sources) - the fix for the
+//      designed-in leak where a German query returned English threads.
 // Plus the house rule that the brief carries no em dash anywhere.
 //
 // Zero-dep node:assert; pure function, no workspace needed.
@@ -45,8 +47,11 @@ try {
       'the rejection line names SEO posts, listicles, roundups, vendor pages and press releases as never-signals');
     ok(/Only a person asking, complaining or comparing in a thread counts\./.test(p),
       'and states the positive test: a person asking, complaining or comparing in a thread');
-    // ---- (3) the language fence --------------------------------------------
-    ok(/Only threads in German, French, Italian or English\./.test(p), 'the language fence names exactly German, French, Italian, English');
+    // ---- (3) the language directive (replaces the old passive fence) --------
+    ok(/LANGUAGE IS NOT OPTIONAL\./.test(p), 'the brief COMMANDS per-query-language search, not passive tolerance');
+    ok(/infer its language from that query's own keywords and brief/.test(p), 'an unset query is told to infer its language from its own keywords');
+    ok(/Discard an off-language English result/.test(p), 'off-language English is discarded unless the thread is about the target region');
+    ok(!/Only threads in German, French, Italian or English\./.test(p), 'the old passive tolerance line is gone');
     ok(!/—|–/.test(p), 'no em dash / en dash anywhere in the brief');
   }
 
@@ -54,7 +59,7 @@ try {
   ok(full.indexOf('queryId: coach-software-platform') < full.indexOf('WHERE TO LOOK') && full.indexOf('WHERE TO LOOK') < full.indexOf('HOW TO REPORT'),
     'WHERE TO LOOK renders after the query blocks and before HOW TO REPORT');
   const added = full.slice(full.indexOf('WHERE TO LOOK'), full.indexOf('HOW TO REPORT')).trim().split('\n').length;
-  ok(added <= 8, `the block stays short (${added} lines, cap 8) - it is a fence, not a second brief`);
+  ok(added <= 16, `the language directive stays tight (${added} lines, cap 16) - a directive, not a second brief`);
 
   // ---- lane-bound hints follow the lane -------------------------------------
   const QS = [{ id: 'coach-get-clients-de', label: 'Coach Kunden (DE)', keywords: ['Coach Kunden finden'], subreddits: ['r/Coaching', 'r/Selbststaendig'], instances: ['mastodon.social'] }];
@@ -73,7 +78,7 @@ try {
   ok(!unfenced.includes('Out of scope for this run'), 'no fence line when every lane is in scope');
 
   assert.ok(failures === 0, `${failures} assertion(s) failed`);
-  console.log(`[radar-prompt-quality] OK - per-lane operators follow the scope, the rejection line and the language fence are pinned (${pass} assertions).`);
+  console.log(`[radar-prompt-quality] OK - per-lane operators follow the scope, the rejection line and the language directive are pinned (${pass} assertions).`);
 } catch (err) {
   console.error(`[radar-prompt-quality] FAIL - ${err.stack || err.message}`);
   process.exitCode = 1;

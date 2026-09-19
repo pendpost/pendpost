@@ -4,8 +4,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
 import Radar from '../Radar.jsx';
+import AppToast from '../AppToast.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 
 // The Radar (beta) Studio panel (spec 32, Pattern P4-read + P9): renders the opt-in
 // beta gate, the ranked scored signal feed, and the compact query editor. Covers every
@@ -28,6 +30,13 @@ const radarAgentStopMock = vi.fn(() => Promise.resolve({ ok: true, stopped: true
 const radarGeoResetMock = vi.fn(() => Promise.resolve({ ok: true, cleared: { footprint: 2, comparisonBacklog: 1, dismissedBacklog: 1 } }));
 const radarDraftComparisonMock = vi.fn(() => Promise.resolve({ ok: true, drafted: true }));
 let healthData;
+let engageRuntime;
+const engagePauseMock = vi.fn(() => Promise.resolve({ ok: true }));
+// Turn on auto-reply kicks a probe per armed lane; a named mock so the arm test can assert it.
+const engageProbeMock = vi.fn(() => Promise.resolve({ ok: true, usable: true }));
+const engageCancelMock = vi.fn(() => Promise.resolve({ ok: true }));
+const engageUndoMock = vi.fn(() => Promise.resolve({ ok: true }));
+const engageCommunityRecheckMock = vi.fn(() => Promise.resolve({ ok: true }));
 const radarTriageMock = vi.fn(() => Promise.resolve({ ok: true }));
 const radarBacklogTriageMock = vi.fn(() => Promise.resolve({ ok: true }));
 // R5 piece 2: record a copy-draft posted by hand.
@@ -41,6 +50,9 @@ const markPostedMock = vi.fn(() => Promise.resolve({ ok: true }));
 const lintMock = vi.fn(() => Promise.resolve({ ok: true, clean: false, warnings: 1, truncated: false, findings: [{ rule: 'ai-tell', match: 'game-changer', hint: 'avoid AI hype', severity: 'warning', index: 0 }] }));
 
 vi.mock('../../lib/api.js', () => ({
+  // The "Needs you" strip names the active client in its wrong-account line, the same words the
+  // autonomy ledger uses. One client is enough here; the strip's own suite covers the copy.
+  useActiveClient: () => ({ activeClient: { id: 'acme', displayName: 'Acme' }, activeClientId: 'acme' }),
   // A new dependency of the approval card: fail OPEN in tests (no content blockers) so
   // the approve button keeps its pre-gate behaviour here; blocking is covered in its own test.
   usePlatformValidate: () => ({ data: null }),
@@ -60,6 +72,20 @@ vi.mock('../../lib/api.js', () => ({
   useAccounts: () => ({ data: accountsData }),
   // Spec 41 S5: the scan control is gated on setup.agent.validation.state === 'live'.
   usePendpostHealth: () => ({ data: healthData }),
+  // Spec 50: the "Respond for me" runtime (GET /api/engage). Undefined = the route is not
+  // reachable, which is exactly the state where neither the glyph nor the feed line renders.
+  useEngage: () => ({ data: engageRuntime }),
+  // Spec 50 P5a: the "Needs you" strip mounts above the feed and reads its own query. No asks
+  // by default, so the ordinary panel this suite covers renders no strip at all.
+  useEngageAsks: () => ({ data: { ok: true, asks: [] }, isLoading: false, isError: false, refetch: vi.fn() }),
+  engageAnswer: vi.fn(() => Promise.resolve({ ok: true })),
+  engageConfirmAsk: vi.fn(() => Promise.resolve({ ok: true })),
+  engageDismiss: vi.fn(() => Promise.resolve({ ok: true })),
+  engageProbe: (...a) => engageProbeMock(...a),
+  engagePause: (...a) => engagePauseMock(...a),
+  engageCancel: (...a) => engageCancelMock(...a),
+  engageUndo: (...a) => engageUndoMock(...a),
+  engageCommunityRecheck: (...a) => engageCommunityRecheckMock(...a),
   saveConfig: (...a) => saveConfigMock(...a),
   radarAgentScan: (...a) => radarAgentScanMock(...a),
   radarAgentStop: (...a) => radarAgentStopMock(...a),
@@ -96,7 +122,12 @@ function renderPanel({ locale = 'en' } = {}) {
       <QueryClientProvider client={qc}>
         <I18nProvider locale={locale}>
           <TooltipProvider>
-            <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} onOpenPost={onOpenPostMock} />
+            <ConfirmProvider>
+              <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} onOpenPost={onOpenPostMock} />
+              {/* Spec 50 row 12: the Pause toast is the app-shell toast, so the panel's own
+                  suite mounts it to prove the Resume affordance really arrives. */}
+              <AppToast />
+            </ConfirmProvider>
           </TooltipProvider>
         </I18nProvider>
       </QueryClientProvider>,
@@ -117,6 +148,13 @@ beforeEach(() => {
   radarGeoResetMock.mockClear();
   radarDraftComparisonMock.mockClear();
   healthData = agentLive();
+  // Spec 50: no engage runtime by default - the ordinary panel is unchanged by the feature.
+  engageRuntime = undefined;
+  engagePauseMock.mockClear();
+  engageProbeMock.mockClear();
+  engageCancelMock.mockClear();
+  engageUndoMock.mockClear();
+  engageCommunityRecheckMock.mockClear();
   radarTriageMock.mockClear();
   radarBacklogTriageMock.mockClear();
   radarMarkCopyPostedMock.mockClear();
@@ -1078,16 +1116,16 @@ describe('Radar panel (spec 32 listening seam)', () => {
   // Finding 2 (net-simplify): the scan handoff must not render twice on the zero-signal screen.
   // The always-on top-up handoff is gated on a non-empty feed; the empty state owns the zero case.
 
-  // Dismiss moved OUT of the overflow menu to the first-class "Done" (with a confirm
-  // guard) in UX round 4; this pins the shipped flow, not the pre-round-4 menu item.
-  it('dismissing a signal (Done -> confirm) calls radar_triage (durable) and invalidates the feed', async () => {
+  // Dismiss is the first-class "Done" button. Owner ask (granular-filters round): Done is now a
+  // SINGLE tap - no confirm guard - with forgiveness coming from an Undo toast instead. This
+  // pins the one-tap flow: Done dismisses durably and invalidates on the first click.
+  it('marking a signal Done dismisses it in one tap (durable) and invalidates the feed', async () => {
     const user = userEvent.setup();
     const { qc } = renderPanel();
     const spy = vi.spyOn(qc, 'invalidateQueries');
     const row = screen.getByText('high_intent').closest('li');
-    // Done is destructive-adjacent (never re-surfaces), so it takes a deliberate confirm.
+    // One tap, no confirm step in the way.
     await user.click(within(row).getByRole('button', { name: /done/i }));
-    await user.click(within(row).getByRole('button', { name: /^hide$/i }));
     await waitFor(() => expect(radarTriageMock).toHaveBeenCalledTimes(1));
     // The trailing clientId scopes the write to a signal's own project in the all-projects
     // overview; single-client mode (this test) passes undefined and the write binds the active client.
@@ -1119,7 +1157,8 @@ describe('Radar panel (spec 32 listening seam)', () => {
       feedData.items[0],
     ];
     const { container } = renderPanel();
-    await user.click(screen.getByRole('button', { name: /priority/i }));
+    // Scope to the Sort group: a "Priority" tier FILTER now shares the word with the sort control.
+    await user.click(within(screen.getByRole('group', { name: /sort/i })).getByRole('button', { name: /priority/i }));
     const rows = [...container.querySelectorAll('ol > li')].map((li) => li.textContent).join('|');
     expect(rows.indexOf('low_intent')).toBeLessThan(rows.indexOf('high_intent'));
     const watchedRow = screen.getByText('low_intent').closest('li');
@@ -1258,6 +1297,44 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(screen.getByRole('button', { name: /1 done/i })).toBeInTheDocument();
   });
 
+  // Spec 50 P5a coherence fix: once "Respond for me" holds a live row for a signal, the copy
+  // path is not the owner's job any more. The hint that tells them to go and paste the answer
+  // by hand would be flatly untrue, and "Draft reply" would be a second hand on the same
+  // thread - so both stand down and opening the thread is the row's one primary again.
+  it('hides the copy-by-hand hint while the engage policy handles the row', async () => {
+    const base = {
+      source: 'hackernews', externalId: 'h3', url: 'https://mock.hn/3', author: 'waiting_person',
+      community: 'news.ycombinator.com', text: 'is there anything that posts for me?',
+      ts: new Date().toISOString(), intentScore: 72, scoredBy: 'agent',
+    };
+    // Hacker News is a COPY lane: no reply API, so the answer is pasted by hand.
+    feedData.capabilities = { ...feedData.capabilities, hackernews: { reply: false, search: true, copyDraft: true } };
+    // Without an engage row: the copy lane says, correctly, that this one is on the owner.
+    feedData.items = [base];
+    const { unmount } = renderPanel();
+    expect(screen.getByText(/Reply by hand on/)).toBeInTheDocument();
+    unmount();
+
+    // With one: the policy owns it, so the hint is gone.
+    feedData.items = [{ ...base, engage: { actionId: 'a3', status: 'queued', waitingOn: null, kinds: ['reply'], releaseAt: new Date(Date.now() + 3_600_000).toISOString(), result: {}, dryRun: false, rung: null, askId: null } }];
+    renderPanel();
+    expect(screen.queryByText(/Reply by hand on/)).not.toBeInTheDocument();
+  });
+
+  // And the row it GAVE UP on hands the work back: a failed row is exactly the case where a
+  // human move is the right offer again, so the hint returns rather than leaving a dead end.
+  it('gives the copy-by-hand hint back when the policy failed on the row', () => {
+    feedData.capabilities = { ...feedData.capabilities, hackernews: { reply: false, search: true, copyDraft: true } };
+    feedData.items = [{
+      source: 'hackernews', externalId: 'h4', url: 'https://mock.hn/4', author: 'handed_back',
+      community: 'news.ycombinator.com', text: 'anything that posts for me?',
+      ts: new Date().toISOString(), intentScore: 72, scoredBy: 'agent',
+      engage: { actionId: 'a4', status: 'failed', waitingOn: null, kinds: ['reply'], releaseAt: null, result: {}, dryRun: false, rung: 'L4', askId: 'ask-4' },
+    }];
+    renderPanel();
+    expect(screen.getByText(/Reply by hand on/)).toBeInTheDocument();
+  });
+
   // WP3 (2026-07-17): the card overview. The agent's WHY is folded behind the Bot glyph
   // (tooltip), the quote clamps until expanded, and the expanded card offers "Answer as a
   // post" - a composer pre-fill, never an auto-created post.
@@ -1385,7 +1462,9 @@ describe('Radar panel (spec 32 listening seam)', () => {
       <QueryClientProvider client={qc}>
         <I18nProvider locale="en">
           <TooltipProvider>
-            <Radar active campaigns={[]} onNavigate={onNavigateMock} />
+            <ConfirmProvider>
+              <Radar active campaigns={[]} onNavigate={onNavigateMock} />
+            </ConfirmProvider>
           </TooltipProvider>
         </I18nProvider>
       </QueryClientProvider>,
@@ -1514,7 +1593,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
   // draft THIS signal now (scope:'draft-one'), held pending for review.
   it('willAutoPost renders as a non-interactive status pill plus a separate "Draft now" action', async () => {
     const user = userEvent.setup();
-    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    configData.posting.autoApprove = { ...(configData.posting.autoApprove || {}), radarReplies: { enabled: true, lanes: ['reddit'], minScore: 60 } };
     feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
     renderPanel();
     const row = screen.getByText('high_intent').closest('li');
@@ -1531,7 +1610,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
   });
 
   it('a running draft-one job renders the busy state on its target card (no badge button)', () => {
-    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    configData.posting.autoApprove = { ...(configData.posting.autoApprove || {}), radarReplies: { enabled: true, lanes: ['reddit'], minScore: 60 } };
     feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
     feedData.jobs = [{ id: 'j1', state: 'running', scope: 'draft-one', target: 'reddit r1', phase: 'drafting', providerId: 'claude-code', sources: ['reddit'], startedAt: new Date().toISOString(), activity: [] }];
     renderPanel();
@@ -1543,7 +1622,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
   // Honesty: once the agent examined the thread and declined to reply, the badge stops
   // predicting an auto-post the agent already refused.
   it('an agent-declined signal shows no auto-reply badge', () => {
-    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    configData.posting.autoApprove = { ...(configData.posting.autoApprove || {}), radarReplies: { enabled: true, lanes: ['reddit'], minScore: 60 } };
     feedData.items = [{ ...feedData.items[0], scoredBy: 'agent', agentDeclined: { ts: new Date().toISOString(), reason: 'not a buying question' } }];
     renderPanel();
     const row = screen.getByText('high_intent').closest('li');
@@ -1553,7 +1632,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
   it('without a live agent the "Draft now" action falls back to the inline editor instead of a dead spawn', async () => {
     const user = userEvent.setup();
     healthData = agentNotLive();
-    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    configData.posting.autoApprove = { ...(configData.posting.autoApprove || {}), radarReplies: { enabled: true, lanes: ['reddit'], minScore: 60 } };
     feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
     renderPanel();
     const row = screen.getByText('high_intent').closest('li');
@@ -1592,7 +1671,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
   // regardless of which signal the running job actually targets (only one job runs per
   // client at a time). The status pill itself is unaffected (it was never interactive).
   it('while ANY agent job is running, the "Draft now" action renders disabled (the status pill stays)', () => {
-    configData.posting.radar.autoReply = { enabled: true, lanes: ['reddit'], minScore: 60 };
+    configData.posting.autoApprove = { ...(configData.posting.autoApprove || {}), radarReplies: { enabled: true, lanes: ['reddit'], minScore: 60 } };
     feedData.items = [{ ...feedData.items[0], scoredBy: 'agent' }];
     feedData.jobs = [{ id: 'j2', state: 'running', scope: 'scan', providerId: 'claude-code', sources: ['reddit'], startedAt: new Date().toISOString(), activity: [] }];
     renderPanel();
@@ -1669,7 +1748,8 @@ describe('Radar panel (spec 32 listening seam)', () => {
       // Server order: high_intent (rank 1) BEFORE the lower-ranked answered signal.
       feedData.items = [feedData.items[0], answered()];
       renderPanel();
-      await user.click(screen.getByRole('button', { name: /priority/i }));
+      // Scope to the Sort group (a "Priority" tier filter now shares the word with the sort).
+      await user.click(within(screen.getByRole('group', { name: /sort/i })).getByRole('button', { name: /priority/i }));
       const a = screen.getByText('answered_author').closest('li');
       const b = screen.getByText('high_intent').closest('li');
       // The live conversation renders ABOVE the higher-scored cold signal.
@@ -1762,7 +1842,10 @@ describe('Radar panel (spec 32 listening seam)', () => {
     feedData.items = [{ ...feedData.items[0], matchedQuery: 'pendpost buyer intent', scoredBy: 'agent' }];
     renderPanel();
     const row = screen.getByText('high_intent').closest('li');
-    expect(within(row).queryByText(/pendpost buyer intent/)).not.toBeInTheDocument();
+    // The FACT ROW (exact score, humanized tags) stays hidden until expand. The quiet query CHIP
+    // already surfaces the matched search on the collapsed row (owner ask), so assert on the score.
+    expect(within(row).queryByText(/Score 82/)).not.toBeInTheDocument();
+    expect(within(row).getByText('pendpost buyer intent')).toBeInTheDocument();
     // Click the card body (the author line), not the chevron.
     await user.click(within(row).getByText('high_intent'));
     expect(within(row).getByText(/Search .*pendpost buyer intent/)).toBeInTheDocument();
@@ -1946,9 +2029,12 @@ describe('Radar panel (spec 32 listening seam)', () => {
       reddit: { ok: false, error: 'not_connected' },
     };
     renderPanel();
-    expect(screen.getByText(/not connected/i)).toBeInTheDocument();
-    expect(screen.queryByText(/access expired/i)).not.toBeInTheDocument();
-    const connect = screen.getByRole('button', { name: /^connect$/i });
+    // Scope to the scan-coverage notice (role=status): the auto-reply strip also names
+    // not-connected reply lanes now, so the assertions target the notice under test.
+    const notice = screen.getByRole('status', { name: '' });
+    expect(within(notice).getByText(/not connected/i)).toBeInTheDocument();
+    expect(within(notice).queryByText(/access expired/i)).not.toBeInTheDocument();
+    const connect = within(notice).getByRole('button', { name: /^connect$/i });
     await user.click(connect);
     expect(onNavigateMock).toHaveBeenCalledWith('setup', 'reddit');
   });
@@ -2130,8 +2216,9 @@ describe('Radar panel (spec 32 listening seam)', () => {
       reddit: { ok: false, error: 'not_connected', at: new Date().toISOString() },
     };
     renderPanel();
-    expect(screen.queryByText(/not connected/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^connect$/i })).not.toBeInTheDocument();
+    // No SCAN-coverage notice for an out-of-scan lane (the notice is the role=status card).
+    // The auto-reply strip may still name reply lanes; this test is about the scan notice only.
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 
   // D6/D1: a lane that half delivered says so ("Partial:"), and the engine's raw error text
@@ -2194,7 +2281,9 @@ describe('Radar panel (spec 32 listening seam)', () => {
       <QueryClientProvider client={qc}>
         <I18nProvider locale="en">
           <TooltipProvider>
-            <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} />
+            <ConfirmProvider>
+              <Radar active campaigns={CAMPAIGNS} onNavigate={onNavigateMock} onNewPost={onNewPostMock} />
+            </ConfirmProvider>
           </TooltipProvider>
         </I18nProvider>
       </QueryClientProvider>
@@ -2687,6 +2776,23 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(within(row).queryByRole('menuitem', { name: /watch/i })).not.toBeInTheDocument();
     });
 
+    // The Radar-local overflow is a second implementation of the same affordance, so it drifted
+    // apart from ui/RowMenu: its items rendered ~32px while the trigger already carried a 44px
+    // hit box. Both now take MENU_ITEM from recipes.js, and this is the lock on that.
+    it('its menu items are real 44px rows, from the shared MENU_ITEM recipe', async () => {
+      const user = userEvent.setup();
+      withBacklog();
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /worth writing for AI answers/i }));
+      const row = screen.getByText('pendpost vs Buffer').closest('li');
+      await user.click(within(row).getByRole('button', { name: /more actions/i }));
+      for (const item of within(row).getAllByRole('menuitem')) {
+        expect(item).toHaveClass('min-h-11');
+        expect(item.className).toMatch(/focus-visible:ring-brand/);
+        expect(item.className).toMatch(/\btext-sm\b/); // the text size is unchanged
+      }
+    });
+
     // US-RAD-32: the VISIBLE label is the source domain (never a bare "#1" the
     // reader has to gamble on); an unparseable url falls back to the number.
     it('a backlog example link shows its thread domain as the visible label', async () => {
@@ -2756,5 +2862,293 @@ describe('Radar panel (spec 32 listening seam)', () => {
       const coverage = screen.getByRole('list', { name: /sources these searches cover/i });
       expect(within(coverage).getByRole('button', { name: /reddit: scanned\. connect it to reply/i })).toBeInTheDocument();
     });
+  });
+});
+
+// ---- Spec 50 S5: what "Respond for me" did or will do, in the row's status slot ----------
+// Every state is VISIBLE text with an icon (never colour alone, never hover-only), the facts
+// behind it are focus-reachable, and the two destructive-ish moves (Cancel before it goes out,
+// Undo after) live in the row overflow with an inline confirm in front of the irreversible one.
+describe('Radar panel - spec 50 S5 engage states', () => {
+  // One reddit signal, whose engage row the case under test shapes.
+  const withEngage = (engage, extra = {}) => {
+    feedData.items = [{
+      source: 'reddit', externalId: 'r1', url: 'https://mock.reddit/1', author: 'high_intent',
+      community: 'r/socialmedia', text: 'What tool should I use to schedule posts?',
+      ts: new Date().toISOString(), intentScore: 82, intentTags: ['buying-question'],
+      suggestedAction: 'reply', engage, ...extra,
+    }];
+  };
+  const AT = '2026-09-10T08:00:00.000Z';
+  // The page header carries its OWN "More actions" overflow, so a row's menu is always
+  // reached through that row, never through a global query.
+  const rowOverflow = () => within(document.getElementById(`radar-sig-${encodeURIComponent('reddit r1')}`)).getByRole('button', { name: /more actions/i });
+
+  it('queued: names the kinds and the time it goes out', () => {
+    withEngage({ actionId: 'a1', status: 'queued', waitingOn: null, kinds: ['reply', 'like'], releaseAt: AT });
+    renderPanel();
+    expect(screen.getByText(/^reply, like · /)).toBeInTheDocument();
+  });
+
+  it('every waiting reason has its own words, never a raw enum', () => {
+    const cases = [
+      ['cap', /tomorrow .* · daily limit/i],
+      ['hours', /tonight .* · outside hours/i],
+      ['catchup', /catching up · /i],
+      ['chrome', /^waiting for chrome$/i],
+      ['lane', /^platform off$/i],
+      ['lanePaused', /cooling down · resumes /i],
+      ['paused', /^paused$/i],
+    ];
+    for (const [waitingOn, re] of cases) {
+      withEngage({ actionId: 'a1', status: 'queued', waitingOn, kinds: ['reply'], releaseAt: AT });
+      const { unmount } = renderPanel();
+      expect(screen.getByText(re), waitingOn).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it('posting soon counts the grace window down; posting now says so', () => {
+    withEngage({ actionId: 'a1', status: 'posting_soon', waitingOn: null, kinds: ['repost'], graceUntil: new Date(Date.now() + 12 * 60_000).toISOString() });
+    const { unmount } = renderPanel();
+    expect(screen.getByText(/posting in 12 min/i)).toBeInTheDocument();
+    unmount();
+    withEngage({ actionId: 'a1', status: 'releasing', waitingOn: null, kinds: ['reply'] });
+    renderPanel();
+    expect(screen.getByText(/posting now/i)).toBeInTheDocument();
+  });
+
+  it('done: links the answer and names what else it did', () => {
+    withEngage({ actionId: 'a1', status: 'done', waitingOn: null, kinds: ['reply', 'like', 'follow'], doneAt: AT, result: { permalink: 'https://mock.reddit/1/answer' } });
+    renderPanel();
+    const link = screen.getByRole('link', { name: /replied /i });
+    expect(link).toHaveAttribute('href', 'https://mock.reddit/1/answer');
+    expect(screen.getByText(/\+ like, follow/i)).toBeInTheDocument();
+  });
+
+  it('dry run: "would have replied" only when the post box was actually reached (D19)', () => {
+    withEngage({ actionId: 'a1', status: 'dry_run', waitingOn: null, kinds: ['reply'], dryRun: true, result: { composerFound: true } });
+    const { unmount } = renderPanel();
+    expect(screen.getByText(/would have replied/i)).toBeInTheDocument();
+    unmount();
+    withEngage({ actionId: 'a1', status: 'dry_run', waitingOn: null, kinds: ['reply'], dryRun: true, result: { composerFound: false } });
+    renderPanel();
+    expect(screen.getByText(/could not reach the post box on Reddit/i)).toBeInTheDocument();
+    expect(screen.queryByText(/would have replied/i)).not.toBeInTheDocument();
+  });
+
+  it('skipped: the reason is humanized, and a community rule can be re-checked (row 7e5)', async () => {
+    const user = userEvent.setup();
+    withEngage({ actionId: 'a1', status: 'skipped', waitingOn: null, kinds: ['reply'], reason: 'community_rule' });
+    renderPanel();
+    expect(screen.getByText(/skipped · this community bans automated posts/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /check rules again/i }));
+    await waitFor(() => expect(engageCommunityRecheckMock).toHaveBeenCalledWith('reddit', 'r/socialmedia'));
+  });
+
+  it('a skip decision with no action row still says so, in your words', () => {
+    feedData.items = [{
+      source: 'reddit', externalId: 'r1', url: 'https://mock.reddit/1', author: 'high_intent',
+      community: 'r/socialmedia', text: 'chatter', ts: new Date().toISOString(), intentScore: 20,
+      decision: { kind: 'skip', reason: 'owner' },
+    }];
+    renderPanel();
+    expect(screen.getByText(/skipped by you/i)).toBeInTheDocument();
+  });
+
+  it('handed to you / undone / cancelled each have their own sentence', () => {
+    withEngage({ actionId: 'a1', status: 'failed', waitingOn: null, kinds: ['reply'], rung: 4 });
+    const { unmount } = renderPanel();
+    expect(screen.getByText(/could not post on Reddit · handed to you/i)).toBeInTheDocument();
+    unmount();
+    withEngage({ actionId: 'a1', status: 'undone', waitingOn: null, kinds: ['reply'], undoneAt: AT });
+    const second = renderPanel();
+    expect(screen.getByText(/undone /i)).toBeInTheDocument();
+    second.unmount();
+    withEngage({ actionId: 'a1', status: 'cancelled', waitingOn: null, kinds: ['reply'] });
+    renderPanel();
+    expect(screen.getByText(/cancelled by you/i)).toBeInTheDocument();
+  });
+
+  it('the detail is focus-reachable, not a hover-only reveal', () => {
+    withEngage({ actionId: 'a1', status: 'queued', waitingOn: 'cap', kinds: ['reply', 'like'], releaseAt: AT, rung: 2 });
+    renderPanel();
+    const status = screen.getByText(/tomorrow .* · daily limit/i);
+    expect(status).toHaveAttribute('tabindex', '0');
+    const describedBy = status.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const detail = document.getElementById(describedBy);
+    expect(detail).toHaveTextContent(/planned: reply, like/i);
+    expect(detail).toHaveTextContent(/tried 2 times, then handed to you/i);
+  });
+
+  it('Cancel sits in the row overflow while a row has not gone out (row 5)', async () => {
+    const user = userEvent.setup();
+    withEngage({ actionId: 'a1', status: 'posting_soon', waitingOn: null, kinds: ['repost'], graceUntil: new Date(Date.now() + 10 * 60_000).toISOString() });
+    renderPanel();
+    await user.click(rowOverflow());
+    await user.click(await screen.findByRole('menuitem', { name: /^cancel$/i }));
+    await waitFor(() => expect(engageCancelMock).toHaveBeenCalledWith('a1'));
+  });
+
+  it('Undo asks inline before it deletes anything public (row 11)', async () => {
+    const user = userEvent.setup();
+    withEngage({ actionId: 'a1', status: 'done', waitingOn: null, kinds: ['reply'], doneAt: AT, result: { permalink: 'https://mock.reddit/1/answer' } });
+    renderPanel();
+    await user.click(rowOverflow());
+    await user.click(await screen.findByRole('menuitem', { name: /^undo$/i }));
+    // The confirm is INLINE in the row, and nothing has run yet.
+    expect(screen.getByText(/delete this reply on Reddit\?/i)).toBeInTheDocument();
+    expect(engageUndoMock).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /^keep$/i }));
+    expect(screen.queryByText(/delete this reply on Reddit\?/i)).not.toBeInTheDocument();
+    // Asking again and confirming runs the reverse action.
+    await user.click(rowOverflow());
+    await user.click(await screen.findByRole('menuitem', { name: /^undo$/i }));
+    await user.click(screen.getByRole('button', { name: /^delete$/i }));
+    await waitFor(() => expect(engageUndoMock).toHaveBeenCalledWith('a1'));
+  });
+
+  it('where the platform cannot recall the action, the row says so and offers no Delete', async () => {
+    const user = userEvent.setup();
+    withEngage({ actionId: 'a1', status: 'done', waitingOn: null, kinds: ['dm'], doneAt: AT, result: { permalink: null, recallable: false } });
+    renderPanel();
+    await user.click(rowOverflow());
+    await user.click(await screen.findByRole('menuitem', { name: /^undo$/i }));
+    expect(screen.getByText(/cannot be recalled on Reddit/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^delete$/i })).not.toBeInTheDocument();
+  });
+
+  it('an ordinary signal with no engage row is untouched by the feature', () => {
+    renderPanel();
+    expect(screen.queryByText(/waiting for chrome/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/posting now/i)).not.toBeInTheDocument();
+  });
+});
+
+describe('Radar panel - spec 50 feed line + Pause glyph', () => {
+  it('one line for the whole feed says how many actions wait for Chrome (row 7e)', () => {
+    engageRuntime = { mode: 'live', paused: false, lanes: {}, today: {}, waitingForChrome: 6 };
+    renderPanel();
+    const lines = screen.getAllByText(/waiting for chrome · 6 actions/i);
+    expect(lines).toHaveLength(1);
+  });
+
+  it('the Pause glyph appears only while the policy is armed', () => {
+    engageRuntime = { mode: 'off', paused: false, lanes: {}, today: {}, waitingForChrome: 0 };
+    configData.posting.radar.engage = { mode: 'off', paused: false, lanes: {} };
+    const { unmount } = renderPanel();
+    expect(screen.queryByRole('button', { name: /^pause$/i })).not.toBeInTheDocument();
+    unmount();
+    configData.posting.radar.engage = { mode: 'live', paused: false, lanes: {} };
+    engageRuntime = { mode: 'live', paused: false, lanes: {}, today: {}, waitingForChrome: 0 };
+    renderPanel();
+    expect(screen.getByRole('button', { name: /^pause$/i })).toBeInTheDocument();
+  });
+
+  it('pausing is immediate and the toast carries Resume back (row 12)', async () => {
+    const user = userEvent.setup();
+    configData.posting.radar.engage = { mode: 'live', paused: false, lanes: {} };
+    engageRuntime = { mode: 'live', paused: false, lanes: {}, today: {}, waitingForChrome: 0 };
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /^pause$/i }));
+    await waitFor(() => expect(engagePauseMock).toHaveBeenCalledWith(true));
+    // No confirmation popover anywhere on the way.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    const toast = await screen.findByRole('status');
+    expect(toast).toHaveTextContent(/paused/i);
+    await user.click(within(toast).getByRole('button', { name: /^resume$/i }));
+    await waitFor(() => expect(engagePauseMock).toHaveBeenCalledWith(false));
+  });
+
+  it('a paused policy flips the header glyph to Resume', () => {
+    configData.posting.radar.engage = { mode: 'live', paused: true, lanes: {} };
+    engageRuntime = { mode: 'live', paused: true, lanes: {}, today: {}, waitingForChrome: 0 };
+    renderPanel();
+    expect(screen.getByRole('button', { name: /^resume$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^pause$/i })).not.toBeInTheDocument();
+  });
+});
+
+describe('Radar panel - Turn on auto-reply (one-click arm, deadlock fix)', () => {
+  // Connected = the credential authenticates (account_status.live.ok) OR the engage probe
+  // already said ready - NOT the runtime `usable` the old strip gated on, which needs a probe
+  // nobody runs. These fixtures mirror the owner's real gap: Mastodon connected, Reddit not.
+  const connectMastodon = () => {
+    accountsData = { ...accountsData, mastodon: { authenticated: true, configured: true, live: { ok: true } } };
+  };
+  const turnOnButton = () => screen.getByRole('button', { name: /turn on auto-?reply|turn on automation/i });
+
+  it('the button is ENABLED when a reply lane is connected, even with nothing probed yet', () => {
+    connectMastodon();
+    renderPanel();
+    expect(turnOnButton()).toBeEnabled();
+  });
+
+  it('the button is DISABLED when no reply lane is connected (never blocks, but nothing to arm)', () => {
+    renderPanel(); // default: reddit not configured, mastodon not connected, no .live
+    expect(turnOnButton()).toBeDisabled();
+    // and each reply lane is NAMED with its next step, never a dead "Not ready" line
+    expect(screen.getAllByText(/not connected/i).length).toBeGreaterThan(0);
+  });
+
+  it('one click arms EACH connected reply lane: mode live + per-lane enabled (read-modify-write) + radarReplies, then probes it', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    // An existing lane object carrying a confirmed handle must survive the write (setConfig
+    // replaces a written lane wholesale, so the arm must re-supply it, not clobber it).
+    configData.posting.radar.engage = { mode: 'off', paused: false, lanes: { mastodon: { enabled: false, handle: 'pendpost', warmupStartedAt: 't1' } }, caps: { reply: 10 } };
+    renderPanel();
+    await user.click(turnOnButton());
+    await user.click(await screen.findByRole('button', { name: /go live/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled());
+    const [rev, set] = saveConfigMock.mock.calls[0];
+    expect(rev).toBe('r1');
+    expect(set.posting.radar.engage.mode).toBe('live');
+    expect(set.posting.radar.engage.paused).toBe(false);
+    // RMW: enabled flipped, handle + warmupStartedAt preserved.
+    expect(set.posting.radar.engage.lanes.mastodon).toEqual({ enabled: true, handle: 'pendpost', warmupStartedAt: 't1' });
+    expect(set.posting.autoApprove.radarReplies).toEqual({ enabled: true, lanes: ['mastodon'] });
+    // and the probe is kicked so the lane leaves reason:'checking'
+    await waitFor(() => expect(engageProbeMock).toHaveBeenCalledWith('mastodon'));
+  });
+
+  it('a connected copy-only account (X without Enterprise) reads "Draft only" and is NEVER armed', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    feedData.capabilities = { ...feedData.capabilities, x: { reply: false, copyDraft: true } };
+    accountsData = { ...accountsData, x: { authenticated: true, configured: true, live: { ok: true } } };
+    renderPanel();
+    expect(screen.getByText(/draft only/i)).toBeInTheDocument();
+    await user.click(turnOnButton());
+    await user.click(await screen.findByRole('button', { name: /go live/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled());
+    const [, set] = saveConfigMock.mock.calls[0];
+    expect(set.posting.autoApprove.radarReplies.lanes).toEqual(['mastodon']);
+    expect(set.posting.autoApprove.radarReplies.lanes).not.toContain('x');
+  });
+
+  it('X WITH Enterprise (reply-capable) is armed when connected', async () => {
+    const user = userEvent.setup();
+    connectMastodon();
+    feedData.capabilities = { ...feedData.capabilities, x: { reply: true } };
+    accountsData = { ...accountsData, x: { authenticated: true, configured: true, live: { ok: true } } };
+    renderPanel();
+    await user.click(turnOnButton());
+    await user.click(await screen.findByRole('button', { name: /go live/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled());
+    const [, set] = saveConfigMock.mock.calls[0];
+    expect(set.posting.autoApprove.radarReplies.lanes).toEqual(expect.arrayContaining(['mastodon', 'x']));
+    await waitFor(() => expect(engageProbeMock).toHaveBeenCalledWith('x'));
+  });
+
+  it('a not-connected reply lane is named with a Connect deep-link to Setup (no dead end)', async () => {
+    const user = userEvent.setup();
+    connectMastodon(); // so the strip renders its lane list
+    renderPanel();
+    // Reddit is reply-capable but not connected -> its line carries the one Connect action.
+    const connects = screen.getAllByRole('button', { name: /^connect$/i });
+    await user.click(connects[0]);
+    expect(onNavigateMock).toHaveBeenCalledWith('setup', 'reddit');
   });
 });

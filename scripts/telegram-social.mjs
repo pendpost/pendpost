@@ -36,6 +36,7 @@
  *   verify           --plan <p> [--only <id>]   read-only liveness (best-effort)
  *   insights         --plan <p> [--only <id>]   account-scoped subscriber count via getChatMemberCount (spec 08)
  *   probe                                        read-only health probe (getMe)
+ *   owner-chat       --client <id>              connect the OWNER's own chat for urgent pushes (spec 50 S7)
  *   delete           --id <messageId>            delete a channel message (cleanup)
  */
 import fs from 'node:fs';
@@ -719,6 +720,143 @@ async function cmdReact(args) {
   Object.assign(RUN, await runLaneReact('telegram', args));
 }
 
+// ---------- the owner push ceremony (spec 50 S7, row 9e) ----------
+//
+// `owner-chat` connects the OPERATOR's own private chat with this brand's bot, which is a
+// different destination from TELEGRAM_CHANNEL_ID (the audience channel every other command in
+// this file publishes to). Confusing the two would push an internal "this one needs you" into
+// the brand's public channel, so this ceremony only ever accepts a chat of type `private` and
+// stores it under posting.notify.telegramChatId, never in .env next to the channel id.
+//
+// No secret is typed. The bot token already exists from `auth`, and a chat id is not a
+// credential - it is a preference, which is why it lives in config.json (owner-writable) and
+// not in the 0600 .env. The owner's only move is to open Telegram and say anything to the bot:
+// Telegram will not let a bot message a human who has not spoken to it first, so this handshake
+// is Telegram's rule, not ours.
+const OWNER_CHAT_TIMEOUT_MS = 120000;
+const OWNER_CHAT_POLL_MS = 2000;
+
+// Write the chat id through the OWNER config path (setConfig with ifRev), never a hand-edit of
+// config.json: that path is what validates the value, bumps the rev, and writes the audit
+// actor. Dynamic import keeps lib/config.mjs out of the publish hot path's module graph, the
+// same way the comment verbs import lib/comments.mjs.
+async function storeOwnerChatId(chatId) {
+  const { getConfig, setConfig } = await import('../lib/config.mjs');
+  const res = setConfig({
+    ifRev: getConfig().rev,
+    actor: 'owner',
+    set: { posting: { notify: { telegramChatId: String(chatId) } } },
+  });
+  if (!res || res.ok === false) {
+    throw new Error(`could not store the chat id: ${(res && (res.message || res.error)) || 'config write refused'}`);
+  }
+  return res;
+}
+
+/**
+ * The ceremony body, injectable end to end so a test can run it with zero network.
+ *
+ * States, exactly as the spec names them: waiting / found / timeout.
+ *
+ * @param {object} [opts]
+ * @param {string|null} [opts.token] - defaults to the lane's TELEGRAM_BOT_TOKEN.
+ * @param {Function|null} [opts.fetchImpl] - defaults to global fetch.
+ * @param {number} [opts.timeoutMs] - how long to wait for the owner's message (spec: 120s).
+ * @param {number} [opts.pollMs] - gap between getUpdates polls.
+ * @param {Function} [opts.log] - where the operator-facing lines go.
+ * @param {Function} [opts.sleep]
+ * @param {Function} [opts.store] - the config write; injectable so a test can watch it.
+ * @returns {Promise<{ok:true, chatId:string, username:string}
+ *   |{ok:false, code:'no_token'|'auth_failed'|'timeout'|'store_failed', message:string}>}
+ */
+export async function runOwnerChat({
+  token = null,
+  fetchImpl = null,
+  timeoutMs = OWNER_CHAT_TIMEOUT_MS,
+  pollMs = OWNER_CHAT_POLL_MS,
+  log = (line) => console.log(line),
+  sleep = (ms) => new Promise((resolve) => { const t = setTimeout(resolve, ms); if (t.unref) t.unref(); }),
+  store = storeOwnerChatId,
+} = {}) {
+  const botToken = String(token || readEnv('TELEGRAM_BOT_TOKEN') || '').trim();
+  if (!botToken) {
+    return { ok: false, code: 'no_token', message: 'The Telegram lane is not connected yet. Run: node scripts/telegram-social.mjs auth --client <id>' };
+  }
+  const doFetch = typeof fetchImpl === 'function' ? fetchImpl : fetch;
+  const call = async (method, body) => {
+    const res = await doFetch(`https://api.telegram.org/bot${botToken}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const raw = res && typeof res.text === 'function' ? await res.text() : '';
+    let data = {};
+    try { data = raw ? JSON.parse(raw) : {}; } catch { data = {}; }
+    return { httpOk: Boolean(res && res.ok !== false), data };
+  };
+
+  const me = await call('getMe');
+  if (!me.httpOk || me.data.ok === false) {
+    return { ok: false, code: 'auth_failed', message: String(me.data.description || 'the bot token was refused by Telegram') };
+  }
+  const username = String((me.data.result && me.data.result.username) || '').trim();
+  const handle = username ? `@${username}` : 'your bot';
+
+  log(`[ok] Bot ${handle} is reachable.`);
+  log(`Open Telegram, find ${handle}, and send it any message. A plain "hi" is enough.`);
+  log(`Waiting up to ${Math.round(timeoutMs / 1000)} seconds for it to arrive.`);
+
+  // The offset is what stops a backlog of channel posts from being re-read on every poll: each
+  // pass acknowledges what it saw, so the loop always makes progress toward the deadline.
+  let offset = 0;
+  let found = null;
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const upd = await call('getUpdates', { offset, timeout: 0, allowed_updates: ['message'] });
+    const items = Array.isArray(upd.data.result) ? upd.data.result : [];
+    for (const item of items) {
+      if (item && Number.isFinite(item.update_id)) offset = item.update_id + 1;
+      const chat = item && item.message && item.message.chat;
+      // Only a PRIVATE chat. A group or a channel id here would turn every future "this one
+      // needs you" into a public post, which is the one outcome this ceremony must not allow.
+      if (chat && chat.type === 'private' && (chat.id || chat.id === 0)) { found = String(chat.id); break; }
+    }
+    if (found) break;
+    if (Date.now() >= deadline) break;
+    await sleep(pollMs);
+  } while (Date.now() < deadline);
+
+  if (!found) {
+    log('No message received. Send the bot a message and run again.');
+    return { ok: false, code: 'timeout', message: 'No message received. Send the bot a message and run again.' };
+  }
+
+  try {
+    await store(found);
+  } catch (err) {
+    return { ok: false, code: 'store_failed', message: String((err && err.message) || err) };
+  }
+
+  // One real message, so the owner sees the thing working rather than reading that it does.
+  await call('sendMessage', {
+    chat_id: found,
+    text: 'Push connected. pendpost will message you here when something needs you.',
+    disable_web_page_preview: true,
+  });
+  log(`[ok] Push connected. Urgent questions now reach you in ${handle}.`);
+  return { ok: true, chatId: found, username };
+}
+
+async function cmdOwnerChat() {
+  const res = await runOwnerChat();
+  if (!res.ok) {
+    console.error(`[err] ${res.message}`);
+    RUN.results.push({ platform: 'telegram', action: 'owner-chat', ok: false, detail: res.message });
+    process.exit(res.code === 'timeout' ? 1 : 2);
+  }
+  RUN.results.push({ platform: 'telegram', action: 'owner-chat', ok: true, detail: `owner chat ${res.chatId}` });
+}
+
 const COMMANDS = {
   auth: cmdAuth,
   connect: cmdAuth,
@@ -736,6 +874,7 @@ const COMMANDS = {
   delete: cmdDelete,
   probe: cmdProbe,
   profile: cmdProfile,
+  'owner-chat': cmdOwnerChat,
 };
 
 async function main() {
@@ -767,6 +906,14 @@ async function main() {
   const cmd = COMMANDS[commandName];
   if (!cmd) {
     console.error(`Usage: node scripts/telegram-social.mjs <${Object.keys(COMMANDS).join('|')}> [options]`);
+    process.exit(2);
+  }
+  // Spec 50 S7: owner-chat writes THIS client's config.json (posting.notify.telegramChatId).
+  // Naming the client is what re-roots the process (lib/cli-client.mjs), and a ceremony that
+  // guessed would connect the owner's phone to the wrong brand's asks - the same class of
+  // mistake the credential guard exists to prevent. PENDPOST_CLIENT_ID counts as naming it.
+  if (commandName === 'owner-chat' && typeof args.client !== 'string' && !process.env.PENDPOST_CLIENT_ID) {
+    console.error('[err] owner-chat requires --client <id> - it stores the chat id in that client\'s config.');
     process.exit(2);
   }
   if (['validate', 'publish-due', 'status', 'verify', 'edit', 'insights'].includes(commandName) && !args.plan) {

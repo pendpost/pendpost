@@ -201,10 +201,24 @@ try {
   // 144 routes / 120 tools = radar_geo_reset gains its REST twin (S7.3, radar-reliability
   // 2026-08-31): POST /api/radar/geo-reset + the panel-overflow entry, so the tool leaves
   // exemptions.tools and routes go 143 -> 144 while tools stay 120.
-  ok(/144 routes, 120 tools.*1 documented UI-only/.test(parityOut),
+  // 145 routes / 121 tools = +radar_engage_report (spec 50 P1): the triage child's report verb,
+  // WITH a REST twin (POST /api/radar/engage-report) unlike radar_followup_report above - its
+  // fence is not fail-closed outside a spawn, so a route is reachable rather than a door to a
+  // refusal, and it is declared agentOnly in API-CONTRACT.md instead of exempted.
+  // 152 routes / 127 tools = +the six owner verbs of spec 50 P2 (engage_queue_list,
+  // engage_cancel, engage_pause, engage_probe, engage_confirm_handle, engage_community_recheck)
+  // with their REST twins, plus GET /api/engage - the read-only overview the ledger and the
+  // Radar strip both poll, which has no tool of its own because clients_overview already
+  // carries the same figures for an agent. So routes go +7 and tools +6.
+  // 157 routes / 132 tools = +engage_undo (spec 50 P3 §7.9) with its REST twin
+  // POST /api/engage/undo (+1 each) and the four Needs you verbs of P5a (+4 each).
+  // 159 routes / 133 tools = +radar_triage_bulk (granular-filters bulk dismiss) WITH its REST twin
+  // POST /api/radar/triage-bulk (+1 each), PLUS the GUI-only POST /api/radar/restore (the undo verb,
+  // no MCP twin by design - routes exemption), so routes go +2, tools +1, the 1 UI-only unchanged.
+  ok(/159 routes, 133 tools.*1 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 144/120 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 159/133 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

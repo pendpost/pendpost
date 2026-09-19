@@ -66,7 +66,7 @@ function isSignal(s) {
 
 try {
   const { scoreSignal, scoreInto, runLaneRadar, RADAR_SOURCES, RADAR_CAPABILITIES, signalKey, mergeSignals, isExcluded, normalizeSignal } = await import('../lib/radar.mjs');
-  const { runRadarScan, listRadar, triageSignal } = await import('../lib/writes.mjs');
+  const { runRadarScan, listRadar, triageSignal, triageSignalsBulk, restoreSignals } = await import('../lib/writes.mjs');
 
   // ---- (a) the intent scorer -----------------------------------------------
   const buyingQ = scoreSignal('What tool should I use to schedule social posts across platforms?', { competitors: [] });
@@ -289,6 +289,54 @@ try {
   ok((await triageSignal({ source: 'reddit', externalId: '', action: 'dismiss', actor: 't' })).code === 'invalid_input', 'triage requires externalId');
   ok((await triageSignal({ source: 'reddit', externalId: 'x', action: 'nope', actor: 't' })).code === 'invalid_input', 'triage rejects an unknown action');
   ok((await triageSignal({ source: 'reddit', externalId: 'x', action: 'dismiss', actor: '' })).code === 'invalid_input', 'triage requires an actor');
+
+  // ---- (granular filters) bulk dismiss: skips watched, writes seen, idempotent, restore round-trips ----
+  await runRadarScan({}); // fresh feed after the single-triage mutations above
+  const bulkFeed = await listRadar({});
+  // Pin one signal to prove the WATCHED guard, and pick two others to bulk-dismiss.
+  const pinned = bulkFeed.items[0];
+  await triageSignal({ source: pinned.source, externalId: pinned.externalId, action: 'watch', actor: 'tester' });
+  const targets = bulkFeed.items.filter((s) => signalKey(s) !== signalKey(pinned)).slice(0, 2);
+  ok(targets.length === 2, 'have two non-watched targets for the bulk-dismiss test');
+  // Include the WATCHED one + a bogus source in the same batch: watched is protected, bogus is skipped-invalid.
+  const bulkIds = [
+    ...targets.map((s) => ({ source: s.source, externalId: s.externalId })),
+    { source: pinned.source, externalId: pinned.externalId },
+    { source: 'facebook', externalId: 'not-a-radar-source' },
+  ];
+  const bulk = await triageSignalsBulk({ ids: bulkIds, action: 'dismiss', actor: 'tester' });
+  ok(bulk.ok === true && bulk.dismissed === 2, `bulk dismiss removes the two non-watched signals (dismissed=${bulk.dismissed})`);
+  ok(bulk.skippedWatched === 1, `bulk dismiss SKIPS the watched signal (skippedWatched=${bulk.skippedWatched})`);
+  ok(bulk.skippedInvalid === 1, `bulk dismiss counts the unknown source as skipped-invalid (skippedInvalid=${bulk.skippedInvalid})`);
+  const afterBulk = await listRadar({});
+  ok(!targets.some((t) => afterBulk.items.some((s) => signalKey(s) === signalKey(t))), 'both bulk-dismissed signals are gone from the feed');
+  ok(afterBulk.items.some((s) => signalKey(s) === signalKey(pinned)), 'the watched signal survived the bulk dismiss (safety guard)');
+  await runRadarScan({});
+  const afterRescan = await listRadar({});
+  ok(!targets.some((t) => afterRescan.items.some((s) => signalKey(s) === signalKey(t))), 'a re-scan does NOT re-surface bulk-dismissed signals (seen ledger)');
+  // Idempotent: dismissing the same ids again dismisses 0 (already gone) and never throws.
+  const bulk2 = await triageSignalsBulk({ ids: targets.map((s) => ({ source: s.source, externalId: s.externalId })), action: 'dismiss', actor: 'tester' });
+  ok(bulk2.ok === true && bulk2.dismissed === 0, 'a repeat bulk dismiss is idempotent (dismissed=0)');
+  // bulk guards: bad action / empty ids / no actor.
+  ok((await triageSignalsBulk({ ids: [{ source: 'reddit', externalId: 'x' }], action: 'watch', actor: 't' })).code === 'invalid_input', 'bulk triage rejects a non-dismiss action');
+  ok((await triageSignalsBulk({ ids: [], action: 'dismiss', actor: 't' })).code === 'invalid_input', 'bulk triage rejects an empty ids array');
+  ok((await triageSignalsBulk({ ids: [{ source: 'reddit', externalId: 'x' }], action: 'dismiss', actor: '' })).code === 'invalid_input', 'bulk triage requires an actor');
+  ok((await triageSignalsBulk({ ids: new Array(1001).fill({ source: 'reddit', externalId: 'x' }), action: 'dismiss', actor: 't' })).code === 'invalid_input', 'bulk triage caps the batch size');
+
+  // ---- (granular filters) restore: re-inserts removed signals AND clears their seen entries ----
+  const restore = await restoreSignals({ signals: targets, actor: 'tester' });
+  ok(restore.ok === true && restore.restored === 2, `restore re-inserts both dismissed signals (restored=${restore.restored})`);
+  const afterRestore = await listRadar({});
+  ok(targets.every((t) => afterRestore.items.some((s) => signalKey(s) === signalKey(t))), 'both restored signals are back in the feed (round-trip)');
+  // The seen entries were cleared, so a re-scan keeps them (they are not re-suppressed).
+  await runRadarScan({});
+  const afterRestoreRescan = await listRadar({});
+  ok(targets.every((t) => afterRestoreRescan.items.some((s) => signalKey(s) === signalKey(t))), 'restored signals SURVIVE a re-scan (seen entry was cleared, not re-suppressed)');
+  // restore guards + defensiveness: empty array rejected, no actor rejected, malformed entries ignored (no throw).
+  ok((await restoreSignals({ signals: [], actor: 't' })).code === 'invalid_input', 'restore rejects an empty signals array');
+  ok((await restoreSignals({ signals: [targets[0]], actor: '' })).code === 'invalid_input', 'restore requires an actor');
+  const defensive = await restoreSignals({ signals: [{ text: 'no source or externalId' }, { source: 'reddit', externalId: '' }], actor: 'tester' });
+  ok(defensive.ok === true && defensive.restored === 0, 'restore ignores malformed entries without throwing (restored=0)');
 
   // ---- (d) the config validator --------------------------------------------
   const { setConfig, getConfig } = await import('../lib/config.mjs');

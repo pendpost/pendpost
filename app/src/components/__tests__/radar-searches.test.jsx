@@ -286,7 +286,7 @@ describe('RadarBrand (per-tenant brand)', () => {
 
 // A manual reddit+HN search. The reconciliation deleted this coverage from radar-panel.test.jsx
 // because the editor moved off the Radar page; it is restored here against RadarSearches.
-const Q1 = { id: 'q1', label: 'scheduling', enabled: true, sources: ['reddit', 'hackernews'], keywords: ['schedule'], competitors: ['Buffer'], cadence: 'manual' };
+const Q1 = { id: 'q1', label: 'scheduling', enabled: true, sources: ['reddit', 'hackernews'], keywords: ['schedule'], competitors: ['Buffer'] };
 
 describe('RadarSearches query editor', () => {
   it('auto-saves a new query through config_set (no Save button)', async () => {
@@ -550,24 +550,90 @@ describe('RadarSearches query editor', () => {
 // ledger row 3 - it is Radar cadence config ("when Radar runs"), not an autonomy policy
 // ("what Radar may do unattended"), so it belongs at the top of this card, beside the rest of
 // what Radar searches for. Saves stay the same partial radar-subtree read-modify-write.
-describe('RadarSearches "Daily run" block (UX issue 4)', () => {
-  it('renders the title, the fire-time picker and the paid-run budget picker at the top of the card', () => {
+// The saved-search row at a 375px viewport. The Radar settings card used to hold a 510px
+// min-content box: the row pinned its controls on one line and the query text ran nowrap, so
+// the longest label decided how wide the card had to be. jsdom does no layout, so the contract
+// is asserted on the row's own sizing classes: it may WRAP, it carries no fixed floor above a
+// 320px screen, and the text stack is inline-size contained so its ellipsis line can never
+// dictate the card's width again. The measured proof is
+// docs/specs/platform-capabilities/screenshots/radar-searches-375.png.
+describe('RadarSearches saved-search row (375px fit)', () => {
+  // "min-w-[18rem]" / "w-[420px]" / "min-w-96" - every fixed inline floor a class can state.
+  const FIXED = /(?:^|:)(?:min-)?w-(?:\[(\d+(?:\.\d+)?)(px|rem)\]|(\d+(?:\.\d+)?))(?:$|\s)/;
+  const pxOf = (cls) => {
+    const m = cls.match(FIXED);
+    if (!m) return null;
+    if (m[1]) return m[2] === 'rem' ? Number(m[1]) * 16 : Number(m[1]);
+    return Number(m[3]) * 4; // the Tailwind spacing scale, 1 = 0.25rem
+  };
+  const row = (container) => container.querySelector('li div[class*="ring-1"]');
+
+  it('the row wraps instead of pinning its controls to one line', () => {
     configData = radarOn([Q1]);
-    configData.posting.radar.agent = { provider: 'claude-code', dailyBudget: 2 };
-    configData.posting.radar.dailyAt = '14:00';
+    const { container } = renderSearches();
+    expect(row(container).className).toMatch(/\bflex-wrap\b/);
+  });
+
+  it('neither the row nor anything in it states a fixed width above 320px', () => {
+    configData = radarOn([{ ...Q1, label: 'people asking which scheduler finally handles Mastodon and Bluesky together' }]);
+    const { container } = renderSearches();
+    const el = row(container);
+    const offenders = [el, ...el.querySelectorAll('*')]
+      .flatMap((node) => (node.className || '').toString().split(/\s+/))
+      .map((cls) => ({ cls, px: pxOf(cls) }))
+      .filter((x) => x.px != null && x.px > 320);
+    expect(offenders.map((x) => x.cls)).toEqual([]);
+  });
+
+  it('the query text stack truncates, is inline-size contained, and keeps the full text a tooltip away', () => {
+    const label = 'people asking which scheduler finally handles Mastodon and Bluesky together';
+    configData = radarOn([{ ...Q1, label }]);
+    const { container } = renderSearches();
+    const stack = row(container).querySelector('[class*="contain:inline-size"]');
+    expect(stack).toBeTruthy();
+    expect(stack.firstElementChild.className).toMatch(/\btruncate\b/);
+    expect(stack.lastElementChild.className).toMatch(/\btruncate\b/);
+    // Radix renders the tooltip content on demand; the trigger carries the full text.
+    expect(stack.closest('[data-state]') || stack.parentElement).toBeTruthy();
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+});
+
+describe('RadarSearches "Daily run" block (one global cadence switch)', () => {
+  // Radar on with the global daily switch ON (the fire-time + budget only appear then).
+  const radarDaily = (queries, extra = {}) => ({ rev: 'r1', posting: { radar: { enabled: true, dailyEnabled: true, queries, ...extra } } });
+
+  it('shows the "Automatic daily scan" switch, off by default, with the on-demand hint and no schedule controls', () => {
+    configData = radarOn([Q1]); // dailyEnabled undefined => off
     const { container } = renderSearches();
     expect(screen.getByText('Daily run')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /automatic daily scan/i })).toHaveAttribute('aria-checked', 'false');
+    expect(screen.getByText(/only searches when you press scan now/i)).toBeInTheDocument();
+    expect(screen.queryByText(/runs daily at/i)).not.toBeInTheDocument();
+    expect(container.querySelector('input[type="time"]')).toBeNull();
+  });
+
+  it('turning the switch ON persists dailyEnabled:true', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('switch', { name: /automatic daily scan/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith('r1', { posting: { radar: { dailyEnabled: true } } }));
+  });
+
+  it('when ON, renders the fire-time picker and the paid-run budget picker', () => {
+    configData = radarDaily([Q1], { agent: { provider: 'claude-code', dailyBudget: 2 }, dailyAt: '14:00' });
+    const { container } = renderSearches();
+    expect(screen.getByRole('switch', { name: /automatic daily scan/i })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByText(/runs daily at/i)).toBeInTheDocument();
     // input[type=time] carries no ARIA role testing-library recognizes (role "generic" in
-    // jsdom), so it is queried by type rather than getByRole/getByLabelText - the sibling
-    // house-tooltip button also carries an aria-label built from the same field text
-    // ("Help: Runs daily at"), which would otherwise ambiguously double-match.
+    // jsdom), so it is queried by type rather than getByRole/getByLabelText.
     expect(container.querySelector('input[type="time"]')).toHaveValue('14:00');
     expect(screen.getByRole('combobox', { name: /paid jobs per day/i })).toHaveValue('2');
   });
 
   it('persists posting.radar.dailyAt when the time picker changes', async () => {
-    configData = radarOn([Q1]);
+    configData = radarDaily([Q1]);
     const { container } = renderSearches();
     fireEvent.change(container.querySelector('input[type="time"]'), { target: { value: '07:30' } });
     await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith('r1', { posting: { radar: { dailyAt: '07:30' } } }));
@@ -575,110 +641,100 @@ describe('RadarSearches "Daily run" block (UX issue 4)', () => {
 
   it('persists posting.radar.agent.dailyBudget via read-modify-write, preserving the sibling provider', async () => {
     const user = userEvent.setup();
-    configData = radarOn([Q1]);
-    configData.posting.radar.agent = { provider: 'claude-code', dailyBudget: 1 };
+    configData = radarDaily([Q1], { agent: { provider: 'claude-code', dailyBudget: 1 } });
     renderSearches();
     await user.selectOptions(screen.getByRole('combobox', { name: /paid jobs per day/i }), '3');
     await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith('r1', { posting: { radar: { agent: expect.objectContaining({ provider: 'claude-code', dailyBudget: 3 }) } } }));
   });
 
   it('states the budget consequence sentence beside the dailyBudget control', () => {
-    configData = radarOn([Q1]);
+    configData = radarDaily([Q1]);
     renderSearches();
     expect(screen.getByText(/budget 1 is consumed by the daily scan/i)).toBeInTheDocument();
     expect(screen.getByText(/at least 2 runs a day/i)).toBeInTheDocument();
   });
 
-  it('shows the "no agent connected" note + Setup link when no agent is connected', async () => {
+  it('shows the "connect your agent" note + Setup link when daily is ON and no agent is connected', async () => {
     const user = userEvent.setup();
-    configData = radarOn([Q1]); // no posting.radar.agent
+    configData = radarDaily([Q1]); // no posting.radar.agent
     renderSearches();
-    expect(screen.getByText(/no research agent is connected yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/connect your agent in setup/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /connect one in setup/i }));
     expect(onNavigateMock).toHaveBeenCalledWith('setup');
   });
 
-  it('hides the "no agent connected" note once an agent is connected', () => {
-    configData = radarOn([Q1]);
-    configData.posting.radar.agent = { provider: 'claude-code', dailyBudget: 1 };
+  it('hides the agent note once an agent is connected', () => {
+    configData = radarDaily([Q1], { agent: { provider: 'claude-code', dailyBudget: 1 } });
     renderSearches();
-    expect(screen.queryByText(/no research agent is connected yet/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/connect your agent in setup/i)).not.toBeInTheDocument();
+  });
+
+  it('the Daily run block + switch are present even on a project with no queries (it is Radar-wide, not per-query)', () => {
+    configData = radarOn([]);
+    renderSearches();
+    expect(screen.getByText('Daily run')).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /automatic daily scan/i })).toBeInTheDocument();
   });
 });
 
-describe('RadarSearches scan schedule (one Off / On demand / Daily control)', () => {
-  const schedule = () => screen.getByRole('combobox', { name: /scan schedule/i });
+describe('RadarSearches per-query pause (cadence is global now)', () => {
+  const row = (container) => container.querySelector('li div[class*="ring-1"]');
 
-  it('a manual query reads as On demand', () => {
+  it('the query row has NO scan-schedule control - cadence is decided once, globally', () => {
+    configData = radarOn([Q1]);
+    const { container } = renderSearches();
+    expect(within(row(container)).queryByRole('combobox')).toBeNull();
+  });
+
+  it('an active query shows no Paused chip', () => {
     configData = radarOn([Q1]);
     renderSearches();
-    expect(schedule()).toHaveValue('manual');
+    expect(screen.queryByText('Paused')).not.toBeInTheDocument();
   });
 
-  it('a cadence:daily query reads as Daily', () => {
-    configData = radarOn([{ ...Q1, cadence: 'daily' }]);
-    renderSearches();
-    expect(schedule()).toHaveValue('daily');
-  });
-
-  it('a paused query (enabled:false) reads as Off', () => {
+  it('a paused query (enabled:false) shows a Paused chip on its row', () => {
     configData = radarOn([{ ...Q1, enabled: false }]);
     renderSearches();
-    expect(schedule()).toHaveValue('off');
+    expect(screen.getByText('Paused')).toBeInTheDocument();
   });
 
-  it('choosing Daily writes enabled:true + cadence:daily via config_set (picking Daily IS the arming)', async () => {
+  it('the editor carries a "Pause this search" toggle reflecting the paused state', async () => {
     const user = userEvent.setup();
-    // Owner round 3: no separate daily toggle - the option is always live, and choosing it
-    // arms the daily research on its own (agent research joins once a provider is connected).
+    configData = radarOn([{ ...Q1, enabled: false }]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    expect(screen.getByRole('switch', { name: /pause this search/i })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('an active query editor shows the pause toggle OFF', async () => {
+    const user = userEvent.setup();
     configData = radarOn([Q1]);
     renderSearches();
-    await user.selectOptions(schedule(), 'daily');
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
-    const q = saveConfigMock.mock.calls[0][1].posting.radar.queries.find((x) => x.id === 'q1');
-    expect(q.cadence).toBe('daily');
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    expect(screen.getByRole('switch', { name: /pause this search/i })).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('toggling pause ON in the editor writes enabled:false (and never a per-query cadence)', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([Q1]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    await user.click(screen.getByRole('switch', { name: /pause this search/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    const q = saveConfigMock.mock.calls.at(-1)[1].posting.radar.queries.find((x) => x.id === 'q1');
+    expect(q.enabled).toBe(false);
+    expect('cadence' in q).toBe(false);
+  });
+
+  it('un-pausing in the editor writes enabled:true', async () => {
+    const user = userEvent.setup();
+    configData = radarOn([{ ...Q1, enabled: false }]);
+    renderSearches();
+    await user.click(screen.getByRole('button', { name: /edit query/i }));
+    await user.click(screen.getByRole('switch', { name: /pause this search/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled(), { timeout: 2000 });
+    const q = saveConfigMock.mock.calls.at(-1)[1].posting.radar.queries.find((x) => x.id === 'q1');
     expect(q.enabled).toBe(true);
-  });
-
-  it('the Daily option is never disabled - there is no second toggle to trip over', () => {
-    configData = radarOn([Q1]);
-    renderSearches();
-    const daily = [...schedule().querySelectorAll('option')].find((o) => o.value === 'daily');
-    expect(daily.disabled).toBe(false);
-  });
-
-  it('UX issue 4: the fire-time control moved HERE from the Autonomy ledger - a daily query surfaces it', () => {
-    // dailyAt is Radar cadence config, not an autonomy policy, so it moved from the ledger's
-    // former "Overnight research" row into this card's own "Daily run" block.
-    configData = radarOn([{ ...Q1, cadence: 'daily' }]);
-    const { container } = renderSearches();
-    expect(screen.getByText(/runs daily at/i)).toBeInTheDocument();
-    expect(container.querySelector('input[type="time"]')).toBeInTheDocument();
-  });
-
-  it('the Daily run block is present even on a manual-only project (it is Radar-wide, not per-query)', () => {
-    configData = radarOn([Q1]);
-    const { container } = renderSearches();
-    expect(screen.getByText(/runs daily at/i)).toBeInTheDocument();
-    expect(container.querySelector('input[type="time"]')).toBeInTheDocument();
-  });
-
-  it('choosing On demand on a daily query writes cadence:manual', async () => {
-    const user = userEvent.setup();
-    configData = radarOn([{ ...Q1, cadence: 'daily' }]);
-    renderSearches();
-    await user.selectOptions(schedule(), 'manual');
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
-    expect(saveConfigMock.mock.calls[0][1].posting.radar.queries.find((q) => q.id === 'q1').cadence).toBe('manual');
-  });
-
-  it('choosing Off pauses the query (enabled:false)', async () => {
-    const user = userEvent.setup();
-    configData = radarOn([Q1]);
-    renderSearches();
-    await user.selectOptions(schedule(), 'off');
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
-    expect(saveConfigMock.mock.calls[0][1].posting.radar.queries.find((q) => q.id === 'q1').enabled).toBe(false);
   });
 });
 

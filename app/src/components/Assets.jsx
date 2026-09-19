@@ -101,7 +101,7 @@ function SpecRow({ asset }) {
   );
 }
 
-export function AssetCard({ asset, dir, onAttach, onDelete, onRename, selectedIndex = 0, onToggleSelect }) {
+export function AssetCard({ asset, onAttach, onDelete, onRename, selectedIndex = 0, onToggleSelect }) {
   const t = useT();
   const [playing, setPlaying] = useState(false);
   const used = asset.usedBy && asset.usedBy.length;
@@ -224,7 +224,7 @@ export function AssetCard({ asset, dir, onAttach, onDelete, onRename, selectedIn
 // cluster (type badge + resolution via SpecRow, used/unused, size, modified date),
 // and the SAME attach/rename/delete handlers + aria-label keys as the card. Wrapped
 // by a <ul role="list"> in the parent.
-export function AssetRow({ asset, dir, onAttach, onDelete, onRename, selectedIndex = 0, onToggleSelect }) {
+export function AssetRow({ asset, onAttach, onDelete, onRename, selectedIndex = 0, onToggleSelect }) {
   const t = useT();
   const used = asset.usedBy && asset.usedBy.length;
   return (
@@ -650,11 +650,11 @@ export default function Assets({ onAttach }) {
         ) : shown.length ? (
           view === 'list' ? (
             <ul role="list" aria-label={t('assets.row.list')} className="space-y-2">
-              {shown.map((a) => <AssetRow key={a.file} asset={a} dir={dir} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} selectedIndex={selectedIndexOf(a.file)} onToggleSelect={() => toggleSelect(a.file)} />)}
+              {shown.map((a) => <AssetRow key={a.file} asset={a} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} selectedIndex={selectedIndexOf(a.file)} onToggleSelect={() => toggleSelect(a.file)} />)}
             </ul>
           ) : (
             <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5">
-              {shown.map((a) => <AssetCard key={a.file} asset={a} dir={dir} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} selectedIndex={selectedIndexOf(a.file)} onToggleSelect={() => toggleSelect(a.file)} />)}
+              {shown.map((a) => <AssetCard key={a.file} asset={a} onAttach={onAttach} onDelete={handleDelete} onRename={handleRename} selectedIndex={selectedIndexOf(a.file)} onToggleSelect={() => toggleSelect(a.file)} />)}
             </div>
           )
         ) : assets.length === 0 && !q && folder === 'all' && mediaType === 'all' ? (

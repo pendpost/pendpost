@@ -1756,7 +1756,8 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // makes an unresolved MCP-authored slide survive a round-trip save instead of vanishing.
   const mediaItemsPayload = rel.mediaItems
     ? mediaItems.map((p) => String(p || '').trim()).filter(Boolean).map((p) => {
-      const { url: _seededUrl, ...base } = carouselRawRefs.current.get(p) || { path: p };
+      const base = { ...(carouselRawRefs.current.get(p) || { path: p }) };
+      delete base.url; // the stored url is re-derived below, never re-emitted verbatim
       const u = String(slideUrls[p] || '').trim();
       return u ? { ...base, url: u } : base;
     })

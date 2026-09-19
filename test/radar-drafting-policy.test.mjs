@@ -59,6 +59,8 @@ try {
   await asClient(() => createCampaign({ id: 'c1', displayName: 'Campaign One', actor: 'owner' }));
 
   const setRadar = (radar) => asClient(() => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar } } }));
+  // The auto-reply trust scope moved to autoApprove.radarReplies (owner Q2). Drafting stays decoupled.
+  const setRadarReplies = (rr) => asClient(() => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { autoApprove: { radarReplies: rr } } } }));
 
   // Radar on, one query, agent connected with a BIG research ask (maxPerRun 20) - so any
   // smaller draft pick below is provably the DRAFTING cap, never the research knob.
@@ -93,7 +95,7 @@ try {
   // ===== (a)+(b): defaults draft generously, agent-judged-low is the ONLY drop =====
   // autoReply is OFF and carries a strict minScore 80 - under the old coupling that
   // suppressed every draft below 80; now it must not suppress anything.
-  setRadar({ autoReply: { enabled: false, lanes: [], minScore: 80 } });
+  setRadarReplies({ enabled: false, lanes: [], minScore: 80 });
   const run1 = await asClient(() => radarAgentScan({ actor: 'owner' }));
   ok(run1.job && run1.job.state === 'done', `scan #1 settles done (got ${run1.job && run1.job.state}: ${run1.job && run1.job.reason})`);
   ok(run1.job.draftTargets === 4,
@@ -116,7 +118,7 @@ try {
     'agent-scored 20 < drafting.minScore 30 -> below_threshold, and the refusal names the DRAFTING threshold');
 
   // ===== (e): THE SACRED PIN - drafting volume never widens autonomy =====
-  setRadar({ autoReply: { enabled: true, lanes: ['reddit'], minScore: 80 } });
+  setRadarReplies({ enabled: true, lanes: ['reddit'], minScore: 80 });
   const e = await asClient(() => queueRadarReply({ campaign: 'c1', signalUrl: engineScored.url, source: 'reddit', externalId: engineScored.externalId, text: 'another clean, link-free answer', actor: 'agent:claude', confirm: true }));
   ok(e.ok === true && e.approval === 'pending',
     'SACRED: above the drafting bar but not agent-scored >= autoReply.minScore -> queues PENDING, never auto-approved (setApproval untouched, the gate reads autoReply.minScore only)');

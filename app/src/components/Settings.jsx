@@ -184,7 +184,13 @@ export default function Settings({ focus = null, onNavigate }) {
     // do without you, per lane - the differentiator, made visible), PREFERENCES (how the app
     // behaves for you + where it may publish) and RADAR (what Radar watches). Each group packs into
     // its own balanced grid on wide screens, so none ends in a lonely empty track.
-    <div className="mx-auto max-w-6xl space-y-8">
+    // `w-full` is load-bearing, not decoration: the page sits in a COLUMN flex container
+    // (App.jsx's glass panel), where a stretch item's width is the flex line's cross size - the
+    // widest thing on the page. Without a definite width, one card whose content refused to
+    // shrink made EVERY card that wide, so at 375px the autonomy ledger was a 510px box in a
+    // 375px viewport for a reason that lived three cards below it. w-full pins the page to the
+    // panel, and overflow stays where it belongs: inside the card that has it.
+    <div className="mx-auto w-full max-w-6xl space-y-8">
       {isLoading || !data ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">{t('settings.loading')}</p>
       ) : (
@@ -192,7 +198,7 @@ export default function Settings({ focus = null, onNavigate }) {
           {/* ── GROUP: Autonomy (the ledger - what pendpost may do without you, ux-audit R7) ── */}
           <section className="space-y-4" aria-labelledby="settings-grp-autonomy">
             <GroupHeading id="settings-grp-autonomy" title={t('settings.group.autonomy.title')} tip={t('settings.group.autonomy.tip')} />
-            <AutonomyLedger onNavigate={onNavigate} />
+            <AutonomyLedger focus={focus === 'engage' ? 'engage' : null} onNavigate={onNavigate} />
           </section>
 
           {/* ── GROUP: Preferences (the regular, non-Radar settings) ── */}
