@@ -86,6 +86,22 @@ try {
   const overridden = scoreSignal('this mentions FLUXCAP somewhere', { intentPatterns: [{ phrase: 'FLUXCAP', weight: 30, tag: 'buying-question' }] });
   ok(overridden.intentScore >= 30 && overridden.intentTags.includes('buying-question'), 'query.intentPatterns override the default phrase library');
 
+  // ---- (a1b) AMBIGUOUS competitor names ("Buffer"/"Later") must not false-positive ----
+  // These are everyday words: a bare \bword\b match fired the +16 competitor bonus on wholly
+  // unrelated posts (a diary that says "later"), pushing chatter into the Mittel tier. An
+  // ambiguous name now only counts when the post is on-topic (buyer intent OR the domain named).
+  const coatNoise = scoreSignal("Reaching into grandpa's big winter coat, I'll sort the boxes out later.", {}, { competitorsDefault: ['Buffer', 'Later'] });
+  ok(!coatNoise.intentTags.includes('competitor-mention'), `off-topic "...later" is NOT tagged a competitor (score ${coatNoise.intentScore})`);
+  ok(coatNoise.intentScore < 30 && (coatNoise.suggestedAction === 'ignore' || coatNoise.suggestedAction === 'watch'), `off-topic common-word noise stays Niedrig (${coatNoise.intentScore}/${coatNoise.suggestedAction})`);
+  const metalNoise = scoreSignal('AMG Goes Ranking - Anthrax. The overworked metal reviewer will file the rest later.', {}, { competitorsDefault: ['Later'] });
+  ok(!metalNoise.intentTags.includes('competitor-mention'), `a review that merely says "later" is NOT a competitor mention (score ${metalNoise.intentScore})`);
+  // But a REAL competitor thread still counts: intent present (leaving/alternative) ...
+  const realIntentCompetitor = scoreSignal('Leaving Buffer, it is too expensive - any alternative?', {}, { competitorsDefault: ['Buffer'] });
+  ok(realIntentCompetitor.intentTags.includes('competitor-mention'), `"leaving Buffer, any alternative?" keeps competitor-mention (${realIntentCompetitor.intentScore})`);
+  // ... or the domain is named ("scheduler"), even without an intent phrase.
+  const anchoredCompetitor = scoreSignal('The Buffer scheduler is too pricey for what it does.', {}, { competitorsDefault: ['Buffer'] });
+  ok(anchoredCompetitor.intentTags.includes('competitor-mention'), `"Buffer scheduler ..." (domain named) keeps competitor-mention (${anchoredCompetitor.intentScore})`);
+
   // ---- (a2) the default library is BILINGUAL (EN + de/de-CH) and covers SERVICE-seeking ----
   // Non-English markets (e.g. a Swiss coaching platform) must get useful scores OUT OF THE BOX,
   // without hand-writing intentPatterns. German buyer language + "looking for a coach/consultant"

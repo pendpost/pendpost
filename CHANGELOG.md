@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-09-23
+
+This release cleans up Radar's feed and adds honest comparison pages to the website.
+
+### Fixed
+- Radar stops treating everyday words as competitor mentions. A competitor whose name is also a common word, such as Buffer or Later, now counts only when the post is actually about social tools: a buying-intent phrase appears, or the domain is named. A diary entry about doing something "later" no longer lands in the Medium tier as a comparison opportunity. Competitors with unique names match exactly as before.
+
+### Changed
+- The website has new comparison pages for people weighing Buffer, Hootsuite, Metricool and Postiz, and each one says where the other tool is the better pick. The main comparison table now reflects that Buffer, Hootsuite, Metricool and Mixpost ship MCP servers too, and every page's search description fits in 160 characters.
+
 ## [2.6.0] - 2026-09-19
 
 This release adds signed publish receipts, so you can prove a post went out exactly as you approved it, without taking pendpost's word for it.
