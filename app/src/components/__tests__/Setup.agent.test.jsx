@@ -152,12 +152,12 @@ describe('Setup "Your agent" card', () => {
 
   // WP9: another client already proved an agent - one press adopts it (server-side copy).
   it('offers "use the same agent as {client}" when a sibling client holds a credential, and adopts on click', async () => {
-    setup.agent = agentSetup({ adoptFrom: [{ id: 'bondigoo', displayName: 'bondigoo', provider: 'claude-code' }] });
+    setup.agent = agentSetup({ adoptFrom: [{ id: 'northwind', displayName: 'northwind', provider: 'claude-code' }] });
     const user = userEvent.setup();
     renderSetup();
     await openCard(user);
-    await user.click(within(card()).getByRole('button', { name: /use the same agent as bondigoo/i }));
-    await waitFor(() => expect(adoptAgentMock).toHaveBeenCalledWith('bondigoo', 'claude-code'));
+    await user.click(within(card()).getByRole('button', { name: /use the same agent as northwind/i }));
+    await waitFor(() => expect(adoptAgentMock).toHaveBeenCalledWith('northwind', 'claude-code'));
   });
 
   it('offers NO adopt shortcut when no sibling client has one (never a dead affordance)', async () => {
@@ -249,11 +249,11 @@ describe('Setup "Your agent" card', () => {
   // probe spawn, so adopt and token-save each chain the recheck automatically -
   // the card lands proven (live or failed-with-reason), never silently unproven.
   it('adopting a sibling credential auto-runs the probe exactly once', async () => {
-    setup.agent = agentSetup({ adoptFrom: [{ id: 'bondigoo', displayName: 'bondigoo', provider: 'claude-code' }] });
+    setup.agent = agentSetup({ adoptFrom: [{ id: 'northwind', displayName: 'northwind', provider: 'claude-code' }] });
     const user = userEvent.setup();
     renderSetup();
     await openCard(user);
-    await user.click(within(card()).getByRole('button', { name: /use the same agent as bondigoo/i }));
+    await user.click(within(card()).getByRole('button', { name: /use the same agent as northwind/i }));
     await waitFor(() => expect(recheckAgentMock).toHaveBeenCalledTimes(1));
   });
 

@@ -15,7 +15,7 @@ const renderBadge = (served) => render(
 
 describe('ServedBadge', () => {
   it('shows an amber 720p pill when IG downscaled a vertical reel', () => {
-    // The live bondigoo reel: 720x1280 @ ~0.49 Mbps (shorter side 720 -> below HD).
+    // A live client reel: 720x1280 @ ~0.49 Mbps (shorter side 720 -> below HD).
     renderBadge({ width: 720, height: 1280, bitrate: 494884, probedAt: '2026-08-13T18:35:01.403Z' });
     expect(screen.getByText('720p')).toBeInTheDocument();
     const btn = screen.getByRole('button', { name: /likely downscaled/i });

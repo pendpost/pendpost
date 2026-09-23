@@ -4,7 +4,7 @@
 // A brand's KI-Sichtbarkeit STATE (footprint log + derived comparison backlog + dismissed ledger)
 // lives in state.radar.geo, not config - so a config edit cannot clear it. When one tenant's state
 // was seeded with another brand's competitors/questions (the pendpost-competitor rows that landed
-// under bondigoo), the owner needs a way to drop them. This proves: the reset clears all three
+// under a second client), the owner needs a way to drop them. This proves: the reset clears all three
 // arrays under the BOUND client, is owner-only, and is idempotent.
 //
 // Zero-dep node:assert. Fresh temp PENDPOST_ROOT set BEFORE importing lib.

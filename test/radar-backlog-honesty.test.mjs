@@ -59,7 +59,7 @@ try {
     '"better than that" yields NOTHING (stopword + non-rival, via BETTER_RE)');
   ok(titles('Is there a real alternative to Buffer?').join() === 'Buffer alternative',
     'a real "alternative to X" (a declared rival) is untouched');
-  // The live bondigoo noise: off-topic proper nouns that are NOT declared rivals mint nothing,
+  // The live noise from a second client's feed: off-topic proper nouns that are NOT declared rivals mint nothing,
   // even though they are structurally identical to "Buffer vs Hootsuite".
   ok(comparisonBacklog([sig('Arduino vs Evil - a talk', 4)], [], [], { competitors: RIVALS }).length === 0,
     '"Arduino vs Evil" (neither side a declared rival) mints NOTHING - the live contamination is dead');

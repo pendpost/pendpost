@@ -1136,7 +1136,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
 
       {/* WHERE these posts land, stated ONCE for the whole client-scoped list. The
           approval cards show a platform glyph, which says instagram but not WHICH
-          instagram - so on 2026-07-25 a bondigoo post was approved and published onto
+          instagram - so on 2026-07-25 a second client's post was approved and published onto
           the pendpost account with nothing on screen that could have caught it. The
           destination belongs to the project, not the post, so it is one row here rather
           than a chip repeated on every card. Only the lanes this list actually contains

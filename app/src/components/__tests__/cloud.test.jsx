@@ -228,7 +228,7 @@ describe('Cloud', () => {
     cloudState = connected();
     subState = { data: { ok: true, alwaysOn: false, status: 'active', tier: 'starter', postsIncluded: 400, postsUsed: 0, overageCents: 10, extraBrandCents: 900, brandsBilled: 0, estOverageCents: 0, spendCapCents: null, billingMode: 'live', action: 'fire' } };
     withClients([
-      { clientId: 'bondigoo', name: 'bondigoo', active: false, alwaysOn: false },
+      { clientId: 'northwind', name: 'northwind', active: false, alwaysOn: false },
       { clientId: 'pendpost', name: 'pendpost', active: true, alwaysOn: false },
     ]);
     renderCloud();

@@ -23,7 +23,7 @@ const q = [{ id: 'q1', label: 'Buyers', sources: ['reddit'] }];
 const GERMAN_NOTE = 'Write that line in German.';
 
 // (a) the directive brief replaces the old passive tolerance line.
-const brief = radarScanPrompt(q, 20, 'bondigoo', null, null, null, null, null, null, 'de-CH');
+const brief = radarScanPrompt(q, 20, 'northwind', null, null, null, null, null, null, 'de-CH');
 ok(/LANGUAGE IS NOT OPTIONAL/.test(brief), '(a) the brief commands per-query-language search');
 ok(/infer its language from that query's own keywords/.test(brief), '(a) unset queries are told to infer from keywords');
 ok(/gutefrage\.net/.test(brief) && /de\.quora\.com/.test(brief), '(a) language-native sources are named (gutefrage.net, de.quora.com)');
@@ -33,21 +33,21 @@ ok(!/Only threads in German, French, Italian or English\./.test(brief), '(a) the
 
 // (b) searchLocale (the 10th arg) drives the market-default line.
 ok(/primary market is de-CH\./.test(brief), '(b) searchLocale de-CH surfaces the market-default line');
-const noMarket = radarScanPrompt(q, 20, 'bondigoo'); // legacy call, no searchLocale
+const noMarket = radarScanPrompt(q, 20, 'northwind'); // legacy call, no searchLocale
 ok(!/primary market is/.test(noMarket), '(b) no searchLocale => no market line (status quo)');
 ok(/LANGUAGE IS NOT OPTIONAL/.test(noMarket), '(b) the language command still stands without a searchLocale');
 
 // (c) an explicit per-query lang is surfaced; an unset query prints no language line.
 const withLang = radarScanPrompt(
   [{ id: 'fr1', label: 'FR buyers', lang: 'fr', keywords: ['meilleur planificateur'] }, { id: 'en1', label: 'EN buyers', keywords: ['best scheduler'] }],
-  20, 'bondigoo', null, null, null, null, null, null, 'de-CH',
+  20, 'northwind', null, null, null, null, null, null, 'de-CH',
 );
 ok(/language: fr - search in this language/.test(withLang), '(c) an explicit lang:"fr" surfaces in its query block');
 // The unset (en1) query must NOT get a language line - inference is the brief's job, not a printed default.
 ok(withLang.split('language: fr')[1] && !/language: en\b/.test(withLang), '(c) an unset query prints no language: line');
 
 // (d) back-compat: noteLocale (6th arg) still governs ONLY the closing log line, never the search.
-const noteDe = radarScanPrompt(q, 20, 'bondigoo', null, null, 'de-CH');
+const noteDe = radarScanPrompt(q, 20, 'northwind', null, null, 'de-CH');
 ok(noteDe.includes(GERMAN_NOTE), '(d) noteLocale de-CH still asks the closing log line in German');
 ok(!/primary market is/.test(noteDe), '(d) noteLocale does NOT set a search-language market line');
 const idx = noteDe.indexOf(GERMAN_NOTE);

@@ -1,6 +1,6 @@
 // destination-strip.test.jsx - "which account do these posts go to", stated once.
 //
-// On 2026-07-25 a bondigoo post published onto the pendpost Instagram account. The
+// On 2026-07-25 a second client's post published onto the pendpost Instagram account. The
 // operator approved it with nothing on screen naming the destination: the cards carry a
 // platform GLYPH, which says instagram, not WHICH instagram. These tests pin the three
 // things that make the strip worth trusting - it names the account, it never invents or
@@ -29,16 +29,16 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-// The real shape lib/accounts.mjs returns, with the live bondigoo/pendpost split that
+// The real shape lib/accounts.mjs returns, with the two-client split (client B vs pendpost) that
 // caused the incident: an Instagram account with a handle, one without.
 const withHandle = {
-  meta: { igHandle: 'bondigoo', igUserId: '17841479717835003', pageId: '1126781540525407' },
-  linkedin: { orgUrn: 'urn:li:organization:110418589' },
-  youtube: { channelId: 'UCFnVHisN1YFfk0HlmRsxYtg', handle: '' },
-  x: { handle: '21Funkyy' },
+  meta: { igHandle: 'northwind', igUserId: '17840000000000001', pageId: '100000000000001' },
+  linkedin: { orgUrn: 'urn:li:organization:10000001' },
+  youtube: { channelId: 'UC0000000000000000000001', handle: '' },
+  x: { handle: 'northwind_x' },
 };
 const noHandle = {
-  meta: { igHandle: '', igUserId: '17841479717835003', pageId: '1126781540525407' },
+  meta: { igHandle: '', igUserId: '17840000000000001', pageId: '100000000000001' },
   linkedin: { orgUrn: '' },
   youtube: { channelId: '', handle: '' },
   x: { handle: '' },
@@ -73,14 +73,14 @@ function renderStrip(props, { expanded = true } = {}) {
 
 describe('destinationFor', () => {
   it('prefers a human handle over the machine id', () => {
-    expect(destinationFor('instagram', withHandle)).toEqual({ handle: '@bondigoo', id: '17841479717835003' });
-    expect(destinationFor('x', withHandle)).toEqual({ handle: '@21Funkyy', id: null });
+    expect(destinationFor('instagram', withHandle)).toEqual({ handle: '@northwind', id: '17840000000000001' });
+    expect(destinationFor('x', withHandle)).toEqual({ handle: '@northwind_x', id: null });
   });
 
   it('falls back to the id when there is no handle, never to nothing', () => {
-    expect(destinationFor('instagram', noHandle)).toEqual({ handle: null, id: '17841479717835003' });
+    expect(destinationFor('instagram', noHandle)).toEqual({ handle: null, id: '17840000000000001' });
     // The urn prefix is machine noise; the org number is the identifying part.
-    expect(destinationFor('linkedin', withHandle)).toEqual({ handle: null, id: '110418589' });
+    expect(destinationFor('linkedin', withHandle)).toEqual({ handle: null, id: '10000001' });
   });
 
   it('is null ONLY when the lane has no identifier at all', () => {
@@ -114,22 +114,22 @@ describe('destinationFor', () => {
 describe('DestinationStrip', () => {
   it('names the account for each lane the list contains', () => {
     renderStrip({ platforms: ['instagram', 'x'], accounts: withHandle });
-    expect(screen.getByText('@bondigoo')).toBeInTheDocument();
-    expect(screen.getByText('@21Funkyy')).toBeInTheDocument();
+    expect(screen.getByText('@northwind')).toBeInTheDocument();
+    expect(screen.getByText('@northwind_x')).toBeInTheDocument();
   });
 
   it('names only the lanes in front of the operator', () => {
     renderStrip({ platforms: ['instagram'], accounts: withHandle });
-    expect(screen.queryByText('@21Funkyy')).not.toBeInTheDocument();
+    expect(screen.queryByText('@northwind_x')).not.toBeInTheDocument();
   });
 
   it('renders a long id SHORT, with the full value reachable, never as a bare 17-digit number', () => {
     renderStrip({ platforms: ['instagram'], accounts: noHandle });
-    expect(screen.queryByText('17841479717835003')).not.toBeInTheDocument();
+    expect(screen.queryByText('17840000000000001')).not.toBeInTheDocument();
     // Expanded shows the short id twice: once in the summary line, once as the chip.
-    expect(screen.getAllByText(shortId('17841479717835003')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(shortId('17840000000000001')).length).toBeGreaterThan(0);
     // The unabbreviated truth is still available.
-    expect(screen.getByLabelText(/17841479717835003/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/17840000000000001/)).toBeInTheDocument();
   });
 
   it('connected lanes NEVER render "no account on file"', () => {
@@ -169,7 +169,7 @@ describe('DestinationStrip disclosure', () => {
   it('defaults COLLAPSED to one summary line: handles inline, chips hidden', () => {
     renderStrip({ platforms: ['instagram', 'x'], accounts: withHandle }, { expanded: false });
     const trigger = screen.getByRole('button', { expanded: false });
-    expect(trigger).toHaveTextContent('@bondigoo · @21Funkyy');
+    expect(trigger).toHaveTextContent('@northwind · @northwind_x');
     // The chip strip (each chip carries the full-truth aria-label) is not rendered.
     expect(screen.queryByLabelText(/Instagram:/)).not.toBeInTheDocument();
   });

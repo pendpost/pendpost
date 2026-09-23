@@ -159,9 +159,21 @@ pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a R
 
 Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr, WordPress, and Ghost are live. Reddit, Pinterest, TikTok, and Google Business Profile are in beta. Each engine handles its own auth, publishing, native scheduling, cover/thumbnail mechanics, and read-only insights. Facebook, YouTube, Mastodon, WordPress, and Ghost schedule natively, so those posts fire even when pendpost is off. Instagram, LinkedIn, X, Telegram, Discord, and Nostr have no native scheduling, so due posts are published by the scheduler at their scheduled time.
 
-## Security + privacy
+## Security
 
 pendpost binds `127.0.0.1` (loopback) by default, never phones home, and keeps secrets only in your own `.env` (which is gitignored). See [SECURITY.md](SECURITY.md) for the full posture and how to report a vulnerability.
+
+## Privacy Policy
+
+pendpost runs on your own machine and sends nothing to us (Nomadik GmbH).
+
+- **What it collects:** only what you give it. Plans, drafts, media and activity history live in its local `data/` folder, and your platform credentials live in your own `.env`.
+- **How it uses and stores data:** everything stays on your machine. Content goes out only to the social platforms you connect, to publish the posts you approve.
+- **Third parties:** the MCP client you connect (for example Claude Desktop or Cursor) and its AI model provider see whatever your agent reads through pendpost's tools, under your own account and their terms. Radar reads public posts from the sources you turn on.
+- **Retention:** your data stays until you delete the folder; we hold no copy. The optional 24/7 cloud service keeps plans, encrypted tokens and audit records while you subscribe, and deletes any managed copy after a short safety window once you leave.
+- **Contact:** hello@pendpost.com
+
+The full policy is at [pendpost.com/privacy](https://pendpost.com/privacy).
 
 ## Shaping pendpost
 

@@ -4,14 +4,14 @@
 //
 // The bug this guards: `node scripts/reddit-social.mjs auth` run from a shell sets no
 // PENDPOST_ROOT, so activeRoot() falls to data/clients/<activeClientId>. With
-// activeClientId=bondigoo, a ceremony meant for pendpost silently reads/writes
-// bondigoo's .env. lib/cli-client.mjs enforceCeremonyClient closes that: an explicit
+// a second client active, a ceremony meant for pendpost silently reads/writes
+// that client's .env. lib/cli-client.mjs enforceCeremonyClient closes that: an explicit
 // --client is honored (and the process is re-rooted at it), and with no client and no
 // TTY to confirm on the ceremony REFUSES rather than touching the active client.
 //
 // Both cases spawn the REAL reddit engine NON-interactively (spawnSync, piped stdio,
 // so process.stdin.isTTY is undefined) for deterministic behavior. PENDPOST_ROOT is a
-// throwaway workspace whose clients.json makes bondigoo the active client - exactly the
+// throwaway workspace whose clients.json makes northwind the active client - exactly the
 // production hazard, in a temp dir. PENDPOST_MODE=mock keeps `connect` offline (the verb
 // is not mockable, so cmdConnect still runs and writes; only its live validation is skipped).
 
@@ -42,18 +42,18 @@ function run(args, extraEnv = {}) {
 }
 
 try {
-  // A throwaway multi-client registry: bondigoo is ACTIVE (the wrong target).
+  // A throwaway multi-client registry: northwind is ACTIVE (the wrong target).
   fs.mkdirSync(DATA, { recursive: true });
   fs.writeFileSync(path.join(DATA, 'clients.json'), JSON.stringify({
-    activeClientId: 'bondigoo',
+    activeClientId: 'northwind',
     clients: [
       { id: 'default', displayName: 'Default', status: 'active' },
-      { id: 'bondigoo', displayName: 'bondigoo', status: 'active' },
+      { id: 'northwind', displayName: 'northwind', status: 'active' },
       { id: 'pendpost', displayName: 'pendpost', status: 'active' },
     ],
   }));
 
-  // ===== A. explicit --client is honored, even though activeClientId=bondigoo =====
+  // ===== A. explicit --client is honored, even though activeClientId=northwind =====
   const creds = {
     REDDIT_CLIENT_ID: 'fake-client-id',
     REDDIT_CLIENT_SECRET: 'fake-secret-ends-with=', // proves '=' in a value round-trips
@@ -68,17 +68,17 @@ try {
   ok(/^REDDIT_CLIENT_ID=fake-client-id$/m.test(written), 'pendpost/.env carries REDDIT_CLIENT_ID');
   ok(/^REDDIT_CLIENT_SECRET=fake-secret-ends-with=$/m.test(written), "a secret value containing '=' round-trips");
   ok(/^REDDIT_SUBREDDIT=SocialMediaMarketing$/m.test(written), 'pendpost/.env carries the target subreddit');
-  ok(!fs.existsSync(clientEnv('bondigoo')), 'the ACTIVE client bondigoo/.env was NOT written');
+  ok(!fs.existsSync(clientEnv('northwind')), 'the ACTIVE client northwind/.env was NOT written');
 
   // ===== B. no --client, no TTY to confirm on -> REFUSE, write nothing =====
   const b = run(['connect']); // no --client, piped stdio => not a TTY
   ok(b.status === 2, `bare connect refuses with exit 2 (got ${b.status})`);
   ok(/refus/i.test(b.stderr || ''), 'refusal names why it stopped (stderr mentions refusing)');
-  ok(/bondigoo/.test(b.stderr || ''), 'refusal surfaces the active client it would have hit (bondigoo)');
-  ok(!fs.existsSync(clientEnv('bondigoo')), 'still nothing written to bondigoo/.env after the refusal');
+  ok(/northwind/.test(b.stderr || ''), 'refusal surfaces the active client it would have hit (northwind)');
+  ok(!fs.existsSync(clientEnv('northwind')), 'still nothing written to northwind/.env after the refusal');
 
   // ===== C. NON-ceremony verbs: an explicit --client is honored, never ignored =====
-  // The 2026-08-20 footgun: `set-thumbnail --client bondigoo` silently ran against
+  // The 2026-08-20 footgun: `set-thumbnail --client northwind` silently ran against
   // the repo-root workspace because only CEREMONY_VERBS re-rooted. An explicit
   // target on ANY verb must now re-root (visible via the [info] targeting line)...
   const c = run(['status', '--client', 'pendpost']);

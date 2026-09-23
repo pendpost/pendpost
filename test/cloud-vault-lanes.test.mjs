@@ -26,7 +26,7 @@ fs.mkdirSync(path.join(WS, 'data', 'plans'), { recursive: true });
 fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.stringify({ plans: [] }, null, 2));
 
 const API_KEY = 'ppc_key_vault_lanes_0001';
-// Representative, non-real credentials (no bondigoo / real channel ids - open-core clean).
+// Representative, non-real credentials (no real client names / channel ids - open-core clean).
 const TG_TOKEN = '111222333:AA-fake-bot-token-value';
 const TG_CHANNEL = '@example_channel';
 const DC_ID = '987654321098765432';
