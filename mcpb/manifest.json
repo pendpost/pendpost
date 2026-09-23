@@ -7,7 +7,8 @@
   "long_description": "pendpost is a free, MIT-licensed, local-first social media planner. Your AI agent drafts and schedules posts for Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr, WordPress and Ghost, and nothing publishes until you approve it. An agent can never approve its own post. It runs on your machine, binds 127.0.0.1, and keeps your platform credentials in your own .env.",
   "author": {
     "name": "Nomadik GmbH",
-    "url": "https://pendpost.com"
+    "email": "hello@pendpost.com",
+    "url": "https://github.com/pendpost"
   },
   "repository": {
     "type": "git",
