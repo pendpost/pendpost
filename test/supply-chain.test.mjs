@@ -11,6 +11,7 @@
 // Zero-dep node:assert. This test reads files only (no PENDPOST_ROOT needed): it
 // asserts repository invariants, not per-instance behaviour.
 import assert from 'node:assert';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -94,4 +95,47 @@ ok(files.includes('AGENTS.md'), 'package.json files ships the AGENTS.md contract
 ok(!files.some((f) => /(^|\/)\.env$/.test(f)),
   'package.json files ships no raw .env (only .env.example is allowed)');
 
-console.log(`[supply-chain] OK - zero runtime deps + version parity + tight publish allowlist across package.json, lib/util.mjs, CITATION.cff, CHANGELOG.md (${pass} assertions).`);
+// ---- (d) no private client name anywhere in the npm `files` set ------------
+// 2.6.0 and 2.6.1 shipped code comments naming a private client (incident notes).
+// Walk exactly what npm packs (every `files` entry that exists on disk, plus
+// package.json) and fail on any path or text line that names one. The names are
+// stored as sha256 hashes, not literals: this file ships in the public repo, and a
+// guard that spells out what it guards would be the leak itself. Matching is per
+// word token (split on non-alphanumerics and camelCase), compared whole AND by its
+// prefix of the name's length, so "<name>'s", "<name>-platform" and "<name>Id" all
+// hit. ops/publish-oss.mjs runs the literal version of this over the public mirror.
+const PRIVATE_NAME_HASHES = [
+  { len: 8, sha256: '6d5f5d25ce12a4105a3d5de560a9506144ce0406247cfa4052db4c545630500d' },
+];
+const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
+const seen = new Map();
+const isPrivate = (token) => {
+  const t = token.toLowerCase();
+  if (!seen.has(t)) seen.set(t, PRIVATE_NAME_HASHES.some((h) => t.length >= h.len && sha(t.slice(0, h.len)) === h.sha256));
+  return seen.get(t);
+};
+const namesPrivate = (text) => text.split(/[^A-Za-z0-9]+/)
+  .flatMap((w) => w.split(/(?<=[a-z0-9])(?=[A-Z])/))
+  .some(isPrivate);
+const SKIP = new Set(['node_modules', '.git', '.DS_Store']);
+const packed = [];
+const collect = (rel) => {
+  const abs = path.join(REPO, rel);
+  if (!fs.existsSync(abs)) return;
+  if (fs.statSync(abs).isDirectory()) {
+    for (const e of fs.readdirSync(abs)) if (!SKIP.has(e)) collect(path.posix.join(rel, e));
+  } else packed.push(rel);
+};
+for (const f of new Set(['package.json', ...files])) collect(f.replace(/\/$/, ''));
+const nameHits = [];
+for (const rel of packed) {
+  if (namesPrivate(rel)) nameHits.push(`${rel} (path)`);
+  const buf = fs.readFileSync(path.join(REPO, rel));
+  if (buf.subarray(0, 8192).includes(0)) continue; // binary (media)
+  buf.toString('utf8').split('\n').forEach((line, i) => { if (namesPrivate(line)) nameHits.push(`${rel}:${i + 1}`); });
+}
+ok(packed.length > 0 && packed.includes('lib/util.mjs'), `the npm files walk found the packed set (${packed.length} files)`);
+ok(nameHits.length === 0,
+  `no private client name in the npm files set (hits: ${nameHits.slice(0, 20).join(', ') || 'none'}${nameHits.length > 20 ? ` and ${nameHits.length - 20} more` : ''})`);
+
+console.log(`[supply-chain] OK - zero runtime deps + version parity + tight publish allowlist + no private client names across package.json, lib/util.mjs, CITATION.cff, CHANGELOG.md (${pass} assertions).`);

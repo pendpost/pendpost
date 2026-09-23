@@ -46,7 +46,7 @@ try {
     'the default brand is empty: facts "", isSupplyOnly false, audience "", notForClaims "" - the pendpost tenant stays on the fallback');
 
   // ===== (config) brand.facts round-trips =====
-  const FACTS = 'bondigoo: a Swiss marketplace that connects independent Coaches with people who want coaching. Coaches list their offer and get paid through a secure payment flow.';
+  const FACTS = 'northwind: a Swiss marketplace that connects independent Coaches with people who want coaching. Coaches list their offer and get paid through a secure payment flow.';
   const w1 = set({ enabled: true, brand: { facts: FACTS } });
   ok(w1.ok === true, 'a brand.facts write is accepted');
   ok(radarOf().brand.facts === FACTS, 'brand.facts round-trips intact');
@@ -70,7 +70,7 @@ try {
 
   // ===== (draft) brand.facts REPLACES PRODUCT_FACTS =====
   const sig = [{ source: 'reddit', externalId: 't3_1', url: 'https://reddit.com/r/x/1', text: 'how do I find coaching clients?' }];
-  const draftBrand = radarDraftPrompt(sig, { brand: { facts: FACTS }, campaign: 'c1', clientId: 'bondigoo' });
+  const draftBrand = radarDraftPrompt(sig, { brand: { facts: FACTS }, campaign: 'c1', clientId: 'northwind' });
   ok(draftBrand.includes(FACTS), 'the draft prompt carries the tenant fact sheet');
   ok(!draftBrand.includes(PENDPOST_MARKER), 'and pendpost\'s own PRODUCT_FACTS is GONE from a non-pendpost draft - the whole drafted:0 root cause');
 
@@ -81,7 +81,7 @@ try {
   ok(draftEmpty.includes(PENDPOST_MARKER), 'an empty facts string also falls back to PRODUCT_FACTS');
 
   // ===== (scan) brand injects a top-of-prompt block + a supply-vs-demand line =====
-  const scanBrand = radarScanPrompt([{ id: 'q1', label: 'S' }], 20, 'bondigoo', null, null, null,
+  const scanBrand = radarScanPrompt([{ id: 'q1', label: 'S' }], 20, 'northwind', null, null, null,
     { facts: FACTS, isSupplyOnly: true, audience: 'Coaches who want to fill their practice' });
   ok(scanBrand.includes(FACTS), 'the scan prompt carries the tenant fact sheet');
   ok(/THE BRAND|THE PRODUCT/.test(scanBrand), 'the scan prompt names a THE BRAND / THE PRODUCT block');
@@ -94,11 +94,11 @@ try {
   ok(!scanPlain.includes(PENDPOST_MARKER), 'and it never leaks PRODUCT_FACTS into the scan (which never had product identity)');
 
   // ===== (leak) a folded GEO footprint_log instruction carries the bound clientId =====
-  const scanGeo = radarScanPrompt([{ id: 'q1', label: 'S' }], 20, 'bondigoo', null,
-    { questions: ['beste Coaching Plattform Schweiz'], brandName: 'bondigoo' });
+  const scanGeo = radarScanPrompt([{ id: 'q1', label: 'S' }], 20, 'northwind', null,
+    { questions: ['beste Coaching Plattform Schweiz'], brandName: 'northwind' });
   ok(/radar_footprint_log/.test(scanGeo), 'the folded GEO check is present');
   const footprintZone = scanGeo.slice(scanGeo.indexOf('radar_footprint_log'));
-  ok(/clientId:\s*"bondigoo"/.test(footprintZone), 'the footprint_log call is told to pass clientId - the exact leak that filed pendpost rows under bondigoo');
+  ok(/clientId:\s*"northwind"/.test(footprintZone), 'the footprint_log call is told to pass clientId - the exact leak that filed pendpost rows under a second client');
 
   console.log(`[radar-brand] OK - brand round-trips + recurses + validates + is agent-writable; brand.facts replaces PRODUCT_FACTS in the draft and falls back when empty; the scan gains a top-of-prompt brand block with a supply-vs-demand line only when set; folded GEO footprint carries clientId (${pass} assertions).`);
 } finally {

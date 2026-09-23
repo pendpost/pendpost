@@ -246,7 +246,7 @@ try {
   // The child is a SEPARATE PROCESS: it does not inherit withClient, so its radar_ingest call
   // binds to whatever client is merely ACTIVE unless the prompt tells it which one it is
   // working for. On the first real run this cost an entire 6-minute job: scoped to `pendpost`,
-  // bound to `bondigoo`, queryId unresolvable, four real findings thrown away. The near-miss is
+  // bound to the active second client, queryId unresolvable, four real findings thrown away. The near-miss is
   // the worse half - had the active client owned a query with the same id, one brand's research
   // would have landed silently in another brand's feed.
   const { radarScanPrompt } = await import('../lib/radar-prompt.mjs');
@@ -272,7 +272,7 @@ try {
   ok(!AGENT_SCAN_TOOLS.includes('mcp__pendpost__config_get'), 'config_get stays OFF the allow-list - the query is in the prompt, and a research child gets no config read');
 
   // ===== THE PER-LANE BUDGET FOLLOWS THE WORK (incident 2026-09-04) =====
-  // bondigoo's saved queries grew from 4 to 7 and every manual lane child timed out: five
+  // One client's saved queries grew from 4 to 7 and every manual lane child timed out: five
   // one-source spawns at 180s each, every one told to research all seven queries. The lanes now
   // pack into as many spawns as fit under the cap, so each child gets a slice it can use.
   const recordBin = path.join(WS, 'record-claude');

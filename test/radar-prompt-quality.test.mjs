@@ -25,7 +25,7 @@ try {
   const AGENT_LANES = ['x', 'youtube', 'nostr', 'linkedin', 'instagram', 'quora'];
 
   // ---- (1) operators per lane, scoped ---------------------------------------
-  const full = radarScanPrompt(Q, 20, 'bondigoo', AGENT_LANES, null, 'de-CH', { facts: 'A Swiss coaching marketplace.' }, 90, 5 * 60_000);
+  const full = radarScanPrompt(Q, 20, 'northwind', AGENT_LANES, null, 'de-CH', { facts: 'A Swiss coaching marketplace.' }, 90, 5 * 60_000);
   ok(/\nWHERE TO LOOK\n/.test(full), 'the brief carries a WHERE TO LOOK block');
   ok(/site:quora\.com/.test(full), 'quora in scope -> site:quora.com');
   ok(/site:youtube\.com\/watch \(the video page and its comments\)/.test(full), 'youtube in scope -> site:youtube.com/watch, naming the watch page AND its comments');
@@ -33,11 +33,11 @@ try {
   ok(/site:linkedin\.com\/posts/.test(full), 'linkedin in scope -> site:linkedin.com/posts (the operator that was already in the source notes is now also in the lane list)');
   ok(!/site:reddit\.com/.test(full), 'reddit NOT in scope (the engine owns it) -> no site:reddit.com operator, nothing invites the child onto reddit');
 
-  const linkedinOnly = radarScanPrompt(Q, 20, 'bondigoo', ['linkedin'], null, null, null, 90, 5 * 60_000);
+  const linkedinOnly = radarScanPrompt(Q, 20, 'northwind', ['linkedin'], null, null, null, 90, 5 * 60_000);
   ok(/site:linkedin\.com\/posts/.test(linkedinOnly) && !/site:quora\.com/.test(linkedinOnly) && !/site:youtube\.com/.test(linkedinOnly) && !/site:x\.com/.test(linkedinOnly),
     'a one-lane brief carries exactly that lane\'s operator - the operator list follows the scope, never the capability table');
 
-  const legacy = radarScanPrompt(Q, 20, 'bondigoo');
+  const legacy = radarScanPrompt(Q, 20, 'northwind');
   ok(/site:reddit\.com \(read-only discovery; report the thread, never post\)/.test(legacy),
     'an older caller passing no scope (full capability set) gets the reddit operator, marked read-only discovery');
 
@@ -63,18 +63,18 @@ try {
 
   // ---- lane-bound hints follow the lane -------------------------------------
   const QS = [{ id: 'coach-get-clients-de', label: 'Coach Kunden (DE)', keywords: ['Coach Kunden finden'], subreddits: ['r/Coaching', 'r/Selbststaendig'], instances: ['mastodon.social'] }];
-  const noReddit = radarScanPrompt(QS, 30, 'bondigoo', AGENT_LANES);
+  const noReddit = radarScanPrompt(QS, 30, 'northwind', AGENT_LANES);
   ok(!noReddit.includes('subreddits:'), 'a query\'s saved subreddits are NOT printed when reddit is out of scope (a skipped lane gets no invitation)');
   ok(!noReddit.includes('instances:'), 'a query\'s saved mastodon instances are NOT printed when mastodon is out of scope');
-  const withReddit = radarScanPrompt(QS, 30, 'bondigoo', ['reddit', 'mastodon', ...AGENT_LANES]);
+  const withReddit = radarScanPrompt(QS, 30, 'northwind', ['reddit', 'mastodon', ...AGENT_LANES]);
   ok(withReddit.includes('subreddits: r/Coaching, r/Selbststaendig'), 'the same subreddits ARE printed once reddit is in scope');
   ok(withReddit.includes('instances: mastodon.social'), 'the same instances ARE printed once mastodon is in scope');
 
   // ---- out-of-scope fence ------------------------------------------------------
-  const fenced = radarScanPrompt(QS, 30, 'bondigoo', AGENT_LANES);
+  const fenced = radarScanPrompt(QS, 30, 'northwind', AGENT_LANES);
   ok(/Out of scope for this run: [^\n]*\breddit\b/.test(fenced), 'the brief names reddit as OUT OF SCOPE when the lane is skipped (the query brief no longer speaks louder than the scope)');
   ok(/Out of scope for this run: [^\n]*\bbluesky\b/.test(fenced) && /\bmastodon\b/.test(fenced.slice(fenced.indexOf('Out of scope'))), 'bluesky and mastodon are fenced out too');
-  const unfenced = radarScanPrompt(QS, 30, 'bondigoo', ['reddit', 'bluesky', 'mastodon', 'hackernews', ...AGENT_LANES]);
+  const unfenced = radarScanPrompt(QS, 30, 'northwind', ['reddit', 'bluesky', 'mastodon', 'hackernews', ...AGENT_LANES]);
   ok(!unfenced.includes('Out of scope for this run'), 'no fence line when every lane is in scope');
 
   assert.ok(failures === 0, `${failures} assertion(s) failed`);

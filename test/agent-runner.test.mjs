@@ -309,7 +309,7 @@ process.exit(0);
   process.env[BIN_VAR] = fakeBin;
 
   // ===== (12) the per-lane budget is sized to the WORK, and the total stays under the cap =====
-  // Incident 2026-09-04 (bondigoo): the saved queries grew from 4 to 7 and every manual lane
+  // Incident 2026-09-04 (a second client): the saved queries grew from 4 to 7 and every manual lane
   // child (5 lanes x 180s) timed out - each child had to research all 7 queries in 3 minutes.
   // The planner derives what one lane needs from the query count, then packs lanes into as
   // many spawns as fit under AGENT_TIMEOUT_MS. Total wall-clock never exceeds the cap; a lane

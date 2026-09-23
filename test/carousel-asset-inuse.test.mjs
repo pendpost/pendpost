@@ -6,7 +6,7 @@
 // Both in-use sites built their path set from the SINGLE media.path
 // (lib/assets.mjs scanAssets usedBy, and lib/writes.mjs usingPosts, which
 // delete_asset and rename_asset share). A carousel's media.path is always null: its
-// slides live on media.items[]. 19 real bondigoo slide files were deletable this way.
+// slides live on media.items[]. 19 real client slide files were deletable this way.
 //
 // The fix is ONE type-gated path set (plans.postMediaPaths) used at both sites. The
 // `type === 'carousel'` gate is load-bearing beyond this unit: it is what makes the

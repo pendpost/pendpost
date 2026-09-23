@@ -3,7 +3,7 @@
 // poll the cloud on EVERY tick forever, because cloudInFlight() counted RELIC markers: a
 // cloudAccepted / cloudFailures / cloudRetriggered entry for a post that has long since posted (or
 // vanished from the plan) is never cleared, so the in-flight gate stayed permanently true. Live
-// evidence 2026-07-29: 24 acks + 9 failures (pendpost) and 18 + 1 (bondigoo), most of them relics,
+// evidence 2026-07-29: 24 acks + 9 failures (pendpost) and 18 + 1 (a second client), most of them relics,
 // driving ~2,880 PUT /v1/brands a day against the cloud (each one a Neon write AND a live Stripe
 // subscriptions.list).
 //

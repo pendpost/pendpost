@@ -1,4 +1,4 @@
-// Input.jsx - the shared floating-label text input (bondigoo's peer +
+// Input.jsx - the shared floating-label text input (the sibling design system's peer +
 // placeholder-shown pattern, adapted to pendpost's ring-hairline fields).
 //
 // The label lives INSIDE the field: full-size in the middle while the field is
@@ -6,7 +6,7 @@
 // needs an example placeholder ("Acme Retail") and never loses its name while
 // filled. The float is CSS-only: `placeholder=" "` is load-bearing, because
 // :placeholder-shown is true exactly while the field is empty - no JS state.
-// Unlike bondigoo's border-punching pill, the label floats INSIDE the fill, so
+// Unlike that design system's border-punching pill, the label floats INSIDE the fill, so
 // it works over any surface and needs no background masking.
 //
 // Error/hint render below the field with the same aria contract the hand-rolled

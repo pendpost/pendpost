@@ -46,7 +46,7 @@ try {
   await createCampaign({ id: 'ctx', note: 'radar replies', timezone: 'UTC', actor: 'owner' });
   const getPost = (id) => (loadPlanStore().campaigns.find((c) => c.id === 'ctx')?.posts || []).find((p) => p.id === id);
 
-  // Seed one signal exactly the way bondigoo's real feed was seeded: an agent submitted it.
+  // Seed one signal exactly the way a real client feed was seeded: an agent submitted it.
   const ing = await radarIngest({
     actor: 'agent:claude',
     queryId: 'q1',

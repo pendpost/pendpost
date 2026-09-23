@@ -7,7 +7,7 @@ import { useT } from '../../lib/i18n.js';
 // DestinationStrip - "posts from this project publish to THESE accounts", stated once
 // per surface.
 //
-// WHY THIS EXISTS. On 2026-07-25 a bondigoo post published onto the pendpost Instagram
+// WHY THIS EXISTS. On 2026-07-25 a second client's post published onto the pendpost Instagram
 // account. The owner approved it with no way to see where it would land: the approval
 // cards show a platform GLYPH, which says instagram, not WHICH instagram. Nothing in the
 // UI answered "which account is this going to".

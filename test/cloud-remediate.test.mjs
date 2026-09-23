@@ -29,7 +29,7 @@ fs.writeFileSync(
   [
     'PENDPOST_CLOUD_API_KEY=ppc_test_secret_abcdef0123456789',
     'LINKEDIN_ACCESS_TOKEN=li_access_token_value',
-    'LINKEDIN_ORG_URN=urn:li:organization:110418589',
+    'LINKEDIN_ORG_URN=urn:li:organization:10000001',
     `LINKEDIN_TOKEN_EXPIRES_AT=${Date.now() + 40 * 24 * 3600 * 1000}`,
   ].join('\n') + '\n',
 );

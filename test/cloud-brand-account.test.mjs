@@ -1,6 +1,6 @@
 // cloud-brand-account.test.mjs - one workspace, TWO brands, distinct platform accounts.
 //
-// THE TEST THAT WAS MISSING. On 2026-07-25 a bondigoo Instagram post published onto the
+// THE TEST THAT WAS MISSING. On 2026-07-25 a second client's Instagram post published onto the
 // pendpost Instagram account. Both brands live in one cloud workspace; the vault was
 // keyed on (workspace, platform) with no brand, and the worker resolved the account with
 // ORDER BY created_at DESC LIMIT 1, so whichever brand sealed its token last owned the

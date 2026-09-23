@@ -4,17 +4,45 @@
   "display_name": "pendpost",
   "version": "2.6.1",
   "description": "An AI agent drafts and schedules your social media posts; you approve before anything publishes. Local-first, MIT.",
-  "author": { "name": "Nomadik GmbH", "url": "https://pendpost.com" },
+  "long_description": "pendpost is a free, MIT-licensed, local-first social media planner. Your AI agent drafts and schedules posts for Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, Nostr, WordPress and Ghost, and nothing publishes until you approve it. An agent can never approve its own post. It runs on your machine, binds 127.0.0.1, and keeps your platform credentials in your own .env.",
+  "author": {
+    "name": "Nomadik GmbH",
+    "url": "https://pendpost.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pendpost/pendpost"
+  },
   "homepage": "https://pendpost.com",
   "documentation": "https://docs.pendpost.com",
-  "privacy_policies": ["https://pendpost.com/privacy"],
+  "support": "https://github.com/pendpost/pendpost/issues",
+  "icon": "icon.png",
+  "privacy_policies": [
+    "https://pendpost.com/privacy"
+  ],
+  "license": "MIT",
+  "keywords": [
+    "social media",
+    "scheduler",
+    "approval",
+    "instagram",
+    "linkedin",
+    "mastodon",
+    "local-first"
+  ],
   "server": {
     "type": "node",
     "entry_point": "server/index.mjs",
     "mcp_config": {
       "command": "npx",
-      "args": ["-y", "pendpost", "--stdio"],
-      "env": { "PENDPOST_ROOT": "${user_config.workspace}" }
+      "args": [
+        "-y",
+        "pendpost",
+        "--stdio"
+      ],
+      "env": {
+        "PENDPOST_ROOT": "${user_config.workspace}"
+      }
     }
   },
   "user_config": {
