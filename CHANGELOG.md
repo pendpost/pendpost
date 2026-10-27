@@ -26,6 +26,7 @@ Facebook Pages get photo and carousel posts, drafted and checked the same way as
 - A carousel whose slides are listed by file name in the plan now reaches the cloud; before, the upload looked in the wrong folder and skipped the post.
 - On a brand the always-on cloud manages, posts the cloud cannot send (Facebook photo posts, and Instagram carousels and feed images unless the cloud carries them) went out about 20 minutes late, because pendpost first waited for the cloud. They now go out on time from your computer.
 - The docs and quickstart no longer say pendpost falls back to mock mode when no credentials are set. Since 2.7.0 pendpost runs live unless you set `PENDPOST_MODE=mock`; a lane with no credential is live-but-unauthenticated and waits for you to connect it rather than quietly faking a publish. The quickstart, the mock-mode and credentials pages, `CONTRIBUTING.md`, `SUPPORT.md`, `AGENTS.md` and the website now say so. Reported in GitHub issue #36.
+- The dashboard build works again. An unintended `tailwindcss` v4 bump had broken `npm run build` (the app's PostCSS and Tailwind config target v3); pinned `tailwindcss` back to v3 to match the config.
 
 ## [2.7.0] - 2026-10-14
 
