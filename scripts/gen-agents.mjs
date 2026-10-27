@@ -60,9 +60,11 @@ sections at the end are generated from lib/playbooks.mjs.
 
 ## Mock-first
 
-With no credentials, pendpost runs the full draft -> approve -> schedule ->
-publish -> insights loop in mock mode (no network; nothing leaves the machine).
-Exercise everything here before connecting a real platform.
+With \`PENDPOST_MODE=mock\`, pendpost runs the full draft -> approve -> schedule ->
+publish -> insights loop through the credential-free mock driver (no network;
+nothing leaves the machine). Exercise everything there before connecting a real
+platform. Without it pendpost is live: a lane with no credential is
+live-but-unauthenticated and waits to be connected rather than publishing.
 
 ## Connecting as an agent
 

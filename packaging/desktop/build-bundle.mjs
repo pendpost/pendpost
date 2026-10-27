@@ -37,8 +37,8 @@ export const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 // The pinned Node runtime. A specific patch (not "latest") so the bundle is
 // reproducible and the SHASUMS256 verification below is meaningful; bump
-// deliberately. Node 20 is the active LTS and matches .nvmrc / the CI matrix.
-export const NODE_VERSION = '20.18.1';
+// deliberately. Node 22 is the active LTS and matches .nvmrc / the CI matrix.
+export const NODE_VERSION = '22.23.4';
 
 const NODE_ASSET = {
   'darwin-x64': { name: `node-v${NODE_VERSION}-darwin-x64.tar.gz`, bin: `node-v${NODE_VERSION}-darwin-x64/bin/node` },

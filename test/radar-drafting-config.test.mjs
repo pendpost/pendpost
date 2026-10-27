@@ -36,10 +36,15 @@ try {
   const fresh = radarOf();
   ok(fresh.drafting && fresh.drafting.minScore === 30 && fresh.drafting.maxPerRun === 20,
     'RADAR_DEFAULTS presents drafting { minScore:30, maxPerRun:20 } on a fresh read (generous volume, per owner decision 2)');
+  ok(fresh.drafting.enabled === true,
+    'RADAR_DEFAULTS presents drafting.enabled true by default (issue #37: drafting is on unless turned off, so behaviour is unchanged)');
   ok(RADAR_OWNER_ONLY_KEYS.includes('drafting'),
     'drafting is in RADAR_OWNER_ONLY_KEYS - unattended volume policy is owner-authorized');
 
   // ===== (1) the validator =====
+  ok(set({ drafting: { enabled: false } }).ok === true, 'a partial { enabled:false } write is accepted (issue #37: turn drafting off, keep scoring)');
+  ok(set({ drafting: { enabled: true } }).ok === true, 'a partial { enabled:true } write is accepted');
+  ok(set({ drafting: { enabled: 'no' } }).code === 'invalid_input', 'a non-boolean enabled is refused');
   ok(set({ drafting: { minScore: 50 } }).ok === true, 'a partial { minScore } write is accepted');
   ok(set({ drafting: { maxPerRun: 5 } }).ok === true, 'a partial { maxPerRun } write is accepted');
   ok(set({ drafting: {} }).ok === true, 'an empty drafting partial is accepted (a no-op merge)');
@@ -83,14 +88,23 @@ try {
   ok(radarOf().drafting.minScore === 40 && radarOf().drafting.maxPerRun === 7,
     'and the reverse partial preserves minScore');
 
+  // (3b-enabled) the enabled flag merges like its siblings: turning drafting off must not wipe
+  // minScore/maxPerRun, and a later threshold write must not silently turn drafting back on.
+  ok(set({ drafting: { enabled: false } }).ok === true, 'owner turns drafting off');
+  ok(radarOf().drafting.enabled === false && radarOf().drafting.minScore === 40 && radarOf().drafting.maxPerRun === 7,
+    'the enabled write preserved minScore/maxPerRun (the nested shallow-merge covers the new key)');
+  ok(set({ drafting: { minScore: 55 } }).ok === true, 'a later partial { minScore } write succeeds');
+  ok(radarOf().drafting.enabled === false && radarOf().drafting.minScore === 55,
+    'and it did NOT wipe enabled:false (a threshold edit never re-enables drafting)');
+
   // (3c) readPosting presents the FULL shape from a PARTIAL store: hand-persist what an
   // older build (or a hand edit) might hold - drafting with only one key - and read it back.
   const stored = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   stored.radar.drafting = { minScore: 65 };
   fs.writeFileSync(configPath, JSON.stringify(stored, null, 2));
   const partial = radarOf();
-  ok(partial.drafting.minScore === 65 && partial.drafting.maxPerRun === 20,
-    'readPosting re-merges a PARTIAL persisted drafting onto the defaults - a reader never sees maxPerRun undefined');
+  ok(partial.drafting.minScore === 65 && partial.drafting.maxPerRun === 20 && partial.drafting.enabled === true,
+    'readPosting re-merges a PARTIAL persisted drafting onto the defaults - a reader never sees maxPerRun or enabled undefined');
 
   // The Studio read-modify-write echo still saves (the no-bricked-install rule).
   const echo = setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: partial } } });

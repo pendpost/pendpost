@@ -152,6 +152,31 @@ describe('PostDetail held post: Try again is the primary action', () => {
   });
 });
 
+// Critic round 2 #3 (issue #7): a post parked publish_unconfirmed (Facebook never confirmed
+// the publish, the Page check could not find it). The server answers the first retry with
+// needs_confirm + error publish_unconfirmed; the second confirm must say what continuing
+// does (no Page check), not the native-schedule copy.
+describe('PostDetail Try again on an unconfirmed Facebook publish', () => {
+  it('asks with the unconfirmed copy, then retries with confirm', async () => {
+    const user = userEvent.setup();
+    const unconfirmedPost = {
+      ...heldPost, id: 'p3', platforms: ['facebook'],
+      publishHold: { at: '2026-06-01T10:03:00Z', lane: 'facebook', code: 'publish_unconfirmed', message: 'Facebook did not confirm whether the post went live.' },
+      lastFailure: { lane: 'facebook', at: '2026-06-01T10:03:00Z', code: 'publish_unconfirmed', message: 'Facebook did not confirm whether the post went live.', terminal: true },
+    };
+    reschedulePostMock.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('needs confirm'), { code: 'needs_confirm', error: 'publish_unconfirmed' })));
+    renderDetail(unconfirmedPost);
+    await user.click(screen.getByRole('button', { name: /clear the block and publish/i }));
+    const first = await screen.findByRole('dialog', { name: /try again\?/i });
+    await user.click(within(first).getByRole('button', { name: /try again/i }));
+    const second = await screen.findByText(/publishes the post again without checking the Page/i);
+    expect(second).toBeInTheDocument();
+    expect(screen.queryByText(/natively scheduled/i)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /continue/i }));
+    await waitFor(() => expect(reschedulePostMock).toHaveBeenLastCalledWith('launch', 'p3', unconfirmedPost.scheduledAt, true));
+  });
+});
+
 describe('PostDetail terminal failures without a retry path keep mark-as-posted', () => {
   it('cloud-terminal (no local hold): banner keeps "post it yourself" + mark as posted', () => {
     renderDetail(cloudTerminalPost);

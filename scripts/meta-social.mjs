@@ -3,7 +3,10 @@
  * meta-social.mjs - direct Meta (Facebook + Instagram) scheduling, no third-party service.
  *
  * Facebook: native scheduled posts via Graph API (published=false + scheduled_publish_time),
- *           which appear in the Meta Business Suite Planner for review.
+ *           which appear in the Meta Business Suite Planner for review. Since issue #7 the
+ *           FB half publishes three post types: a full-bleed reel (type=reel, video_reels),
+ *           a single-photo Page post (type=image) and a multi-photo Page post
+ *           (type=carousel, image slides only) - see publishFacebookPhotos.
  * Instagram: Meta exposes NO scheduling API, so IG entries are published at their due time
  *            by re-running `publish-due` (driven by a one-time Claude scheduled task).
  *
@@ -49,6 +52,7 @@ import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
 import { avSyncBlocker, avSyncBlockRow, probeMedia, findCoverSibling } from '../lib/assets.mjs';
 import { effectivePublicUrl, effectiveSlideUrl, classifyMediaProbe, probeMediaUrl, deadMediaUrlDiagnosis } from '../lib/public-media.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
+import { FACEBOOK_PHOTO_TYPES, fbPhotoFileProblem } from '../lib/capabilities.mjs';
 import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 
@@ -202,7 +206,50 @@ async function igResumableUpload(containerId, filePath, token) {
 // video_state accepts DRAFT (private, reviewable), PUBLISHED (now), or SCHEDULED
 // (+ scheduled_publish_time -> appears in the Planner, Meta-fired).
 
-async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, videoState, scheduledAt }) {
+// Contract C3 (revised after critic round 1): what happened to a reel whose finish call
+// ended without a verdict? The reel is keyed by OUR video id (minted by our own start
+// call), so it needs no caption match; its own status decides. Meta's Reels Publishing
+// guide gives status.video_status (ready / processing / error / expired / upload_failed /
+// ...) and three phases, each with a status (not_started / in_progress / complete(d) /
+// error); publishing_phase also carries publish_status (draft / published / scheduled /
+// error). The guide does not say how a finished-but-processing reel reads, so the rule
+// only ADOPTS on positive evidence that the publish took:
+//   - 'adopt'    published === true, or publish_status published/scheduled, or the
+//                publishing phase in_progress or complete(d);
+//   - 'refinish' the video exists, is the Page's own, is in no error state, its upload is
+//                complete, but nothing shows the publish took (a draft): finish the SAME
+//                video id again. A finish on our own video cannot create a second reel,
+//                whereas adopting a draft would lose the post;
+//   - 'fresh'    the video is gone, failed (error / expired / upload_failed or a phase
+//                error) or never finished uploading: publish afresh;
+//   - throws     the video cannot be read, or is not the Page's own (publish_unconfirmed).
+const FAILED_VIDEO_STATUS = new Set(['error', 'expired', 'upload_failed']);
+const PHASE_DONE = new Set(['complete', 'completed']);
+async function fbReelState(videoId, pageToken, pageId = readEnv('META_PAGE_ID')) {
+  if (!videoId) throw ambiguousCheck('the pending reel has no video id');
+  let v;
+  try {
+    v = await graph('GET', `/${videoId}`, { fields: 'id,status,published,permalink_url,from{id}', access_token: pageToken });
+  } catch (err) {
+    if (metaPostGone(err)) return { state: 'fresh' };
+    throw err;
+  }
+  if (!v.from || String(v.from.id) !== String(pageId)) throw ambiguousCheck('the video is not the Page\'s own');
+  const st = v.status || {};
+  const failed = FAILED_VIDEO_STATUS.has(st.video_status)
+    || ['uploading_phase', 'processing_phase', 'publishing_phase'].some((k) => st[k] && st[k].status === 'error');
+  if (failed) return { state: 'fresh' };
+  const pub = st.publishing_phase || {};
+  if (v.published === true || ['published', 'scheduled'].includes(pub.publish_status)
+    || pub.status === 'in_progress' || PHASE_DONE.has(pub.status)) {
+    return { state: 'adopt', id: String(videoId), permalink: v.permalink_url || null };
+  }
+  const up = st.uploading_phase || {};
+  if (up.status && !PHASE_DONE.has(up.status)) return { state: 'fresh' };
+  return { state: 'refinish', videoId: String(videoId) };
+}
+
+async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, videoState, scheduledAt, markIntent = async () => {} }) {
   // Phase 1: start - obtain a video_id + upload_url
   const start = await graph('POST', `/${pageId}/video_reels`, {
     upload_phase: 'start',
@@ -230,6 +277,16 @@ async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, vide
   }
 
   // Phase 3: finish - set the publish state
+  await finishFacebookReel(pageId, pageToken, videoId, { caption, videoState, scheduledAt, markIntent });
+  return { videoId };
+}
+
+// The finish step on its own, so a draft reel left by an unconfirmed attempt can be
+// finished again on the SAME video id (C3 revised). The finish call is the one that
+// publishes (contract C1/C2): for a live publish the intent marker goes to the plan FIRST,
+// and an outcome that is not a definitive refusal is publish_pending_check, never
+// re-finished in this run.
+async function finishFacebookReel(pageId, pageToken, videoId, { caption, videoState = 'PUBLISHED', scheduledAt = null, markIntent = async () => {} } = {}) {
   const finishParams = {
     upload_phase: 'finish',
     video_id: videoId,
@@ -240,8 +297,12 @@ async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, vide
   if (videoState === 'SCHEDULED' && scheduledAt) {
     finishParams.scheduled_publish_time = unixSeconds(scheduledAt);
   }
-  await graph('POST', `/${pageId}/video_reels`, finishParams);
-  return videoId;
+  if (videoState !== 'PUBLISHED') {
+    await graph('POST', `/${pageId}/video_reels`, finishParams);
+    return;
+  }
+  await markIntent({ at: new Date().toISOString(), kind: 'reel', caption: String(caption || ''), videoId: String(videoId) });
+  await runPublishingCall(`FB reel finish (${videoId})`, () => graph('POST', `/${pageId}/video_reels`, finishParams));
 }
 
 // Custom reel cover via the classic Video Thumbnails edge - the mechanism the
@@ -254,6 +315,316 @@ async function setFbReelThumbnail(videoId, jpgPath, pageToken) {
   form.append('source', new Blob([fs.readFileSync(jpgPath)], { type: 'image/jpeg' }), path.basename(jpgPath));
   form.append('is_preferred', 'true');
   await graph('POST', `/${videoId}/thumbnails`, { access_token: pageToken }, { form });
+}
+
+// ---------- FB Page photo posts (issue #7: type=image single photo, type=carousel multi-photo) ----------
+//
+// Meta's Page Photos reference (developers.facebook.com/docs/graph-api/reference/page/photos):
+//  - a photo goes to POST /{page-id}/photos as a file attachment (multipart `source`) or a
+//    public `url`. pendpost sends the LOCAL render bytes, so no public media host is needed
+//    (Instagram's IMAGE container is the one Meta surface with no upload; FB has one).
+//  - a single photo published now: one /photos call with caption + published=true; the
+//    response carries { id (photo), post_id (the Page post) }.
+//  - a multi-photo post: each photo uploaded with published=false, then ONE
+//    POST /{page-id}/feed with attached_media[n]={"media_fbid":"<photo id>"}.
+//  - a scheduled post: the photos MUST be temporary=true (with published=false, and a
+//    temporary photo may NOT carry scheduled_publish_time); the /feed call carries
+//    published=false + scheduled_publish_time + unpublished_content_type=SCHEDULED. A
+//    temporary photo Meta does not see published within ~24h is deleted, so a run that
+//    dies between the uploads and the feed post leaves nothing behind. A scheduled single
+//    photo rides the same feed path (one attached photo), because only /feed is documented
+//    to return the scheduled post's id.
+//  - alt text: alt_text_custom on each photo (post.altText on every slide, the X/LinkedIn
+//    per-slide precedent).
+//  - limits: JPEG/BMP/PNG/GIF/TIFF up to 4 MB (refused locally in fbPhotoPreflight).
+
+const FB_PHOTO_MIME = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.bmp': 'image/bmp', '.tif': 'image/tiff', '.tiff': 'image/tiff' };
+
+function isFbPhotoPost(post) {
+  return FACEBOOK_PHOTO_TYPES.includes(post?.type);
+}
+
+// Run one Graph step and name it on failure, so a failed row says WHICH step dropped
+// ("FB photo upload 2/3 (b.jpg): ..."). A Graph rejection keeps every structured field
+// (fbCode for the 368 breaker, retriable, httpStatus) and its "HTTP <status>" text, so
+// lib/publish-hold.mjs still classifies a 5xx/429 transient and a 4xx refusal permanent. A
+// bare network throw becomes "<step>: fetch failed (<cause>)" - the igResumableUpload
+// precedent, still matched by isTransientFailure.
+async function fbStep(step, fn) {
+  try {
+    return await fn();
+  } catch (cause) {
+    if (cause && cause.httpStatus === undefined && /fetch failed/i.test(String(cause.message || ''))) {
+      const why = cause?.cause?.code || cause?.cause?.message || cause?.message || String(cause);
+      const err = new Error(`${step}: fetch failed (${why})`, { cause });
+      err.retriable = true;
+      throw err;
+    }
+    if (cause instanceof Error) {
+      cause.message = `${step}: ${cause.message}`;
+      throw cause;
+    }
+    throw new Error(`${step}: ${String(cause)}`);
+  }
+}
+
+async function uploadFbPhoto(pageId, pageToken, photoPath, params) {
+  const form = new FormData();
+  const mime = FB_PHOTO_MIME[path.extname(photoPath).toLowerCase()] || 'application/octet-stream';
+  form.append('source', new Blob([fs.readFileSync(photoPath)], { type: mime }), path.basename(photoPath));
+  const clean = Object.fromEntries(Object.entries({ ...params, access_token: pageToken }).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+  return graph('POST', `/${pageId}/photos`, clean, { form });
+}
+
+// ---------- the unconfirmed-publish contract (owner decision 2026-10-14, critic contract C1-C3) ----------
+//
+// The call that actually PUBLISHES on Facebook (a single photo's published=true /photos, an
+// album's final /feed, a reel's finish) can end without a verdict: Meta answers 5xx, the
+// connection drops, the run is killed or the Mac sleeps. Re-publishing blind is how a Page
+// gets the same post twice. So, shared with the pendpost-cloud port:
+//   C1 right before a publishing call the engine writes the intent marker
+//      fbPublishPending = { at, kind: 'photo'|'album'|'reel', caption, photoCount | videoId }
+//      to the plan, and clears it only on a confirmed outcome (a success, an adoption, or a
+//      definitive 4xx refusal). Whatever happens between the call and the next plan write,
+//      the marker is there.
+//   C2 an unconfirmed outcome is publish_pending_check (transient) and nothing more is
+//      published this run. A later run that finds a marker waits until PUBLISH_SETTLE_MS
+//      after `at`, then checks the Page against the MARKER (its caption, kind and photo count,
+//      not the post's current fields), paging the Page's own posts back to `at`: exactly one
+//      strict own match is adopted; no match publishes (with a fresh marker); a check that
+//      fails or cannot single out one post is publish_unconfirmed (parked, the owner decides:
+//      mark_posted, or the owner's confirmed Try again, which clears the marker and publishes
+//      without another check, lib/writes.mjs reschedulePost; no agent can release it).
+//   C3 a reel: its own video status decides (fbReelState): adopt a reel that is published or
+//      publishing, re-finish the SAME video while it is still a draft, publish afresh when it
+//      is gone or failed.
+const PAGE_CHECK_SKEW_MS = 2 * 60 * 1000; // clock skew between this machine and Meta
+export const PUBLISH_SETTLE_MS = 3 * 60 * 1000; // let Meta settle before reading the Page
+const PAGE_CHECK_MAX_PAGES = 40; // a Page this busy since the attempt is ambiguous, not a guess
+
+// A definitive refusal: Meta answered 4xx, so the call published nothing. Every other end
+// of a publishing call (5xx, a dropped or hung connection, a crash) leaves the outcome open.
+export function isDefinitiveRefusal(err) {
+  return typeof err?.httpStatus === 'number' && err.httpStatus >= 400 && err.httpStatus < 500;
+}
+
+export const PENDING_CHECK_SENTENCE = 'Facebook has not confirmed this publish yet. pendpost checks the Page before it tries again, so it never posts twice.';
+const UNCONFIRMED_SENTENCE = 'Facebook did not confirm whether the post went live, and pendpost could not confirm it on the Page. Look at the Page: if the post is there, mark it posted; if not, confirm Try again to publish it again.';
+
+function pendingCheckError(cause, detail = '') {
+  const why = String((cause && cause.message) || detail || '').replace(/\s+/g, ' ').slice(0, 140);
+  const err = new Error(`${PENDING_CHECK_SENTENCE}${why ? ` (${why})` : ''}`, cause ? { cause } : undefined);
+  err.fbCode = 'publish_pending_check';
+  err.retriable = true;
+  return err;
+}
+
+function unconfirmedError(publishErr, checkErr) {
+  const why = String((checkErr && checkErr.message) || checkErr || 'check failed').replace(/\s+/g, ' ').slice(0, 60);
+  const err = new Error(`${UNCONFIRMED_SENTENCE} (check: ${why})`, publishErr ? { cause: publishErr } : undefined);
+  err.fbCode = 'publish_unconfirmed';
+  err.retriable = false;
+  return err;
+}
+
+// Run ONE publishing call. A definitive refusal rethrows (marked so the caller clears the
+// marker); any other failure becomes publish_pending_check. Never retried here.
+async function runPublishingCall(step, call) {
+  try {
+    return await fbStep(step, call);
+  } catch (err) {
+    if (isDefinitiveRefusal(err)) { err.clearMarker = true; throw err; }
+    throw pendingCheckError(err);
+  }
+}
+
+// Adoption is deliberately strict (security review of 0dfe9e5f): a post is adopted ONLY
+// when it is provably ours and provably the one the attempt made. Anything that looks like
+// it but cannot be singled out is AMBIGUOUS and never adopts (the caller parks it).
+//   - author: the Page's own posts only (GET /{page-id}/posts, plus from.id === page id);
+//   - caption: an empty caption can identify nothing, so it never adopts;
+//   - shape: a single photo is a `photo` attachment, an album an `album` with exactly the
+//     photo count attached; a candidate whose shape cannot be read is ambiguous;
+//   - time: created at/after the attempt (minus clock skew);
+//   - count: exactly one candidate, never two.
+function ambiguousCheck(why) {
+  const e = new Error(`the Page check could not single out this post (${why})`);
+  e.ambiguousMatch = true;
+  return e;
+}
+
+function requireCaption(caption) {
+  const want = String(caption || '').trim();
+  if (!want) throw ambiguousCheck('the post has no caption to recognise it by');
+  return want;
+}
+
+// 'match' | 'mismatch' | 'unknown' for a candidate's attachment shape.
+function photoShapeOf(post, photoCount) {
+  if (!Number.isInteger(photoCount) || photoCount < 1) return 'match';
+  const att = post && post.attachments && Array.isArray(post.attachments.data) ? post.attachments.data[0] : null;
+  if (!att || !att.type) return 'unknown';
+  if (photoCount === 1) return att.type === 'photo' ? 'match' : 'mismatch';
+  if (att.type !== 'album') return 'mismatch';
+  const subs = att.subattachments && Array.isArray(att.subattachments.data) ? att.subattachments.data : null;
+  if (!subs) return 'unknown';
+  return subs.length === photoCount ? 'match' : 'mismatch';
+}
+
+// Pick the one adoptable candidate, or null for none; throws on ambiguity.
+function singleOwnMatch(candidates, pageId, want, extraOk = () => 'match') {
+  const own = candidates.filter((post) => post && post.from && String(post.from.id) === String(pageId)
+    && String(post.message || '').trim() === want);
+  const verdicts = own.map((post) => ({ post, shape: extraOk(post) })).filter((v) => v.shape !== 'mismatch');
+  if (verdicts.some((v) => v.shape === 'unknown')) throw ambiguousCheck('a matching post whose attachments could not be read');
+  if (verdicts.length > 1) throw ambiguousCheck(`${verdicts.length} of the Page's own posts match`);
+  return verdicts.length === 1 ? verdicts[0].post : null;
+}
+
+// A published post of the Page that is this attempt's. Pages /posts (newest first) back to
+// the attempt time, never a fixed window. Throws when the Page cannot be read or the answer
+// is ambiguous.
+async function findPublishedPagePost(pageId, pageToken, { caption, sinceMs, photoCount = null }) {
+  const want = requireCaption(caption);
+  const floor = sinceMs - PAGE_CHECK_SKEW_MS;
+  const recent = [];
+  let after = null;
+  for (let page = 0; ; page += 1) {
+    if (page >= PAGE_CHECK_MAX_PAGES) throw ambiguousCheck('too many posts since the attempt to check them all');
+    const params = {
+      fields: 'id,message,created_time,permalink_url,from{id},attachments{type,subattachments.limit(25){type}}',
+      since: Math.floor(floor / 1000), limit: 100, access_token: pageToken,
+    };
+    if (after) params.after = after;
+    const res = await graph('GET', `/${pageId}/posts`, params);
+    const data = Array.isArray(res.data) ? res.data : [];
+    let reachedFloor = false;
+    for (const post of data) {
+      const created = Date.parse(String(post.created_time || '').replace(/\+0000$/, 'Z'));
+      if (!Number.isFinite(created) || created < floor) { reachedFloor = true; continue; }
+      recent.push(post);
+    }
+    after = res.paging && res.paging.cursors ? res.paging.cursors.after : null;
+    if (reachedFloor || !data.length || !(res.paging && res.paging.next) || !after) break;
+  }
+  const hit = singleOwnMatch(recent, pageId, want, (post) => photoShapeOf(post, photoCount));
+  return hit ? { id: String(hit.id), permalink: hit.permalink_url || null } : null;
+}
+
+// The scheduled twin: the Page's own scheduled feed post with the same caption and slot.
+async function findScheduledPagePost(pageId, pageToken, { caption, scheduledAt }) {
+  const want = requireCaption(caption);
+  const res = await graph('GET', `/${pageId}/scheduled_posts`, { fields: 'id,message,scheduled_publish_time,from{id}', limit: 100, access_token: pageToken });
+  const slot = unixSeconds(scheduledAt);
+  const inSlot = (res.data || []).filter((post) => Number(post.scheduled_publish_time) === slot);
+  const hit = singleOwnMatch(inSlot, pageId, want);
+  return hit ? { id: String(hit.id), permalink: null } : null;
+}
+
+// Resolve a marker an earlier run left (C2/C3). Returns { wait: true } inside the settle
+// time, { adopt: { id, permalink } } for the one strict match, { refinish: { videoId } } for
+// a reel still sitting as a draft, or { publish: true } when the attempt provably did not
+// land. Throws publish_unconfirmed when the check fails or is
+// ambiguous.
+async function resolvePendingFb(pageId, pageToken, pending, now = Date.now()) {
+  const at = Date.parse(pending && pending.at);
+  if (!Number.isFinite(at)) throw unconfirmedError(null, 'the pending marker has no valid time');
+  if (now < at + PUBLISH_SETTLE_MS) return { wait: true, at };
+  let found;
+  try {
+    if (pending.kind === 'reel') {
+      const r = await fbReelState(pending.videoId, pageToken, pageId);
+      if (r.state === 'refinish') return { refinish: { videoId: r.videoId } };
+      found = r.state === 'adopt' ? { id: r.id, permalink: r.permalink } : null;
+    } else if (pending.scheduledAt) {
+      // A native schedule attempt: the post sits in /scheduled_posts until its slot, then Meta
+      // publishes it and it leaves that list. Check both, or a run after the slot finds
+      // nothing and publishes the post a second time (critic round 2 #4).
+      found = await findScheduledPagePost(pageId, pageToken, { caption: pending.caption, scheduledAt: pending.scheduledAt })
+        || await findPublishedPagePost(pageId, pageToken, { caption: pending.caption, sinceMs: at, photoCount: pending.kind === 'photo' ? 1 : pending.photoCount });
+    } else found = await findPublishedPagePost(pageId, pageToken, { caption: pending.caption, sinceMs: at, photoCount: pending.kind === 'photo' ? 1 : pending.photoCount });
+  } catch (checkErr) {
+    throw unconfirmedError(null, checkErr);
+  }
+  return found ? { adopt: found } : { publish: true };
+}
+
+// Publish (or natively schedule, with scheduledAt) a Page photo post from local files.
+// Returns { postId, photoIds }. markIntent(marker) is awaited right before the publishing
+// call (C1). Throws a step-named error; a definitive refusal carries clearMarker.
+export async function publishFacebookPhotos(pageId, pageToken, photoPaths, { caption = '', altText = '', scheduledAt = null, markIntent = async () => {} } = {}) {
+  const n = photoPaths.length;
+  const alt = String(altText || '').trim();
+  const text = String(caption || '');
+  const scheduled = Boolean(scheduledAt);
+  const intent = (kind) => ({ at: new Date().toISOString(), kind, caption: text, photoCount: n, ...(scheduled ? { scheduledAt } : {}) });
+  if (n === 1 && !scheduled) {
+    await markIntent(intent('photo'));
+    const res = await runPublishingCall(`FB photo upload 1/1 (${path.basename(photoPaths[0])})`, () => uploadFbPhoto(pageId, pageToken, photoPaths[0], {
+      caption: text, published: 'true', alt_text_custom: alt,
+    }));
+    // post_id is the Page post (what verify/insights/comments read). Meta documents it on
+    // this response; should it ever be absent, the photo id still fences the lane so a
+    // re-run can never double-post.
+    return { postId: String(res.post_id || res.id), photoIds: [String(res.id)] };
+  }
+  const photoIds = [];
+  for (let i = 0; i < n; i += 1) {
+    const res = await fbStep(`FB photo upload ${i + 1}/${n} (${path.basename(photoPaths[i])})`, () => uploadFbPhoto(pageId, pageToken, photoPaths[i], {
+      published: 'false', temporary: scheduled ? 'true' : undefined, alt_text_custom: alt,
+    }));
+    photoIds.push(String(res.id));
+  }
+  const feedParams = { access_token: pageToken };
+  if (text) feedParams.message = text;
+  photoIds.forEach((id, i) => { feedParams[`attached_media[${i}]`] = JSON.stringify({ media_fbid: id }); });
+  if (scheduled) {
+    feedParams.published = 'false';
+    feedParams.scheduled_publish_time = unixSeconds(scheduledAt);
+    feedParams.unpublished_content_type = 'SCHEDULED';
+  }
+  // The unpublished photos are uploads, not posts: only this /feed call publishes.
+  await markIntent(intent(n === 1 ? 'photo' : 'album'));
+  const res = await runPublishingCall(`FB feed post (${n} photo${n === 1 ? '' : 's'})`, () => graph('POST', `/${pageId}/feed`, feedParams));
+  return { postId: String(res.id), photoIds };
+}
+
+// The live permalink of a Page post, read back right after publishing so the result row
+// carries it (verify re-reads it later as the authoritative record). Best-effort: null on
+// any error, the publish stands either way.
+async function fbPermalink(postId, pageToken) {
+  try {
+    const v = await graph('GET', `/${postId}`, { fields: 'permalink_url', access_token: pageToken });
+    return v.permalink_url || null;
+  } catch {
+    return null;
+  }
+}
+
+// Local, side-effect-free gate for a FB photo post: resolves the photo files and refuses
+// every shape Meta would reject BEFORE any Graph call. Returns { photos: [absPath...] } or
+// { block: { errorCode, errorMessage } }. The codes follow lib/publish-hold.mjs: a content
+// refusal (invalid_carousel / unsupported / invalid_media) parks on the first strike since
+// only an edit fixes it; media_missing rides the normal cap (a render may still be syncing).
+function fbPhotoPreflight(plan, post) {
+  let photos;
+  if (post.type === 'carousel') {
+    const items = carouselItems(post);
+    photos = items.map((it) => resolveMediaPath(plan, { file: it.file, path: it.path }));
+    const blocker = carouselBlocker(post, 'facebook', photos.map((p) => ({ exists: Boolean(p) })));
+    if (blocker) return { block: { errorCode: 'invalid_carousel', errorMessage: blocker } };
+    const unsupported = carouselUnsupported(post, 'facebook');
+    if (unsupported) return { block: { errorCode: 'unsupported', errorMessage: unsupported } };
+  } else {
+    const p = resolveMediaPath(plan, post);
+    if (!p) return { block: { errorCode: 'media_missing', errorMessage: `facebook photo not found on disk (${post.path || post.file || 'no file set'})` } };
+    photos = [p];
+  }
+  for (const p of photos) {
+    const problem = fbPhotoFileProblem(p, fs.statSync(p).size);
+    if (problem) return { block: { errorCode: 'invalid_media', errorMessage: problem.reason } };
+  }
+  return { photos };
 }
 
 // Cover for a post, in display-parity precedence (exported for the engine tests):
@@ -296,7 +667,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'fbPublishPending'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -647,7 +1018,7 @@ async function cmdSetupSystemUser(args) {
   console.log('[note] Keep the Meta lane PAUSED (data/plans/meta-lane.json) until Business Verification is complete AND Meta has reinstated the account. The System User identity is necessary but not sufficient on its own - the account must be healthy first.');
 }
 
-async function scheduleFacebookPost(post, pageId, pageToken, mediaPath, dryRun) {
+async function scheduleFacebookPost(post, pageId, pageToken, mediaPath, dryRun, plan = null, markIntent = async () => {}) {
   const publishAt = unixSeconds(post.scheduledAt);
   const nowSec = Math.floor(Date.now() / 1000);
   if (publishAt < nowSec + 10 * 60) {
@@ -659,6 +1030,29 @@ async function scheduleFacebookPost(post, pageId, pageToken, mediaPath, dryRun) 
     return null;
   }
   const caption = post.caption || post.title || '';
+  // Issue #7: a photo post (type=image / type=carousel) schedules natively as a feed post
+  // with temporary photos attached (publishFacebookPhotos). Before this branch the old
+  // path uploaded EVERY local file to /videos, so a jpg would have gone up as a video.
+  if (isFbPhotoPost(post)) {
+    const pre = fbPhotoPreflight(plan || { folder: '' }, post);
+    if (pre.block) {
+      console.log(`[warn] ${post.id}: ${pre.block.errorMessage} - skipping FB half.`);
+      RUN.results.push({ postId: post.id, platform: 'facebook', action: 'schedule-native', ok: false, ...pre.block });
+      return null;
+    }
+    if (dryRun) {
+      console.log(`[dry] ${post.id}: would schedule a FB ${post.type === 'carousel' ? `multi-photo post of ${pre.photos.length}` : 'photo post'} for ${post.scheduledAt}`);
+      return null;
+    }
+    // C2: an earlier attempt left a marker: settle, then look for the scheduled post first.
+    if (post.fbPublishPending) {
+      const r = await resolvePendingFb(pageId, pageToken, post.fbPublishPending);
+      if (r.wait) throw pendingCheckError(null, `checking the Page after ${new Date(r.at + PUBLISH_SETTLE_MS).toISOString()}`);
+      if (r.adopt) return r.adopt.id;
+    }
+    const { postId } = await publishFacebookPhotos(pageId, pageToken, pre.photos, { caption, altText: post.altText || '', scheduledAt: post.scheduledAt, markIntent });
+    return postId;
+  }
   if (dryRun) {
     console.log(`[dry] ${post.id}: would schedule FB ${mediaPath ? 'video' : 'text'} post for ${post.scheduledAt}`);
     return null;
@@ -710,15 +1104,16 @@ async function cmdSchedule(args) {
       console.log(`[warn] ${post.id}: media file not found (${post.path || post.file}) - skipping.`);
       continue;
     }
-
     if (platforms.includes('facebook') && !post.fbPostId && !fbEnabled) {
       console.log(`[skip] ${post.id}: facebook publishing is disabled by platform policy (instagram unaffected). Enable via config.platforms.facebook=true on a healthy Page.`);
     } else if (platforms.includes('facebook') && !post.fbPostId) {
       console.log(`[info] ${post.id}: scheduling FB post for ${fmtLocal(post.scheduledAt, plan.timezone)}...`);
       try {
-        const fbPostId = await scheduleFacebookPost(post, pageId, pageToken, mediaPath, args['dry-run']);
+        const markIntent = async (marker) => { post.fbPublishPending = marker; await savePlan(abs, plan, [post.id]); };
+        const fbPostId = await scheduleFacebookPost(post, pageId, pageToken, mediaPath, args['dry-run'], plan, markIntent);
         if (fbPostId) {
           post.fbPostId = fbPostId;
+          post.fbPublishPending = null;
           appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action: 'schedule-native', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
           dirty = true;
           touched.add(post.id);
@@ -726,6 +1121,7 @@ async function cmdSchedule(args) {
           console.log(`[ok] ${post.id}: FB scheduled (post id ${fbPostId}) - review it in the Meta Business Suite Planner.`);
         }
       } catch (err) {
+        if (err.clearMarker) post.fbPublishPending = null;
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action: 'schedule-native', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin: 0, actor: ACTOR });
         dirty = true;
         touched.add(post.id);
@@ -802,10 +1198,12 @@ async function cmdPublishDue(args) {
       continue;
     }
     const platforms = post.platforms || [];
-    // FB only publishes full-bleed reels here (video_reels); IG publishes reels + stories.
-    // FB is gated by the per-client platform policy (deny-by-default); a disabled
-    // FB target is skipped while IG still publishes.
-    const fbTargeted = platforms.includes('facebook') && post.type === 'reel';
+    // FB publishes full-bleed reels (video_reels) and, since issue #7, single- and
+    // multi-photo Page posts (type=image / type=carousel, publishFacebookPhotos); IG
+    // publishes reels + stories + feed images + carousels. FB is gated by the per-client
+    // platform policy (deny-by-default); a disabled FB target is skipped while IG still
+    // publishes.
+    const fbTargeted = platforms.includes('facebook') && (post.type === 'reel' || isFbPhotoPost(post));
     if (fbTargeted && !fbEnabled) console.log(`[skip] ${post.id}: facebook publishing is disabled by platform policy (instagram unaffected).`);
     const wantsFb = fbTargeted && fbEnabled;
     const wantsIg = platforms.includes('instagram');
@@ -829,14 +1227,84 @@ async function cmdPublishDue(args) {
     const lateMin = Math.round((now - dueMs) / 60000);
     if (lateMin > 15) console.log(`[warn] ${post.id}: publishing ${lateMin} min late (catch-up).`);
 
+    // The FB half is done once its own id exists: fbReelId for a reel, fbPostId for a photo
+    // post. Mark posted only when every wanted half is in (a mid-failure stays planned and
+    // the minted half's id fences it from re-posting on the retry).
+    const fbDone = () => !wantsFb || (post.type === 'reel' ? Boolean(post.fbReelId) : Boolean(post.fbPostId));
+    const igDone = () => !wantsIg || Boolean(post.igMediaId);
+    const markPostedIfDone = async () => {
+      if (post.status === 'posted' || !fbDone() || !igDone()) return false;
+      post.status = 'posted';
+      post.postedAt = new Date(now).toISOString();
+      await savePlan(abs, plan, [post.id]);
+      published += 1;
+      return true;
+    };
+
+    // Issue #7: the Facebook photo half (type=image single photo / type=carousel
+    // multi-photo), from the LOCAL render bytes. Runs before the IG half so a mixed post's
+    // FB outcome never depends on IG's. Idempotent via fbPostId.
+    if (wantsFb && !fbCapBlock && isFbPhotoPost(post) && !post.fbPostId) {
+      const pre = fbPhotoPreflight(plan, post);
+      const action = post.type === 'carousel' ? 'publish-carousel' : 'publish-photo';
+      // C1: the intent marker, persisted before the publishing call leaves.
+      const markIntent = async (marker) => { post.fbPublishPending = marker; await savePlan(abs, plan, [post.id]); };
+      if (args['dry-run']) {
+        console.log(`[dry] ${post.id}: would ${post.fbPublishPending ? 'check the Page for an unconfirmed FB publish, then maybe ' : ''}publish a FB ${post.type === 'carousel' ? `multi-photo post of ${(pre.photos || []).length}` : 'single-photo post'}`);
+      } else {
+        try {
+          // C2: an earlier attempt left a marker. Settle, check the Page against the MARKER,
+          // adopt the one strict match; publish only when the attempt provably did not land.
+          let result = null;
+          if (post.fbPublishPending) {
+            const r = await resolvePendingFb(pageId, pageToken, post.fbPublishPending);
+            if (r.wait) throw pendingCheckError(null, `checking the Page after ${new Date(r.at + PUBLISH_SETTLE_MS).toISOString()}`);
+            if (r.adopt) result = { postId: r.adopt.id, adopted: true, permalink: r.adopt.permalink };
+          }
+          if (!result && pre.block) {
+            console.log(`[warn] ${post.id}: ${pre.block.errorMessage} - skipping FB.`);
+            RUN.results.push({ postId: post.id, platform: 'facebook', action: 'publish', ok: false, ...pre.block });
+          } else {
+            if (!result) {
+              console.log(`[info] ${post.id}: publishing FB ${post.type === 'carousel' ? `multi-photo post (${pre.photos.length} photos)` : 'photo post'}...`);
+              result = await publishFacebookPhotos(pageId, pageToken, pre.photos, { caption: post.caption || '', altText: post.altText || '', markIntent });
+            }
+            const postId = result.postId;
+            post.fbPostId = postId;
+            post.fbPublishPending = null;
+            appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action, ok: true, errorCode: null, errorMessage: null, lateMin, actor: ACTOR, ...(result.adopted ? { adopted: true } : {}) });
+            await savePlan(abs, plan, [post.id]);
+            const permalink = result.permalink || await fbPermalink(postId, pageToken);
+            RUN.results.push({ postId: post.id, platform: 'facebook', action, ok: true, id: postId, ...(permalink ? { permalink } : {}), ...(result.adopted ? { adopted: true } : {}) });
+            console.log(result.adopted
+              ? `[ok] ${post.id}: the Page already shows this post (${postId}) after an unconfirmed publish: adopted, not posted again.`
+              : `[ok] ${post.id}: published on Facebook (post ${postId}).`);
+          }
+        } catch (err) {
+          // A definitive 4xx refusal published nothing: the marker goes. Every other outcome
+          // keeps it, so the next run checks before it publishes.
+          if (err.clearMarker) post.fbPublishPending = null;
+          appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action, ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
+          await savePlan(abs, plan, [post.id]);
+          RUN.results.push({ postId: post.id, platform: 'facebook', action, ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable, ...(post.fbPublishPending ? { fbPublishPending: post.fbPublishPending } : {}) });
+          console.error(`[err] ${post.id}: FB photo post failed - ${err.message}`);
+          if (err.fbCode === 368) {
+            RUN.blocked368 = true;
+            await reportMetaBlock(err);
+            break;
+          }
+        }
+      }
+    }
+
     // Spec 05 + 39: a native Instagram carousel (media_type=CAROUSEL) - 2..10 child
-    // containers. FB multi-photo is out of scope (FB stays reel-gated), so only the IG
-    // half publishes. Fail-closed BEFORE any Graph call (count/cap + slides-on-disk).
+    // containers. The FB multi-photo half ran above (issue #7); this is the IG half.
+    // Fail-closed BEFORE any Graph call (count/cap + slides-on-disk).
     // IMAGE children publish from a PUBLIC per-slide `url` (Graph has no local-image
     // upload) via an image_url child container; an image slide WITHOUT a url emits an
     // honest ok:false row (no half-post). VIDEO children upload via the resumable path.
     if (isCarouselPost(post)) {
-      if (!wantsIg || post.igMediaId) continue;
+      if (!wantsIg || post.igMediaId) { await markPostedIfDone(); continue; }
       const postingCfg = loadClientConfig();
       const slides = carouselItems(post).map((it) => ({
         path: resolveMediaPath(plan, { file: it.file, path: it.path }),
@@ -898,13 +1366,11 @@ async function cmdPublishDue(args) {
         await pollContainer(parent.id, pageToken);
         const media = await graph('POST', `/${igUserId}/media_publish`, { creation_id: parent.id, access_token: pageToken });
         post.igMediaId = media.id;
-        post.status = 'posted';
-        post.postedAt = new Date(now).toISOString();
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: 'publish-carousel', ok: true, errorCode: null, errorMessage: null, lateMin, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
         RUN.results.push({ postId: post.id, platform: 'instagram', action: 'publish', ok: true, id: media.id });
         console.log(`[ok] ${post.id}: IG carousel published (media id ${media.id}).`);
-        published += 1;
+        await markPostedIfDone();
       } catch (err) {
         if (err.fbCode === 9004) {
           let diag = null;
@@ -951,7 +1417,7 @@ async function cmdPublishDue(args) {
 
     if (args['dry-run']) {
       const targets = [
-        wantsFb && !post.fbReelId ? 'FB-reel' : null,
+        wantsFb && post.type === 'reel' && !post.fbReelId ? 'FB-reel' : null,
         wantsIg && !post.igMediaId ? `IG-${post.type}` : null,
       ].filter(Boolean).join(' + ');
       console.log(`[dry] ${post.id}: would publish ${targets || '(nothing - already done)'} from ${mediaPath}`);
@@ -959,12 +1425,34 @@ async function cmdPublishDue(args) {
     }
 
     // Facebook full-bleed Reel (POST /video_reels, PUBLISHED). Per-platform idempotent via fbReelId.
-    if (wantsFb && !post.fbReelId) {
+    if (wantsFb && post.type === 'reel' && !post.fbReelId) {
       console.log(`[info] ${post.id}: publishing full-bleed FB Reel...`);
       try {
-        const vid = await publishFacebookReel(pageId, pageToken, mediaPath, { caption: post.caption || '', videoState: 'PUBLISHED' });
-        await pollVideoReady(vid, pageToken);
+        // C2/C3: an earlier finish left a marker. Settle, then the video's own status decides
+        // (adopt an accepted reel, publish afresh only when it provably did not land).
+        let vid = null;
+        let adoptedReel = false;
+        const pending = post.fbPublishPending;
+        if (pending) {
+          const r = await resolvePendingFb(pageId, pageToken, pending);
+          if (r.wait) throw pendingCheckError(null, `checking the reel after ${new Date(r.at + PUBLISH_SETTLE_MS).toISOString()}`);
+          if (r.adopt) { vid = r.adopt.id; adoptedReel = true; }
+          if (r.refinish) {
+            // C3 revised: the same video, finished again (a fresh marker first).
+            const markIntent = async (marker) => { post.fbPublishPending = marker; await savePlan(abs, plan, [post.id]); };
+            console.log(`[info] ${post.id}: FB reel ${r.refinish.videoId} is still a draft after an unconfirmed finish: finishing the same video again.`);
+            await finishFacebookReel(pageId, pageToken, r.refinish.videoId, { caption: post.caption || '', markIntent });
+            vid = r.refinish.videoId;
+          }
+        }
+        if (!vid) {
+          const markIntent = async (marker) => { post.fbPublishPending = marker; await savePlan(abs, plan, [post.id]); };
+          ({ videoId: vid } = await publishFacebookReel(pageId, pageToken, mediaPath, { caption: post.caption || '', videoState: 'PUBLISHED', markIntent }));
+        }
+        // An adopted reel is accepted and may still be processing (C3): no wait for it here.
+        if (!adoptedReel) await pollVideoReady(vid, pageToken);
         post.fbReelId = vid;
+        post.fbPublishPending = null;
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action: 'publish-reel', ok: true, errorCode: null, errorMessage: null, lateMin, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
         RUN.results.push({ postId: post.id, platform: 'facebook', action: 'publish-reel', ok: true, id: vid });
@@ -983,9 +1471,10 @@ async function cmdPublishDue(args) {
           }
         }
       } catch (err) {
+        if (err.clearMarker) post.fbPublishPending = null;
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'facebook', action: 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
         await savePlan(abs, plan, [post.id]);
-        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable });
+        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'publish-reel', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable, ...(post.fbPublishPending ? { fbPublishPending: post.fbPublishPending } : {}) });
         console.error(`[err] ${post.id}: FB Reel failed - ${err.message}`);
         if (err.fbCode === 368) {
           RUN.blocked368 = true;
@@ -1062,8 +1551,18 @@ async function cmdPublishDue(args) {
     if (wantsIg && !post.igMediaId && post.type !== 'image') {
       const isStory = post.type === 'story';
       try {
-        console.log(`[info] ${post.id}: creating IG resumable ${isStory ? 'STORIES' : 'REELS'} container...`);
-        const containerParams = { media_type: isStory ? 'STORIES' : 'REELS', upload_type: 'resumable', access_token: pageToken };
+        // Two ways to hand IG the bytes. rupload processes the video INSIDE the upload request
+        // and gives up after ~35s with HTTP 400 ProcessingFailedError (measured 2026-10-22: every
+        // pass returned in <=26s, every failure at 35-37s regardless of file size; a 70s reel
+        // needs ~64s, so it passes only on a rare fast spell, and a failed container sits IN_PROGRESS).
+        // video_url lets Meta fetch and process asynchronously; we poll status_code instead.
+        // videoUrl is a transport field the cloud injects on its staged plan (a presigned GET of
+        // the sha256-verified media object), never operator content (not in UPDATABLE_FIELDS).
+        const videoUrl = /^https:\/\/\S+$/i.test(post.videoUrl || '') ? post.videoUrl.trim() : null;
+        console.log(`[info] ${post.id}: creating IG ${videoUrl ? 'video_url' : 'resumable'} ${isStory ? 'STORIES' : 'REELS'} container...`);
+        const containerParams = { media_type: isStory ? 'STORIES' : 'REELS', access_token: pageToken };
+        if (videoUrl) containerParams.video_url = videoUrl;
+        else containerParams.upload_type = 'resumable';
         if (!isStory) {
           containerParams.caption = post.caption || '';
           containerParams.share_to_feed = 'true';
@@ -1107,9 +1606,14 @@ async function cmdPublishDue(args) {
             throw coverErr;
           }
         }
-        console.log(`[info] ${post.id}: uploading ${(fs.statSync(mediaPath).size / 1e6).toFixed(1)} MB from ${mediaPath}...`);
-        await igResumableUpload(container.id, mediaPath, pageToken);
-        await pollContainer(container.id, pageToken);
+        if (videoUrl) {
+          console.log(`[info] ${post.id}: IG fetches the video from the cloud media url; waiting for processing...`);
+        } else {
+          console.log(`[info] ${post.id}: uploading ${(fs.statSync(mediaPath).size / 1e6).toFixed(1)} MB from ${mediaPath}...`);
+          await igResumableUpload(container.id, mediaPath, pageToken);
+        }
+        // Async processing of a ~70s reel took 64s; allow long reels room.
+        await pollContainer(container.id, pageToken, videoUrl ? 10 * 60 * 1000 : undefined);
         const media = await graph('POST', `/${igUserId}/media_publish`, { creation_id: container.id, access_token: pageToken });
         post.igMediaId = media.id;
         appendAttempt(post, { ts: new Date().toISOString(), platform: 'instagram', action: isStory ? 'publish-story' : 'publish-reel', ok: true, errorCode: null, errorMessage: null, lateMin, actor: ACTOR });
@@ -1139,14 +1643,7 @@ async function cmdPublishDue(args) {
     }
 
     // Mark posted only when every required platform succeeded (mid-failure leaves it planned to retry).
-    const fbDone = !wantsFb || post.fbReelId;
-    const igDone = !wantsIg || post.igMediaId;
-    if (fbDone && igDone) {
-      post.status = 'posted';
-      post.postedAt = new Date(now).toISOString();
-      await savePlan(abs, plan, [post.id]);
-      published += 1;
-    }
+    await markPostedIfDone();
   }
 
   console.log(`[done] publish-due complete - ${published} post(s) published.`);
@@ -1241,7 +1738,7 @@ async function cmdFbReel(args) {
   }
   if (!mediaPath || !fs.existsSync(mediaPath)) { console.error(`[err] media not found: ${mediaPath}`); process.exit(1); }
   console.log(`[info] FB Reel ${state}: uploading ${(fs.statSync(mediaPath).size / 1e6).toFixed(1)} MB from ${mediaPath}...`);
-  const videoId = await publishFacebookReel(pageId, pageToken, mediaPath, { caption, videoState: state, scheduledAt });
+  const { videoId } = await publishFacebookReel(pageId, pageToken, mediaPath, { caption, videoState: state, scheduledAt });
   console.log(`[ok] FB Reel created (video_id ${videoId}, state ${state}). Polling processing...`);
   const status = await pollVideoReady(videoId, pageToken);
   console.log(`[info] processing status: ${JSON.stringify(status)}`);
@@ -1323,11 +1820,25 @@ const FB_REEL_METRIC_SETS = [
   'total_video_views',
 ];
 
+// FB Page post metrics (issue #7 photo posts), descending. post_impressions_unique is
+// retired from Graph v25 (the insights reference), so it is only the last resort on the
+// v24 the engine pins; post_media_view / post_total_media_view_unique are its successors.
+const FB_POST_METRIC_SETS = [
+  'post_media_view,post_total_media_view_unique,post_reactions_by_type_total,post_clicks',
+  'post_media_view,post_total_media_view_unique',
+  'post_impressions_unique',
+];
+
 function insightsToMetrics(data) {
   const metrics = {};
   for (const row of data?.data || []) {
     const value = row.values?.[0]?.value ?? row.total_value?.value;
     if (typeof value === 'number') metrics[row.name] = value;
+    // A by-type breakdown (post_reactions_by_type_total = { like: n, love: n, ... }) reads
+    // as its total.
+    else if (value && typeof value === 'object' && Object.values(value).every((v) => typeof v === 'number')) {
+      metrics[row.name] = Object.values(value).reduce((a, b) => a + b, 0);
+    }
   }
   return metrics;
 }
@@ -1358,6 +1869,25 @@ async function fetchFbReelInsights(videoId, token) {
     }
   }
   throw new Error(`no supported video_insights metric set for ${videoId}`);
+}
+
+async function fetchFbPostInsights(postId, token) {
+  for (const metric of FB_POST_METRIC_SETS) {
+    try {
+      const metrics = insightsToMetrics(await graph('GET', `/${postId}/insights`, { metric, access_token: token }));
+      if (Object.keys(metrics).length) return metrics;
+    } catch (err) {
+      if (metaPostGone(err)) throw err;
+      /* metric set not supported - try the next */
+    }
+  }
+  // The count fields exist on every Page post: the floor, never empty.
+  const p = await graph('GET', `/${postId}`, { fields: 'reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0),shares', access_token: token });
+  return {
+    reactions: p.reactions?.summary?.total_count ?? null,
+    comments: p.comments?.summary?.total_count ?? null,
+    shares: p.shares?.count ?? 0,
+  };
 }
 
 async function cmdInsights(args) {
@@ -1403,6 +1933,19 @@ async function cmdInsights(args) {
         console.log(`[ok] ${post.id}: FB ${JSON.stringify(metrics)}`);
       } catch (err) {
         if (metaPostGone(err)) goneRow(post, 'facebook', post.fbReelId, err);
+        else if (failRow(post, 'facebook', err)) break;
+      }
+    } else if (post.fbPostId && !skipGone.has(`${post.id}/facebook`)) {
+      // Issue #7: a Page post (photo / multi-photo). A natively scheduled one has no
+      // metrics before its slot, so it is read only once its due time has passed.
+      const due = Date.parse(post.scheduledAt || '');
+      if (post.status !== 'posted' && !(Number.isFinite(due) && due <= Date.now())) continue;
+      try {
+        const metrics = await fetchFbPostInsights(post.fbPostId, pageToken);
+        RUN.results.push({ postId: post.id, platform: 'facebook', action: 'insights', ok: true, id: post.fbPostId, metrics });
+        console.log(`[ok] ${post.id}: FB ${JSON.stringify(metrics)}`);
+      } catch (err) {
+        if (metaPostGone(err)) goneRow(post, 'facebook', post.fbPostId, err);
         else if (failRow(post, 'facebook', err)) break;
       }
     }
@@ -1681,6 +2224,9 @@ async function main() {
       only: typeof args.only === 'string' ? args.only : null,
       // spec 06: the moderate verb carries its action so the mock can branch per-lane.
       action: typeof args.action === 'string' ? args.action : null,
+      // Issue #7: which side of a meta post a comments read targets, so the mock answers
+      // each side with its own thread (live: the Graph node's own fields).
+      metaSide: typeof args.platform === 'string' ? args.platform : null,
     });
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
     else console.error(`[mock] meta ${commandName}: ${envelope.results.length} result(s)`);
@@ -1720,4 +2266,4 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 // Test-only export: cmdDelete + RUN are exported so a delete-idempotency test can
 // drive the real 100/33-swallow logic in-process against a stubbed global.fetch,
 // with no network/credentials/subprocess - mirrors yt-social.mjs's cmdDelete export.
-export { cmdDelete, cmdInsights, RUN, igResumableUpload };
+export { cmdDelete, cmdInsights, cmdPublishDue, cmdSchedule, cmdVerify, RUN, igResumableUpload };

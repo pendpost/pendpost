@@ -10,7 +10,7 @@ dashboard at http://127.0.0.1:8090 from the same process.
 
 ## Setup
 
-1. Install the bundle in Claude Desktop. Node.js 20 or newer must be on your machine.
+1. Install the bundle in Claude Desktop. Node.js 22 or newer must be on your machine.
 2. Optional: pick a workspace folder. It holds your `.env` (platform credentials) and
    `data/` (plans, drafts, media). Leave it blank to use the default location.
 3. Open http://127.0.0.1:8090 and connect the platforms you want on the Setup page. Until

@@ -100,7 +100,7 @@ try {
   const xImg = (await v('x-image')).x;
   ok(!xImg.problems.some((p) => /does not publish an image post/i.test(p)), 'validate: an X image tweet is NOT stranded by the image-type lane gate (the X engine uploads a single image)');
   const yt = (await v('yt-image')).youtube;
-  ok(yt.problems.some((p) => /does not publish an image post/.test(p) && /reddit, pinterest, instagram, x, telegram, discord and mastodon/.test(p)), 'validate: a non-image lane blocks with the honest lane list');
+  ok(yt.problems.some((p) => /does not publish an image post/.test(p) && /reddit, pinterest, instagram, facebook, x, telegram, discord and mastodon/.test(p)), 'validate: a non-image lane blocks with the honest lane list');
   ok(yt.problemCodes.some((c) => c && c.code === 'validate.imageTypeLane' && c.params.platform === 'youtube'), 'validate: the lane gate carries its §4j code + platform param');
   const carU = (await v('car-urls')).instagram;
   ok(!carU.problems.some((p) => /image-carousel|image_url/i.test(p)), 'validate: an IG image carousel with per-slide urls has NO seam problem (the spec 05 block is now conditional)');
@@ -159,8 +159,10 @@ try {
   ok(/post\.type === 'image'/.test(metaSrc) && /image_url: publicUrl/.test(metaSrc), 'engine: the IG IMAGE container branch exists (no more silent extension bailout for type=image)');
   ok(/containerParams\.alt_text = post\.altText\.trim\(\)/.test(metaSrc), 'engine: alt_text threads onto the IMAGE container (spec 21 coverage gate closed)');
   ok(!/image posts are not supported in local-file mode/.test(metaSrc), 'engine: the old silent-bailout warn string is retired');
-  const cloudSrc = fs.readFileSync(path.join(REPO, 'lib', 'cloud-client.mjs'), 'utf8');
-  ok(/post\.type === 'image'.*includes\('instagram'\)/.test(cloudSrc), 'cloud: cloudFiresPost holds IG images back until the cloud companion ships (§4i)');
+  // The rule moved to lib/capabilities.mjs cloudFiresPostFor (issue #7, shared with the post
+  // DTO), so this backstop now asserts the behaviour instead of a source line.
+  const { cloudFiresPost } = await import('../lib/cloud-client.mjs');
+  ok(cloudFiresPost({ type: 'image', platforms: ['instagram'] }, false) === false, 'cloud: cloudFiresPost holds IG images back until the cloud companion ships (§4i)');
 
   // ===== 5. the §4.0 public media mirror (config-only upgrade) =====
   const MIRROR = { publicMediaBaseUrl: 'https://media.example.com/' };

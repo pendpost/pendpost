@@ -31,7 +31,7 @@ const API_KEY = 'ppc_test_secret_abcdef0123456789';
 fs.writeFileSync(path.join(WS, '.env'), `PENDPOST_CLOUD_API_KEY=${API_KEY}\n`);
 
 const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
-const { loadPlanStore } = await import('../lib/plans.mjs');
+const { loadPlanStore, planStoreStats } = await import('../lib/plans.mjs');
 const { loadState, saveState } = await import('../lib/state.mjs');
 const { activeClientId } = await import('../lib/multi-client.mjs');
 const { setBrandAlwaysOn } = await import('../lib/cloud-config.mjs');
@@ -266,6 +266,20 @@ try {
   }];
   await cloud.reconcileCloudResults();
   ok(!(loadState().cloudFailures || {})[relicKey], 'a replayed failure for an already-posted post is NOT written back (no relic re-creation)');
+
+  // --- (10) one reconcile walks the plan store a bounded number of times -----------------
+  //          Incident 2026-10-24: the daemon answered no request at all, /api/health included,
+  //          for 25+ minutes across a restart. reconcileCloudResults called findCampaign once
+  //          per result group, and each call walked the WHOLE store (every plan file, every
+  //          post's view). Under memory pressure a cold walk outran PLAN_VIEW_TTL_MS, so every
+  //          walk was cold: 112 replayed groups x several seconds of synchronous work, back to
+  //          back on the one event loop. The walk count must not grow with the result count.
+  const GROUPS = 40;
+  resultsPayload = Array.from({ length: GROUPS }, (_, i) => doneResult(i === 0 ? 'good' : `ghost-${i}`, `ig-${i}`));
+  const walksBefore = planStoreStats().walks;
+  await cloud.reconcileCloudResults();
+  const walks = planStoreStats().walks - walksBefore;
+  ok(walks < 10, `a reconcile of ${GROUPS} result groups walks the plan store ${walks} times, not once per group`);
 
   console.log(`[cloud-reconcile] OK - done patches + clears overdue, idempotent, refused is a no-op, brand loop reconciles, cloud-fired telegram flips to posted, a failed fire stays due but surfaces its reason, a gone radar reply goes terminal, a terminal refusal clears its ack (${pass} assertions).`);
 } finally {

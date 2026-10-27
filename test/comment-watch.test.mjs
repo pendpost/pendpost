@@ -145,6 +145,24 @@ try {
     [`${CAMP}:p-recent2:youtube`]: NEEDS,
   }) });
   ok(loadState().comments.sources.youtube.ok === true, 'sweep: success wins - one OK post keeps the lane ok:true despite a sibling post failing');
+
+  // ---- the sweep never re-walks the store per target (incident 2026-10-24) ----------
+  // Each read awaits the network, so by the next target the plan views had aged out and
+  // listComments' own findCampaign was a COLD walk of every plan file, once per target: the
+  // second hot loop that kept the live daemon from answering requests. The sweep hands each
+  // read the post it already enumerated; listComments given that post does no store walk.
+  const handed = [];
+  await commentSweep({ force: true, now: NOW + 4 * HOUR, readComments: async (args, known) => { handed.push({ args, known }); return { ok: true, items: [] }; } });
+  ok(handed.length === 2 && handed.every(({ args, known }) => known && known.post && known.post.id === args.postId), 'sweep: every read is handed the post the sweep enumerated');
+  const { listComments } = await import('../lib/writes.mjs');
+  const { loadPlanStore, planStoreStats } = await import('../lib/plans.mjs');
+  const known = loadPlanStore().campaigns.find((c) => c.id === CAMP).posts.find((p) => p.id === 'p-stale');
+  const walksBefore = planStoreStats().walks;
+  // An id-less copy has no commentable target, so the read stops before any network call.
+  const res = await listComments({ campaign: CAMP, postId: 'p-stale' }, { post: { ...known, ids: {}, ytVideoId: undefined } });
+  ok(res.ok === true && res.empty === true && planStoreStats().walks === walksBefore, 'listComments with a known post walks the plan store zero times');
+  const mismatched = await listComments({ campaign: CAMP, postId: 'p-recent' }, { post: { ...known, ids: {}, ytVideoId: undefined } });
+  ok(planStoreStats().walks > walksBefore && mismatched.empty !== true, 'listComments ignores a known post whose id does not match and looks the post up');
 } catch (err) {
   failures += 1;
   console.error('  FAIL - threw:', (err && err.stack) || err);

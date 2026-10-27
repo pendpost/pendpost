@@ -1238,8 +1238,8 @@ const TEXT_LANE_FORMATS = ['text', 'video'];
 const POLL_LANE_FORMATS = [...TEXT_LANE_FORMATS, 'poll'];
 // Spec 05: the carousel-capable lanes ADD 'carousel' to their format list via their OWN
 // array - never by mutating a shared const, which would leak the native-album format to
-// fb/tiktok/mastodon/nostr/... (they assemble no carousel: FB stays reel-gated, tiktok
-// photo-mode + mastodon/nostr have no engine branch). instagram rides the visual set;
+// tiktok/nostr/... (they assemble no carousel: tiktok photo-mode + nostr have no engine
+// branch). facebook has its own explicit entry below (issue #7). instagram rides the visual set;
 // x/linkedin/telegram/discord/reddit ride the poll set; pinterest has its OWN explicit
 // entry (below) so it offers carousel WITHOUT the poll leak the old full-TYPES fallback
 // caused (spec 05 review #7 - pinterest has no poll engine).
@@ -1272,7 +1272,12 @@ const PLATFORM_FORMATS = {
   instagram: [...VISUAL_CAROUSEL_FORMATS, 'image'],
   tiktok: VISUAL_LANE_FORMATS,
   youtube: ['youtube-short', 'youtube-longform', 'video'],
-  facebook: TEXT_LANE_FORMATS,
+  // Issue #7: facebook's explicit, honest list - exactly what the meta engine's FB half
+  // publishes (lib/capabilities.mjs FACEBOOK_TYPES, twin-guarded by
+  // __tests__/format-facebook-photo.test.js): the full-bleed reel, a multi-photo Page post
+  // and a single-photo Page post. It no longer borrows text/video from TEXT_LANE_FORMATS:
+  // the FB lane always refused those, so offering them only stranded a post.
+  facebook: ['reel', 'carousel', 'image'],
   linkedin: POLL_CAROUSEL_FORMATS,
   // Byte lanes: media-kind-driven engines that upload a still image directly, so each ADDS
   // 'image' via its OWN array (the OPT_IN anti-leak rule), twin-guarded against IMAGE_LANES in
@@ -1559,7 +1564,9 @@ export function fieldRelevance(platforms = [], type = 'reel') {
     gbp: has('gbp'),
     // Meaningful only alongside an uploadable image; each engine no-ops when the
     // post carries none (honest, avoids type-coupling in this relevance map).
-    altText: has('x') || has('wordpress') || has('pinterest') || has('instagram'),
+    // Issue #7: a Facebook photo post carries it on every photo (alt_text_custom).
+    altText: has('x') || has('wordpress') || has('pinterest') || has('instagram')
+      || (has('facebook') && (type === 'image' || type === 'carousel')),
     // Spec 13: rich long-form metadata - SEO meta + feature-image alt apply to
     // either blog lane; wpCategories is WordPress-only (Ghost has no categories).
     metaTitle: anyBlog,
@@ -1876,13 +1883,13 @@ export function presentPlatforms(accounts, posting, posts = [], selected = []) {
   return [...known, ...extra];
 }
 
-// The platforms whose OWN scheduler fires a future post (Facebook
-// scheduled_publish_time, YouTube publishAt, Mastodon scheduled_at, WordPress
-// status 'future', Ghost scheduled + published_at), so it publishes on time even
-// when the user's machine is off. Mirrors lib/plans.mjs NATIVE_SCHEDULING_PLATFORMS
+// The platforms whose OWN scheduler fires a future post (YouTube publishAt, Mastodon
+// scheduled_at, WordPress status 'future', Ghost scheduled + published_at), so it
+// publishes on time even when the user's machine is off. Facebook is not one (issue
+// #7): pendpost fires it at its time, from the cloud or from this computer. Mirrors lib/plans.mjs NATIVE_SCHEDULING_PLATFORMS
 // (the app bundle cannot import the core, so the set is restated here next to the
 // existing PLATFORMS list). Every other lane needs pendpost running at the due time.
-export const NATIVE_SCHEDULING_PLATFORMS = new Set(['facebook', 'youtube', 'mastodon', 'wordpress', 'ghost']);
+export const NATIVE_SCHEDULING_PLATFORMS = new Set(['youtube', 'mastodon', 'wordpress', 'ghost']);
 
 // Presentational only: 'native' = the platform publishes it even with the computer
 // off; 'local' = pendpost must be running. Used for the per-platform delivery hint
@@ -1898,7 +1905,7 @@ export function deliveryMode(platform) {
 // ('native' self-schedules, 'local' needs pendpost running). Reuses setupIdOf so
 // facebook/instagram resolve to the 'meta' cloud lane - no second platform->lane map.
 // 'cloud' and 'native' both mean "fires without the user"; only 'local' needs action.
-export function effectiveDelivery(platform, { cloudOn = false, cloudLanes = [], type = null, localOnlyTypes = [] } = {}) {
+export function effectiveDelivery(platform, { cloudOn = false, cloudLanes = [], type = null, localOnlyTypes = [], cloudFires = undefined } = {}) {
   // H6: some post FORMATS the cloud cannot fire at all (a carousel, a nostr longform),
   // whatever the lane's capability says. The capability endpoint is lane-shaped and
   // structurally cannot answer a per-type question, so the list arrives as an option
@@ -1911,7 +1918,11 @@ export function effectiveDelivery(platform, { cloudOn = false, cloudLanes = [], 
   //
   // Both new options default to inert, so every existing call site is byte-identical.
   const base = deliveryMode(platform);
-  if (base !== 'native' && type && localOnlyTypes.includes(type)) return 'local';
+  // Issue #7: the post's own verdict (post.cloudFires, from the server's cloudFiresPost
+  // rule) outranks the static type list when the caller has it: an Instagram album with
+  // carouselViaCloud on IS cloud-fired, an Instagram feed image with it off is NOT.
+  const formatLocal = cloudFires === false || (cloudFires === undefined && Boolean(type) && localOnlyTypes.includes(type));
+  if (base !== 'native' && formatLocal) return 'local';
   if (cloudOn && cloudLanes.includes(setupIdOf(platform))) return 'cloud';
   return base;
 }

@@ -10,6 +10,7 @@ import { makeT } from '../lib/i18n.js';
 // orthography. Mirrors test/i18n-pack.test.mjs for the server pack.
 const CODES = [
   'blocker.manifest',
+  'blocker.config',
   'blocker.lane.notConnected',
   'blocker.lane.unproven',
   'blocker.lane.failed',
