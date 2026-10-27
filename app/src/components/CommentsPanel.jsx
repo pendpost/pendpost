@@ -125,7 +125,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
     if (!text) return;
     setError(null);
     try {
-      await onReply(comment.commentId, text, comment.author);
+      await onReply(comment.commentId, text, comment.author, comment.platform);
       setDraft('');
       setOpen(false);
     } catch (err) {
@@ -139,7 +139,7 @@ function CommentRow({ comment, lane, laneMeta, moderateActions, reactActions, on
     setModError(null);
     setModerating(true);
     try {
-      await onModerate(comment.commentId, action, confirm);
+      await onModerate(comment.commentId, action, confirm, comment.platform);
       setModeratedAs(action);
       setMenuOpen(false);
       setPendingAction(null);
@@ -384,10 +384,13 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
   const [sent, setSent] = useState([]);
   const [replying, setReplying] = useState(false);
 
-  const onReply = async (commentId, text, author) => {
+  // Issue #7: a comment carries its own platform when the read merged several sides (a post
+  // on Instagram AND Facebook). Reply and moderation go to THAT side, never the post-level
+  // targetPlatform, so a Facebook comment is never answered through the Instagram node.
+  const onReply = async (commentId, text, author, side) => {
     setReplying(true);
     try {
-      await replyToComment(campaign, postId, commentId, text, data?.targetPlatform || undefined, author, clientId);
+      await replyToComment(campaign, postId, commentId, text, side || data?.targetPlatform || undefined, author, clientId);
       setSent((prev) => [
         ...prev,
         { commentId: `local-${Date.now()}`, parentId: commentId, author: t('postDetail.comments.you'), text, ts: new Date().toISOString(), kind: 'comment', local: true },
@@ -412,8 +415,8 @@ export default function CommentsPanel({ campaign, postId, enabled = true, onRepl
   // Moderation mutation (spec 06): the SAME invalidateQueries(['plans']) + refetch
   // path. confirm rides through for the suppressing actions (server-gated). Throws on
   // failure so the row can surface the error affordance.
-  const onModerate = async (commentId, action, confirm) => {
-    await moderateComment(campaign, postId, commentId, action, data?.targetPlatform || undefined, confirm, clientId);
+  const onModerate = async (commentId, action, confirm, side) => {
+    await moderateComment(campaign, postId, commentId, action, side || data?.targetPlatform || undefined, confirm, clientId);
     queryClient.invalidateQueries({ queryKey: ['plans'] });
     refetch();
   };

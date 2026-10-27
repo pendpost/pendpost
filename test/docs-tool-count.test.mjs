@@ -6,7 +6,7 @@
 // source test/parity-check.mjs counts - and derive liveCount from it. Then we
 // scan README.md and the two site-docs that quote a tool count, and require
 // every `<integer> tools` mention to equal liveCount. We also require the
-// canonical doc (site-docs/mcp.mdx) to name `parity-check.mjs` as the
+// canonical doc (site-docs/mcp-server.mdx) to name `parity-check.mjs` as the
 // authoritative self-check, so the number points at a verifier, not a trust.
 //
 // Zero-dep node:assert. A fresh temp PENDPOST_ROOT is set BEFORE importing lib
@@ -43,7 +43,7 @@ try {
   // ---- read the docs that quote a tool count --------------------------------
   const docs = {
     'README.md': fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8'),
-    'site-docs/mcp.mdx': fs.readFileSync(path.join(ROOT, 'site-docs', 'mcp.mdx'), 'utf8'),
+    'site-docs/mcp-server.mdx': fs.readFileSync(path.join(ROOT, 'site-docs', 'mcp-server.mdx'), 'utf8'),
     'site-docs/architecture.mdx': fs.readFileSync(path.join(ROOT, 'site-docs', 'architecture.mdx'), 'utf8'),
   };
 
@@ -59,10 +59,10 @@ try {
   ok(mentions > 0, `at least one doc states a tool count (found ${mentions}), so the guard has teeth`);
 
   // ---- the canonical doc points at the parity self-check --------------------
-  ok(docs['site-docs/mcp.mdx'].includes('parity-check.mjs'),
-    'site-docs/mcp.mdx names parity-check.mjs as the authoritative source for the live count');
+  ok(docs['site-docs/mcp-server.mdx'].includes('parity-check.mjs'),
+    'site-docs/mcp-server.mdx names parity-check.mjs as the authoritative source for the live count');
 
-  console.log(`[docs-tool-count] OK - ${mentions} doc tool-count mention(s) all equal live ${liveCount}; mcp.mdx cites parity-check.mjs (${pass} assertions).`);
+  console.log(`[docs-tool-count] OK - ${mentions} doc tool-count mention(s) all equal live ${liveCount}; mcp-server.mdx cites parity-check.mjs (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

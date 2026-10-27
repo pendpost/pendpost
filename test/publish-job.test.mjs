@@ -80,7 +80,9 @@ try {
   // ---- (3) delivery mode: native survives power-off, live needs the runtime --
   ok(job.delivery.mode === 'live' && job.delivery.survivesPowerOff === false, 'a meta lane with instagram is live (needs the runtime), not power-off-safe');
   const fbOnly = buildPublishJob({ ...basePost, platforms: ['facebook'] }, 'meta', { ...metaCtx, lanePlatforms: ['facebook'] });
-  ok(fbOnly.delivery.mode === 'native' && fbOnly.delivery.survivesPowerOff === true, 'a facebook-only meta lane is native (scheduled_publish_time), power-off-safe');
+  // Issue #7 (truthful delivery): pendpost fires a Facebook post at its due time (the cloud
+  // or this computer), it never hands it to Facebook's own scheduler, so it is 'live'.
+  ok(fbOnly.delivery.mode === 'live' && fbOnly.delivery.survivesPowerOff === false, 'a facebook-only meta lane is live (fired at due time by the cloud or this computer), not power-off-safe');
   ok(ytJob.delivery.mode === 'native' && ytJob.delivery.survivesPowerOff === true, 'a youtube lane is native (publishAt), power-off-safe');
   const liJob = buildPublishJob({ ...basePost, platforms: ['linkedin'] }, 'linkedin', { ...metaCtx, command: 'publish-due', timeoutMs: 180_000, lanePlatforms: ['linkedin'] });
   ok(liJob.delivery.mode === 'live' && liJob.delivery.survivesPowerOff === false, 'a linkedin lane is live (needs the runtime), not power-off-safe');

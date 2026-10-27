@@ -53,6 +53,11 @@ const CODE_KEYS = {
   media_missing: 'failure.media',
   invalid_media: 'failure.media',
   radar_target_gone: 'failure.targetGone',
+  // The publishing call failed ambiguously AND the platform could not be checked
+  // (scripts/meta-social.mjs, issue #7): nobody knows yet whether the post is live.
+  publish_unconfirmed: 'failure.unconfirmed',
+  // The publish left its intent marker and waits for the Page check (contract C2).
+  publish_pending_check: 'failure.pendingCheck',
   parent_missing: 'failure.targetGone',
   // The cloud's credential refusals (lastFailure.code from state.cloudFailures refusedCode):
   // the same sentence the cloud issue rows use, naming the platform.
@@ -84,8 +89,8 @@ export function failureKey({ message, code, haltCode } = {}) {
   // list). Not a credential refusal and not a single network hiccup: new relays fix it.
   if (/\bno relay reachable\b/i.test(s)) return 'failure.relaysDown';
   // Instagram rupload's "HTTP 400 ProcessingFailedError": Meta labels it retriable:false, but
-  // it is intermittent on valid reels and the same bytes publish on a later try (see
-  // lib/publish-hold.mjs isTransientFailure). Named before the plain 400, whose "rejected as
+  // it is a ~35s in-request processing timeout on valid reels, so the same bytes can publish
+  // on a later try (see lib/publish-hold.mjs isTransientFailure). Named before the plain 400, whose "rejected as
   // invalid" sentence would send the owner to fix a post that is fine.
   if (/ProcessingFailedError/i.test(s)) return 'failure.processing';
   const status = failureStatus(s);

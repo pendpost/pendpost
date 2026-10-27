@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-27
+
+Facebook Pages get photo and carousel posts, drafted and checked the same way as everything else and sent from your computer. Radar can now research and score signals with reply drafting turned off, for the workflow where every reply is written by hand. And the docs finally match the code on mock mode: pendpost runs live unless you ask for mock, so an unconnected lane is never mistaken for a safe sandbox.
+
+### Added
+- You can turn Radar's reply drafting off while keeping its research and scoring. Set `posting.radar.drafting.enabled` to false (through `config_set` or `PUT /api/config`): a scan still researches, ranks and scores signals into your feed, it just skips drafting replies, so a run no longer spends agent budget on drafts you were going to write by hand. On by default, so nothing changes unless you turn it off. Requested in GitHub issue #37.
+- Photo posts on your Facebook Page. Pick Image for a single-photo post or Carousel for a multi-photo post (up to 10 photos) on a post that includes Facebook, so a weekly carousel can reach Instagram and Facebook together. pendpost uploads the photos straight from your computer, so Facebook needs no public image link. Alt text goes with every photo, and Check flags what Facebook would refuse before you approve: a video slide in a carousel, a photo over 4 MB, or a format other than JPEG, PNG, GIF, BMP or TIFF. Agents get the same through `plan_create_post`, `platform_validate`, `verify_post`, the insights sweep and the comment inbox, and the whole loop runs in mock mode without credentials. Facebook photo posts are sent by pendpost on your computer at their time; the always-on cloud does not carry them yet. Your Meta token needs the `pages_manage_posts` permission for them. Requested in GitHub issue #7.
+
+### Changed
+- On a Facebook-only post the format menu now offers Reel, Image and Carousel. It no longer offers Text and Video, which Facebook in pendpost never published.
+- Comments on Facebook Page posts and Facebook reels can be read, answered and hidden from the comment inbox. A post that went to both Instagram and Facebook now shows the comments from both, and each answer goes back to the network the comment came from.
+
+- On a brand the always-on cloud manages, the cloud now publishes Facebook too: reels, single photos and photo carousels. A carousel that goes only to Facebook needs no extra setting; Instagram and mixed carousels still follow the carousel switch.
+- When Facebook does not confirm a publish (a server error, a dropped connection, or pendpost stopping mid-call), pendpost notes the attempt before it sends anything, waits a few minutes, and then looks at your Page. If the post is there, it is recorded as published; if not, pendpost publishes it. If it cannot tell, nothing is posted again and the post waits for you with a short note on what to do: look at the Page, then mark the post as posted, or confirm Try again to publish it once more. Only you can release such a post, never an agent. pendpost never posts the same thing twice on its own, on your computer or in the cloud. A Facebook photo post without a caption now gets a warning in the check, because pendpost cannot recognise it on the Page.
+
+### Fixed
+- pendpost no longer says Facebook posts are scheduled on Facebook and go out with your computer off. They go out at their time from the cloud when it is on, otherwise from your computer.
+- A carousel whose slides are listed by file name in the plan now reaches the cloud; before, the upload looked in the wrong folder and skipped the post.
+- On a brand the always-on cloud manages, posts the cloud cannot send (Facebook photo posts, and Instagram carousels and feed images unless the cloud carries them) went out about 20 minutes late, because pendpost first waited for the cloud. They now go out on time from your computer.
+- The docs and quickstart no longer say pendpost falls back to mock mode when no credentials are set. Since 2.7.0 pendpost runs live unless you set `PENDPOST_MODE=mock`; a lane with no credential is live-but-unauthenticated and waits for you to connect it rather than quietly faking a publish. The quickstart, the mock-mode and credentials pages, `CONTRIBUTING.md`, `SUPPORT.md`, `AGENTS.md` and the website now say so. Reported in GitHub issue #36.
+
 ## [2.7.0] - 2026-10-14
 
 This release is about signal over noise. Radar now finds people who actually need you instead of every comment that happens to contain a keyword, and it learns from one tap. pendpost stops crying wolf: a message reaches you only when pendpost cannot fix the problem itself, and it names the one fix. LinkedIn and X sign-ins renew themselves well ahead of expiry, including in the always-on cloud. Every error in the Studio now reads as a plain sentence, with the raw technical line one tap away behind a "?".

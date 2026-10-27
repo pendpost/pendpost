@@ -14,9 +14,11 @@ sections at the end are generated from lib/playbooks.mjs.
 
 ## Mock-first
 
-With no credentials, pendpost runs the full draft -> approve -> schedule ->
-publish -> insights loop in mock mode (no network; nothing leaves the machine).
-Exercise everything here before connecting a real platform.
+With `PENDPOST_MODE=mock`, pendpost runs the full draft -> approve -> schedule ->
+publish -> insights loop through the credential-free mock driver (no network;
+nothing leaves the machine). Exercise everything there before connecting a real
+platform. Without it pendpost is live: a lane with no credential is
+live-but-unauthenticated and waits to be connected rather than publishing.
 
 ## Connecting as an agent
 
@@ -88,7 +90,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - **Portal:** https://developers.facebook.com/apps
 - **App to create:** a Business app
 - **Products to add:** Instagram Graph API, Facebook Login for Business
-- **Scopes to request:** `instagram_basic instagram_content_publish pages_show_list pages_read_engagement business_management`
+- **Scopes to request:** `instagram_basic instagram_content_publish pages_show_list pages_read_engagement pages_manage_posts business_management`
 
 **Steps**
 
@@ -104,6 +106,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 
 - _Publishing returns a permissions error even though the token works for reads._ The token was minted without the instagram_content_publish scope. **Fix:** Re-generate the System User token with instagram_content_publish (and instagram_basic) granted, then re-run the setup CLI.
 - _The API reports no Instagram account is available for the Page._ The Facebook Page is not linked to an Instagram professional account. **Fix:** Link the Page to an Instagram Business or Creator account in Page settings, then re-check the lane.
+- _Facebook photo or multi-photo posts fail with a permissions error while reels and Instagram publish._ The token lacks pages_manage_posts, which /{page-id}/photos and /{page-id}/feed require. **Fix:** Re-generate the System User token with pages_manage_posts granted (the Page assigned with full control), then re-run the setup CLI.
 - _Calls 404 or post to the wrong place._ The configured Page ID belongs to a different Page than the one the token controls. **Fix:** Confirm the Page ID (META_PAGE_ID) matches the Page the System User was granted, and the IG User ID belongs to that Page.
 
 ## LinkedIn

@@ -3,7 +3,7 @@
 # Multi-stage: build the React dashboard, then run the zero-dependency server.
 
 # ---- stage 1: build the dashboard ----
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 WORKDIR /app/app
 COPY app/package.json app/package-lock.json ./
 RUN npm ci
@@ -11,7 +11,7 @@ COPY app/ ./
 RUN npm run build
 
 # ---- stage 2: runtime ----
-FROM node:20-slim
+FROM node:22-slim
 # ffmpeg/ffprobe power cover extraction + media validation in LIVE mode; mock
 # mode does not need them, but they keep the image fully capable.
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \

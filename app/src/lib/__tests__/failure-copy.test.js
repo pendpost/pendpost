@@ -20,6 +20,23 @@ describe('failureCopy', () => {
     expect(failureStatus('media not found (clip.mp4)')).toBe(null);
   });
 
+  it('an unconfirmed Facebook publish asks the owner to look at the Page, never "a later try usually works"', () => {
+    // scripts/meta-social.mjs: the publishing call failed ambiguously (5xx) and the Page
+    // check failed too, so nobody knows whether the post is live (issue #7).
+    const f = { lane: 'meta', code: 'publish_unconfirmed', message: 'Facebook did not confirm whether the post went live, and pendpost could not check the Page. (check: Graph GET /111/feed: HTTP 500 OAuthException 2)' };
+    expect(failureKey(f)).toBe('failure.unconfirmed');
+    expect(humanizeFailure(f, en).text).toMatch(/Look at the Page/);
+    expect(humanizeFailure(f, en).text).not.toMatch(/later try usually works/);
+    expect(humanizeFailure(f, de).text).toMatch(/Schau auf der Seite nach/);
+  });
+
+  it('a publish waiting for the Page check says so, never that the platform refused it', () => {
+    const f = { lane: 'facebook', code: 'publish_pending_check', message: 'Facebook has not confirmed this publish yet. (FB feed post (2 photos): Graph POST /111/feed: HTTP 500)' };
+    expect(failureKey(f)).toBe('failure.pendingCheck');
+    expect(humanizeFailure(f, en).text).toMatch(/checks the Page/);
+    expect(humanizeFailure(f, de).text).toMatch(/prüft die Seite/);
+  });
+
   it('a long fail-closed cloud hold never reads as the platform refusing the post', () => {
     // lib/plans.mjs reports a hold past 2 h as code cloud_unanswered; nothing was refused.
     const f = { lane: 'meta', code: 'cloud_unanswered', message: 'the cloud already has this post and has not answered the publish claim for over 2 hours' };

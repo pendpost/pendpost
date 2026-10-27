@@ -137,7 +137,22 @@ try {
   ok(f.ok === true && f.approval === 'pending',
     'draft-one (fence armed holdApproval): the same 20-scored signal DOES draft - and lands pending, the hold stands the policy down');
 
-  console.log(`\n[radar-drafting-policy] OK - drafting volume decoupled from auto-posting: generous drafts, drafting.maxPerRun caps the pick, the door reads drafting.minScore, draft-one bypasses, and autonomy is byte-unchanged (${pass} assertions).`);
+  // ===== (g) issue #37: drafting.enabled false -> research/score runs, the draft phase is skipped =====
+  // maxPerRun is still 2 from (c), so a re-enabled scan proving it drafts again cannot be an
+  // accident of an empty candidate set.
+  setRadar({ drafting: { enabled: false } });
+  const off = await asClient(() => radarAgentScan({ actor: 'owner' }));
+  ok(off.job && off.job.state === 'done',
+    `drafting off: the scan still settles done - research/ingest/score ran (got ${off.job && off.job.state})`);
+  ok(!off.job.draftTargets && off.job.draftSkipped === 'disabled',
+    `drafting off: the draft phase is skipped - no draftTargets and draftSkipped:'disabled' (got targets=${off.job.draftTargets}, skipped=${off.job.draftSkipped})`);
+
+  setRadar({ drafting: { enabled: true } });
+  const on = await asClient(() => radarAgentScan({ actor: 'owner' }));
+  ok(on.job.draftTargets === 2 && !on.job.draftSkipped,
+    `re-enabling drafting drafts again at the maxPerRun 2 cap, no skip marker (got targets=${on.job.draftTargets}, skipped=${on.job.draftSkipped})`);
+
+  console.log(`\n[radar-drafting-policy] OK - drafting volume decoupled from auto-posting: generous drafts, drafting.maxPerRun caps the pick, the door reads drafting.minScore, draft-one bypasses, drafting.enabled gates the whole phase, and autonomy is byte-unchanged (${pass} assertions).`);
 } finally {
   if (savedBin === undefined) delete process.env[BIN_VAR]; else process.env[BIN_VAR] = savedBin;
   fs.rmSync(WS, { recursive: true, force: true });

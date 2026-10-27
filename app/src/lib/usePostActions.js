@@ -176,9 +176,10 @@ export function usePostActions(post, { onEdit } = {}) {
           await reschedulePost(post.campaign, post.id, post.scheduledAt, false, clientId);
         } catch (err) {
           if (err?.code !== 'needs_confirm') throw err;
+          // An unconfirmed Facebook publish: the confirm clears the pending Page check.
           const ok2 = await confirm({
             title: t('postDetail.confirm.title'),
-            body: t('reschedule.confirm.body'),
+            body: t(err?.error === 'publish_unconfirmed' ? 'reschedule.confirm.unconfirmedBody' : 'reschedule.confirm.body'),
             confirmLabel: t('postDetail.confirm.continue'),
             danger: true,
           });

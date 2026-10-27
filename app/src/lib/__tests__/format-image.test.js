@@ -32,8 +32,8 @@ describe('the image TYPE is offered on exactly the image-capable lanes', () => {
   // never via the shared consts, so the OPT_IN anti-leak rule still holds. nostr is
   // deliberately EXCLUDED: its engine drops a type:image note (isTextPost-gated), and an
   // image already publishes there via a type:text note - see IMAGE_LANES in capabilities.mjs.
-  const IMAGE_OFFERED = ['reddit', 'pinterest', 'instagram', 'x', 'telegram', 'discord', 'mastodon'];
-  const OTHER_LANES = ['linkedin', 'facebook', 'tiktok', 'nostr', 'wordpress', 'ghost', 'gbp', 'youtube'];
+  const IMAGE_OFFERED = ['reddit', 'pinterest', 'instagram', 'facebook', 'x', 'telegram', 'discord', 'mastodon'];
+  const OTHER_LANES = ['linkedin', 'tiktok', 'nostr', 'wordpress', 'ghost', 'gbp', 'youtube'];
 
   it('offers image on every image-capable lane', () => {
     for (const lane of IMAGE_OFFERED) {

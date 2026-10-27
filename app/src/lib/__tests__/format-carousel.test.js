@@ -21,10 +21,11 @@ describe('carousel TYPE registration', () => {
 
 describe('PLATFORM_FORMATS unions carousel only for the seven carousel lanes', () => {
   // E2 added mastodon: its engine now assembles a native album of up to 4 attachments.
-  const CAROUSEL_LANES = ['instagram', 'x', 'linkedin', 'telegram', 'discord', 'reddit', 'pinterest', 'mastodon'];
-  // The lanes that share a base format set but assemble NO native album: facebook stays
-  // reel-gated, tiktok photo-mode + nostr have no engine branch.
-  const NON_CAROUSEL_LANES = ['facebook', 'tiktok', 'nostr', 'wordpress', 'ghost', 'gbp', 'youtube'];
+  // Issue #7 added facebook: a multi-photo Page post (image slides only).
+  const CAROUSEL_LANES = ['instagram', 'facebook', 'x', 'linkedin', 'telegram', 'discord', 'reddit', 'pinterest', 'mastodon'];
+  // The lanes that share a base format set but assemble NO native album: tiktok
+  // photo-mode + nostr have no engine branch.
+  const NON_CAROUSEL_LANES = ['tiktok', 'nostr', 'wordpress', 'ghost', 'gbp', 'youtube'];
 
   it('offers carousel on every carousel-capable lane', () => {
     for (const lane of CAROUSEL_LANES) {
@@ -32,16 +33,17 @@ describe('PLATFORM_FORMATS unions carousel only for the seven carousel lanes', (
     }
   });
 
-  it('does NOT leak carousel to fb / tiktok / nostr / blog lanes', () => {
+  it('does NOT leak carousel to tiktok / nostr / blog lanes', () => {
     for (const lane of NON_CAROUSEL_LANES) {
       expect(formatsForPlatform(lane), lane).not.toContain('carousel');
     }
   });
 
-  it('keeps the fb-vs-lanes distinction: fb stays reel-gated (no carousel), the visual/poll lanes gain it', () => {
-    // facebook shares the text-lane base with the carousel poll lanes but must NOT union
-    // carousel (FB multi-photo is out of scope; the FB lane publishes reels only).
-    expect(formatsForPlatform('facebook')).not.toContain('carousel');
+  it('facebook offers carousel from its own explicit list (issue #7), the visual/poll lanes gain it too', () => {
+    // facebook has its OWN entry (reel/carousel/image), so the carousel never leaked to it
+    // through the shared text-lane base: it is offered because the FB engine publishes it.
+    expect(formatsForPlatform('facebook')).toContain('carousel');
+    expect(formatsForPlatform('tiktok')).not.toContain('carousel');
     expect(formatsForPlatform('instagram')).toContain('carousel'); // visual lane + carousel
     expect(formatsForPlatform('linkedin')).toContain('carousel'); // poll lane + carousel
     // The pre-existing formats are untouched (no regression: carousel is purely additive).

@@ -196,6 +196,28 @@ try {
   Date.now = realNow;
 }
 
+// ---- (h) a slow walk does not expire its own views -----------------------------------
+// Incident 2026-10-24: under memory pressure (GBs of swap) one cold walk took longer than
+// PLAN_VIEW_TTL_MS. The views were stamped with the walk's START time, so they were already
+// past the age cap when the walk returned, and the very next walk rebuilt everything again:
+// every walk cold, forever, and the daemon's event loop never came up for air. The age is
+// counted from when a view was BUILT.
+try {
+  const base = realNow();
+  let first = true;
+  // The walk reads the clock once at its start (base); every later read, including the
+  // moment each view finishes building, lands past the age cap: a walk slower than the TTL.
+  Date.now = () => { if (first) { first = false; return base; } return base + plans.PLAN_VIEW_TTL_MS + 1000; };
+  plans.clearPlanStoreCache();
+  loadPlanStore();
+  const slowBuilds = plans.planStoreStats().viewBuilds;
+  Date.now = () => base + plans.PLAN_VIEW_TTL_MS + 1500;
+  loadPlanStore();
+  ok(plans.planStoreStats().viewBuilds === slowBuilds, 'the walk right after a slow (> TTL) walk is a cache hit, not another cold rebuild');
+} finally {
+  Date.now = realNow;
+}
+
 // ---- (f) the posting config is memoized by its stat, one deep copy per caller --------
 resetCounts();
 const cfgA = getPosting();

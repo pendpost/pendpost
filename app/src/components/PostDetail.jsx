@@ -891,7 +891,10 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
         await reschedulePost(post.campaign, post.id, post.scheduledAt, false);
       } catch (err) {
         if (err?.code !== 'needs_confirm') throw err;
-        const ok2 = await confirm({ title: t('postDetail.confirm.title'), body: withClientLine(t('reschedule.confirm.body')), confirmLabel: t('postDetail.confirm.continue'), danger: true });
+        // An unconfirmed Facebook publish (err.error publish_unconfirmed): the owner's confirm
+        // clears the pending Page check and publishes again without it, so say exactly that.
+        const bodyKey = err?.error === 'publish_unconfirmed' ? 'reschedule.confirm.unconfirmedBody' : 'reschedule.confirm.body';
+        const ok2 = await confirm({ title: t('postDetail.confirm.title'), body: withClientLine(t(bodyKey)), confirmLabel: t('postDetail.confirm.continue'), danger: true });
         if (!ok2) throw { canceled: true };
         await reschedulePost(post.campaign, post.id, post.scheduledAt, true);
       }
@@ -1316,7 +1319,9 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   );
   // H6: the post's TYPE rides the delivery question, because the cloud cannot fire some
   // formats at all (an album, a nostr longform) whatever the lane's capability says.
-  const deliveryOpts = { cloudOn, cloudLanes, type: post.type, localOnlyTypes };
+  // Issue #7: plus the server's own per-post verdict (post.cloudFires), which knows the
+  // carouselViaCloud flag and the Facebook-only album exemption the type list cannot.
+  const deliveryOpts = { cloudOn, cloudLanes, type: post.type, localOnlyTypes, cloudFires: post.cloudFires };
   const localPending = pendingPlatforms.filter(
     (p) => effectiveDelivery(p, deliveryOpts) === 'local',
   );
@@ -1327,7 +1332,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // WHICH sentence the existing line renders, never whether a line appears: the operator
   // otherwise reads "needs pendpost running: LinkedIn" and goes looking at the LinkedIn
   // connection, which is fine, and learns nothing about the real cause.
-  const localBecauseFormat = Boolean(post.type) && (localOnlyTypes || []).includes(post.type)
+  const localBecauseFormat = (post.cloudFires === false || (post.cloudFires === undefined && Boolean(post.type) && (localOnlyTypes || []).includes(post.type)))
     && localPending.some((p) => effectiveDelivery(p, { cloudOn, cloudLanes }) !== 'local');
   // An UNCONNECTED lane outranks both: "needs pendpost running" is true about the delivery
   // MECHANISM and silent about connectivity (effectiveDelivery never consults setup), so it

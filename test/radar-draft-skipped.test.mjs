@@ -86,7 +86,16 @@ try {
   ok(!('draftSkipped' in run2.job) || run2.job.draftSkipped == null,
     `with a campaign the marker is ABSENT - it means exactly one thing (got ${JSON.stringify(run2.job.draftSkipped)})`);
 
-  console.log(`[radar-draft-skipped] OK - a no-campaign draft skip is machine-readable on the done row, absent otherwise (${pass} assertions).`);
+  // ===== (d) issue #37: drafting.enabled false => done + draftSkipped:'disabled' (campaign present,
+  // so this is the operator's choice, not a no_campaign degrade) =====
+  await asClient(() => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: { drafting: { enabled: false } } } } }));
+  const run3 = await asClient(() => radarAgentScan({ actor: 'owner' }));
+  ok(run3.job.state === 'done', `scan #3 (drafting off) settles done (got ${run3.job.state})`);
+  ok(run3.job.draftSkipped === 'disabled',
+    `B9: drafting turned off carries draftSkipped:'disabled' - distinct from no_campaign (got ${JSON.stringify(run3.job.draftSkipped)})`);
+  ok(/drafting is off/.test(run3.job.tail || ''), 'the prose tail says drafting is off');
+
+  console.log(`[radar-draft-skipped] OK - a no-campaign draft skip is machine-readable on the done row, 'disabled' when drafting is turned off, absent otherwise (${pass} assertions).`);
 } catch (err) {
   console.error(`[radar-draft-skipped] FAIL - ${err.stack || err.message}`);
   process.exitCode = 1;

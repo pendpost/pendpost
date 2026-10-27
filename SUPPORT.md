@@ -4,7 +4,7 @@ Thanks for using pendpost. Here is where to get help.
 
 ## Documentation
 
-Start with the docs at https://docs.pendpost.com and the quickstart in the README. Most questions are answered there. You do not need any credentials to try pendpost: mock mode runs the full draft to approve to schedule to publish to insights loop with zero credentials.
+Start with the docs at https://docs.pendpost.com and the quickstart in the README. Most questions are answered there. You do not need any credentials to try pendpost: start it with `PENDPOST_MODE=mock` and the mock driver runs the full draft to approve to schedule to publish to insights loop with no real API calls.
 
 ## Questions and ideas
 

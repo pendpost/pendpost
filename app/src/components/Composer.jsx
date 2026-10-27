@@ -149,7 +149,7 @@ const specBadges = (a, t) => {
 // can regex-read both literals; keep them as single-line object literals with no nested
 // braces or that guard goes blind. CAROUSEL_LANE_NOMIX is guarded on arrival rather
 // than after a second miss.
-const CAROUSEL_LANE_MAX = { x: 4, mastodon: 4, pinterest: 5, instagram: 10, telegram: 10, discord: 10, linkedin: 20, reddit: 20 };
+const CAROUSEL_LANE_MAX = { x: 4, mastodon: 4, pinterest: 5, instagram: 10, facebook: 10, telegram: 10, discord: 10, linkedin: 20, reddit: 20 };
 const CAROUSEL_LANE_NOMIX = { x: true, mastodon: true };
 // The structural bound lib/writes.mjs enforces at save. Used when no carousel-capable
 // lane is targeted yet: the previous fallback of 10 was invented and hid the Add control

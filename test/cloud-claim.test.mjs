@@ -14,6 +14,11 @@
 //      The full hold contract lives in test/cloud-backstop-fail-closed.test.mjs.
 //   4. Claim GRANTED                     -> the backstop fires and then CONSUMES the
 //      claim (the cloud worker records the job done-idempotent instead of re-firing).
+//   5. The 2026-10-22 replay on ONE post (ig-kk-schlaf-erinnerung): the grace is long
+//      gone, yet while the cloud holds the claim through its transient-retry chain no
+//      tick fires locally, however many ticks pass; the first tick after the cloud
+//      releases (final failure) fires exactly once. The grace alone never fires a lane
+//      the cloud still holds; only a released or expired claim does.
 // Mock mode + a mocked global.fetch; no network, no real cloud, never publishes.
 import assert from 'node:assert';
 import fs from 'node:fs';
@@ -163,7 +168,28 @@ try {
   const consume = claimCalls.find((cl) => cl.action === 'consume' && cl.claimKey === `${CLIENT}:${CAMP}:p-granted:meta`);
   ok(Boolean(consume), 'a successful backstop fire CONSUMES the claim (the cloud then records done-idempotent)');
 
-  console.log(`[cloud-claim] OK: stands down on denial, marks posted on consumed, holds an acked job and fails open for a never-acked one on network error, consumes on success (${pass} assertions).`);
+  // --- (5) incident replay: a held claim outlasts the grace across many ticks --------
+  // 2026-10-22: the Mac logged 'held live by cloud' every minute while the cloud ran its
+  // 2/5/10-minute retry chain, then fired in the minute after the chain's final failure
+  // released the claim. Same post, consecutive ticks: held -> no fire, released -> one.
+  await addApprovedReel('p-chain');
+  claimModes.set('p-chain', 'denied');
+  const acquiresBefore = claimCalls.filter((cl) => cl.action === 'acquire' && cl.claimKey.includes(':p-chain:')).length;
+  for (let i = 0; i < 5; i += 1) {
+    const tc = await runDueExclusive('scheduler');
+    ok(!tc.ran.some((r) => r.postId === 'p-chain'), `held tick ${i + 1}: no local dispatch while the cloud holds the claim past the grace`);
+  }
+  const acquiresHeld = claimCalls.filter((cl) => cl.action === 'acquire' && cl.claimKey.includes(':p-chain:')).length - acquiresBefore;
+  ok(acquiresHeld === 5, 'every held tick re-asked the claim (the hold is re-checked, never cached into a fire)');
+  ok(readPost('p-chain').status !== 'posted', 'five held ticks later the post is still unposted locally');
+  ok(!getActivity(120).some((e) => e.postId === 'p-chain' && e.action === 'cloud-backstop'), 'no cloud-backstop row while the claim was held');
+  claimModes.set('p-chain', 'granted'); // the cloud's final failure released the claim
+  const tr = await runDueExclusive('scheduler');
+  ok(tr.ran.filter((r) => r.postId === 'p-chain' && r.lane === 'meta').length === 1, 'the first tick after the release fires the lane exactly once');
+  ok(readPost('p-chain').status === 'posted', 'the released-claim fire published locally');
+  ok(claimCalls.some((cl) => cl.action === 'consume' && cl.claimKey === `${CLIENT}:${CAMP}:p-chain:meta`), 'the backstop fire consumed the claim, so a queued cloud retry goes done-idempotent');
+
+  console.log(`[cloud-claim] OK: stands down on denial (across many ticks past the grace), marks posted on consumed, holds an acked job and fails open for a never-acked one on network error, consumes on success (${pass} assertions).`);
 } finally {
   delete global.fetch;
   fs.rmSync(WS, { recursive: true, force: true });

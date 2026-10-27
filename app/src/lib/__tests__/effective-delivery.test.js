@@ -14,6 +14,11 @@ describe('effectiveDelivery', () => {
     expect(effectiveDelivery('instagram', on)).toBe('cloud');
   });
 
+  it('never calls Facebook native: the cloud fires it, or this computer does (issue #7)', () => {
+    expect(effectiveDelivery('facebook', { cloudOn: false, cloudLanes: [] })).toBe('local');
+    expect(effectiveDelivery('facebook', { cloudOn: true, cloudLanes: ['meta'] })).toBe('cloud');
+  });
+
   it('is native for a self-scheduling platform regardless of cloud', () => {
     expect(effectiveDelivery('youtube', on)).toBe('native');
     expect(effectiveDelivery('mastodon', { cloudOn: false, cloudLanes: [] })).toBe('native');
