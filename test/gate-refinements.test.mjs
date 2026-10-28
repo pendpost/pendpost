@@ -89,6 +89,16 @@ try {
   await sweepApprovalExpiry({ actor: 'pendpost' });
   ok(rowsFor('aged', 'approval-expired').length === 1, 'a second expiry sweep does not double-log (idempotent)');
 
+  // A post already scheduled ON the platform (YouTube publishAt) spent its approval there:
+  // the sweep must skip it. The sweep walks the READ MODEL, where the minted ids live
+  // under post.ids, so this pins the handoff check against that shape (round-2 critic).
+  await createPost({ campaign: CAMP, post: { id: 'native', type: 'youtube-short', platforms: ['youtube'], scheduledAt: isoIn(48 * 3600 * 1000), path: 'data/media/clip.mp4', title: 'T', description: 'D' }, actor: 'agent:claude' });
+  await approvePost({ campaign: CAMP, postId: 'native', actor: 'owner' });
+  patchPost('native', { approvalAt: '2020-01-01T00:00:00Z', status: 'scheduled', ytVideoId: 'VIDNATIVE1' });
+  ok(getPost('native').ids?.ytVideoId === 'VIDNATIVE1' && getPost('native').ytVideoId === undefined, 'fixture: the read model carries the id under post.ids only');
+  await sweepApprovalExpiry({ actor: 'pendpost' });
+  ok(getPost('native').approval === 'approved' && rowsFor('native', 'approval-expired').length === 0, 'a natively scheduled post is NOT reverted by approval expiry (the platform still publishes it)');
+
   // Radar's approve-then-fire path is untouched: a freshly-approved radar reply
   // (scheduledAt = now) is NOT aged out by the sweep - it publishes normally.
   await createPost({ campaign: CAMP, post: { id: 'reply', type: 'text', platforms: ['mastodon'], scheduledAt: isoIn(-1000), caption: 'radar reply' }, actor: 'agent:claude' });

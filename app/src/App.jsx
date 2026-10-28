@@ -94,7 +94,7 @@ export default function App() {
     try { localStorage.setItem('pendpost.allClients', allClients ? '1' : '0'); } catch { /* private mode - ignore */ }
   }, [allClients]);
   const { data: plansData, isLoading: plansLoading, isError: plansIsError } = usePlans();
-  const { data: accounts } = useAccounts();
+  const { data: accounts, isLoading: accountsLoading } = useAccounts();
   const { activeClient, data: clientsData, activeClientId } = useActiveClient();
   // The offer list for the mode: every ACTIVE (non-archived, non-dormant-default)
   // client, mirroring ClientSwitcher's own "listed" derivation so the trigger's
@@ -1319,6 +1319,7 @@ export default function App() {
                   seed={composer.seed}
                   campaigns={campaigns}
                   accounts={accounts}
+                  accountsLoading={accountsLoading}
                   posting={posting}
                   onClose={closeComposer}
                   onSaved={(campaign, id, humanizer) => {

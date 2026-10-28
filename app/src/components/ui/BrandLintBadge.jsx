@@ -6,7 +6,9 @@
 // like the gate (errors block, warns never do).
 //
 // This is presentation only - it NEVER calls a write and NEVER changes
-// approve/reject enablement. The badge is a NON-INTERACTIVE status element so it
+// approve/reject enablement. Since #40 the server refuses an approve with a
+// lint error (lint_blocked), so the label says so; the buttons stay enabled and
+// the refusal itself names the platforms and the fix. The badge is a NON-INTERACTIVE status element so it
 // can sit as a SIBLING of an interactive card without nesting a control inside
 // another control (no interactive-in-interactive).
 import { useQuery } from '@tanstack/react-query';
@@ -62,7 +64,7 @@ export default function BrandLintBadge({ caption, platforms }) {
       className="inline-flex items-center gap-1 rounded-full bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold text-red-700 ring-1 ring-red-500/30 dark:text-red-300"
     >
       <AlertTriangle size={11} aria-hidden="true" />
-      <span aria-hidden="true">{t('approvals.lint.count', { count: errors })}</span>
+      <span aria-hidden="true">{t(errors === 1 ? 'approvals.lint.count.one' : 'approvals.lint.count', { count: errors })}</span>
     </span>
   );
 }

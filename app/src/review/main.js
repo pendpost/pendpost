@@ -223,6 +223,15 @@ async function decide(card, verdict, note) {
     render();
     return false;
   }
+  if (result.status === 409 && result.body && result.body.code === 'lint_blocked') {
+    // Issue #40: the caption breaks a brand-lint rule on some platforms, so the approval was
+    // refused. The reviewer cannot edit the copy: say which platforms, and that the agency
+    // has to fix it. The card stays pending.
+    const ids = Array.isArray(result.body.platforms) ? result.body.platforms.filter(Boolean) : [];
+    item.error = t('review.error.lintBlocked', { platforms: ids.map(platformLabel).join(', ') || '-' });
+    paintCard(card);
+    return false;
+  }
   // any other failure: keep the card pending, surface a network-style error, preserve input
   item.error = t('review.error.network');
   paintCard(card);

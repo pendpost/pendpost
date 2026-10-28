@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Wrench, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
+import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Info, Wrench, Pencil, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
 import { STATE_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, ATTENTION_WORDS, postStatusWord, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtStampShort } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
@@ -8,9 +8,10 @@ import { MediaLightbox } from './ui/MediaLightbox.jsx';
 import { CarouselPreview } from './ui/CarouselPreview.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW, FIELD, FIELD_ERR, FIELD_MULTILINE } from './ui/tokens.js';
-import { TAP_TARGET, PILL_TONES } from './ui/recipes.js';
+import { TAP_TARGET, PILL_TONES, STATUS_INK } from './ui/recipes.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
+import { validateRowText, recoveryFor } from '../lib/blockerText.js';
 import { useQuery } from '@tanstack/react-query';
 
 // The X (Twitter) brand glyph. lucide-react's `X` is the close/cross icon, and
@@ -688,23 +689,25 @@ export function SelectAllControl({ total, selectedCount, onToggle, allKey, clear
 // The component is non-interactive (no buttons/links), so it can sit inside the
 // Composer's edit form or the PostDetail Platforms section without nesting a
 // control inside another control (no interactive-in-interactive).
-function BlockerRow({ severity, children }) {
+function BlockerRow({ severity, children, action = null }) {
   const t = useT();
-  // 'problem' = hard red (kept for callers that still need it); 'action' = amber
-  // "needs action" (the owner has a fix); 'warning' = amber advisory. The publish
-  // panel uses action/warning only - a draft is shown by its badge, never as red.
-  const isProblem = severity === 'problem';
-  const isAction = severity === 'action';
-  const Icon = isProblem ? AlertOctagon : AlertTriangle;
-  const cls = isProblem
-    ? 'text-red-600 dark:text-red-300'
-    : 'text-amber-700 dark:text-amber-300';
-  const word = isProblem ? t('blockers.problemLabel') : isAction ? t('blockers.actionLabel') : t('blockers.warningLabel');
+  // Blocking vs advisory must read apart at a glance (brand/DESIGN.md: status is colour PLUS
+  // icon, never colour alone). 'action' (a blocker: this cannot publish as it is) and
+  // 'problem' carry the error ink with the octagon; 'warning' (an advisory hint that never
+  // blocks) is neutral ink with the info glyph. The sr-only word says the same for a
+  // screen reader. `action` is the row's own recovery (Edit / Setup), inside the row.
+  const isBlocking = severity === 'problem' || severity === 'action';
+  const Icon = isBlocking ? AlertOctagon : Info;
+  const cls = isBlocking ? STATUS_INK.err : STATUS_INK.ok;
+  const word = severity === 'problem' ? t('blockers.problemLabel') : severity === 'action' ? t('blockers.actionLabel') : t('blockers.warningLabel');
   return (
     <li className={`flex items-start gap-2 text-[11px] ${cls}`}>
       <Icon size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
       <span className="sr-only">{word}: </span>
-      <span className="min-w-0 flex-1">{children}</span>
+      <span className="min-w-0 flex-1">
+        {children}
+        {action ? <>{' '}{action}</> : null}
+      </span>
     </li>
   );
 }
@@ -763,12 +766,6 @@ function presubmitRowText(t, row) {
 // idiom, one row at a time. Only the four spec-39-owned strings carry codes
 // today; every uncoded row (problemCodes[i] === null) and every code missing
 // from a locale pack falls back to the raw English problem, never a blank row.
-function validateRowText(t, problem, code) {
-  if (!code || !code.code) return problem;
-  const key = `blockers.${code.code}`;
-  const translated = t(key, code.params || {});
-  return translated === key ? problem : translated;
-}
 
 // Does the blockers panel already carry a "Set up <lane>" link for this lane?
 //
@@ -788,7 +785,16 @@ export function setupLinkOffered(platformValidate, platform, onNavigate) {
   return Boolean(rows[platform]?.needsSetup);
 }
 
-export function PlatformBlockers({ platformValidate, presubmit, validateMedia, approval, editedSinceApproval = false, showApproval = true, onNavigate, onFix, className = '' }) {
+// A blocker row's inline recovery: a small text action inside the row, with the shared
+// 44px hit box (TAP_TARGET) so it stays easy to hit without painting a bigger control.
+const ROW_ACTION = `${TAP_TARGET} inline-flex items-center gap-1 rounded font-bold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light`;
+
+// `onEdit` (optional) opens the editor on this post: every blocker row whose fix is content the
+// owner can change (a caption over the cap, a missing image link, a subreddit rule) carries Edit
+// inside the row, so no blocker is a dead end. A not-connected lane gets its Setup link
+// instead; the Reddit flair row keeps its own control (onFix). Surfaces that ARE the editor
+// (the Composer) pass no onEdit.
+export function PlatformBlockers({ platformValidate, presubmit, validateMedia, approval, editedSinceApproval = false, showApproval = true, onNavigate, onFix, onEdit, className = '' }) {
   const t = useT();
   const platforms = platformValidate?.ok ? platformValidate.platforms || {} : {};
   // Spec 09: an optional second source, keyed the SAME way (platform -> {ready,
@@ -855,6 +861,29 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
         const meta = PLATFORM_META[platform];
         const Icon = meta?.Icon;
         const label = meta?.label || platform;
+        // Each blocker row carries its OWN recovery inside the row, from that problem's `fix`
+        // (recoveryFor): Edit, Setup, or none for a problem the owner waits out. Presubmit rows
+        // (subreddit / creator rules) are content the editor fixes. A not-connected lane
+        // already carries its Setup link, so its rows get no second action.
+        const rowAction = (rec) => {
+          if (rec === 'edit' && typeof onEdit === 'function') {
+            return (
+              <button type="button" onClick={onEdit} className={ROW_ACTION}>
+                <Pencil size={11} aria-hidden="true" />
+                {t('action.edit')}
+              </button>
+            );
+          }
+          if (rec === 'setup' && typeof onNavigate === 'function') {
+            return (
+              <button type="button" onClick={() => onNavigate('setup', platform)} className={ROW_ACTION}>
+                <Wrench size={11} aria-hidden="true" />
+                {t('nav.setup')}
+              </button>
+            );
+          }
+          return null;
+        };
         return (
           <div key={platform} className="space-y-1">
             <p className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
@@ -879,7 +908,7 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
                 </li>
               ) : null}
               {presubmitProblems.map((p, i) => (
-                <BlockerRow key={`pp-${i}`} severity="action">{p}</BlockerRow>
+                <BlockerRow key={`pp-${i}`} severity="action" action={rowAction('edit')}>{p}</BlockerRow>
               ))}
               {showSetupLink ? (
                 <li>
@@ -893,17 +922,17 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
                   </button>
                 </li>
               ) : (
-                // Remaining problems (media, caption, policy) are amber "needs action"
-                // rows the owner can fix - never a generic red error.
+                // Remaining problems (media, caption, policy) are blockers: this cannot publish
+                // as it is. Each carries its own recovery inline.
                 problems.map((p, i) => (
-                  <BlockerRow key={`p-${i}`} severity="action">{validateRowText(t, p, v.problemCodes?.[i])}</BlockerRow>
+                  <BlockerRow key={`p-${i}`} severity="action" action={rowAction(recoveryFor([p], [v.problemCodes?.[i]]))}>{validateRowText(t, p, v.problemCodes?.[i])}</BlockerRow>
                 ))
               )}
               {presubmitWarnings.map((w, i) => (
                 <BlockerRow key={`pw-${i}`} severity="warning">{w}</BlockerRow>
               ))}
               {warnings.map((w, i) => (
-                <BlockerRow key={`w-${i}`} severity="warning">{w}</BlockerRow>
+                <BlockerRow key={`w-${i}`} severity="warning">{validateRowText(t, w, v.warningCodes?.[i])}</BlockerRow>
               ))}
             </ul>
           </div>

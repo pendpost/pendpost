@@ -682,6 +682,16 @@ async function sendJson(method, path, body, { timeoutMs } = {}) {
       // The platform a refusal is about (approve's not_configured for a skipped lane), so
       // the alert can name it in the owner's language.
       if (typeof data.platform === 'string') err.platform = data.platform;
+      // #40: approve's lint_blocked refusal lists what tripped, per platform
+      // ([{ platform, rule, match, hint }]), so the alert can name the platforms.
+      if (Array.isArray(data.findings)) err.findings = data.findings;
+      // Approve's not_ready refusal lists the blockers per platform; media_url_dead names the
+      // dead public image link. Both feed the plain sentence (failureCopy approveRefusal).
+      if (Array.isArray(data.blocked)) err.blocked = data.blocked;
+      if (typeof data.url === 'string') err.url = data.url;
+      // media_url_dead says which fix applies ('publish-media' | 'edit'); without it the
+      // alert offered Edit for an image that only needs publishing to the site.
+      if (typeof data.fix === 'string') err.fix = data.fix;
       // A4 archive safety: the archive refusal (needs_confirm) carries the client's
       // fresh in-flight counts so the UI can re-ask with the server's numbers.
       if (data.inFlight) err.inFlight = data.inFlight;
@@ -786,7 +796,10 @@ export const createPost = (campaign, post) => postJson(`/api/plans/${campaign}/p
 // other one. Single-client callers omit it and nothing changes.
 export const updatePost = (campaign, postId, ifRev, fields, clientId) => sendJson('PATCH', `/api/plans/${campaign}/posts/${postId}`, { ifRev, fields, actor: ACTOR, clientId });
 export const deletePost = (campaign, postId, force = false, clientId) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}`, { force, actor: ACTOR, clientId });
-export const approvePost = (campaign, postId, note, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/approve`, { actor: ACTOR, note, clientId });
+// The thrown error is stamped action:'approve', so the alert can say "the approval failed"
+// for the codes that only mean that (failureCopy approveRefusal).
+export const approvePost = (campaign, postId, note, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/approve`, { actor: ACTOR, note, clientId })
+  .catch((err) => { if (err && typeof err === 'object') err.action = 'approve'; throw err; });
 export const rejectPost = (campaign, postId, note, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/reject`, { actor: ACTOR, note, clientId });
 export const unschedulePost = (campaign, postId, confirm = false, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/unschedule`, { confirm, actor: ACTOR, clientId });
 export const reschedulePost = (campaign, postId, scheduledAt, confirm = false, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/reschedule`, { scheduledAt, confirm, actor: ACTOR, clientId });

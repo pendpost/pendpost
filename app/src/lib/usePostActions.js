@@ -8,6 +8,7 @@ import { patchPlanRemove } from './useReschedule.js';
 import { canApprovePost, canRejectPost, canParkPost, canVerifyPost, canPublishNowPost, isHeldRetry, postHasPublishEvidence } from './postActions.js';
 import { publishRunOutcome } from './format.js';
 import { humanizeAction, humanizeFailure } from './failureCopy.js';
+import { showApproveNotice } from './approveNotice.js';
 
 // The overview's post-action set - the SAME actions PostDetail offers, made reachable
 // from a card/row's three-dots menu (ui/RowMenu) so an operator can act without opening
@@ -53,7 +54,7 @@ export function usePostActions(post, { onEdit } = {}) {
 
   const approve = async () => {
     try {
-      await approvePost(post.campaign, post.id, undefined, clientId);
+      showApproveNotice(await approvePost(post.campaign, post.id, undefined, clientId), t);
     } catch (err) {
       showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {

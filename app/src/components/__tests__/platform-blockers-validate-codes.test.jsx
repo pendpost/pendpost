@@ -75,4 +75,47 @@ describe('PlatformBlockers - validate problemCodes (spec 39 §4j)', () => {
     });
     expect(screen.getByText('a plain problem')).toBeInTheDocument();
   });
+
+  // Warnings localize the same way through warningCodes[] (advise.* codes): the LinkedIn
+  // no-image advisory used to show its English engine line in a de-CH Studio.
+  it('renders a coded warning in German, never the engine line', () => {
+    renderBlockers({
+      linkedin: {
+        ready: false, problems: [], problemCodes: [], needsSetup: false,
+        warnings: ['no image set - the LinkedIn article card will have no thumbnail (set post.image to the Cloudinary hero URL)'],
+        warningCodes: [{ code: 'advise.linkedinNoImage', params: {} }],
+      },
+    }, 'de-CH');
+    expect(screen.getByText('Kein Bild gesetzt: Die LinkedIn-Linkvorschau erscheint ohne Vorschaubild. Füge im Editor ein Bild hinzu')).toBeInTheDocument();
+    expect(screen.queryByText(/Cloudinary/)).toBeNull();
+  });
+
+  it('a YouTube category warning names the category in the owner\'s language', () => {
+    renderBlockers({
+      youtube: {
+        ready: false, problems: [], problemCodes: [], needsSetup: false,
+        warnings: ['YouTube category Education (27) will be sent (set on this post)'],
+        warningCodes: [{ code: 'advise.youtubeCategory', params: { youtubeCategoryId: '27', category: 'Education (27)' } }],
+      },
+    }, 'de-CH');
+    expect(screen.getByText('Die YouTube-Kategorie Bildung wird mit diesem Beitrag gesendet')).toBeInTheDocument();
+  });
+
+  it('an uncoded warning still falls back to its line', () => {
+    renderBlockers({ x: { ready: false, problems: [], problemCodes: [], needsSetup: false, warnings: ['a plain warning'], warningCodes: [null] } });
+    expect(screen.getByText('a plain warning')).toBeInTheDocument();
+  });
+
+  // Brand-lint rows name the rule by its human name, never the slug ("broken-link").
+  it('a brand-lint blocker names the rule in words', () => {
+    renderBlockers({
+      linkedin: {
+        ready: false, needsSetup: false, warnings: [],
+        problems: ['brand-lint error (broken-link) on the linkedin text - approval is refused until it is fixed: ...'],
+        problemCodes: [{ code: 'validate.brandLint', params: { platform: 'LinkedIn', rule: 'broken-link' }, fix: 'edit' }],
+      },
+    }, 'de-CH');
+    expect(screen.getByText(/Markenregel "Kaputter Link"/)).toBeInTheDocument();
+    expect(screen.queryByText(/broken-link/)).toBeNull();
+  });
 });

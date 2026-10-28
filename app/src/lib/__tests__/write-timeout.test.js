@@ -139,3 +139,34 @@ describe('errReason: a "<verb> ging nicht. {reason}" sentence', () => {
     expect(errReason({}, t, 'radar.ask.error.check', { platform: 'Quora' }).text).toContain('Öffne Quora in Chrome');
   });
 });
+
+// #40: approve's lint_blocked refusal carries findings[] ({platform, rule, match, hint}); the
+// thrown Error must keep them so the alert can name the platforms.
+describe('sendJson keeps a lint_blocked refusal\'s findings', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('copies findings onto the thrown error', async () => {
+    const findings = [{ platform: 'instagram', rule: 'em-dash', match: '\u2014', hint: 'Use a comma.' }];
+    vi.stubGlobal('fetch', () => Promise.resolve({
+      ok: false,
+      status: 409,
+      json: () => Promise.resolve({ ok: false, code: 'lint_blocked', message: 'caption fails brand lint on instagram', findings }),
+    }));
+    await expect(approvePost('spring', 'p1')).rejects.toMatchObject({ code: 'lint_blocked', findings });
+  });
+});
+
+// The judge's row E: media_url_dead carries fix:'publish-media' from the engine; sendJson must
+// keep it, or the alert offers Edit for an image that only needs publishing.
+describe('sendJson keeps a media_url_dead refusal\'s fix', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('copies fix, url and platform onto the thrown error', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve({
+      ok: false,
+      status: 400,
+      json: () => Promise.resolve({ ok: false, code: 'media_url_dead', message: 'dead', url: 'https://pendpost.com/media/a.jpg', platform: 'instagram', fix: 'publish-media' }),
+    }));
+    await expect(approvePost('spring', 'p1')).rejects.toMatchObject({ code: 'media_url_dead', fix: 'publish-media', url: 'https://pendpost.com/media/a.jpg', platform: 'instagram' });
+  });
+});

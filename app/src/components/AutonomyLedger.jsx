@@ -210,6 +210,8 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
   const drafting = radar.drafting || {};
   const draftMinScore = Number.isFinite(drafting.minScore) ? drafting.minScore : 30;
   const draftMaxPerRun = Number.isInteger(drafting.maxPerRun) ? drafting.maxPerRun : 20;
+  // #42: drafting.enabled defaults ON (engine RADAR_DEFAULTS); only an explicit false is off.
+  const draftingEnabled = drafting.enabled !== false;
 
   useEffect(() => {
     if (!config) return;
@@ -283,9 +285,10 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
     writeConfig({ posting: { radar: partial } }).then(invalidate).catch((err) => setError(errAlert(err, t, 'radar.error.save')));
   };
   // Read-modify-write the WHOLE drafting object (the autoReply pattern) so a partial
-  // save never clobbers the sibling field. The dashboard writes as the owner, so the
-  // server's owner-only drafting gate accepts it.
-  const saveDrafting = (partial) => saveRadar({ drafting: { minScore: draftMinScore, maxPerRun: draftMaxPerRun, ...partial } });
+  // save never clobbers a sibling field. `enabled` always rides along: the server
+  // re-defaults a missing key, so a knob change once silently turned drafting back on
+  // (#42). The dashboard writes as the owner, so the owner-only drafting gate accepts it.
+  const saveDrafting = (partial) => saveRadar({ drafting: { enabled: draftingEnabled, minScore: draftMinScore, maxPerRun: draftMaxPerRun, ...partial } });
   // "Entwürfe pro Scan": constrained number input (native min/max), validated on blur
   // as the backstop (A4) - out of range keeps the typed value + an inline error.
   const saveDraftMax = () => {
@@ -498,25 +501,30 @@ export default function AutonomyLedger({ onNavigate, focus = null }) {
         {/* S7 drafting rows: the DRAFT threshold + per-scan cap, decoupled from the mode
             above (that one decides whether anything is POSTED for you; these decide what
             gets PREPARED as a draft at all). Owner-only server-side; the dashboard always
-            writes as the owner. */}
-        <label className="flex items-center justify-between gap-3">
-          <TipLabel label={t('settings.drafting.minScore.label')} tip={t('settings.drafting.minScore.tip')} />
-          <Select aria-label={t('settings.drafting.minScore.label')} value={String(draftMinScore)} onChange={(e) => saveDrafting({ minScore: Number(e.target.value) })} wrapClassName="w-auto" className={`${FIELD} w-auto tabular-nums`}>
-            {[...new Set([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, draftMinScore])].sort((a, b) => a - b).map((n) => (
-              <option key={n} value={String(n)}>{t('settings.drafting.minScore.option', { n })}</option>
-            ))}
-          </Select>
-        </label>
-        <div className="space-y-1">
-          <div className="flex items-center justify-between gap-3">
-            <TipLabel label={t('settings.drafting.maxPerRun.label')} tip={t('settings.drafting.maxPerRun.tip')} />
-            <input type="number" min="1" max="50" inputMode="numeric" value={draftMax} onChange={(e) => setDraftMax(e.target.value)} onBlur={saveDraftMax} className={`${draftMaxError ? FIELD_ERR : FIELD} w-24 tabular-nums`} aria-label={t('settings.drafting.maxPerRun.label')} aria-invalid={draftMaxError ? 'true' : undefined} />
-          </div>
-          {draftMaxError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{draftMaxError}</p> : null}
-        </div>
-        {/* The pinned relationship sentence: it defines the two-threshold middle state
-            (drafted for review, not auto-posted) in one line. */}
-        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.drafting.relation')}</p>
+            writes as the owner. #42: an on/off switch leads; off = scans still research
+            and score but write no reply drafts, so the knobs only render while it is on. */}
+        <ToggleRow label={t('settings.drafting.enabled.label')} checked={draftingEnabled} onChange={() => saveDrafting({ enabled: !draftingEnabled })} />
+        {draftingEnabled ? (
+          <>
+            <label className="flex items-center justify-between gap-3">
+              <TipLabel label={t('settings.drafting.minScore.label')} tip={t('settings.drafting.minScore.tip')} />
+              <Select aria-label={t('settings.drafting.minScore.label')} value={String(draftMinScore)} onChange={(e) => saveDrafting({ minScore: Number(e.target.value) })} wrapClassName="w-auto" className={`${FIELD} w-auto tabular-nums`}>
+                {[...new Set([0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, draftMinScore])].sort((a, b) => a - b).map((n) => (
+                  <option key={n} value={String(n)}>{t('settings.drafting.minScore.option', { n })}</option>
+                ))}
+              </Select>
+            </label>
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-3">
+                <TipLabel label={t('settings.drafting.maxPerRun.label')} tip={t('settings.drafting.maxPerRun.tip')} />
+                <input type="number" min="1" max="50" inputMode="numeric" value={draftMax} onChange={(e) => setDraftMax(e.target.value)} onBlur={saveDraftMax} className={`${draftMaxError ? FIELD_ERR : FIELD} w-24 tabular-nums`} aria-label={t('settings.drafting.maxPerRun.label')} aria-invalid={draftMaxError ? 'true' : undefined} />
+              </div>
+              {draftMaxError ? <p role="alert" className="text-[11px] font-bold text-red-600 dark:text-red-300">{draftMaxError}</p> : null}
+            </div>
+          </>
+        ) : (
+          <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.drafting.off')}</p>
+        )}
         {xConnected ? (
           <ToggleRow
             label={t('settings.xEnterprise.label')}

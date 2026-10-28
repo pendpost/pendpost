@@ -78,7 +78,7 @@ const postedPost = {
   postedAt: '2026-06-01T10:54:00Z',
 };
 
-function renderDetail(post, { onClose = () => {} } = {}) {
+function renderDetail(post, { onClose = () => {}, onEdit = () => {} } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
     qc,
@@ -87,7 +87,7 @@ function renderDetail(post, { onClose = () => {} } = {}) {
         <I18nProvider locale="en">
           <TooltipProvider>
             <ConfirmProvider>
-              <PostDetail post={post} onClose={onClose} onEdit={() => {}} />
+              <PostDetail post={post} onClose={onClose} onEdit={onEdit} />
             </ConfirmProvider>
           </TooltipProvider>
         </I18nProvider>
@@ -171,5 +171,44 @@ describe('PostDetail posted header shows the actual publish time', () => {
   it('renders "Published ..." from postedAt instead of the scheduled time', () => {
     renderDetail(postedPost);
     expect(screen.getByText(/^Published /)).toBeInTheDocument();
+  });
+});
+
+// #40: approve refused by the brand-lint gate (code lint_blocked). No confirm and no
+// "approve anyway": the drawer stays open on one sentence that names the platform and the
+// fix; the finding (hint + matched text) rides the "?".
+describe('PostDetail approve refused by the brand-lint gate (#40)', () => {
+  it('keeps the dialog open and names the platform and the fix', async () => {
+    approvePostMock.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('caption fails brand lint on telegram'), {
+      code: 'lint_blocked',
+      findings: [{ platform: 'telegram', rule: 'em-dash', match: '—', hint: 'Use a comma instead.' }],
+    })));
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    renderDetail(pendingPost, { onClose });
+    await user.click(screen.getByRole('button', { name: /^approve$/i }));
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('The caption breaks a brand rule on Telegram (Long dashes). Edit the caption for Telegram or remove Telegram from the post.');
+    expect(alert).not.toHaveTextContent(/fails brand lint/);
+    expect(screen.queryByRole('button', { name: /more about this/i })).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(approvePostMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('offers Edit next to the refusal, which opens the editor on this post', async () => {
+    approvePostMock.mockImplementationOnce(() => Promise.reject(Object.assign(new Error('caption fails brand lint on telegram'), {
+      code: 'lint_blocked',
+      findings: [{ platform: 'telegram', rule: 'em-dash', match: '\u2014', hint: 'Use a comma instead.' }],
+    })));
+    const user = userEvent.setup();
+    const onEdit = vi.fn();
+    renderDetail(pendingPost, { onEdit });
+    await user.click(screen.getByRole('button', { name: /^approve$/i }));
+    await screen.findByRole('alert');
+    // The primary keeps its verb (never a red "Error") and stays disabled for this blocker.
+    expect(screen.getByRole('button', { name: /^approve$/i })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /^error$/i })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(onEdit).toHaveBeenCalledWith(pendingPost);
   });
 });

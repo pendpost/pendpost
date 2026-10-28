@@ -1,0 +1,89 @@
+name: Blog release
+
+# Releases date-gated blog posts without anyone's machine being on. Posts sit on
+# main with future `datePublished` dates and the build only renders posts dated
+# today or earlier (web/src/lib/blog.ts), so each morning this workflow:
+#   1. rebuilds production via a Vercel deploy hook when a post is due today,
+#   2. waits until each due URL is live, then pings IndexNow for them,
+#   3. cross-posts posts published two days ago to dev.to (canonical back to us).
+# 05:00 UTC is 06:00/07:00 in Zurich, the same calendar day the gate uses.
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: blog-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    # site-only: web/ is private, so this never applies to the public OSS repo.
+    if: github.repository == 'pendpost/site'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Find due posts
+        id: due
+        working-directory: web
+        run: |
+          today=$(node scripts/blog-due.mjs --urls | paste -sd, -)
+          synd=$(node scripts/blog-due.mjs --offset -2 | paste -sd' ' -)
+          echo "today=$today" >> "$GITHUB_OUTPUT"
+          echo "synd=$synd" >> "$GITHUB_OUTPUT"
+          echo "Due today: ${today:-none}"
+          echo "Due for syndication: ${synd:-none}"
+
+      - name: Rebuild production
+        if: steps.due.outputs.today != ''
+        env:
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK_WEB }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::error::VERCEL_DEPLOY_HOOK_WEB is not set; posts due today will not go live."
+            exit 1
+          fi
+          curl -fsS -X POST "$HOOK" > /dev/null
+          echo "Deploy hook triggered."
+
+      - name: Wait until due posts are live
+        if: steps.due.outputs.today != ''
+        env:
+          DUE_URLS: ${{ steps.due.outputs.today }}
+        run: |
+          IFS=',' read -ra urls <<< "$DUE_URLS"
+          for url in "${urls[@]}"; do
+            for i in $(seq 1 30); do
+              code=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+              [ "$code" = "200" ] && { echo "live: $url"; break; }
+              [ "$i" = "30" ] && { echo "::error::$url still returns $code after 15 minutes"; exit 1; }
+              sleep 30
+            done
+          done
+
+      - name: Ping IndexNow
+        if: steps.due.outputs.today != ''
+        working-directory: web
+        env:
+          DUE_URLS: ${{ steps.due.outputs.today }}
+        run: node scripts/indexnow-ping.mjs --urls "$DUE_URLS,https://pendpost.com/blog,https://pendpost.com/blog/rss.xml,https://pendpost.com/llms-full.txt"
+
+      - name: Cross-post to dev.to
+        if: steps.due.outputs.synd != ''
+        working-directory: web
+        env:
+          DEVTO_API_KEY: ${{ secrets.DEVTO_API_KEY }}
+          SYND_SLUGS: ${{ steps.due.outputs.synd }}
+        # Word-splitting on purpose: one argument per slug.
+        run: node scripts/syndicate-blog.mjs $SYND_SLUGS

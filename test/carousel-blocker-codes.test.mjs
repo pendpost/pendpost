@@ -54,7 +54,7 @@ const posts = [
   // gave it a real one - which is exactly the drift this assertion is meant to catch.)
   { id: 'lane', platforms: ['wordpress'], mediaItems: imgUrl(3), ...base },
   { id: 'min', platforms: ['linkedin'], mediaItems: img(1), ...base },
-  { id: 'max', platforms: ['instagram'], mediaItems: vid(15), ...base },
+  { id: 'max', platforms: ['telegram'], mediaItems: vid(15), ...base },
   { id: 'mix', platforms: ['x'], mediaItems: [{ path: 'data/media/i0.jpg' }, { path: 'data/media/v0.mp4' }], ...base },
   { id: 'pinvid', platforms: ['pinterest'], mediaItems: [...imgUrl(2), { path: 'data/media/v0.mp4' }], ...base },
   { id: 'pinurl', platforms: ['pinterest'], mediaItems: img(3), ...base },
@@ -102,10 +102,10 @@ try {
     'min-items: the English string is byte-identical');
   coded(min, /needs at least/, 'validate.carouselMinItems', { min: 2 }, 'min-items');
 
-  const max = await rows('max', 'instagram');
-  ok(find(max, /^instagram allows at most 10 carousel items \(this carousel has 15\)$/) !== undefined,
+  const max = await rows('max', 'telegram');
+  ok(find(max, /^telegram allows at most 10 carousel items \(this carousel has 15\)$/) !== undefined,
     'max-items: the English string is byte-identical');
-  coded(max, /allows at most/, 'validate.carouselMaxItems', { platform: 'instagram', max: 10, count: 15 }, 'max-items');
+  coded(max, /allows at most/, 'validate.carouselMaxItems', { platform: 'telegram', max: 10, count: 15 }, 'max-items');
 
   const mix = await rows('mix', 'x');
   ok(find(mix, /^x cannot mix images and video in one carousel$/) !== undefined,

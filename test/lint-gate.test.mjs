@@ -37,6 +37,8 @@ const { runDueExclusive } = await import('../lib/scheduler.mjs');
 const { brandLint } = await import('../lib/lint.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
 const { loadState } = await import('../lib/state.mjs');
+const { loadManifest, postContentHash } = await import('../lib/plans.mjs');
+const { activeRoot } = await import('../lib/context.mjs');
 
 const getPost = (camp, id) => (loadPlanStore().campaigns.find((c) => c.id === camp)?.posts || []).find((p) => p.id === id);
 const activity = () => loadState().activity || [];
@@ -50,6 +52,20 @@ async function approvedIgPost(camp, id, caption) {
   });
   assert.ok(cp.ok, `createPost(${camp}/${id}): ${JSON.stringify(cp)}`);
   const ap = await approvePost({ campaign: camp, postId: id, actor: 'owner' });
+  // Issue #40: approval now refuses a brand-lint ERROR up front (lint_blocked). The publish
+  // fence below is the BACKSTOP for a post that is approved anyway (approved before the
+  // approval gate existed, or a hand-edited plan), so stamp that approval on disk the way
+  // such a post would carry it, then drive the fence exactly as before.
+  if (ap.code === 'lint_blocked') {
+    const entry = loadManifest().plans.find((p) => p.id === camp);
+    const planAbs = path.resolve(activeRoot(), entry.path);
+    const plan = JSON.parse(fs.readFileSync(planAbs, 'utf8'));
+    const raw = plan.posts.find((p) => p.id === id);
+    Object.assign(raw, { approval: 'approved', approvalBy: 'owner', approvalAt: new Date().toISOString() });
+    raw.approvedContentHash = postContentHash(raw);
+    fs.writeFileSync(planAbs, JSON.stringify(plan, null, 2));
+    return;
+  }
   assert.ok(ap.ok, `approvePost(${camp}/${id}): ${JSON.stringify(ap)}`);
 }
 

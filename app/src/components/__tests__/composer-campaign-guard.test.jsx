@@ -33,7 +33,7 @@ function renderCreate(campaigns) {
       <I18nProvider locale="en">
         <TooltipProvider>
           <ConfirmProvider>
-            <Composer mode="create" post={null} campaigns={campaigns} onClose={vi.fn()} onSaved={vi.fn()} />
+            <Composer mode="create" post={null} campaigns={campaigns} accounts={{ meta: { configured: true } }} onClose={vi.fn()} onSaved={vi.fn()} />
           </ConfirmProvider>
         </TooltipProvider>
       </I18nProvider>
@@ -75,8 +75,9 @@ describe('Composer campaign guard (US-CFG-12)', () => {
     await user.click(screen.getByRole('button', { name: 'Instagram' }));
     await user.click(screen.getByRole('button', { name: /create draft/i }));
     expect(await screen.findByRole('alert')).toBeInTheDocument();
-    // The fieldset's first toggle (Facebook, first in PLATFORMS order) receives
-    // focus, not just the alert, so a keyboard user lands on the blocking field.
-    expect(screen.getByRole('button', { name: 'Facebook' })).toHaveFocus();
+    // The fieldset's first toggle (Instagram, the only visible chip for this
+    // Instagram-connected brand) receives focus, not just the alert, so a keyboard
+    // user lands on the blocking field.
+    expect(screen.getByRole('button', { name: 'Instagram' })).toHaveFocus();
   });
 });

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check, Upload } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check, Upload, Wrench } from 'lucide-react';
 import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, useRedditFlairs, usePinterestBoardSections, createPost, updatePost, lintText } from '../lib/api.js';
 import { useAssetUpload } from '../lib/useAssetUpload.js';
 import { useT, useLocale } from '../lib/i18n.js';
 import { splitTweetThread } from '../lib/thread.js';
-import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia } from '../lib/format.js';
-import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, FIELD, FIELD_MULTILINE, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY, showsLinkedinCard } from './ui.jsx';
+import { xWeightedLength } from '../lib/x-text.js';
+import { mastodonStatusLength } from '../lib/mastodon-text.js';
+import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, platformsForField, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia } from '../lib/format.js';
+import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, FIELD, FIELD_MULTILINE, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY, showsLinkedinCard, Skeleton } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
@@ -51,6 +53,14 @@ export function srtToText(raw) {
 // to pick the single most-permissive platform when several are co-selected, so a
 // multi-target caption is not over-flagged for the laxest target (A4). The server
 // remains the source of truth; this map just orders the choice.
+// A new post's default format for its selected platforms: 'reel' while any of them publishes
+// one (the long-standing default), else the first format the first platform publishes. No
+// platform yet (accounts loading) keeps 'reel'.
+function defaultFormatFor(platforms) {
+  if (!platforms.length || platforms.some((p) => formatsForPlatform(p).includes('reel'))) return 'reel';
+  return formatsForPlatform(platforms[0])[0];
+}
+
 const CAPTION_CAPS = { instagram: 2200, facebook: 63206, linkedin: 3000, youtube: 5000, x: 280, mastodon: 500, gbp: 1500 };
 
 // Derive ONE representative platform for the live lint from the multi-select.
@@ -85,6 +95,23 @@ export function useLint(text, platform) {
   return result;
 }
 
+// One lint finding in the owner's language. The over-the-cap findings (caption-length,
+// caption-hard-cap) carry only numbers in `match` ("560 chars (cap 500 for mastodon)"); they
+// read as one localized sentence that says the text is too long to publish there (every capped
+// lane refuses, it never truncates: lib/caption.mjs captionBlocker). Other rules keep the
+// matched text and the rule's own hint.
+const CAP_MATCH = /^(\d+) chars \((?:hard )?cap (\d+)(?: (?:for|on) ([a-z]+))?\)$/;
+function lintFindingText(t, f) {
+  const m = (f.rule === 'caption-length' || f.rule === 'caption-hard-cap') ? CAP_MATCH.exec(String(f.match || '')) : null;
+  if (m) {
+    const platform = m[3] ? (PLATFORM_META[m[3]]?.label || m[3]) : null;
+    return platform
+      ? t('composer.lint.tooLong', { count: m[1], max: m[2], platform })
+      : t('composer.lint.tooLongAny', { count: m[1], max: m[2] });
+  }
+  return <><span className="font-bold">&quot;{f.match}&quot;</span> - {f.hint}</>;
+}
+
 export function LintPanel({ lint }) {
   const t = useT();
   if (!lint) return null;
@@ -113,9 +140,7 @@ export function LintPanel({ lint }) {
           }`}
         >
           <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
-          <span>
-            <span className="font-bold">&quot;{f.match}&quot;</span> - {f.hint}
-          </span>
+          <span>{lintFindingText(t, f)}</span>
         </li>
       ))}
       {findings.length > 8 ? (
@@ -149,7 +174,7 @@ const specBadges = (a, t) => {
 // can regex-read both literals; keep them as single-line object literals with no nested
 // braces or that guard goes blind. CAROUSEL_LANE_NOMIX is guarded on arrival rather
 // than after a second miss.
-const CAROUSEL_LANE_MAX = { x: 4, mastodon: 4, pinterest: 5, instagram: 10, facebook: 10, telegram: 10, discord: 10, linkedin: 20, reddit: 20 };
+const CAROUSEL_LANE_MAX = { x: 4, mastodon: 4, pinterest: 5, instagram: 20, facebook: 10, telegram: 10, discord: 10, linkedin: 20, reddit: 20 };
 const CAROUSEL_LANE_NOMIX = { x: true, mastodon: true };
 // The structural bound lib/writes.mjs enforces at save. Used when no carousel-capable
 // lane is targeted yet: the previous fallback of 10 was invented and hid the Add control
@@ -1150,7 +1175,7 @@ function carouselSeedRefs(isEdit, post) {
 
 // Create + edit composer as a full page. Edit mode never touches approval/cover/
 // publish fields - those have their own controls in PostDetail.
-export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, posting, onStartThread, onDirtyChange }) {
+export default function Composer({ mode, post, campaigns, onClose, onSaved, seed, onNavigate, accounts, accountsLoading = false, posting, onStartThread, onDirtyChange }) {
   const t = useT();
   const locale = useLocale();
   const queryClient = useQueryClient();
@@ -1183,8 +1208,50 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [campaign, setCampaign] = useState(isEdit ? post.campaign : campaigns.find((c) => c.active)?.id || campaigns[0]?.id || '');
   const [id, setId] = useState(isEdit ? post.id : '');
   const [idEdited, setIdEdited] = useState(isEdit);
-  const [type, setType] = useState(isEdit ? post.type : seedType || 'reel');
-  const [platforms, setPlatforms] = useState(isEdit ? post.platforms : ['instagram']);
+  // #41: a new post starts on the FIRST platform the picker actually shows, never a
+  // hidden default (a YouTube-only brand once saved an Instagram target it could not
+  // see). While accounts are still loading nothing is preselected; the effect below
+  // applies the first visible platform once they arrive, unless the owner already
+  // picked. Captured once so the dirty-check snapshot starts from the same value.
+  const [initialPlatforms] = useState(() => (isEdit ? post.platforms : visiblePlatforms(accounts, posting).slice(0, 1)));
+  const [rawPlatforms, setPlatforms] = useState(initialPlatforms);
+  const [platformsTouched, setPlatformsTouched] = useState(isEdit);
+  // A new post's format defaults to 'reel' while a selected platform publishes one, else to
+  // the first format the first selected platform does publish (a YouTube-only brand starts
+  // on a YouTube Short, never on a reel YouTube refuses). Like the platforms, it follows the
+  // machine-default selection until the owner picks a format (or a seed brought one).
+  const [initialType] = useState(() => (isEdit ? post.type : seedType || defaultFormatFor(initialPlatforms)));
+  const [type, setType] = useState(initialType);
+  const [typeTouched, setTypeTouched] = useState(isEdit || Boolean(seedType));
+  // The picker offers only connected + enabled + not-skipped lanes, EXCEPT it always
+  // keeps any lane the post being edited already targets so a real target is never
+  // silently dropped. Union of visiblePlatforms(accounts, posting) and the post's
+  // ORIGINAL targets (never the live selection: derived from the selection, deselecting
+  // a targeted-but-unconnected lane unrendered its chip on the first click with no way
+  // back), in PLATFORMS order. Falls back to the full list when accounts/posting are
+  // unavailable, so the picker is never empty on any render path.
+  const pickerPlatforms = useMemo(() => {
+    if (!accounts) return PLATFORMS;
+    const visible = visiblePlatforms(accounts, posting);
+    const allowed = new Set([...visible, ...(isEdit ? post.platforms : [])]);
+    return PLATFORMS.filter((p) => allowed.has(p));
+  }, [accounts, posting, isEdit, post]);
+  // #41: the selection everything downstream reads (payload, Format menu, hint, field
+  // relevance) is the part the owner can SEE in the picker, so a saved post never
+  // carries a platform that has no chip. Edit mode keeps the post's own targets (the
+  // picker always offers them).
+  const platforms = useMemo(
+    () => (isEdit ? rawPlatforms : rawPlatforms.filter((p) => pickerPlatforms.includes(p))),
+    [isEdit, rawPlatforms, pickerPlatforms],
+  );
+  // Accounts can land after mount: apply the first visible platform then, but only
+  // while the owner has not touched the selection (a machine default, not an edit).
+  useEffect(() => {
+    if (isEdit || platformsTouched || !accounts) return;
+    const next = visiblePlatforms(accounts, posting).slice(0, 1);
+    setPlatforms((prev) => (prev.length === next.length && prev.every((p, i) => p === next[i]) ? prev : next));
+    if (!typeTouched) setType(defaultFormatFor(next));
+  }, [isEdit, platformsTouched, typeTouched, accounts, posting]);
   const [scheduledIso, setScheduledIso] = useState(isEdit ? post.scheduledAt || null : null);
   const [caption, setCaption] = useState(isEdit ? post.caption : seedCaption);
   const [firstComment, setFirstComment] = useState(isEdit ? post.firstComment || '' : '');
@@ -1342,8 +1409,8 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [initialSnapshot] = useState(() => JSON.stringify({
     campaign: isEdit ? post.campaign : campaigns.find((c) => c.active)?.id || campaigns[0]?.id || '',
     id: isEdit ? post.id : '',
-    type: isEdit ? post.type : seedType || 'reel',
-    platforms: isEdit ? post.platforms : ['instagram'],
+    type: initialType,
+    platforms: initialPlatforms,
     scheduledIso: isEdit ? post.scheduledAt || null : null,
     caption: isEdit ? post.caption : '',
     firstComment: isEdit ? post.firstComment || '' : '',
@@ -1418,19 +1485,28 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const globalHashtags = useMemo(() => configData?.posting?.hashtagPresets || [], [configData]);
   const selectedAsset = useMemo(() => assets.find((a) => `${assetsDir}/${a.file}` === mediaPath), [assets, assetsDir, mediaPath]);
   const campaignPosts = useMemo(() => campaigns.find((c) => c.id === campaign)?.posts || [], [campaigns, campaign]);
-  // The picker offers only connected + enabled + not-skipped lanes, EXCEPT it always
-  // keeps any lane the post being edited already targets so a real target is never
-  // silently dropped. Union of visiblePlatforms(accounts, posting) and the post's
-  // ORIGINAL targets (never the live selection: derived from the selection, deselecting
-  // a targeted-but-unconnected lane unrendered its chip on the first click with no way
-  // back), in PLATFORMS order. Falls back to the full list when accounts/posting are
-  // unavailable, so the picker is never empty on any render path.
-  const pickerPlatforms = useMemo(() => {
-    if (!accounts) return PLATFORMS;
-    const visible = visiblePlatforms(accounts, posting);
-    const allowed = new Set([...visible, ...(isEdit ? post.platforms : [])]);
-    return PLATFORMS.filter((p) => allowed.has(p));
-  }, [accounts, posting, isEdit, post]);
+  // While the brand's accounts are still loading (App passes accountsLoading), the picker cannot
+  // know which platforms will show: a quiet one-row placeholder stands in (no chips to click,
+  // no select-all, no layout jump when the real row lands) and the Format menu commits to
+  // nothing yet. A failed accounts read is not loading: the picker falls back to every
+  // platform, so the composer is never stuck.
+  const platformsLoading = !isEdit && accountsLoading && !accounts;
+  // A brand with nothing connected yet (every lane skipped or unconnected): no chip to pick,
+  // so the picker area says why and links to Setup, and save stays disabled with that line
+  // as its reason, instead of refusing with "select a platform" when there is none.
+  const noPlatformAvailable = !isEdit && Boolean(accounts) && pickerPlatforms.length === 0;
+  // A shared field's label names the platforms it feeds on THIS post: the selected ones
+  // (platformsForField), never a platform the brand cannot even see.
+  const fieldLabel = (key, field) => {
+    const lanes = platformsForField(field, platforms).map((p) => PLATFORM_META[p]?.label || p);
+    return lanes.length ? `${t(key)} (${lanes.join(', ')})` : t(key);
+  };
+  // The media field is named after what it holds: an image format or an image file reads
+  // "Image", a story (image or video) "Media", the video formats "Video". A .png under a
+  // "Video" label next to Format "Image (4:5)" contradicted itself.
+  const mediaIsImage = type === 'image' || /\.(png|jpe?g|gif|webp)$/i.test(mediaPath || '');
+  const mediaIsVideo = !mediaIsImage && type !== 'story';
+  const mediaFieldKey = mediaIsImage ? 'composer.field.mediaImage' : (mediaIsVideo ? 'composer.field.video' : 'composer.field.media');
   // Are all offered platforms selected? Drives the select-all/clear control's label.
   const allPlatformsSelected = pickerPlatforms.length > 0 && pickerPlatforms.every((p) => platforms.includes(p));
   // The SHARED field-relevance model (lib/format.js), consumed identically by the
@@ -1506,10 +1582,13 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // per-platform override else the shared caption; CharCounter +
   // useOverLimitAnnounce carry the shared accessibility contract (icon +
   // sr-only severity, transition-only announce). X caps at 280, Mastodon at 500.
-  const xLen = (xCaption || caption).length;
+  // Counted the way X does (URLs 23, emoji 2), the same counter as approval + publish.
+  const xLen = xWeightedLength(xCaption || caption);
   const xOver = xLen > CAPTION_CAPS.x;
   const xOverAnnounce = useOverLimitAnnounce(xOver, xLen, CAPTION_CAPS.x);
-  const mastodonLen = (mastodonCaption || caption).length;
+  // Counted the way Mastodon does (lib/mastodon-text.js, the engine's twin): a link is 23, a
+  // remote mention @user, emoji one each, and the content warning adds to the same cap.
+  const mastodonLen = mastodonStatusLength(mastodonCaption || caption, spoilerText);
   const mastodonOver = mastodonLen > CAPTION_CAPS.mastodon;
   const mastodonOverAnnounce = useOverLimitAnnounce(mastodonOver, mastodonLen, CAPTION_CAPS.mastodon);
 
@@ -1524,13 +1603,13 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     // (suggestPostId) rewrites it right after mount, and a machine suggestion
     // must never make an untouched composer read dirty.
     () => JSON.stringify({
-      campaign, id: idEdited ? id : '', type, platforms, scheduledIso, caption, firstComment, altText, title,
+      campaign, id: idEdited ? id : '', type: typeTouched ? type : initialType, platforms: platformsTouched ? platforms : initialPlatforms, scheduledIso, caption, firstComment, altText, title,
       link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug,
       body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent,
       ttInteraction, spoilerText, xReplySettings, poll,
       stickers, hashtagsMode, hashtags,
     }) !== initialSnapshot,
-    [campaign, id, idEdited, type, platforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
+    [campaign, id, idEdited, type, typeTouched, initialType, platforms, platformsTouched, initialPlatforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
   );
 
   // Report dirtiness upward so App's client-switch guard (lib/clientSwitchGuard.js)
@@ -1614,6 +1693,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     const willStrand = showInteractive && stickers.length > 0 && next !== 'story';
     if (willStrand && !(await confirmStrand())) return;
     if (willStrand) setStickers([]);
+    setTypeTouched(true);
     setType(next);
   };
 
@@ -1621,6 +1701,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     const willStrand = showInteractive && stickers.length > 0 && p === 'instagram' && platforms.includes(p);
     if (willStrand && !(await confirmStrand())) return;
     if (willStrand) setStickers([]);
+    setPlatformsTouched(true);
     setPlatforms((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
   };
 
@@ -2036,16 +2117,34 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
               <legend className={EYEBROW}>{t('composer.field.platforms')}</legend>
               {/* Multi-select is the whole point: one post, every ticked platform. A
                   select-all/clear control makes that obvious and fast. */}
-              {pickerPlatforms.length > 1 ? (
+              {pickerPlatforms.length > 1 && !platformsLoading ? (
                 <button
                   type="button"
-                  onClick={() => setPlatforms(allPlatformsSelected ? [] : [...pickerPlatforms])}
+                  onClick={() => { setPlatformsTouched(true); setPlatforms(allPlatformsSelected ? [] : [...pickerPlatforms]); }}
                   className="text-[11px] font-bold text-brand transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
                 >
                   {allPlatformsSelected ? t('composer.platforms.clear') : t('composer.platforms.all')}
                 </button>
               ) : null}
             </div>
+            {noPlatformAvailable ? (
+              <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+                <span id="composer-no-platform">{t('composer.platforms.noneConnected')}</span>
+                {onNavigate ? (
+                  <button type="button" onClick={() => onNavigate('setup')} className="inline-flex items-center gap-1 rounded text-xs font-bold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">
+                    <Wrench size={12} aria-hidden="true" />
+                    {t('settings.automation.platforms.setupLink')}
+                  </button>
+                ) : null}
+              </p>
+            ) : null}
+            {platformsLoading ? (
+              <div role="status" aria-busy="true" className="flex gap-1.5">
+                <Skeleton className="h-[30px] w-24 rounded-xl" />
+                <Skeleton className="h-[30px] w-20 rounded-xl" />
+                <span className="sr-only">{t('composer.platforms.loading')}</span>
+              </div>
+            ) : (
             <div className="flex flex-wrap gap-1.5">
               {pickerPlatforms.map((p) => {
                 const meta = PLATFORM_META[p];
@@ -2072,13 +2171,18 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 );
               })}
             </div>
+            )}
             {/* One calm line so the shared-content model is legible: the same post,
                 caption and media publish to every selected platform. */}
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-              {platforms.length > 1
-                ? t('composer.platforms.hintMulti', { n: platforms.length })
-                : t('composer.platforms.hint')}
-            </p>
+            {/* Only when there is a choice to make: with one platform (or none) the line
+                said nothing the single chip does not already show. */}
+            {noPlatformAvailable || platformsLoading || pickerPlatforms.length <= 1 ? null : (
+              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                {platforms.length > 1
+                  ? t('composer.platforms.hintMulti', { n: platforms.length })
+                  : t('composer.platforms.hint')}
+              </p>
+            )}
           </fieldset>
 
           {/* Discoverability: a single X post can grow into a real thread. This
@@ -2125,8 +2229,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                   across platforms; full list when none), keeping the current value
                   listed even if now invalid so a platform change never silently
                   rewrites the format. */}
-              <select id="composer-type" value={type} onChange={(e) => onTypeChange(e.target.value)} className={`${FIELD} w-full h-10`}>
-                {TYPES.filter((ty) => ty === type || (platforms.length ? platforms.some((p) => formatsForPlatform(p).includes(ty)) : true)).map((ty) => (
+              <select id="composer-type" value={platformsLoading ? '' : type} disabled={platformsLoading} onChange={(e) => onTypeChange(e.target.value)} className={`${FIELD} w-full h-10`}>
+                {platformsLoading ? <option value="">…</option> : null}
+                {platformsLoading ? null : TYPES.filter((ty) => ty === type || (platforms.length ? platforms.some((p) => formatsForPlatform(p).includes(ty)) : true)).map((ty) => (
                   <option key={ty} value={ty}>{typeOptionLabel(t, platforms, ty)}</option>
                 ))}
               </select>
@@ -2145,8 +2250,8 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
 
           {needsMedia ? (
             <div className="space-y-1.5">
-              <label className={EYEBROW}>{t('composer.field.video')}</label>
-              <VideoPicker assets={assets} assetsDir={assetsDir} value={mediaPath} onChange={setMediaPath} />
+              <label className={EYEBROW}>{t(mediaFieldKey)}</label>
+              <VideoPicker assets={assets} assetsDir={assetsDir} value={mediaPath} onChange={setMediaPath} placeholderKey={mediaIsVideo ? 'composer.video.choose' : 'composer.media.choose'} />
             </div>
           ) : null}
 
@@ -2409,7 +2514,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
 
           {showFirstComment ? (
             <div className="space-y-1.5">
-              <label className={EYEBROW} htmlFor="composer-comment">{t('composer.field.firstComment')}</label>
+              <label className={EYEBROW} htmlFor="composer-comment">{fieldLabel('composer.field.firstComment', 'firstComment')}</label>
               <textarea id="composer-comment" value={firstComment} onChange={(e) => setFirstComment(e.target.value)} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
               <LintPanel lint={commentLint} />
             </div>
@@ -2420,7 +2525,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
               with an image; each engine no-ops when the post carries none. */}
           {rel.altText ? (
             <div className="space-y-1.5">
-              <label className={EYEBROW} htmlFor="composer-alt-text">{t('composer.field.altText')}</label>
+              <label className={EYEBROW} htmlFor="composer-alt-text">{fieldLabel('composer.field.altText', 'altText')}</label>
               <textarea id="composer-alt-text" value={altText} onChange={(e) => setAltText(e.target.value)} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} />
               <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.altTextHint')}</p>
             </div>
@@ -2440,7 +2545,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
 
           {rel.title ? (
             <div className="space-y-1.5">
-              <label className={EYEBROW} htmlFor="composer-title">{t('composer.field.title')}</label>
+              <label className={EYEBROW} htmlFor="composer-title">{fieldLabel('composer.field.title', 'title')}</label>
               <input id="composer-title" value={title} onChange={(e) => setTitle(e.target.value)} className={`${FIELD} w-full`} />
               {isArticle ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.field.titleArticleHint')}</p> : null}
             </div>
@@ -2752,10 +2857,15 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                   <LintPanel lint={descLint} />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <label className={EYEBROW} htmlFor="composer-blogslug">{t('composer.field.blogSlug')}</label>
-                <input id="composer-blogslug" value={blogSlug} onChange={(e) => setBlogSlug(e.target.value)} placeholder={t('composer.field.blogSlugPlaceholder')} className={`${FIELD} w-full`} />
-              </div>
+              {/* blogSlug is bookkeeping for the blog-to-Short reconciler (which post a Short
+                  came from), never published to YouTube: shown only on a post that carries one,
+                  so a hand-written Short never sees an empty field it cannot use. */}
+              {isEdit && post.blogSlug ? (
+                <div className="space-y-1.5">
+                  <label className={EYEBROW} htmlFor="composer-blogslug">{t('composer.field.blogSlug')}</label>
+                  <input id="composer-blogslug" value={blogSlug} onChange={(e) => setBlogSlug(e.target.value)} placeholder={t('composer.field.blogSlugPlaceholder')} className={`${FIELD} w-full`} />
+                </div>
+              ) : null}
             </>
           ) : null}
 
@@ -2849,7 +2959,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <button type="button" onClick={requestClose} className="rounded-xl px-3.5 py-2 text-sm font-bold text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60">
               {t('composer.cancel')}
             </button>
-            <button type="button" onClick={save} disabled={busy} className={`flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}>
+            <button type="button" onClick={save} disabled={busy || noPlatformAvailable || platformsLoading} aria-describedby={noPlatformAvailable ? 'composer-no-platform' : undefined} className={`flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}>
               {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
               {isEdit ? t('composer.save') : t('composer.createDraft')}
             </button>

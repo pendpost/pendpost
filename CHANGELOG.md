@@ -4,7 +4,38 @@ All notable changes to pendpost are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and pendpost adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.9.0] - 2026-10-28
+
+Approving gets clearer. Every refusal and every pre-flight check in the Studio now says what is wrong, why, and the one thing that fixes it, in your dashboard language, so the review queue no longer ends in "Something went wrong". YouTube uploads carry the right language, a category and the AI disclosure, and brand-lint runs when you approve, not only at publish.
+
+### Added
+
+- An approved post shows when its approval expires if `posting.approvalExpiryHours` is set, and warns in amber when the approval would lapse before the post's slot, so you can approve it again or plan it earlier (#43).
+- A Draft replies switch under Settings > Autonomy > Respond for me turns Radar's reply drafting off and on (`posting.radar.drafting.enabled`). The two drafting knobs show only while drafting is on (#42).
+- YouTube category and AI disclosure per post (#39). Set `youtubeCategoryId` (one of YouTube's assignable category ids, such as `"22"` for People & Blogs or `"28"` for Science & Technology) and `containsSyntheticMedia: true` (the altered or synthetic content label) on a post through `plan_create_post`, `plan_update_post` or the `/api` post routes. A brand-wide default category lives in `posting.youtube.defaultCategoryId` (set it with `config_set`); without one, videos stay under Education (27) as before. The disclosure goes out with the upload, again when pendpost releases an overdue scheduled video, and on a video already published when you add it later and push the edit. Editing a published video keeps its category unless the post sets one. When a post sets its own category or the disclosure, Check shows it, so you see it before you approve. Posts that are already approved keep their approval after the upgrade. Requested in GitHub issue #39.
+
+### Changed
+
+- Every approval refusal and every pre-flight check in the Studio now has its own sentence in your dashboard language: what is wrong, why, and the fix. An Edit or Setup button appears only where it actually fixes the problem. Before, a refusal such as a dead image link showed only "Something went wrong".
+- A check that blocks a post shows in red and disables Approve before you click. Advice that does not block shows in grey. A refusal stays on its card until the post changes.
+- The New post composer starts on a platform you can see. With only one platform it skips the platform hint, and field labels name only the platforms that field applies to. With no platform connected it says so and links to Setup (#41).
+- Brand-lint now runs when you approve a post, not only when it publishes (#40). If a platform's caption (its own caption, such as the X text, or the shared one) breaks a brand-lint rule, the approval is refused with `lint_blocked` and a list of what failed per platform, so you fix it while you are still looking at the post instead of finding a platform quietly skipped at its slot. Fix the caption or remove that platform, then approve again. `force` does not override it. Lint warnings never block; they come back with the approval as `lintWarnings`. The same applies to `approve_post`, the `/api` approve route, auto-approve, Radar auto-replies and the client review link, where the reviewer sees a plain sentence saying the agency has to fix the text first. The check at publish time stays as it was. Requested in GitHub issue #40.
+- An Instagram or Pinterest image that lives on your own site and is not online yet, such as a blog article's preview card that appears on release day, no longer blocks approval. If the link is on the same site as your public media folder (`posting.publicMediaBaseUrl`) but outside that folder, and the post is scheduled for later, pendpost approves it and lists the link as pending media. The link still has to work when the post is due: if it does not, the post is not sent and waits for you. A dead link anywhere else is still refused at approval, now with the link and platform named, and the `/api` route answers 409.
+
+### Fixed
+
+- The New post composer no longer pre-selects a hidden Instagram when Instagram is off or skipped, so a new post can't carry a platform you never saw (#41).
+- Changing Radar's drafting knobs no longer turns reply drafting back on after you switched it off (#42).
+- An approval no longer expires on a post that is already scheduled on the platform (YouTube, Facebook, WordPress). Before, it went back to review while the platform still published it.
+- Editing an already published YouTube video keeps its category and language, and sends an AI disclosure you add later.
+- X posts are counted the way X counts them (every URL 23, every emoji and CJK character 2) at approval, at publish and in the Composer. Before, a link-heavy post could pass approval and then be refused at publish for its raw length.
+- YouTube checks match the Data API: title 100 characters, description 5,000 bytes (umlauts and emoji take more than one), no `<` or `>`, tags 500 characters counting commas and the quotes around tags that contain spaces.
+- Instagram carousels can have up to 20 slides, as Meta now documents (was 10). Facebook albums stay at 10.
+- Public pages corrected: /privacy lists all four YouTube permissions pendpost asks for, /radar describes the owner-only auto-reply switch, and the Postiz comparison describes its preview-link sign-off.
+- The blog social reconciler (`scripts/reconcile-blog-social.mjs`) now runs every draft through the same length caps and brand-lint the Studio uses before writing it. A draft that would be flagged is still created, and the run lists each one with the reason, so you know which posts to shorten before approving. The blog writing guide now states the per-platform caps for social copy.
+- Mastodon posts are counted the way Mastodon counts them: every link is 23 characters whatever its length, a mention like @name@server counts as @name, and an emoji counts once. Before, a link-heavy post that Mastodon would accept was flagged as over 500 at Check, at approval and at publish.
+- YouTube uploads are no longer always marked as German (#38). The video's language and audio language now follow your content language (`posting.contentLanguage`, or the dashboard language when that is empty), so `de-CH` sends `de` and `en` sends `en`. This applies to new uploads and scheduled Shorts; editing a video that is already on YouTube keeps the language it has. Reported in GitHub issue #38.
+- `PENDPOST_MODE=mock npx pendpost` starts again. Since 2.2.0 it exited with "mock mode refused", because under npx the data folder was the npm cache. Mock mode without `PENDPOST_ROOT` now runs in a private demo workspace in your temp folder (created 0700, refused if another user could write to it) and opens on the example Acme campaign. An explicit `PENDPOST_ROOT` still has to sit inside your temp folder in mock mode.
 
 ## [2.8.0] - 2026-10-27
 

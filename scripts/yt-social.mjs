@@ -45,6 +45,7 @@ import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
 import { avSyncBlocker, avSyncBlockRow, findCoverSibling } from '../lib/assets.mjs';
+import { YT_CATEGORY_IDS, YT_DEFAULT_CATEGORY_ID, ytCategoryLabel } from '../lib/capabilities.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // The .env lives in the ACTIVE client subtree, resolved by the shared envPath()
@@ -66,7 +67,6 @@ const ANALYTICS_API = 'https://youtubeanalytics.googleapis.com/v2';
 // refresh token that carries it, or the corresponding call 403s.
 const SCOPES = 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube https://www.googleapis.com/auth/youtube.force-ssl https://www.googleapis.com/auth/yt-analytics.readonly';
 const DEFAULT_REDIRECT = 'http://localhost:8088/callback';
-const CATEGORY_EDUCATION = '27';
 
 // redirect uri is a constant overridable by env (mirrors linkedin-social hardcoding its org urn).
 const redirectUri = () => readEnv('YT_REDIRECT_URI') || DEFAULT_REDIRECT;
@@ -433,20 +433,63 @@ function tagsArray(tags) {
   return String(tags || '').split(',').map((s) => s.trim()).filter(Boolean);
 }
 
+// YouTube's snippet.defaultLanguage / defaultAudioLanguage take a BCP-47 language tag;
+// the primary subtag is enough and is what YouTube Studio lists ('de-CH' -> 'de').
+// Anything unusable falls back to 'en' (the getContentLocale() default), never a
+// hard-coded 'de' (issue #38: every upload was declared German).
+export function ytLanguageTag(locale) {
+  const primary = String(locale || '').split(/[-_]/)[0].toLowerCase();
+  return /^[a-z]{2,3}$/.test(primary) ? primary : 'en';
+}
+
+// The brand-level metadata defaults, resolved ONCE per command: the CONTENT language
+// (getContentLocale(): contentLanguage -> locale -> 'en', NOT the dashboard UI locale) and
+// the brand's default category (posting.youtube.defaultCategoryId, issue #39). Dynamic
+// import keeps lib/config.mjs out of this script's static module graph (the
+// telegram-social.mjs storeOwnerChatId pattern).
+async function ytMetaDefaults() {
+  const { getContentLocale, getPosting } = await import('../lib/config.mjs');
+  const brandCategory = getPosting().youtube?.defaultCategoryId;
+  return {
+    language: ytLanguageTag(getContentLocale()),
+    defaultCategoryId: YT_CATEGORY_IDS.includes(brandCategory) ? brandCategory : YT_DEFAULT_CATEGORY_ID,
+  };
+}
+
+// The category an upload is filed under: the post's youtubeCategoryId, else the brand
+// default, else 27 (Education, the value before issue #39). An id YouTube would refuse is
+// skipped (authoring validation already refuses it; this keeps a hand-edited plan safe).
+function ytCategoryFor(post, defaultCategoryId = YT_DEFAULT_CATEGORY_ID) {
+  if (YT_CATEGORY_IDS.includes(post.youtubeCategoryId)) return post.youtubeCategoryId;
+  return YT_CATEGORY_IDS.includes(defaultCategoryId) ? defaultCategoryId : YT_DEFAULT_CATEGORY_ID;
+}
+
+// The status fields every write of the status part must carry. part=status REPLACES the
+// whole status part, so schedule (videos.insert) and release (videos.update) build it from
+// this one place: selfDeclaredMadeForKids always, and the altered/synthetic disclosure
+// (issue #39) only when the post says true (unset = not sent, as before).
+function ytStatusBase(post) {
+  const status = { selfDeclaredMadeForKids: false };
+  if (post.containsSyntheticMedia === true) status.containsSyntheticMedia = true;
+  return status;
+}
+
 // snippet from the plan entry; publishAt only on the real schedule path (never on validation).
 // privacy defaults to 'private' so validate/schedule are unchanged; cmdPublish passes
 // 'public'/'unlisted' for an immediate, visible upload (compliance-demo / one-off).
-function buildMeta(post, { withPublishAt = false, privacy = 'private', publishAtMs = null } = {}) {
-  const status = { privacyStatus: privacy, selfDeclaredMadeForKids: false };
+// language + defaultCategoryId come from ytMetaDefaults() (the caller resolves them once
+// per command).
+export function buildMeta(post, { withPublishAt = false, privacy = 'private', publishAtMs = null, language = 'en', defaultCategoryId = YT_DEFAULT_CATEGORY_ID } = {}) {
+  const status = { privacyStatus: privacy, ...ytStatusBase(post) };
   if (withPublishAt) status.publishAt = new Date(publishAtMs ?? Date.parse(post.scheduledAt)).toISOString();
   return {
     snippet: {
       title: post.title || 'pendpost',
       description: post.description || '',
       tags: tagsArray(post.tags),
-      categoryId: CATEGORY_EDUCATION,
-      defaultLanguage: 'de',
-      defaultAudioLanguage: 'de',
+      categoryId: ytCategoryFor(post, defaultCategoryId),
+      defaultLanguage: language,
+      defaultAudioLanguage: language,
     },
     status,
   };
@@ -588,7 +631,7 @@ async function cmdValidate(args) {
   }
   if (!/\.(mp4|mov)$/i.test(mediaPath)) { console.error('[err] not a video file.'); process.exit(1); }
 
-  const meta = buildMeta(snippetSource, { withPublishAt: false }); // private, NO publishAt -> never public
+  const meta = buildMeta(snippetSource, { withPublishAt: false, ...(await ytMetaDefaults()) }); // private, NO publishAt -> never public
   console.log(`[info] uploading ${path.basename(mediaPath)} (${(fs.statSync(mediaPath).size / 1e6).toFixed(1)} MB) as PRIVATE...`);
   const video = await insertVideo(meta, mediaPath, token);
   console.log(`[ok] uploaded: id=${video.id}, privacyStatus=${video.status?.privacyStatus}, uploadStatus=${video.status?.uploadStatus}.`);
@@ -596,7 +639,7 @@ async function cmdValidate(args) {
   console.log('[preview] description:');
   console.log(meta.snippet.description);
   console.log(`[preview] tags:        ${JSON.stringify(meta.snippet.tags)}`);
-  console.log(`[preview] categoryId:  ${meta.snippet.categoryId} (Education), selfDeclaredMadeForKids=${meta.status.selfDeclaredMadeForKids}`);
+  console.log(`[preview] categoryId:  ${ytCategoryLabel(meta.snippet.categoryId)}, language=${meta.snippet.defaultLanguage}, selfDeclaredMadeForKids=${meta.status.selfDeclaredMadeForKids}, containsSyntheticMedia=${meta.status.containsSyntheticMedia === true}`);
 
   console.log('[info] deleting the test video (side-effect-free)...');
   await api('DELETE', '/videos', { query: { id: video.id }, token });
@@ -624,13 +667,13 @@ async function cmdPublish(args) {
     tags: typeof args.tags === 'string' ? args.tags : '',
   };
   const token = await getAccessToken();
-  const meta = buildMeta(post, { privacy });
+  const meta = buildMeta(post, { privacy, ...(await ytMetaDefaults()) });
 
   console.log(`[info] uploading ${path.basename(mediaPath)} (${(fs.statSync(mediaPath).size / 1e6).toFixed(1)} MB) as ${privacy.toUpperCase()} via videos.insert (resumable upload, straight from local disk)...`);
   console.log(`[preview] title:       ${meta.snippet.title}`);
   console.log(`[preview] description: ${meta.snippet.description.split('\n')[0] || '(none)'}`);
   console.log(`[preview] tags:        ${JSON.stringify(meta.snippet.tags)}`);
-  console.log(`[preview] categoryId:  ${meta.snippet.categoryId} (Education), selfDeclaredMadeForKids=${meta.status.selfDeclaredMadeForKids}`);
+  console.log(`[preview] categoryId:  ${ytCategoryLabel(meta.snippet.categoryId)}, language=${meta.snippet.defaultLanguage}, selfDeclaredMadeForKids=${meta.status.selfDeclaredMadeForKids}, containsSyntheticMedia=${meta.status.containsSyntheticMedia === true}`);
 
   const video = await insertVideo(meta, mediaPath, token);
   console.log(`[ok] uploaded: id=${video.id}, privacyStatus=${video.status?.privacyStatus}, uploadStatus=${video.status?.uploadStatus}.`);
@@ -641,6 +684,7 @@ async function cmdPublish(args) {
 async function cmdSchedule(args) {
   const { abs, plan } = loadPlan(args.plan);
   const token = args['dry-run'] ? null : await getAccessToken();
+  const metaDefaults = await ytMetaDefaults();
   const now = Date.now();
   const touched = new Set();
   let scheduled = 0;
@@ -740,14 +784,14 @@ async function cmdSchedule(args) {
       continue;
     }
 
-    const meta = buildMeta(post, { withPublishAt: true, publishAtMs });
+    const meta = buildMeta(post, { withPublishAt: true, publishAtMs, ...metaDefaults });
     if (args['dry-run']) {
       console.log(`\n[dry] ${post.id}: would schedule a PRIVATE YouTube video to auto-publish at ${meta.status.publishAt} (${fmtLocal(post.scheduledAt, plan.timezone)} ${plan.timezone || 'UTC'}):`);
       console.log(`      title:       ${meta.snippet.title}`);
       console.log('      description:');
       console.log(meta.snippet.description.split('\n').map((l) => `        ${l}`).join('\n'));
       console.log(`      tags:        ${JSON.stringify(meta.snippet.tags)}`);
-      console.log(`      categoryId:  ${meta.snippet.categoryId} (Education), selfDeclaredMadeForKids=${meta.status.selfDeclaredMadeForKids}`);
+      console.log(`      categoryId:  ${ytCategoryLabel(meta.snippet.categoryId)}, language=${meta.snippet.defaultLanguage}, selfDeclaredMadeForKids=${meta.status.selfDeclaredMadeForKids}, containsSyntheticMedia=${meta.status.containsSyntheticMedia === true}`);
       console.log(`      source:      ${mediaPath}`);
       continue;
     }
@@ -1590,10 +1634,11 @@ async function cmdRelease(args) {
       continue;
     }
     // private-overdue: YouTube did NOT auto-publish at publishAt. Make it public now.
-    // part=status REPLACES the status part, so selfDeclaredMadeForKids must be re-sent
-    // (mirrors buildMeta) and publishAt is omitted to clear the (passed) schedule.
+    // part=status REPLACES the status part, so selfDeclaredMadeForKids and the
+    // altered/synthetic disclosure must be re-sent (ytStatusBase, shared with buildMeta)
+    // and publishAt is omitted to clear the (passed) schedule.
     try {
-      await api('PUT', '/videos', { query: { part: 'status' }, body: { id: post.ytVideoId, status: { privacyStatus: 'public', selfDeclaredMadeForKids: false } }, token });
+      await api('PUT', '/videos', { query: { part: 'status' }, body: { id: post.ytVideoId, status: { privacyStatus: 'public', ...ytStatusBase(post) } }, token });
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'release', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
       await savePlan(abs, plan, [post.id]);
       RUN.results.push({ postId: post.id, platform: 'youtube', action: 'release', ok: true, id: post.ytVideoId, live: true, state: 'public', permalink });
@@ -1612,10 +1657,14 @@ async function cmdRelease(args) {
 // published video, WITHOUT re-uploading bytes ----------
 // videos.update part=snippet REPLACES the whole snippet, and categoryId is a
 // REQUIRED field on update (mirrors the part=status "must re-send
-// selfDeclaredMadeForKids" gotcha at cmdRelease above) - so buildMeta's full
-// snippet (it already sets categoryId/title/description/tags/language) is
-// re-sent verbatim. Never touches status (privacy/schedule unchanged) and never
-// insertVideo (no re-upload). A post with no ytVideoId no-ops with a clear
+// selfDeclaredMadeForKids" gotcha at cmdRelease above). The edit carries the post's
+// title/description/tags, but what the video ALREADY has for category and language is
+// read back first (videos.list) and kept: an edit must not silently re-file a published
+// video under today's brand default or content language. Only a youtubeCategoryId the
+// post sets explicitly changes the category. A disclosure (containsSyntheticMedia:true)
+// the video does not carry yet is pushed with part=status, which REPLACES the whole
+// status part, so the video's current writable status fields are re-sent with it.
+// Never insertVideo (no re-upload). A post with no ytVideoId no-ops with a clear
 // result, so a bare CLI run is safe - it never mints/clears an id.
 export async function cmdEdit(args) {
   const { abs, plan } = loadPlan(args.plan);
@@ -1627,6 +1676,7 @@ export async function cmdEdit(args) {
   // the no-minted-id skip check crashed a bare CLI `edit` over unminted posts
   // instead of emitting the clean skip row below.
   let token = null;
+  let metaDefaults = null;
   let edited = 0;
   for (const post of targets) {
     if (!post.ytVideoId) {
@@ -1636,8 +1686,16 @@ export async function cmdEdit(args) {
     }
     if (!token) token = await getAccessToken();
     try {
-      const meta = buildMeta(post);
-      await api('PUT', '/videos', { query: { part: 'snippet' }, body: { id: post.ytVideoId, snippet: meta.snippet }, token });
+      if (!metaDefaults) metaDefaults = await ytMetaDefaults();
+      const current = await api('GET', '/videos', { query: { part: 'snippet,status', id: post.ytVideoId }, token });
+      const video = (current.items || [])[0];
+      if (!video) throw new Error(`video ${post.ytVideoId} not found (deleted?)`);
+      const snippet = editSnippet(post, video.snippet || {}, metaDefaults);
+      await api('PUT', '/videos', { query: { part: 'snippet' }, body: { id: post.ytVideoId, snippet }, token });
+      if (post.containsSyntheticMedia === true && video.status?.containsSyntheticMedia !== true) {
+        await api('PUT', '/videos', { query: { part: 'status' }, body: { id: post.ytVideoId, status: { ...writableStatus(video.status), containsSyntheticMedia: true } }, token });
+        console.log(`[ok] ${post.id}: altered or synthetic content disclosed on video ${post.ytVideoId}.`);
+      }
       appendAttempt(post, { ts: new Date().toISOString(), platform: 'youtube', action: 'edit', ok: true, errorCode: null, errorMessage: null, lateMin: 0, actor: ACTOR });
       await savePlan(abs, plan, [post.id]);
       RUN.results.push({ postId: post.id, platform: 'youtube', action: 'edit', ok: true, id: post.ytVideoId });
@@ -1661,6 +1719,33 @@ export async function cmdEdit(args) {
     }
   }
   console.log(`[done] edit complete - ${edited} video(s) updated.`);
+}
+
+// The snippet an edit sends: the post's title/description/tags (buildMeta), with the
+// category the post sets explicitly, else the one the video already has, and the
+// video's own language fields kept as they are (omitted when the video has none, so
+// an edit never adds or changes a language). Exported for the test.
+export function editSnippet(post, currentSnippet = {}, defaults = {}) {
+  const built = buildMeta(post, defaults).snippet;
+  const snippet = { title: built.title, description: built.description, tags: built.tags };
+  snippet.categoryId = YT_CATEGORY_IDS.includes(post.youtubeCategoryId)
+    ? post.youtubeCategoryId
+    : (currentSnippet.categoryId || built.categoryId);
+  if (currentSnippet.defaultLanguage) snippet.defaultLanguage = currentSnippet.defaultLanguage;
+  if (currentSnippet.defaultAudioLanguage) snippet.defaultAudioLanguage = currentSnippet.defaultAudioLanguage;
+  return snippet;
+}
+
+// The status fields videos.update accepts, copied from what videos.list returned, so a
+// part=status write re-sends the video's own settings (read-only fields such as
+// uploadStatus or madeForKids are dropped; publishAt only while still private).
+const WRITABLE_STATUS_FIELDS = ['privacyStatus', 'license', 'embeddable', 'publicStatsViewable', 'selfDeclaredMadeForKids', 'containsSyntheticMedia'];
+function writableStatus(status = {}) {
+  const out = {};
+  for (const k of WRITABLE_STATUS_FIELDS) if (status[k] !== undefined) out[k] = status[k];
+  if (status.publishAt && status.privacyStatus === 'private') out.publishAt = status.publishAt;
+  if (out.selfDeclaredMadeForKids === undefined) out.selfDeclaredMadeForKids = false;
+  return out;
 }
 
 // ---------- playlists (spec 15, Pattern P3+P4+P9) ----------
@@ -1948,6 +2033,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 // spawning the CLI or the real Data API - YouTube's API host is a hardcoded literal (not
 // env-overridable), so a live-local-server proof (like the Mastodon lane) is not feasible here.
 export { postComment };
+
+// Test-only exports: cmdRelease's part=status PUT must re-send the disclosure (issue #39),
+// and a cmdSchedule dry run proves the content language (issue #38). Both are driven
+// in-process (the cmdEdit/cmdProfile pattern above).
+export { cmdRelease, cmdSchedule };
 
 // Test-only exports (spec-15 follow-on): the pure 403 classifiers, so a unit test
 // can prove accessNotConfigured/SERVICE_DISABLED -> api_disabled, a real

@@ -125,7 +125,10 @@ try {
 
   setRadarReplies({ enabled: true, lanes: ['mastodon'], requireLintClean: false });
   r = await queue('mastodon', dirty);
-  ok(r.approval === 'approved', 'with requireLintClean off, the same draft auto-approves');
+  // Issue #40: requireLintClean off only skips the POLICY's own lint check. setApproval itself
+  // now refuses a brand-lint ERROR on every caller (the publish fence would drop the reply at
+  // fire time anyway), so the draft stays pending for a human instead of auto-approving.
+  ok(r.approval === 'pending', 'with requireLintClean off, setApproval still refuses the lint ERROR: the draft stays pending (issue #40)');
 
   // Warn-level slop is advisory everywhere else, so it must not silently block here either.
   setRadarReplies({ enabled: true, lanes: ['mastodon'], requireLintClean: true });

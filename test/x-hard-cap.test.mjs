@@ -37,7 +37,8 @@ fs.writeFileSync(path.join(WS, 'data', 'media', 'pic.png'), Buffer.from(
 const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
 const { runDueExclusive } = await import('../lib/scheduler.mjs');
 const { brandLint } = await import('../lib/lint.mjs');
-const { loadPlanStore } = await import('../lib/plans.mjs');
+const { loadPlanStore, loadManifest, postContentHash } = await import('../lib/plans.mjs');
+const { activeRoot } = await import('../lib/context.mjs');
 const { loadState } = await import('../lib/state.mjs');
 
 const getPost = (camp, id) => (loadPlanStore().campaigns.find((c) => c.id === camp)?.posts || []).find((p) => p.id === id);
@@ -71,7 +72,18 @@ const OVER = 'a'.repeat(150) + ' https://pendpost.com ' + 'b'.repeat(150); // > 
   });
   assert.ok(cp.ok, `createPost: ${JSON.stringify(cp)}`);
   const ap = await approvePost({ campaign: 'xcap', postId: 'over', actor: 'owner' });
-  assert.ok(ap.ok, `approvePost: ${JSON.stringify(ap)}`);
+  // Issue #40: approval now refuses the over-cap X caption up front (caption-hard-cap is a
+  // brand-lint ERROR). The scheduler gate below is the backstop for a post approved anyway
+  // (before the approval gate existed, or a hand-edited plan), so stamp that on disk.
+  ok(ap.code === 'lint_blocked' && ap.findings.some((f) => f.platform === 'x' && f.rule === 'caption-hard-cap'),
+    'approval refuses the over-cap X caption with lint_blocked (issue #40)');
+  const entry = loadManifest().plans.find((p) => p.id === 'xcap');
+  const planAbs = path.resolve(activeRoot(), entry.path);
+  const plan = JSON.parse(fs.readFileSync(planAbs, 'utf8'));
+  const raw = plan.posts.find((p) => p.id === 'over');
+  Object.assign(raw, { approval: 'approved', approvalBy: 'owner', approvalAt: new Date().toISOString() });
+  raw.approvedContentHash = postContentHash(raw);
+  fs.writeFileSync(planAbs, JSON.stringify(plan, null, 2));
 
   await runDueExclusive('test');
   const post = getPost('xcap', 'over');

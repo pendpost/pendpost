@@ -7,6 +7,7 @@ import Freigaben from '../Freigaben.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider, makeT } from '../../lib/i18n.js';
+import { clearRefusals } from '../../lib/refusalMemo.js';
 
 // Bound to the same English pack the I18nProvider resolves below, so assertions
 // reference the new keys by id and match whatever copy the merged pack renders
@@ -94,6 +95,7 @@ function cardFor(headline) {
 }
 
 beforeEach(() => {
+  clearRefusals();
   approvePost.mockClear();
   rejectPost.mockClear();
   lintText.mockClear();

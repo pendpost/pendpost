@@ -157,3 +157,37 @@ describe('usePostActions park: the needs_confirm dialog says the Studio sentence
     expect(dialog.textContent).not.toMatch(/pass confirm/);
   });
 });
+
+// #40: a row approve refused by the brand-lint gate toasts the sentence that names the platform
+// and the fix (no "approve anyway"), the finding rides the "?".
+describe('usePostActions approve: a lint_blocked refusal names the platform', () => {
+  it('toasts the lint sentence', async () => {
+    approvePostMock.mockImplementation(() => Promise.reject(Object.assign(new Error('caption fails brand lint on x'), {
+      code: 'lint_blocked',
+      findings: [{ platform: 'x', rule: 'banned-phrase', match: 'game-changer', hint: 'Say what it does instead.' }],
+    })));
+    const { result } = renderHook(() => usePostActions({ ...post, approval: 'pending' }), { wrapper });
+    await act(async () => { await result.current.items.find((i) => i.key === 'approve').run(); });
+    const toast = await screen.findByRole('alert');
+    expect(toast.textContent).toBe('The caption breaks a brand rule on X (Banned phrase). Edit the caption for X or remove X from the post.');
+    expect(screen.queryByRole('button', { name: /more about this/i })).toBeNull();
+  });
+});
+
+// An approve the engine accepted while the image is not online yet (mediaPending) says so in
+// the same shared toast; a plain approve stays silent.
+describe('usePostActions approve: the success notice', () => {
+  it('says the image is not online yet', async () => {
+    approvePostMock.mockResolvedValue({ ok: true, mediaPending: [{ platform: 'instagram', url: 'https://brand.example/a.jpg' }] });
+    const { result } = renderHook(() => usePostActions({ ...post, approval: 'pending' }), { wrapper });
+    await act(async () => { await result.current.items.find((i) => i.key === 'approve').run(); });
+    expect(await screen.findByText("Approved. The image isn't online yet; pendpost checks it again right before posting.")).toBeInTheDocument();
+  });
+
+  it('a plain approve shows no toast', async () => {
+    approvePostMock.mockResolvedValue({ ok: true });
+    const { result } = renderHook(() => usePostActions({ ...post, approval: 'pending' }), { wrapper });
+    await act(async () => { await result.current.items.find((i) => i.key === 'approve').run(); });
+    expect(screen.queryByText(/Approved\./)).toBeNull();
+  });
+});

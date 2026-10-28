@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, CalendarPlus, PauseCircle, CheckCheck, Send, ExternalLink, FileImage, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, MessageSquare, ListPlus, ChevronLeft, ChevronRight, Cloud as CloudIcon, Zap, RefreshCw, Pin, PlugZap, ClipboardCopy, Wrench, Crop } from 'lucide-react';
-import { fmtFull, fmtTime, fmtRelative, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, MANUAL_LANES, postStatusWord, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome, gridCropInfo, X_PORTAL_URL, postDisplayTitle, failedDisplayKey, liveFailure } from '../lib/format.js';
+import { AlertTriangle, CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, CalendarPlus, PauseCircle, CheckCheck, Send, ExternalLink, FileImage, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, MessageSquare, ListPlus, ChevronLeft, ChevronRight, Cloud as CloudIcon, Zap, RefreshCw, Pin, PlugZap, ClipboardCopy, Wrench, Crop } from 'lucide-react';
+import { fmtFull, fmtTime, fmtRelative, approvalExpiresAt, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, MANUAL_LANES, postStatusWord, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome, gridCropInfo, X_PORTAL_URL, postDisplayTitle, failedDisplayKey, liveFailure } from '../lib/format.js';
 import {
   useAccounts, usePendpostHealth, usePlatformValidate, usePresubmitCheck, useValidateMedia, useActiveClient, useRedditFlairs, useInsights, useConfig, useAssets,
   approvePost, rejectPost, deletePost, unschedulePost, reschedulePost, markPosted, verifyPost,
@@ -31,7 +31,8 @@ import { showToast } from './AppToast.jsx';
 import { patchPlanRemove } from '../lib/useReschedule.js';
 import { useT } from '../lib/i18n.js';
 import { humanizeAction, humanizeFailure, laneLabel, plainError } from '../lib/failureCopy.js';
-import InfoTip from './ui/InfoTip.jsx';
+import ActionError from './ui/ActionError.jsx';
+import { showApproveNotice } from '../lib/approveNotice.js';
 import { canPublishNowPost, isHeldRetry } from '../lib/postActions.js';
 
 // The comment-capable platforms (spec 02, Pattern P6): the Comments thread panel is
@@ -223,6 +224,9 @@ function stickerSummary(s, t) {
   return detail ? `${label}: ${detail}` : label;
 }
 
+// YouTube's assignable standard video categories (issue #39), named via youtube.category.<id>.
+const YOUTUBE_CATEGORY_IDS = new Set(['1', '2', '10', '15', '17', '19', '20', '22', '23', '24', '25', '26', '27', '28', '29']);
+
 // The read-only "Details" block: relevant-but-not-primary fields (supporting URLs,
 // the newsletter flag, and the structured GBP / story-sticker / hashtag intent),
 // each shown ONLY when it carries content - so an operator sees the full picture of
@@ -269,6 +273,10 @@ function PostExtras({ post, extras, t }) {
     else if (key === 'emailSegment' && post.emailSegment) rows.push({ key, label: t('postDetail.field.emailSegment'), value: emailSegmentSummary(post.emailSegment, t) });
     else if (key === 'emailOnly' && post.emailOnly === true) rows.push({ key, label: t('postDetail.field.emailOnly'), check: true });
     else if (key === 'publishAsDraft' && post.publishAsDraft === true) rows.push({ key, label: t('postDetail.field.publishAsDraft'), check: true });
+    // Issue #39: YouTube's category by its human name (an id outside the assignable
+    // set shows as-is), and the altered/synthetic-content disclosure, each only when set.
+    else if (key === 'youtubeCategoryId' && post.youtubeCategoryId) rows.push({ key, label: t('postDetail.field.youtubeCategory'), value: YOUTUBE_CATEGORY_IDS.has(String(post.youtubeCategoryId)) ? t(`youtube.category.${post.youtubeCategoryId}`) : String(post.youtubeCategoryId) });
+    else if (key === 'containsSyntheticMedia' && post.containsSyntheticMedia === true) rows.push({ key, label: t('postDetail.field.containsSyntheticMedia'), check: true });
     // LinkedIn author target: show a review row only for the non-default 'member' (personal
     // profile). An organization/unset post shows no row - byte-identical to before.
     else if (key === 'liAuthor' && post.liAuthor === 'member') rows.push({ key, label: t('postDetail.field.liAuthor'), value: t('postDetail.field.liAuthorMember') });
@@ -410,16 +418,6 @@ function coverChips(post, t) {
 // A failed action's alert, the Setup anatomy: the plain sentence ({ text, raw } from
 // humanizeAction) is the alert, and the raw server or engine line rides the house "?"
 // beside it, never inline and never inside the alert.
-function ActionError({ error }) {
-  if (!error) return null;
-  return (
-    <div className="flex items-start gap-1 rounded-xl bg-red-500/10 p-3">
-      <p role="alert" className="text-xs text-red-600 dark:text-red-300">{error.text}</p>
-      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
-    </div>
-  );
-}
-
 export default function PostDetail(props) {
   if (!props.post) return null;
   return <PostDetailBody {...props} />;
@@ -755,7 +753,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // "publish now" on a post the scheduler had already fired.
   const onApprove = async () => {
     setError(null);
-    await approvePost(post.campaign, post.id);
+    showApproveNotice(await approvePost(post.campaign, post.id), t);
     refresh();
     onClose();
   };
@@ -1038,6 +1036,11 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // because postStatusWord keeps 'posted' ahead of the edited refinement.)
   const { data: reviewConfig } = useConfig(true);
   const reviewRequired = Boolean(reviewConfig?.posting?.review?.required);
+  // #43: an approved post shows when its approval ages out, only while an expiry is set.
+  const approvalExpiry = approvalExpiresAt(post, reviewConfig?.posting?.approvalExpiryHours);
+  // When the approval lapses BEFORE the slot, the sweep returns the post to review before it
+  // can publish: say so in the warning tint, with the two ways out.
+  const expiresBeforeSlot = Boolean(approvalExpiry) && Number.isFinite(Date.parse(post.scheduledAt || '')) && Date.parse(approvalExpiry) < Date.parse(post.scheduledAt);
   const reviewClamp = Boolean(post.reviewPending) && (post.derivedState === 'overdue' || post.derivedState === 'publish-failed');
   const canReject = post.approval !== 'rejected' && post.derivedState !== 'posted';
   const editable = post.derivedState !== 'posted';
@@ -1927,7 +1930,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
             there is nothing left to fix before a publish that already happened.
             Suppressed for posted only; every non-posted state keeps the full panel. */}
         {!isPosted ? (
-          <PlatformBlockers platformValidate={platformValidate} presubmit={presubmitCheck} validateMedia={validateMedia} approval={post.approval} editedSinceApproval={post.editedSinceApproval} showApproval={false} onNavigate={onNavigate} onFix={editable && redditTargeted ? () => { const el = flairSelectRef.current; if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); } else { onEdit(post); } } : undefined} className="mt-1.5" />
+          <PlatformBlockers platformValidate={platformValidate} presubmit={presubmitCheck} validateMedia={validateMedia} approval={post.approval} editedSinceApproval={post.editedSinceApproval} showApproval={false} onNavigate={onNavigate} onFix={editable && redditTargeted ? () => { const el = flairSelectRef.current; if (el) { el.scrollIntoView({ block: 'center' }); el.focus(); } else { onEdit(post); } } : undefined} onEdit={editable ? () => onEdit(post) : undefined} className="mt-1.5" />
         ) : null}
       </Section>
 
@@ -2154,6 +2157,23 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                 </a>
               ) : null}
             </div>
+            {/* #43: the approval expiry, ONE place for the fact whether it is neutral or a
+                warning: its own line under the identity row. The warning (the approval lapses
+                before the slot) carries the house warning glyph, the neutral fact a clock, so
+                the status is never colour alone. */}
+            {approvalExpiry ? (
+              <p
+                data-approval-expiry={expiresBeforeSlot ? 'before-slot' : 'ok'}
+                className={`flex items-start gap-1 text-[11px] ${expiresBeforeSlot ? 'text-amber-700 dark:text-amber-300' : 'text-zinc-500 dark:text-zinc-400'}`}
+              >
+                {expiresBeforeSlot
+                  ? <AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  : <CalendarClock size={12} className="mt-0.5 shrink-0" aria-hidden="true" />}
+                <span>{expiresBeforeSlot
+                  ? t('postDetail.approvalExpiresBeforeSlot', { when: fmtRelative(approvalExpiry) })
+                  : t('postDetail.approvalExpires', { when: fmtRelative(approvalExpiry) })}</span>
+              </p>
+            ) : null}
             {/* X thread line (xReplyTo): link to the parent post, or an explicit
                 missing note - a dangling reference never publishes on X. */}
             {post.xReplyTo ? (
@@ -2224,7 +2244,7 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
         </p>
       ) : null}
 
-      <ActionError error={error} />
+      <ActionError error={error} boxed onEdit={editable ? () => onEdit(post) : null} onNavigate={onNavigate} />
       {/* Mastodon pin toggle (spec 31): a non-visual confirmation for screen-reader
           users, mirroring the verify announce region above (post.verify.at). */}
       {mastodonPinAnnounce ? (
@@ -2294,6 +2314,8 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                 ? { idle: t('review.action.sendForSignoff'), loading: t('review.action.sending'), success: t('review.action.sent'), error: t('approvals.action.error') }
                 : { idle: t('approvals.action.approve'), loading: t('approvals.action.approving'), success: t('approvals.action.approved'), error: t('approvals.action.error') }}
               onAction={guard(onApprove)}
+              disabled={Boolean(error?.blocking)}
+              quietError
             />
           ) : null}
           {/* The lane is not connected, so pendpost cannot post this - the operator can.

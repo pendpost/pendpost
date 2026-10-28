@@ -21,26 +21,19 @@ import LiveLaneLinks from './ui/LiveLaneLinks.jsx';
 import DestinationStrip from './ui/DestinationStrip.jsx';
 import { usePrompt } from './ui/confirm.jsx';
 import { ReviewStatusChip } from './ReviewLink.jsx';
-import InfoTip from './ui/InfoTip.jsx';
 import { useT } from '../lib/i18n.js';
 import { humanizeAction, plainError } from '../lib/failureCopy.js';
+import ActionError from './ui/ActionError.jsx';
+import { problemCodeText } from '../lib/blockerText.js';
+import { contentSignature, refusalKey, readRefusal, rememberRefusal } from '../lib/refusalMemo.js';
+import { showApproveNotice } from '../lib/approveNotice.js';
 
 const firstLine = (s) => (s || '').split('\n').find((l) => l.trim()) || '';
 
-// A failed action's lasting alert, the Setup anatomy: the plain sentence ({ text, raw } from
-// humanizeAction) is the alert, and the raw server or engine line rides the house "?" beside
-// it, never inline. `guardAction` wraps a button's action so the alert is built from the
-// thrown error itself (ActionButton's onError only hands over its message, or null when it
-// had none), then rethrows so the button still flashes its own error state.
-function ActionError({ error, className = '' }) {
-  if (!error) return null;
-  return (
-    <div className={`flex items-start gap-1 ${className}`}>
-      <p role="alert" className="text-[11px] text-red-600 dark:text-red-300">{error.text}</p>
-      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
-    </div>
-  );
-}
+// A failed action's lasting alert: ui/ActionError (the plain sentence, the raw line behind the
+// "?", and the one recovery action inline). `guardAction` wraps a button's action so the alert
+// is built from the thrown error itself (ActionButton's onError only hands over its message, or
+// null when it had none), then rethrows so the button still flashes its own error state.
 const actionAlert = (err, t) => humanizeAction(err, t, { fallbackKey: 'error.action' });
 const guardAction = (fn, setError, t) => async () => {
   try {
@@ -101,7 +94,17 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   // without leaving the queue.
   const { items: postActionItems } = usePostActions(post, { onEdit });
   const menuItems = postActionItems.filter((i) => i.key !== 'approve' && i.key !== 'reject');
-  const [error, setError] = useState(null);
+  // A blocking refusal stays on this card until the post's CONTENT changes (lib/refusalMemo.js):
+  // a queue refresh, an engine bookkeeping write or a remount never makes it vanish and turn
+  // Approve green again. Editing the post clears it, so the next Approve is a fresh try.
+  const memoKey = refusalKey(post);
+  const signature = useMemo(() => contentSignature(post), [post]);
+  const [error, setErrorState] = useState(() => readRefusal(memoKey, signature));
+  const setError = useCallback((next) => {
+    setErrorState(next);
+    rememberRefusal(memoKey, signature, next);
+  }, [memoKey, signature]);
+  useEffect(() => { setErrorState(readRefusal(memoKey, signature)); }, [memoKey, signature]);
   // X thread membership: the whole chain this post belongs to. When it is part of
   // a thread, the card offers "select whole thread" so every tweet can be approved
   // together (each is still an independent, individually-audited approval).
@@ -147,7 +150,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     // merge) - thread it so the write lands on ITS client, not whatever the
     // active client happens to be. Single-client mode never sets it, so the call
     // stays exactly the 2-arg shape it always was.
-    await (post.clientId ? approvePost(post.campaign, post.id, undefined, post.clientId) : approvePost(post.campaign, post.id));
+    showApproveNotice(await (post.clientId ? approvePost(post.campaign, post.id, undefined, post.clientId) : approvePost(post.campaign, post.id)), t);
     queryClient.invalidateQueries({ queryKey: ['plans'] });
   };
   // The reject write always opens the multiline note prompt; cancel (null) is a
@@ -251,11 +254,16 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
     const plats = platformValidate?.ok ? (platformValidate.platforms || {}) : {};
     return Object.entries(plats)
       .filter(([, v]) => (v?.problems?.length || 0) > 0 && v?.needsSetup !== true)
-      .map(([platform, v]) => ({ platform, problem: v.problems[0] }));
-  }, [platformValidate]);
+      .map(([platform, v]) => ({ platform, problem: problemCodeText(t, v.problemCodes?.[0]) }));
+  }, [platformValidate, t]);
   const hasHardBlockers = blockerReasons.length > 0;
-  // The first blocker as a one-line reason for the disabled button's tooltip/aria-label.
-  const blockedReason = hasHardBlockers ? `${PLATFORM_META[blockerReasons[0].platform]?.label || blockerReasons[0].platform}: ${blockerReasons[0].problem}` : '';
+  // The first blocker as a one-line reason for the disabled button's tooltip/aria-label, in
+  // the SAME localized words as the blocker rows below (lib/blockerText.js). The engine's
+  // English line is never the reason; an uncoded problem gets a plain platform sentence.
+  const blockedLane = hasHardBlockers ? (PLATFORM_META[blockerReasons[0].platform]?.label || blockerReasons[0].platform) : '';
+  const blockedReason = hasHardBlockers
+    ? t('approvals.card.blockedReason', { reason: blockerReasons[0].problem || t('approvals.card.blockedUncoded', { platform: blockedLane }) })
+    : '';
   // The proactive blocker panel (canon: no dead ends; errors answer what/why/how). Reuses the
   // SAME PlatformBlockers PostDetail renders, so the queue and the detail speak one language;
   // it self-hides when clean and only shows here when a hard blocker exists. onFix opens the
@@ -266,6 +274,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
       showApproval={false}
       onNavigate={onNavigate}
       onFix={onEdit ? () => onEdit(post) : undefined}
+      onEdit={onEdit ? () => onEdit(post) : undefined}
       className="mt-1"
     />
   ) : null;
@@ -381,9 +390,13 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
       // 500 chars) shows the button DISABLED with the reason a hover away, instead of letting
       // the press fail into a red error. The reason itself is rendered proactively below
       // (readinessBlockers), and reject stays enabled as the way out.
-      disabled={hasHardBlockers}
-      ariaLabel={hasHardBlockers ? t('approvals.card.blockedTip', { reason: blockedReason }) : undefined}
-      title={hasHardBlockers ? t('approvals.card.blockedTip', { reason: blockedReason }) : undefined}
+      // A refusal that names a blocker keeps Approve disabled (pressing again cannot work);
+      // the alert below carries the error and its one recovery. The button never turns into
+      // a red "Error" (quietError): a button that names an error is not an action.
+      disabled={hasHardBlockers || Boolean(error?.blocking)}
+      quietError
+      ariaLabel={hasHardBlockers ? blockedReason : undefined}
+      title={hasHardBlockers ? blockedReason : undefined}
       labels={reviewRequired
         // O2: with review.required on, the operator's approve RELABELS to send for
         // sign-off, so a first-time operator sees the verb tell them the post goes to
@@ -607,7 +620,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
             </div>
             {handOffCapture}
             {readinessBlockers}
-            <ActionError error={error} />
+            <ActionError error={error} onEdit={onEdit ? () => onEdit(post) : null} onNavigate={onNavigate} />
           </div>
         </>
       ) : (
@@ -731,7 +744,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
           </div>
           {handOffCapture}
           {readinessBlockers}
-          <ActionError error={error} />
+          <ActionError error={error} onEdit={onEdit ? () => onEdit(post) : null} onNavigate={onNavigate} />
         </div>
       )}
     </li>
@@ -1270,7 +1283,14 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
                 setBulkError({ text: t('approvals.bulk.offlineOnly', { n: effectiveSelection.length }), raw: null });
                 throw { canceled: true };
               }
-              await runBulk((p) => (p.clientId ? approvePost(p.campaign, p.id, undefined, p.clientId) : approvePost(p.campaign, p.id)), t('approvals.bulk.labelApproved'), connected);
+              // The approve notices (image not online yet, brand-rule hints) say it ONCE for the
+              // whole run, also when some posts were refused.
+              const results = [];
+              try {
+                await runBulk(async (p) => { results.push(await (p.clientId ? approvePost(p.campaign, p.id, undefined, p.clientId) : approvePost(p.campaign, p.id))); }, t('approvals.bulk.labelApproved'), connected);
+              } finally {
+                showApproveNotice(results, t);
+              }
             }, setBulkError, t)}
           />
         </div>
