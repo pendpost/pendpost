@@ -237,8 +237,30 @@ describe('failureCopy', () => {
       .toEqual({ text: 'That did not work. Please try again.', raw: 'HTTP 500 internal', known: false });
   });
 
+  // #40: approve refused because the caption breaks a brand rule. The sentence names every
+  // platform and the fix; each finding (hint + the matched text) rides the "?" only.
+  it('humanizeAction: lint_blocked names the platforms, the rules by name and the fix; no engine line', () => {
+    const err = Object.assign(new Error('caption fails brand lint on instagram, x'), {
+      code: 'lint_blocked',
+      findings: [
+        { platform: 'instagram', rule: 'em-dash', match: '\u2014', hint: 'Replace the em dash with a comma.' },
+        { platform: 'x', rule: 'banned-phrase', match: 'game-changer', hint: 'Say what it does instead.' },
+        { platform: 'instagram', rule: 'all-caps', match: 'NEW', hint: 'Write it in sentence case.' },
+      ],
+    });
+    const r = humanizeAction(err, en, { fallbackKey: 'error.action' });
+    expect(r.text).toBe('The caption breaks a brand rule on Instagram, X (Long dashes, Banned phrase, All caps). Edit the caption for Instagram, X or remove Instagram, X from the post.');
+    expect(r.known).toBe(true);
+    expect(r.raw).toBeNull();
+    expect(humanizeAction(err, de).text).toBe('Der Text verstösst auf Instagram, X gegen eine Markenregel (Lange Gedankenstriche, Banned phrase, Grossbuchstaben). Passe den Text für Instagram, X an oder entferne Instagram, X aus dem Beitrag.');
+    // No findings (an older server): still the plain sentence, never the raw line.
+    const bare = humanizeAction(Object.assign(new Error('lint'), { code: 'lint_blocked' }), en);
+    expect(bare.text).toBe('The caption breaks a brand rule on a target platform. Edit the caption or remove that platform from the post.');
+    expect(bare.known).toBe(true);
+  });
+
   it('German copy carries no em/en dashes, spaced hyphens or ß', () => {
-    for (const key of ['connect.keyInvalid', 'connect.refused', 'failure.generic', 'failure.credits', 'failure.blocked', 'failure.apiDisabled', 'failure.scope', 'failure.notConfigured', 'failure.media', 'failure.targetGone', 'failure.xReply', 'failure.expired', 'failure.forbidden', 'failure.notFound', 'failure.tooLarge', 'failure.rateLimit', 'failure.server', 'failure.network', 'failure.rejected', 'failure.processing', 'failure.check.expired', 'failure.keyInvalid', 'failure.relaysDown', 'error.action']) {
+    for (const key of ['connect.keyInvalid', 'connect.refused', 'failure.generic', 'failure.credits', 'failure.blocked', 'failure.apiDisabled', 'failure.scope', 'failure.notConfigured', 'failure.media', 'failure.targetGone', 'failure.xReply', 'failure.expired', 'failure.forbidden', 'failure.notFound', 'failure.tooLarge', 'failure.rateLimit', 'failure.server', 'failure.network', 'failure.rejected', 'failure.processing', 'failure.check.expired', 'failure.keyInvalid', 'failure.relaysDown', 'error.action', 'approve.lintBlocked', 'approve.lintBlockedAny', 'approvals.lint.advisoryLabel']) {
       const s = de(key, { lane: 'X' });
       expect(s, key).not.toBe(key);
       expect(s, key).not.toMatch(/[–—ß]| - /);

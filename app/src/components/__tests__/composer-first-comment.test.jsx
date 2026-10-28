@@ -61,7 +61,8 @@ function renderEditComposer(post, locale = 'en') {
   );
 }
 
-const LABEL = 'First comment (Instagram, YouTube, LinkedIn)';
+// The label names only the platforms this post targets (LinkedIn, Instagram...), never a hidden one.
+const LABEL = /^First comment \(/;
 
 describe('Composer — first-comment field (spec 11: extended to LinkedIn)', () => {
   it('shows for a LinkedIn-only video post and round-trips a typed value', () => {
@@ -76,7 +77,7 @@ describe('Composer — first-comment field (spec 11: extended to LinkedIn)', () 
 
   it('still shows for the pre-existing Instagram-feed lane', () => {
     renderEditComposer(basePost(['instagram']));
-    expect(screen.getByLabelText(LABEL)).toBeInTheDocument();
+    expect(screen.getByLabelText('First comment (Instagram)')).toBeInTheDocument();
   });
 
   it('still hides for an Instagram STORY (no comment surface)', () => {

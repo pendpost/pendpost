@@ -1,5 +1,7 @@
 # pendpost - docker compose up
-# Browse http://127.0.0.1:8090. With no .env it runs in MOCK mode (zero creds).
+# Browse http://127.0.0.1:8090. It runs live: a platform with no credentials waits
+# to be connected, so nothing publishes until you add one. For a demo with fake
+# publishes, uncomment PENDPOST_MODE below.
 services:
   pendpost:
     build: .
@@ -9,13 +11,15 @@ services:
       - "127.0.0.1:8090:8090"
     environment:
       PENDPOST_HOST: "0.0.0.0"
-      # PENDPOST_MODE: "mock"   # uncomment to force mock even if a .env is mounted
+      # Demo: every lane fakes its publishes, in a throwaway workspace inside the
+      # container (the data volume below is never touched), even with a .env mounted.
+      # PENDPOST_MODE: "mock"
     volumes:
       # Persist plans + media + covers across container recreation. The named
       # volume is seeded from the image's data/ (example campaign) on first run.
       - pendpost-data:/app/data
-      # Optional: mount your real credentials to publish for real. Leave commented
-      # to stay in mock mode. Create a .env (see .env.example) before enabling.
+      # Optional: mount your real credentials so lanes can publish. Without it every
+      # lane waits to be connected. Create a .env (see .env.example) before enabling.
       # - ./.env:/app/.env:ro
     restart: unless-stopped
 

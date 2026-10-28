@@ -189,6 +189,27 @@ export function fmtRelative(iso) {
   return rtf.format(Math.round(ms / DAY), 'day');
 }
 
+// #43: when an approved post's approval ages out (posting.approvalExpiryHours, config
+// and MCP only). Mirrors the skips in lib/writes.mjs sweepApprovalExpiry so the line
+// never promises an expiry the sweep would not carry out: off unless the hours are a
+// positive integer, only an approved and not-yet-posted post with a parseable
+// approvalAt, and never a post natively handed off to the platform's own scheduler
+// (nativeHandoffs: status 'scheduled' plus a native id). Past expiries return null
+// (the next sweep returns the post to review). Returns an ISO timestamp or null.
+export function approvalExpiresAt(post, hours, now = Date.now()) {
+  if (!Number.isInteger(hours) || hours < 1) return null;
+  if (!post || post.approval !== 'approved' || post.status === 'posted' || post.derivedState === 'posted') return null;
+  const at = Date.parse(post.approvalAt || '');
+  if (Number.isNaN(at)) return null;
+  const ids = post.ids || {};
+  const handedOff = post.status === 'scheduled' && Boolean(
+    ids.ytVideoId || ids.fbPostId || (ids.mastodonScheduledId && !ids.mastodonStatusId) || ids.wordpressPostId || ids.ghostPostId,
+  );
+  if (handedOff) return null;
+  const expires = at + hours * 3600 * 1000;
+  return expires > now ? new Date(expires).toISOString() : null;
+}
+
 // Dense stamp for compact rows: 2-digit DD.MM.YY (locale-ordered, so de-CH reads
 // 29.06.26) joined to the time. KISS - no weekday, no "scheduled for" prefix.
 export function fmtStampShort(iso) {
@@ -1447,6 +1468,10 @@ const FIELD_PLATFORMS = {
   // Spec 27: draft/pending-review publish status - hand off to a native
   // WordPress draft or the TikTok inbox for a human to finish + publish.
   publishAsDraft: ['wordpress', 'ghost', 'tiktok'],
+  // Issue #39: YouTube's per-post category and the altered/synthetic-content
+  // disclosure. Set through MCP/API only; PostDetail shows them read-only when set.
+  youtubeCategoryId: ['youtube'],
+  containsSyntheticMedia: ['youtube'],
   // LinkedIn per-post author target (Company Page vs the member's personal
   // profile). LinkedIn-exclusive - the engine reads liAuthor only on that lane.
   liAuthor: ['linkedin'],
@@ -1577,6 +1602,9 @@ export function fieldRelevance(platforms = [], type = 'reel') {
     // or the TikTok inbox upload. Approval (§H.2) is untouched; this only
     // changes the destination status once the engine is already allowed to act.
     publishAsDraft: has('wordpress') || has('ghost') || has('tiktok'),
+    // Issue #39: YouTube category + synthetic-content disclosure (read-only review rows).
+    youtubeCategoryId: has('youtube'),
+    containsSyntheticMedia: has('youtube'),
     // LinkedIn per-post author target - shown only when LinkedIn is a target lane.
     liAuthor: has('linkedin'),
     // Spec 14: rich link/CTA - Telegram inline CTA buttons + link-preview/
@@ -1675,11 +1703,15 @@ const EDITABLE_FIELDS = [
 // established boolean pattern (publishAsDraft/emailOnly are authored in the Composer and
 // reviewed read-only here - ContentField only renders text controls). Net-simplify: no
 // second edit surface for the same flag.
-const EXTRA_FIELDS = ['link', 'image', 'imageUrl', 'redditUrl', 'redditFlairId', 'redditSubreddit', 'isPromo', 'pinBoardSection', 'canonicalUrl', 'blogSlug', 'ghostEmail', 'newsletter', 'emailSegment', 'emailOnly', 'hashtags', 'gbp', 'interactiveStory', 'publishAsDraft', 'liAuthor', 'tgCta', 'dcEmbed', 'ttInteraction', 'xReplySettings', 'poll'];
+// Issue #39: youtubeCategoryId + containsSyntheticMedia are set through MCP/API only (no
+// Composer control, owner decision 2026-10-28) and ride here as read-only rows, shown
+// only when set, so the reviewer sees them before approving.
+const EXTRA_FIELDS = ['link', 'image', 'imageUrl', 'redditUrl', 'redditFlairId', 'redditSubreddit', 'isPromo', 'pinBoardSection', 'canonicalUrl', 'blogSlug', 'ghostEmail', 'newsletter', 'emailSegment', 'emailOnly', 'hashtags', 'gbp', 'interactiveStory', 'publishAsDraft', 'youtubeCategoryId', 'containsSyntheticMedia', 'liAuthor', 'tgCta', 'dcEmbed', 'ttInteraction', 'xReplySettings', 'poll'];
 
 // The platforms (in PLATFORMS order) that `field` feeds on THIS post — its
-// declared platform set intersected with the post's targets.
-function platformsForField(field, targeted) {
+// declared platform set intersected with the post's targets. Exported as the ONE rule a
+// field label uses to name its platforms: only the ones the post targets, never a hidden one.
+export function platformsForField(field, targeted) {
   const set = FIELD_PLATFORMS[field] || [];
   return set.filter((p) => targeted.includes(p));
 }

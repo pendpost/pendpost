@@ -64,28 +64,29 @@ function renderEditComposer(post, locale = 'en') {
 describe('Composer — alt-text field (spec 21)', () => {
   it('shows for a Pinterest-only post', () => {
     renderEditComposer(basePost(['pinterest']));
-    expect(screen.getByLabelText('Alt text (X, WordPress, Pinterest, Instagram)')).toBeInTheDocument();
+    // The label names only the platforms this post targets, never a hidden one.
+    expect(screen.getByLabelText('Alt text (Pinterest)')).toBeInTheDocument();
   });
 
   it('shows for an X-only post and round-trips a typed value', async () => {
     renderEditComposer(basePost(['x'], { altText: 'a red bicycle' }));
-    expect(screen.getByLabelText('Alt text (X, WordPress, Pinterest, Instagram)')).toHaveValue('a red bicycle');
+    expect(screen.getByLabelText('Alt text (X)')).toHaveValue('a red bicycle');
   });
 
   it('shows for a WordPress article', () => {
     renderEditComposer(basePost(['wordpress'], { type: 'text', title: 'T', body: 'B' }));
-    expect(screen.getByLabelText('Alt text (X, WordPress, Pinterest, Instagram)')).toBeInTheDocument();
+    expect(screen.getByLabelText('Alt text (WordPress)')).toBeInTheDocument();
   });
 
   it('hides for a LinkedIn-only post (not a spec-21 lane)', () => {
     renderEditComposer(basePost(['linkedin'], { type: 'text', title: 'T' }));
-    expect(screen.queryByLabelText('Alt text (X, WordPress, Pinterest, Instagram)')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Alt text/)).not.toBeInTheDocument();
   });
 
   // Spec 39 closed the IG coverage gate: the feed IMAGE container takes alt_text.
   it('shows for an Instagram post (spec 39: the feed IMAGE container attach point)', () => {
-    renderEditComposer(basePost(['instagram']));
-    expect(screen.getByLabelText('Alt text (X, WordPress, Pinterest, Instagram)')).toBeInTheDocument();
+    renderEditComposer(basePost(['instagram', 'x', 'linkedin']));
+    expect(screen.getByLabelText('Alt text (X, Instagram)')).toBeInTheDocument();
   });
 
   it('has no axe violations with the alt-text field rendered', async () => {

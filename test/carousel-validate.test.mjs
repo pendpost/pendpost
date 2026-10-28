@@ -51,7 +51,8 @@ const base = {
   createdBy: 'agent:claude', scheduledAt: '2099-01-01T09:00:00Z', caption: 'Swipe',
 };
 const posts = [
-  { id: 'ig15', platforms: ['instagram'], mediaItems: vidSlides(3).concat(imgSlides(12)), ...base }, // 15, over IG cap 10
+  { id: 'ig15', platforms: ['instagram'], mediaItems: vidSlides(3).concat(imgSlides(12)), ...base }, // 15, under IG cap 20
+  { id: 'tg15', platforms: ['telegram'], mediaItems: vidSlides(3).concat(imgSlides(12)), ...base }, // 15, over Telegram cap 10
   { id: 'ig-img', platforms: ['instagram'], mediaItems: imgSlides(3), ...base }, // image slides -> no IG feed-image seam
   { id: 'ig-vid', platforms: ['instagram'], mediaItems: vidSlides(3), ...base }, // all video -> publishable
   { id: 'li15', platforms: ['linkedin'], mediaItems: imgSlides(15), ...base }, // 15, under LinkedIn cap 20
@@ -72,9 +73,12 @@ try {
     'save: a 21-slide carousel is rejected at save with the 20-item bound');
 
   // ---- (1) cap reconcile: Pruefen enforces the tighter per-lane cap -------------------
+  const tg15 = await platformValidate({ campaign: 'cv', postId: 'tg15' });
+  ok((tg15.platforms?.telegram?.problems || []).some((p) => /telegram allows at most 10 carousel items \(this carousel has 15\)/.test(p)),
+    'Pruefen: a 15-slide Telegram carousel is blocked at the Telegram cap of 10 (saved as a draft, blocked at readiness)');
   const ig15 = await platformValidate({ campaign: 'cv', postId: 'ig15' });
-  ok((ig15.platforms?.instagram?.problems || []).some((p) => /instagram allows at most 10 carousel items \(this carousel has 15\)/.test(p)),
-    'Pruefen: a 15-slide IG carousel is blocked at the IG cap of 10 (saved as a draft, blocked at readiness)');
+  ok(!(ig15.platforms?.instagram?.problems || []).some((p) => /allows at most \d+ carousel items/.test(p)),
+    'Pruefen: a 15-slide IG carousel is under the IG cap of 20 (Meta content-publishing guide)');
 
   const li15 = await platformValidate({ campaign: 'cv', postId: 'li15' });
   ok(!(li15.platforms?.linkedin?.problems || []).some((p) => /allows at most \d+ carousel items/.test(p)),

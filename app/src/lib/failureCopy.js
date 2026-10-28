@@ -15,6 +15,7 @@
 // Activity.jsx resolveRemediation maps a failure to its one-click FIX; this maps it to its
 // WORDS. They read the same codes and patterns.
 import { PLATFORM_META } from '../components/ui.jsx';
+import { problemCodeText, recoveryFor, lintRuleName } from './blockerText.js';
 
 // A lane's human name. `meta` is the one cloud lane that is not a single platform.
 export function laneLabel(lane) {
@@ -175,25 +176,120 @@ export function humanizeConnect(failure, t) {
   return { text: t('connect.failed'), raw, known: false };
 }
 
+// Approve refusals, by code (lib/writes.mjs setApproval and the approve route). Every code an
+// approve can come back with has its OWN sentence here: what happened, why, and the one move that
+// recovers. The guard test (approve-error-copy.test.js) derives the list from the engine source,
+// so a new engine code without a sentence fails the build instead of reaching the owner as the
+// generic "that did not work". `recovery` names the inline action the alert offers (ActionError):
+// 'edit' opens the editor, 'setup' opens Setup on `lane`.
+//
+// Post-shaped codes (the post, its content or its image) read true for any post action and map
+// always. Codes that only make sense as "the approval failed" map when the error came from the
+// approve call (api.js approvePost stamps err.action = 'approve').
+const BLOCKING_CODES = new Set(['not_ready', 'lint_blocked', 'media_url_dead', 'not_configured']);
+function hostOf(url) {
+  try { return new URL(url).host; } catch { return typeof url === 'string' ? url : ''; }
+}
+function uniqueLanes(list) {
+  return [...new Set((list || []).map((x) => x?.platform).filter(Boolean))].map(laneLabel);
+}
+function approveRefusal(err, t) {
+  const code = err?.code;
+  const isApprove = err?.action === 'approve';
+  if (code === 'not_configured' && err?.platform) {
+    return { text: t('approve.laneNotSetUp', { lane: laneLabel(err.platform) }), recovery: 'setup', lane: err.platform };
+  }
+  if (code === 'not_configured' && isApprove) return { text: t('approve.error.notConfiguredAny'), recovery: 'setup' };
+  if (code === 'lint_blocked') {
+    // #40: the caption breaks a brand rule on a target platform. Each finding rides the "?".
+    const findings = Array.isArray(err.findings) ? err.findings : [];
+    const lanes = uniqueLanes(findings);
+    const rules = [...new Set(findings.map((f) => f?.rule).filter(Boolean))].map((r) => lintRuleName(t, r));
+    const text = lanes.length
+      ? t('approve.lintBlocked', { lanes: lanes.join(', '), rules: rules.join(', ') }).replace(' ()', '')
+      : t('approve.lintBlockedAny');
+    return { text, recovery: 'edit' };
+  }
+  if (code === 'media_url_dead') {
+    // The public image link a URL-fetching platform (Instagram, Pinterest) reads at publish
+    // time does not load. Name the host so the owner sees WHICH link. The engine says which
+    // fix applies: 'publish-media' (the render sits under the brand's own media mirror but
+    // is not published yet: the step is publishing the media, not a new image, so no Edit)
+    // or 'edit' / none (a dead third-party link: replace the image in the editor).
+    const host = hostOf(err.url);
+    const lane = laneLabel(err.platform);
+    if (err.fix === 'publish-media') {
+      const text = t('approve.error.mediaNotPublished');
+      return { text, recovery: null };
+    }
+    const text = t(err.platform ? 'approve.error.mediaUrlDead' : 'approve.error.mediaUrlDeadAny', { lane, host }).replace(' ()', '');
+    return { text, recovery: 'edit' };
+  }
+  if (code === 'not_ready') {
+    // A blocker the platform WILL refuse: blocked[{platform, problems, problemCodes}]. The
+    // recovery comes from the problems' own `fix` (recoveryFor: setup over edit, none for
+    // wait), so the sentence and its button never promise a fix the editor cannot make.
+    // The first problem goes inline when the Studio has copy for its code; the engine's
+    // English lines ride the "?".
+    const blocked = Array.isArray(err.blocked) ? err.blocked : [];
+    const lanes = uniqueLanes(blocked);
+    const recs = blocked.map((b) => ({ platform: b?.platform, rec: recoveryFor(b?.problems, b?.problemCodes) }));
+    const setupEntry = recs.find((r) => r.rec === 'setup');
+    const recovery = setupEntry ? 'setup' : recs.some((r) => r.rec === 'edit') ? 'edit' : (blocked.length ? null : 'edit');
+    const first = blocked.find((b) => b?.problems?.length);
+    const problem = first ? problemCodeText(t, first.problemCodes?.[0]) : null;
+    const lanesText = lanes.length ? lanes.join(', ') : t('approve.error.aPlatform');
+    const base = recovery === 'setup' ? 'approve.error.notReadySetup' : recovery === 'edit' ? 'approve.error.notReady' : 'approve.error.notReadyWait';
+    const text = problem
+      ? t(`${base}Detail`, { lanes: lanesText, problem: problem.replace(/[.\s]+$/, '') })
+      : t(base, { lanes: lanesText });
+    return { text, recovery, lane: setupEntry?.platform || null };
+  }
+  if (code === 'unknown_post') return { text: t('action.error.unknownPost') };
+  if (code === 'unknown_campaign') return { text: t('action.error.unknownCampaign') };
+  if (code === 'dev_readonly') return { text: t('action.error.devReadonly') };
+  if (!isApprove) return null;
+  if (code === 'invalid_input') {
+    const self = /self-approval/.test(String(err?.message || ''));
+    return { text: t(self ? 'approve.error.selfApproval' : 'approve.error.invalid') };
+  }
+  if (code === 'manifest_error') return { text: t('approve.error.manifest') };
+  if (code === 'engine_failure') return { text: t('approve.error.engine') };
+  if (code === 'unknown_route') return { text: t('approve.error.unknownRoute') };
+  return null;
+}
+
 // Setup's in-place actions (save a value, adopt or save the agent token, disconnect, add a
 // board, archive a newsletter, edit the profile, save the cadence). What reaches them is
 // whatever the local API threw: the server's English message, "<path>: HTTP 409", the
 // client's own timeout, or the browser's network TypeError. The sentence is the caller's own
 // plain `fallbackKey`, unless the error says something more useful that reads true for an
-// action: an unreachable local pendpost, a timeout, or (only when `lane` names the platform
-// the action talked to) a connection sentence from humanizeCheck. Without a lane no platform
-// sentence applies: the local daemon answered, not a platform. Same { text, raw, known }
-// shape as the others; `raw` is for the "?" only and null when it would repeat the text.
+// action: an unreachable local pendpost, a timeout, a post action's coded refusal
+// (approveRefusal), or (only when `lane` names the platform the action talked to) a connection
+// sentence from humanizeCheck. Without a lane no platform sentence applies: the local daemon
+// answered, not a platform. Same { text, raw, known } shape as the others (plus `recovery`
+// and `lane` when the alert can offer the fix inline); `raw` is for the "?" only and null when
+// it would repeat the text.
 export function humanizeAction(err, t, { fallbackKey = 'setup.writeError', lane = null } = {}) {
   const raw = typeof err?.message === 'string' && err.message.trim() ? err.message.trim() : null;
   // A sentence the Studio wrote itself for the owner (plainError) is already the alert.
   if (err?.plain && raw) return { text: raw, raw: err.detail || null, known: true };
+  if (err?.code === 'timeout') return { text: t('error.timeout'), raw: raw && raw !== t('error.timeout') ? raw : null, known: true };
+  const refusal = approveRefusal(err, t);
+  if (refusal) {
+    // A refusal the Studio has its own sentence for never shows the engine's English line, not
+    // even behind the "?" (it names files, commands and fields the owner cannot act on). It
+    // stays in the console for whoever debugs.
+    if (raw && typeof console !== 'undefined') console.info(`[pendpost] ${err.code}: ${raw}`);
+    const detail = null;
+    // `blocking`: the post itself is not approvable as it is (a content blocker, a brand-rule
+    // break, a dead image link, a platform not set up), so pressing Approve again cannot
+    // succeed until something changes. The surface keeps Approve disabled meanwhile.
+    const blocking = BLOCKING_CODES.has(err?.code);
+    return { text: refusal.text, raw: detail, known: true, recovery: refusal.recovery || null, lane: refusal.lane || null, blocking };
+  }
   let text = null;
-  if (err?.code === 'timeout') text = t('error.timeout');
-  // Approve refused for a lane the owner skipped at onboarding and never connected
-  // (lib/writes.mjs setApproval): the server names the platform, the sentence names the fix.
-  else if (err?.code === 'not_configured' && err?.platform) text = t('approve.laneNotSetUp', { lane: laneLabel(err.platform) });
-  else if (err instanceof TypeError) text = t('error.network');
+  if (err instanceof TypeError) text = t('error.network');
   else if (lane && raw) text = humanizeCheck({ message: raw, code: err?.code, lane }, t).text;
   const known = Boolean(text);
   if (!text) text = t(fallbackKey);

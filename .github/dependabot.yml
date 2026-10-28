@@ -21,8 +21,11 @@ updates:
       # Breaking majors deferred to a dedicated, tested migration (not hygiene
       # bumps): tailwind v4 (config rewrite) and lucide v1 (removed the platform
       # brand icons this app relies on).
+      # tailwindcss: a grouped dependabot bump slipped past the semver-major
+      # ignore on 2026-10-14 (3.4.13 -> 4.3.3) and broke the app build (prepack
+      # rebuilds app/dist), so lock it by explicit version range, not update-type.
       - dependency-name: "tailwindcss"
-        update-types: ["version-update:semver-major"]
+        versions: [">=4.0.0"]
       - dependency-name: "lucide-react"
         update-types: ["version-update:semver-major"]
       # eslint 9/10 needs the flat-config migration and the react-hooks plugin

@@ -78,6 +78,7 @@ import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 import { measurableInsightsPosts } from '../lib/insights-window.mjs';
+import { mastodonStatusLength } from '../lib/caption.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_PATH = envPath();
@@ -269,7 +270,9 @@ const statusText = (post) => (post.mastodonCaption || post.caption || '').trim()
 // 500-char status limit as the body (status_length_validator combines them), so
 // the pre-publish gate must measure the combined length or the instance 422s at
 // fire time on a body that fits alone but overflows once the CW is added.
-const combinedLen = (post, text) => text.length + (post.spoilerText || '').length;
+// Counted the way Mastodon counts it (lib/caption.mjs): every link is 23 characters and a
+// remote mention counts as @user, so a link-heavy status that fits is not refused here.
+const combinedLen = (post, text) => mastodonStatusLength(text, post.spoilerText);
 
 // Spec 10: the Mastodon poll param for POST /api/v1/statuses. { poll: { options,
 // expires_in (seconds), multiple } }; a status carries EITHER a poll OR media, never

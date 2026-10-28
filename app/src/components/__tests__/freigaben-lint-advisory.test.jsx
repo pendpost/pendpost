@@ -85,6 +85,8 @@ describe('Freigaben advisory brand-lint badge', () => {
     renderFreigaben();
     // Badge surfaces (errors>0 on a target platform).
     expect(await screen.findByRole('status', {}, BADGE_WAIT)).toBeInTheDocument();
+    // One error reads singular ("1 brand error", never "1 brand errors").
+    expect(screen.getByText('1 brand error')).toBeInTheDocument();
     // The advisory badge does NOT disable the actions.
     const approve = screen.getByRole('button', { name: /approve/i });
     const reject = screen.getByRole('button', { name: /reject/i });

@@ -142,6 +142,7 @@ describe('Composer reports dirtiness upward (onDirtyChange)', () => {
         campaigns={campaigns}
         onClose={vi.fn()}
         onSaved={vi.fn()}
+        accounts={{ meta: { configured: true } }}
         onDirtyChange={onDirtyChange}
       />,
     );

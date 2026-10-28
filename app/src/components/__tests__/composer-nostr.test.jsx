@@ -80,7 +80,7 @@ describe('Composer — Nostr article authoring fields (spec 18)', () => {
   it('lights the reused long-form fields + the NIP-23 helper, and suppresses the note caption', () => {
     renderComposer(nostrPost());
     // The reused blog long-form fields are present for a nostr-longform post.
-    expect(screen.getByLabelText('Title')).toBeInTheDocument();
+    expect(screen.getByLabelText('Title (Nostr)')).toBeInTheDocument();
     expect(screen.getByLabelText('Body')).toBeInTheDocument();
     expect(screen.getByLabelText('Excerpt')).toBeInTheDocument();
     // The NIP-23 helper line explains the edit-in-place behaviour.

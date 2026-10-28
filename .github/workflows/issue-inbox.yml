@@ -1,0 +1,65 @@
+name: Issue inbox
+
+# Copies the open issues of the public repo pendpost/pendpost into the `autopilot-inbox`
+# branch of this private repo, for the issue autopilot routine (docs/issue-autopilot/SKILL.md).
+# The routine's cloud sandbox has API access to pendpost/site only; giving it the public repo
+# would mean a push-capable token next to text written by strangers. This job reads the public
+# issues anonymously (no token for the public repo exists anywhere) and the routine reads
+# the snapshot from git. 05:40 UTC runs ahead of the routine's 06:00 UTC cron.
+
+on:
+  schedule:
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: issue-inbox
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    # site-only: the inbox belongs to the private repo's routine.
+    if: github.repository == 'pendpost/site'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch open public issues with their comments
+        run: |
+          node --input-type=module -e '
+          const base = "https://api.github.com/repos/pendpost/pendpost";
+          const headers = { accept: "application/vnd.github+json", "user-agent": "pendpost-issue-inbox" };
+          const get = async (url) => {
+            const res = await fetch(url, { headers });
+            if (!res.ok) throw new Error(`${res.status} ${url}`);
+            return res.json();
+          };
+          const issues = (await get(`${base}/issues?state=open&per_page=100`)).filter((i) => !i.pull_request);
+          const out = [];
+          for (const i of issues) {
+            const comments = i.comments ? await get(`${base}/issues/${i.number}/comments?per_page=100`) : [];
+            out.push({
+              number: i.number, title: i.title, body: i.body, author: i.user?.login,
+              labels: i.labels.map((l) => l.name), createdAt: i.created_at, updatedAt: i.updated_at,
+              comments: comments.map((c) => ({ author: c.user?.login, createdAt: c.created_at, body: c.body })),
+            });
+          }
+          const fs = await import("node:fs");
+          fs.mkdirSync("inbox", { recursive: true });
+          fs.writeFileSync("inbox/issues.json", JSON.stringify({ fetchedAt: new Date().toISOString(), issues: out }, null, 2) + "\n");
+          console.log(`snapshot: ${out.length} open issues`);
+          '
+
+      - name: Publish the snapshot as a single-commit branch
+        working-directory: inbox
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          git init -q -b autopilot-inbox
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add issues.json
+          git commit -q -m "inbox: open issues of pendpost/pendpost"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" autopilot-inbox

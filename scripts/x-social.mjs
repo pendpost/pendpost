@@ -73,6 +73,7 @@ import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { oauth1Header } from '../lib/x-oauth1.mjs';
+import { xWeightedLength, X_TWEET_LIMIT } from '../lib/x-text.mjs';
 import { envPath, describeFetchFailure, isFetchFailure } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -98,7 +99,9 @@ const TOKEN_URL = 'https://api.twitter.com/2/oauth2/token';
 const SCOPES = 'tweet.read tweet.write users.read media.write offline.access dm.read like.read follows.read dm.write';
 const DEFAULT_PORT = 8087;
 const DEFAULT_REDIRECT = 'http://localhost:8087/callback';
-const TWEET_LIMIT = 280;
+// The SAME counter as the readiness validator (lib/x-text.mjs): URLs count 23,
+// emoji and CJK count 2, so a tweet approved as fitting is never refused here.
+const TWEET_LIMIT = X_TWEET_LIMIT;
 // Refresh when the access token expires within this window (it lasts ~2h).
 const REFRESH_BUFFER_MS = 10 * 60 * 1000;
 // Per-part chunk for the chunked media upload (X caps a part at 5 MB).
@@ -646,7 +649,7 @@ async function cmdValidate(args) {
   for (const post of targets) {
     console.log(`\n----- ${post.id} -----`);
     const text = tweetText(post);
-    const len = text.length;
+    const len = xWeightedLength(text);
     const overLimit = len > TWEET_LIMIT;
     console.log(`[preview] type:    ${post.type}`);
     console.log(`[preview] text (${len}/${TWEET_LIMIT}${overLimit ? ' - OVER LIMIT' : ''}):`);
@@ -701,7 +704,8 @@ async function cmdPublishDue(args) {
       if (rr.source !== 'x') { RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `radarReplyTo.source '${rr.source}' does not match the x lane` }); continue; }
       const body = tweetText(post);
       if (!body) { RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'radar reply needs a caption' }); continue; }
-      if (body.length > TWEET_LIMIT) { RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `radar reply is ${body.length} chars (> ${TWEET_LIMIT})` }); continue; }
+      const bodyLen = xWeightedLength(body);
+      if (bodyLen > TWEET_LIMIT) { RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `radar reply is ${bodyLen} chars as X counts them (> ${TWEET_LIMIT})` }); continue; }
       if (args['dry-run']) { console.log(`[dry] ${post.id}: would reply to tweet ${rr.externalId} (${body.length} chars).`); continue; }
       try {
         // createTweet sets body.reply = { in_reply_to_tweet_id } from its 4th arg - the signal's
@@ -735,9 +739,10 @@ async function cmdPublishDue(args) {
       RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'no tweet text (set xCaption or caption)' });
       continue;
     }
-    if (text.length > TWEET_LIMIT) {
-      console.log(`[warn] ${post.id}: text is ${text.length} chars (> ${TWEET_LIMIT}) - set a shorter xCaption; skipping.`);
-      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `tweet is ${text.length} chars - X caps non-Premium posts at ${TWEET_LIMIT}. Shorten the caption or split it into a thread.` });
+    const textLen = xWeightedLength(text);
+    if (textLen > TWEET_LIMIT) {
+      console.log(`[warn] ${post.id}: text is ${textLen} chars as X counts them (> ${TWEET_LIMIT}) - set a shorter xCaption; skipping.`);
+      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `tweet is ${textLen} chars as X counts them (URLs 23, emoji 2) - X caps non-Premium posts at ${TWEET_LIMIT}. Shorten the caption or split it into a thread.` });
       continue;
     }
 

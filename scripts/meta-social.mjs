@@ -1297,7 +1297,7 @@ async function cmdPublishDue(args) {
       }
     }
 
-    // Spec 05 + 39: a native Instagram carousel (media_type=CAROUSEL) - 2..10 child
+    // Spec 05 + 39: a native Instagram carousel (media_type=CAROUSEL) - 2..20 child
     // containers. The FB multi-photo half ran above (issue #7); this is the IG half.
     // Fail-closed BEFORE any Graph call (count/cap + slides-on-disk).
     // IMAGE children publish from a PUBLIC per-slide `url` (Graph has no local-image

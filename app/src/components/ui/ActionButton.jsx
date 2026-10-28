@@ -83,16 +83,21 @@ const ActionButton = forwardRef(function ActionButton({
   disabled,
   onError,
   ariaLabel,
+  // quietError: a refusal is told by the caller's alert (ActionError) beside the button, so
+  // the button keeps its idle look and verb instead of turning into a red "Error" that is
+  // not an action. onError still fires.
+  quietError = false,
   ...rest
 }, ref) {
-  const { status, error, run } = useActionState();
+  const { status: runStatus, error, run } = useActionState();
+  const status = quietError && runStatus === 'error' ? 'idle' : runStatus;
 
   // Surface a real (non-canceled) error to the caller for a persistent message. The
   // message is null when the thrown error carried none; the caller says its own sentence.
   useEffect(() => {
-    if (status === 'error') onError?.(error);
+    if (runStatus === 'error') onError?.(error);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [runStatus]);
 
   const label = labels[status] ?? labels.idle;
   const loading = status === 'loading';

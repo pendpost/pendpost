@@ -46,6 +46,7 @@ function renderComposer(props = {}) {
           post={null}
           campaigns={[{ id: 'launch', active: true, posts: [] }]}
           onClose={vi.fn()}
+          accounts={{ meta: { configured: true }, x: { authenticated: true } }}
           onSaved={vi.fn()}
           {...props}
         />

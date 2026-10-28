@@ -6,6 +6,7 @@ import AutonomyLedger from '../AutonomyLedger.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
+import en from '../../locales/en.json';
 
 // The autonomy ledger (ux-audit R7 = AU1 + AU5 + AU4): ONE surface, three rows, each showing
 // what pendpost may do without the owner, with the control inline. This suite proves the
@@ -229,8 +230,10 @@ describe('S7 drafting rows on the Radar-replies row', () => {
     await openRow(user, /respond for me/i);
     expect(screen.getByRole('combobox', { name: /drafts from score/i })).toHaveValue('30');
     expect(screen.getByRole('spinbutton', { name: /drafts per scan/i })).toHaveValue(20);
-    // The pinned relationship sentence defines the two-threshold middle state.
-    expect(screen.getByText(/whether one is posted for you is decided by "respond for me" above/i)).toBeInTheDocument();
+    // No relation line under the knobs: it repeated the tips and pointed at an off-screen
+    // heading. Its one unique fact (drafting never posts) lives in the "Drafts from score" tip.
+    expect(screen.queryByText(/decided by "respond for me"/i)).toBeNull();
+    expect(en.strings['settings.drafting.minScore.tip']).toMatch(/whether one is posted for you is decided by "Respond for me"/);
   });
 
   it('persists drafting.minScore via read-modify-write of the WHOLE drafting object', async () => {
@@ -239,7 +242,7 @@ describe('S7 drafting rows on the Radar-replies row', () => {
     renderLedger();
     await openRow(user, /respond for me/i);
     await user.selectOptions(screen.getByRole('combobox', { name: /drafts from score/i }), '40');
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { minScore: 40, maxPerRun: 20 } } } }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { enabled: true, minScore: 40, maxPerRun: 20 } } } }));
   });
 
   it('persists drafting.maxPerRun on blur, carrying the sibling minScore untouched', async () => {
@@ -251,7 +254,50 @@ describe('S7 drafting rows on the Radar-replies row', () => {
     await user.clear(field);
     await user.type(field, '35');
     await user.tab();
-    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { minScore: 40, maxPerRun: 35 } } } }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { enabled: true, minScore: 40, maxPerRun: 35 } } } }));
+  });
+
+  // #42: a knob write always carries `enabled`. The server re-defaults a missing key to
+  // true, so leaving it out silently turned drafting back on.
+  it('a knob write carries enabled, so it can never re-default drafting on (#42)', async () => {
+    const user = userEvent.setup();
+    posting.radar.drafting = { minScore: 30, maxPerRun: 20 };
+    renderLedger();
+    await openRow(user, /respond for me/i);
+    await user.selectOptions(screen.getByRole('combobox', { name: /drafts from score/i }), '50');
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledTimes(1));
+    expect(saveConfigMock.mock.calls[0][1].posting.radar.drafting).toHaveProperty('enabled', true);
+  });
+
+  it('the Draft replies switch is on by default with the knobs shown', async () => {
+    const user = userEvent.setup();
+    renderLedger();
+    await openRow(user, /respond for me/i);
+    expect(screen.getByRole('switch', { name: 'Draft replies' })).toBeChecked();
+    expect(screen.getByRole('combobox', { name: /drafts from score/i })).toBeInTheDocument();
+    expect(screen.queryByText(/they just don't write reply drafts/i)).not.toBeInTheDocument();
+  });
+
+  it('turning drafting off writes enabled:false and keeps both knob values (#42)', async () => {
+    const user = userEvent.setup();
+    posting.radar.drafting = { minScore: 60, maxPerRun: 5 };
+    renderLedger();
+    await openRow(user, /respond for me/i);
+    await user.click(screen.getByRole('switch', { name: 'Draft replies' }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { enabled: false, minScore: 60, maxPerRun: 5 } } } }));
+  });
+
+  it('drafting off: the knobs hide, one line says scans still research, and turning it on keeps the knobs (#42)', async () => {
+    const user = userEvent.setup();
+    posting.radar.drafting = { enabled: false, minScore: 70, maxPerRun: 8 };
+    renderLedger();
+    await openRow(user, /respond for me/i);
+    expect(screen.getByRole('switch', { name: 'Draft replies' })).not.toBeChecked();
+    expect(screen.queryByRole('combobox', { name: /drafts from score/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton', { name: /drafts per scan/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Scans still research and score signals, they just don't write reply drafts.")).toBeInTheDocument();
+    await user.click(screen.getByRole('switch', { name: 'Draft replies' }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalledWith(CONFIG_REV, { posting: { radar: { drafting: { enabled: true, minScore: 70, maxPerRun: 8 } } } }));
   });
 
   it('an out-of-range maxPerRun keeps the typed value and shows the inline error (A4)', async () => {

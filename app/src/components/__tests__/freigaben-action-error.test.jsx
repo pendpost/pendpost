@@ -6,6 +6,7 @@ import Freigaben from '../Freigaben.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
+import { clearRefusals } from '../../lib/refusalMemo.js';
 
 // A failed approve/reject leaves a lasting alert that is always a plain sentence
 // (humanizeAction), never the server's raw English line inline. ActionButton hands over
@@ -55,6 +56,7 @@ function renderFreigaben(locale = 'en') {
 }
 
 beforeEach(() => {
+  clearRefusals();
   approvePost.mockReset();
   rejectPost.mockClear();
 });

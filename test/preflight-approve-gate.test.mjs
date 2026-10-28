@@ -29,7 +29,7 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.strin
 // Connect the X lane so its needsSetup does NOT mask the over-cap content blocker under
 // test (accountStatus reads these from the active client's .env). Telegram is left
 // UNCONNECTED on purpose so the setup-only case has a genuinely needsSetup lane.
-fs.writeFileSync(path.join(WS, '.env'), 'X_CLIENT_ID=id\nX_CLIENT_SECRET=secret\nX_REFRESH_TOKEN=tok\nX_HANDLE=pendpost\n', { mode: 0o600 });
+fs.writeFileSync(path.join(WS, '.env'), 'X_CLIENT_ID=id\nX_CLIENT_SECRET=secret\nX_REFRESH_TOKEN=tok\nX_HANDLE=pendpost\nMASTODON_INSTANCE_URL=https://masto.example\nMASTODON_ACCESS_TOKEN=tok\n', { mode: 0o600 });
 
 const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
 const { loadPlanStore } = await import('../lib/plans.mjs');
@@ -53,11 +53,30 @@ try {
   ok(Array.isArray(refused.blocked) && refused.blocked.some((b) => b.platform === 'x'),
     'the refusal names the x lane in blocked[]');
   ok(getPost('over').approval !== 'approved', 'the post stays unapproved after the refusal');
+  // Round-2 contract: each blocked lane carries problemCodes 1:1 with problems, so the
+  // Studio can render its localized sentence and pick the recovery (fix: edit|setup|wait).
+  const xb = refused.blocked.find((b) => b.platform === 'x');
+  ok(Array.isArray(xb.problemCodes) && xb.problemCodes.length === xb.problems.length && xb.problemCodes.every((c) => c && c.code && c.fix),
+    `not_ready blocked[] carries problemCodes with code + fix (got ${JSON.stringify(xb)})`);
+  ok(xb.problemCodes.some((c) => c.code === 'validate.xTooLong' && c.fix === 'edit'), 'the over-cap X caption is coded xTooLong, fixed in the editor');
 
-  // ---- 2. force:true overrides the same blocker -------------------------------------
-  const forced = await approvePost({ campaign: CAMP, postId: 'over', actor: 'owner', force: true });
+  // ---- 2. force:true overrides a content blocker ------------------------------------
+  // Issue #40: the X 280 cap is ALSO a brand-lint error (caption-hard-cap), and force never
+  // overrides brand-lint (owner decision 2026-10-28) - the publish fence would drop that
+  // lane anyway. So the override is proven on a Mastodon body over its 500 cap, which is a
+  // pre-flight blocker but only a lint warning.
+  const forcedX = await approvePost({ campaign: CAMP, postId: 'over', actor: 'owner', force: true });
+  ok(forcedX.code === 'lint_blocked', 'force:true does NOT push an over-280 X caption through (brand-lint error, issue #40)');
+  await createPost({
+    campaign: CAMP,
+    post: { id: 'overm', type: 'text', platforms: ['mastodon'], scheduledAt: '2020-01-01T00:00:00Z', caption: 'b'.repeat(600) },
+    actor: 'agent:claude',
+  });
+  const refusedM = await approvePost({ campaign: CAMP, postId: 'overm', actor: 'owner' });
+  ok(refusedM.code === 'not_ready' && refusedM.blocked.some((b) => b.platform === 'mastodon'), 'an over-cap Mastodon body is refused as not_ready');
+  const forced = await approvePost({ campaign: CAMP, postId: 'overm', actor: 'owner', force: true });
   ok(forced.ok === true, 'force:true approves the over-cap post (owner override)');
-  ok(getPost('over').approval === 'approved', 'the forced post is now approved');
+  ok(getPost('overm').approval === 'approved', 'the forced post is now approved');
 
   // ---- 3. a setup-only lane (Telegram, unconnected) does NOT block approval ----------
   await createPost({
