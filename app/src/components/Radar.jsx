@@ -12,10 +12,12 @@ import { CHIP, BTN_PRIMARY, BTN_QUIET, TAP_TARGET } from './ui/recipes.js';
 import { useConfirm } from './ui/confirm.jsx';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
 import { Tip } from './ui/Tooltip.jsx';
-import { useT } from '../lib/i18n.js';
+import { useT, tCount } from '../lib/i18n.js';
 import { SignalRow, StatFilters, DimensionFilters, ActiveFilterStrip, QueryQualityList, WHEN_WINDOWS_MS, EMPTY_DIM_FILTERS, dimFiltersActive, JobRow, AgentNote, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS } from './radar/RadarFeed.jsx';
 import { GeoStrip, WarmthGauge, PanelMenu } from './radar/RadarGeo.jsx';
 import CommentInbox from './radar/CommentInbox.jsx';
+import { inboxUnanswered, radarSignalKeyOf } from '../lib/replies.js';
+import { jumpToSignal } from '../lib/radarJump.js';
 import NeedsYou from './radar/NeedsYou.jsx';
 import LaneReadinessLine, { SETUP_LANE, BLUESKY_ENV_VARS, CopyEnvLinesButton } from './radar/LaneReadinessLine.jsx';
 import InfoTip from './ui/InfoTip.jsx';
@@ -90,9 +92,12 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   const enabled = radar.enabled === true;
   const hasQueries = Array.isArray(radar.queries) && radar.queries.length > 0;
   // The two engagement views this panel hosts: EXTERNAL conversations to join (Discovered, the
-  // radar signal feed) and comments on OUR OWN posts to reply to (On your posts, the own-post
-  // comment inbox). Separate data paths under the hood; co-located here in one surface.
+  // radar signal feed) and every reply to US (Replies to you: comments, mentions, reviews,
+  // answers to our Radar replies). Separate data paths under the hood; co-located here in one surface.
   const [segment, setSegment] = useState('discovered');
+  // "Open in Radar" from Replies to you: the signal to land on ({ key, revealed }). The button only
+  // shows for a signal that has a card, so there is no "gone" state to explain.
+  const [jump, setJump] = useState(null);
   const [scanning, setScanning] = useState(false);
   // forcePoll closes the pre-first-poll gap (the owner's "infinite loading with no info"): the
   // poll predicate reads the LAST response's jobs[], which at the moment Scan is pressed shows
@@ -100,14 +105,12 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   // POST settled. While the press is in flight the feed polls unconditionally; the moment the
   // response carries the running job, the normal predicate takes over.
   const { data: feed, isLoading, isError: feedIsError, refetch: refetchFeed } = useSignals(active && enabled, scanning);
-  // Direction C intent 1 (engagement on OUR posts): the unanswered own-post count rides the "On
-  // your posts" segment label, so a full inbox is visible without switching segments first. Own
-  // data path (comment inbox), a light cache read. In the all-projects overview the single-client
-  // read is off and the count sums the merged inbox App fans out (useCommentInboxAll).
+  // "Replies to you" (planner-bulk contract, package U): the unanswered count rides the segment
+  // label, so a full inbox is visible without switching first. It is the engine's own number,
+  // the one its alerts use (lib/replies.js inboxUnanswered). In the all-projects overview the
+  // single-client read is off and App's merged body carries the summed count.
   const { data: inbox } = useCommentInbox(active && !allClients);
-  const onPostsUnanswered = allClients
-    ? (Array.isArray(allInbox) ? allInbox.reduce((n, g) => n + (g.unanswered || 0), 0) : 0)
-    : (inbox?.unanswered || 0);
+  const repliesUnanswered = allClients ? (allInbox?.unanswered || 0) : inboxUnanswered(inbox);
   const { data: accounts } = useAccounts();
   const { activeClient } = useActiveClient();
   const clientName = activeClient?.displayName || '';
@@ -575,8 +578,8 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
     if (!clearable.length) return;
     const watchedShown = shownSignals.length - clearable.length;
     const ok = await confirm({
-      title: t('radar.bulk.confirm.title', { n: clearable.length }),
-      body: watchedShown ? t('radar.bulk.confirm.bodyWatched', { n: clearable.length, w: watchedShown }) : t('radar.bulk.confirm.body', { n: clearable.length }),
+      title: tCount(t, 'radar.bulk.confirm.title', clearable.length),
+      body: watchedShown ? tCount(t, 'radar.bulk.confirm.bodyWatched', clearable.length, { w: watchedShown }) : t('radar.bulk.confirm.body', { n: clearable.length }),
       confirmLabel: t('radar.bulk.confirm.yes'),
       cancelLabel: t('radar.bulk.confirm.cancel'),
       danger: true,
@@ -841,10 +844,52 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   // demotion keeps weak rows from sitting as peers of fresh ones, and with no fresh rows there is
   // no peer problem - an all-weak feed renders inline instead of hiding everything behind a
   // lonely strip under "8 Signale".
+  // Radar 2.0 step 2: THE INBOX. When the server sends `inbox`, the anchor views show only the
+  // top posting.radar.dailyTarget actionable asks it marked with inboxRank (plus the rows that are
+  // never demoted: watched, author-replied, karma, mention); everything else folds into the one
+  // collapsed "More" row. Never padded: with no sharp ask today the list is empty and says so,
+  // instead of rendering the weak rows inline.
+  const inboxOn = !allClients && Boolean(feed?.inbox) && Number.isInteger(feed.inbox.target);
+  const isBelowInbox = (s) => s.watched !== true && !s.authorReplied && !signalIsKarma(s, radar) && !signalIsMention(s, radar) && !s.inboxRank;
   const allDemoted = visibleSignals.length > 0 && visibleSignals.every(isDemoted);
-  const demoteHere = (effectiveFilter === 'all' || effectiveFilter === 'new') && !allDemoted;
-  const primarySignals = demoteHere ? visibleSignals.filter((s) => !isDemoted(s)) : visibleSignals;
-  const olderSignals = demoteHere ? visibleSignals.filter(isDemoted) : [];
+  const demoteHere = (effectiveFilter === 'all' || effectiveFilter === 'new') && (inboxOn || !allDemoted);
+  const demoted = inboxOn ? isBelowInbox : isDemoted;
+  const inboxOrder = (a, b) => (a.inboxRank || Infinity) - (b.inboxRank || Infinity);
+  const keptRows = visibleSignals.filter((s) => !demoted(s));
+  const primarySignals = !demoteHere
+    ? visibleSignals
+    : (inboxOn && sortBy === 'priority'
+      ? [...keptRows].sort((a, b) => (Number(Boolean(b.authorReplied)) - Number(Boolean(a.authorReplied))) || inboxOrder(a, b))
+      : keptRows);
+  const olderSignals = demoteHere ? visibleSignals.filter(demoted) : [];
+  // Replies to you -> "Open in Radar": land ON the card. Phase 1 makes it visible (the anchor 'all'
+  // filter, no dimension filter, the feed view, the older fold open when it would sit there - an
+  // answered signal folds out of the default worklist); phase 2, after that render, scrolls it into
+  // view and gives it keyboard focus (lib/radarJump.js, the same jump the agent transcript uses).
+  // A signal no longer in the feed sets the one quiet "not in the list" line instead.
+  useEffect(() => {
+    if (!jump || segment !== 'discovered' || feedLoading) return undefined;
+    if (!jump.revealed) {
+      const sig = signals.find((s) => `${s.source} ${s.externalId}` === jump.key);
+      if (!sig) { setJump(null); return undefined; } // archived in the meantime: Discovered as is
+      setSignalFilter('all');
+      setDimFilters(EMPTY_DIM_FILTERS);
+      setFeedView('feed');
+      if ((inboxOn ? isBelowInbox : isDemoted)(sig)) setOlderOpen(true);
+      setJump({ key: jump.key, revealed: true });
+      return undefined;
+    }
+    const raf = requestAnimationFrame(() => { jumpToSignal(jump.key, { focus: true }); setJump(null); });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isDemoted/isBelowInbox are pure render-scope predicates over the same signals
+  }, [jump, segment, feedLoading, signals, inboxOn]);
+  const openSignal = (item) => {
+    setSegment('discovered');
+    // Radar off: the Discovered segment shows its off state; there is no feed to look in.
+    if (!enabled && !allClients) return;
+    const key = radarSignalKeyOf(item);
+    if (key) setJump({ key, revealed: false });
+  };
   // US-RAD-30 (owner-approved): the same question by the same author found on
   // several networks used to render as one full-height card PER network - at
   // scale the feed quadruples. Near-identical signals (same author, matching
@@ -905,6 +950,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           scope: v.scope || null,
           detail: typeof v.detail === 'string' && v.detail ? v.detail : null,
           partial: v.partial === true,
+          // Radar 2.0 step 3: a lane that is limited by design (Reddit without an app: degraded) or
+          // paused on purpose (X at its monthly read cap) says so, not "unreachable".
+          degraded: v.degraded === true,
           // H6: WHEN the row was earned (R5 stamps `at` on every write) and whether it is too
           // old to act on - 48h, the client mirror of the server rule. A stale row reads muted
           // ("last tried 3 days ago"), never as a live failure.
@@ -957,8 +1005,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   const headedLaneRows = failedInLastScan ? laneRows.filter((d) => d.error !== 'not_connected') : laneRows;
   // One notice line per lane row; the rows a scan tried sit in the headed card, the
   // never-connected setup gaps in a card of their own (outside the heading's claim).
-  const renderLaneRow = ({ id, error, detail, partial, stale, at }) => {
-    const connectClass = CONNECT_ERRORS.includes(error);
+  const renderLaneRow = ({ id, error, detail, partial, stale, at, degraded }) => {
+    const paused = error === 'paused';
+    const connectClass = CONNECT_ERRORS.includes(error) || degraded === true;
     const bsEnv = id === 'bluesky' && error === 'not_connected';
     return (
       <p key={id} className={NOTICE_LINE}>
@@ -997,12 +1046,16 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                 ? t('radar.source.stale', { platform: sourceName(id), time: fmtRelative(at) })
                 : error === 'not_connected'
                   ? t('radar.source.notConnected', { platform: sourceName(id) })
-                  : t(`radar.source.degraded.${error === 'needs_scope' || error === 'rate_limited' ? error : 'engine_failure'}`, { platform: sourceName(id) })}</span>
+                  : paused
+                    ? t('radar.source.paused', { platform: sourceName(id) })
+                    : degraded
+                      ? t('radar.source.degraded.limited', { platform: sourceName(id) })
+                      : t(`radar.source.degraded.${error === 'needs_scope' || error === 'rate_limited' ? error : 'engine_failure'}`, { platform: sourceName(id) })}</span>
           </Tip>
         )}
-        {bsEnv ? null : connectClass && SETUP_LANE_FOR_SOURCE(id) ? (
+        {bsEnv || paused ? null : connectClass && SETUP_LANE_FOR_SOURCE(id) ? (
           <button type="button" onClick={() => onNavigate?.('setup', SETUP_LANE_FOR_SOURCE(id))} className={NOTICE_LINK}>
-            {t(error === 'not_connected' ? 'radar.source.notConnected.connect' : 'radar.source.degraded.reconnect')}
+            {t(error === 'not_connected' || degraded ? 'radar.source.notConnected.connect' : 'radar.source.degraded.reconnect')}
           </button>
         ) : (
           // No Setup lane to send the operator to (or a run failure): the one move
@@ -1059,8 +1112,8 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
             <HelpCircle size={14} aria-hidden="true" />
           </button>
         </Tip>
-        {/* The two engagement views: EXTERNAL conversations (Discovered) vs comments on your OWN
-            posts (On your posts). Reuses the shared Segmented so the two surfaces read as one.
+        {/* The two engagement views: EXTERNAL conversations (Discovered) vs every reply to US
+            (Replies to you). Reuses the shared Segmented so the two surfaces read as one.
             BOTH aggregate across projects now (the signal feed and the own-post inbox), so the
             segment stays usable in the all-projects overview - only the per-client scan/GEO/warmth
             CONTROLS hide in that mode. */}
@@ -1070,7 +1123,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           onChange={setSegment}
           options={[
             { key: 'discovered', label: t('radar.segment.discovered') },
-            { key: 'onposts', label: onPostsUnanswered > 0 ? `${t('radar.segment.onposts')} · ${onPostsUnanswered}` : t('radar.segment.onposts') },
+            { key: 'replies', label: repliesUnanswered > 0 ? `${t('replies.segment')} · ${repliesUnanswered}` : t('replies.segment') },
           ]}
         />
         {allClients ? <span className={CHIP}>{t('clientSwitcher.all')}</span> : null}
@@ -1150,15 +1203,22 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           ))}
         </div>
       ) : null}
-      {segment === 'onposts' ? (
-        // On your posts: the own-post comment inbox (own data path, GET /api/comments/inbox),
-        // co-located in this one engagement surface. Reachable even when Radar beta is off -
-        // the two features are independent. In the all-projects overview it renders the merged,
-        // project-stamped inbox App fans out, and threads each item's clientId through its writes.
+      {segment === 'replies' ? (
+        // Replies to you: every reply to us in one list (own data path, GET /api/comments/inbox),
+        // reachable even when Radar beta is off - the two features are independent. In the
+        // all-projects overview it renders App's merged, project-stamped body and threads each
+        // item's clientId through its writes. "Open in Radar" on an answer to one of our Radar
+        // replies lands on that card in Discovered (openSignal), where it holds the round-two drafter.
         allClients ? (
-          <CommentInbox allClients allPosts={allInbox} allFailed={allInboxFailed} allLoading={allInboxLoading} onNavigate={onNavigate} />
+          <CommentInbox allClients allInbox={allInbox} allFailed={allInboxFailed} allLoading={allInboxLoading} onNavigate={onNavigate} onOpenRadar={openSignal} radar={{ campaign: null, signalOf: (key) => signals.find((s) => `${s.source} ${s.externalId}` === key) || null }} />
         ) : (
-          <CommentInbox onNavigate={onNavigate} />
+          <CommentInbox
+            onNavigate={onNavigate}
+            onOpenRadar={openSignal}
+            // An answer to one of our Radar replies is answered in place: the reply post is filed
+            // like the card's own drafter files it (the first campaign) under that signal's thread.
+            radar={enabled ? { campaign: campaigns?.[0]?.id || null, signalOf: (key) => signals.find((s) => `${s.source} ${s.externalId}` === key) || null } : null}
+          />
         )
       ) : (
       <>
@@ -1248,9 +1308,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
         // has, regardless of the active client's own beta flag.
         <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
           <div className="max-w-sm space-y-2">
-            <RadarIcon size={28} className="mx-auto text-zinc-500" aria-hidden="true" />
+            <RadarIcon size={28} className="mx-auto text-zinc-600" aria-hidden="true" />
             <p className="text-sm font-bold">{t('radar.disabled.title')}</p>
-            <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.disabled.body')}</p>
+            <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.disabled.body')}</p>
             <button type="button" onClick={onEnable} className={`mt-1 ${BTN_PRIMARY}`}>
               {t('radar.disabled.enable')}
             </button>
@@ -1271,6 +1331,8 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               deep-link; every run failure (an agent-lane group, engine_failure, rate_limited)
               offers a rescan scoped to just those lanes. The eyebrow names what the card is,
               now that its lines are heterogeneous. Mirrors the all-projects load-failed notice. */}
+          {/* Radar 2.0 step 1: unjudged engine hits are held back, so a thin feed says why. */}
+          {!allClients && feed?.judgeHealth === 'not_configured' ? <p role="status" className={NOTICE_LINE}><AlertCircle size={12} className={NOTICE_GLYPH_QUIET} aria-hidden="true" /><span>{t('radar.judge.notConfigured')}</span></p> : null}
           {/* r5 (final2 judge): the never-connected lanes get their OWN card. A hairline inside
               the headed card still read as "unreachable in the last scan" to the eye. */}
           {cardAgentLaneGroups.length || laneRows.length ? (
@@ -1312,7 +1374,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               so this closes the gap where a thin scan over older signals had no next move. */}
           {!allClients && signals.length > 0 && scanWasThin && suggestItems.length ? (
             <div className={`space-y-1.5 rounded-xl p-3 ${INNER_SURFACE}`}>
-              <p className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{t('radar.empty.suggest.title')}</p>
+              <p className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">{t('radar.empty.suggest.title')}</p>
               <ul className="flex flex-wrap gap-1.5">{suggestItems}</ul>
             </div>
           ) : null}
@@ -1332,7 +1394,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               <div className="flex min-h-11 items-center gap-2">
                 <button type="button" onClick={() => setAutoOpen((v) => !v)} aria-expanded={autoOpen} className="flex min-h-11 min-w-0 flex-1 items-center gap-1 rounded-lg text-left text-sm font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
                   <span className="truncate">{t('radar.engage.auto.line', { state: autoStateWord })}</span>
-                  <ChevronDown size={14} className={`shrink-0 text-zinc-500 transition ${autoOpen ? 'rotate-180' : '-rotate-90'}`} aria-hidden="true" />
+                  <ChevronDown size={14} className={`shrink-0 text-zinc-600 transition ${autoOpen ? 'rotate-180' : '-rotate-90'}`} aria-hidden="true" />
                 </button>
                 {!engageArmed ? (
                   <button type="button" onClick={goFullAuto} disabled={engageBusy} className={`shrink-0 ${BTN_PRIMARY} ${TAP_TARGET}`}>
@@ -1349,7 +1411,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               </div>
               {autoOpen && !engageArmed ? (
                 <div className="space-y-2 pb-3">
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('radar.engage.auto.body.ready', { n: armReplyLanes.length })}</p>
+                  <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('radar.engage.auto.body.ready', { n: armReplyLanes.length })}</p>
                   {/* NAME each reply channel inline (kill the four-switch deadlock): each auto-reply
                       lane shows its live state + the ONE action that moves it (Connect / Check /
                       Yes-No), and each connected copy-only account says "draft only" so it never
@@ -1364,7 +1426,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                           {/* The lane's state + its one action (Connect deep-link, copy .env
                               lines, Check now, ...) from the SAME line and the same runtime the
                               Settings ledger renders, so the two surfaces say one word per lane. */}
-                          <span className="min-w-0 flex-1 text-zinc-500 dark:text-zinc-400">
+                          <span className="min-w-0 flex-1 text-zinc-600 dark:text-zinc-400">
                             <LaneReadinessLine lane={r.lane} label={t(`radar.source.${r.lane}`)} runtime={laneRuntime(r.lane)} clientName={clientName} onNavigate={onNavigate} onRefresh={refreshEngage} />
                           </span>
                         </li>
@@ -1372,7 +1434,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                       {copyOnlyRows.map((lane) => (
                         <li key={lane} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-[11px]">
                           <span className="w-16 shrink-0 font-semibold text-zinc-600 dark:text-zinc-300">{t(`radar.source.${lane}`)}</span>
-                          <span className="min-w-0 flex-1 text-zinc-500 dark:text-zinc-400">
+                          <span className="min-w-0 flex-1 text-zinc-600 dark:text-zinc-400">
                             <LaneReadinessLine lane={lane} label={t(`radar.source.${lane}`)} copyOnly />
                           </span>
                         </li>
@@ -1388,7 +1450,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               ) : null}
               {autoOpen && engageArmed ? (
                 <div className="space-y-2 pb-3">
-                  <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-zinc-600 dark:text-zinc-400">
                     <span className="min-w-0 flex-1">
                       {t('radar.engage.auto.on.summary', {
                         n: engageUsableCount,
@@ -1415,7 +1477,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                       </p>
                       <p><span className="font-semibold">{t('radar.engage.scope.threshold')}:</span> {t('radar.engage.scope.threshold.value', { score: engageMinScore })}</p>
                       <p className="flex items-center gap-1.5">
-                        <ShieldCheck size={12} aria-hidden="true" className={engageSensitiveAsk ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'} />
+                        <ShieldCheck size={12} aria-hidden="true" className={engageSensitiveAsk ? 'text-brand dark:text-brand-light' : 'text-zinc-600 dark:text-zinc-400'} />
                         {engageSensitiveAsk ? t('radar.engage.scope.sensitive.on') : t('radar.engage.scope.sensitive.off')}
                       </p>
                       {engageDisclosure ? <p><span className="font-semibold">{t('radar.engage.scope.disclosure')}:</span> {engageDisclosure}</p> : null}
@@ -1447,9 +1509,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           {!allClients && !hasQueries ? (
             <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
               <div className="max-w-sm space-y-2">
-                <RadarIcon size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                <RadarIcon size={26} className="mx-auto text-zinc-600" aria-hidden="true" />
                 <p className="text-sm font-bold">{t('radar.noQueries.title')}</p>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.noQueries.body')}</p>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.noQueries.body')}</p>
                 <button type="button" onClick={() => onNavigate?.('settings', 'radar')} className={`mt-1 ${BTN_PRIMARY}`}>
                   <SettingsIcon size={13} aria-hidden="true" />{t('radar.noQueries.cta')}
                 </button>
@@ -1470,7 +1532,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               <div className="max-w-sm space-y-2">
                 <AlertCircle size={26} className="mx-auto text-rose-600 dark:text-rose-400" aria-hidden="true" />
                 <p className="text-sm font-bold">{t('radar.error.load.title')}</p>
-                <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.error.load.body')}</p>
+                <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.error.load.body')}</p>
                 <button type="button" onClick={() => refetchFeed()} className={`mt-1 ${BTN_QUIET}`}>
                   <RefreshCw size={13} aria-hidden="true" />{t('radar.error.load.retry')}
                 </button>
@@ -1523,7 +1585,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                     <div className="flex justify-end">
                       <button type="button" onClick={() => onClearShown(visibleSignals)} disabled={clearingShown} className={`inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 transition hover:bg-red-500/10 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-red-300 ${TAP_TARGET}`}>
                         {clearingShown ? <Loader2 size={12} className="animate-spin" aria-hidden="true" /> : <Trash2 size={12} aria-hidden="true" />}
-                        {t('radar.bulk.clearShown', { n: visibleSignals.filter((s) => s.watched !== true).length })}
+                        {tCount(t, 'radar.bulk.clearShown', visibleSignals.filter((s) => s.watched !== true).length)}
                       </button>
                     </div>
                   ) : null}
@@ -1531,6 +1593,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               ) : null}
               {visibleSignals.length ? (
                 <>
+                  {inboxOn && demoteHere && !primarySignals.length ? (
+                    <p role="status" className={NOTICE_LINE}><CheckCircle2 size={12} className={NOTICE_GLYPH_QUIET} aria-hidden="true" /><span>{t('radar.inbox.none')}</span></p>
+                  ) : null}
                   <ol className="space-y-2">
                     {groupedPrimary.map(({ lead, siblings }) => (
                       siblings.length === 0 ? renderRow(lead) : (
@@ -1575,8 +1640,8 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                     <div>
                       <button type="button" aria-expanded={olderOpen} onClick={() => setOlderOpen((v) => !v)} className="flex w-full items-center gap-2 rounded-xl border border-dashed border-zinc-300/70 px-3 py-2 text-left transition hover:bg-zinc-900/[0.03] dark:border-zinc-600/70 dark:hover:bg-white/5">
                         <ChevronDown size={16} className={`shrink-0 text-zinc-500 transition ${olderOpen ? 'rotate-180' : '-rotate-90'}`} aria-hidden="true" />
-                        <span className="text-sm font-semibold">{t('radar.older.title')}</span>
-                        <span className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.older.body', { n: olderSignals.length })}</span>
+                        <span className="text-sm font-semibold">{t(inboxOn ? 'radar.more.title' : 'radar.older.title')}</span>
+                        <span className="text-xs text-zinc-500 dark:text-zinc-400">{t(inboxOn ? 'radar.more.body' : 'radar.older.body', { n: olderSignals.length })}</span>
                       </button>
                       {olderOpen ? <ol className="mt-2 space-y-2">{olderSignals.map(renderRow)}</ol> : null}
                     </div>
@@ -1588,9 +1653,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                 // drop the filters, offered right here.
                 <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
                   <div className="max-w-sm space-y-2">
-                    <CircleSlash size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                    <CircleSlash size={26} className="mx-auto text-zinc-600" aria-hidden="true" />
                     <p className="text-sm font-bold">{t('radar.filters.empty.title')}</p>
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.filters.empty.body')}</p>
+                    <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.filters.empty.body')}</p>
                     <div className="pt-1">
                       <button type="button" onClick={() => setDimFilters(EMPTY_DIM_FILTERS)} className={BTN_QUIET}>
                         {t('radar.filters.clear')}
@@ -1605,9 +1670,9 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                 // fixes). One quiet next step: widen to the full feed. No colour on an all-clear.
                 <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
                   <div className="max-w-sm space-y-2">
-                    <CheckCircle2 size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                    <CheckCircle2 size={26} className="mx-auto text-zinc-600" aria-hidden="true" />
                     <p className="text-sm font-bold">{t('radar.worklist.empty.title')}</p>
-                    <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.worklist.empty.body')}</p>
+                    <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.worklist.empty.body')}</p>
                     {/* Two forward moves so an empty worklist is never a near-dead-end: run a
                         fresh scan (the real "get new finds" action, only when an agent is live and
                         idle), and widen to the full feed. Scan leads as primary when available. */}
@@ -1643,7 +1708,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
             // agent-verdict + suggested-search chips belong to a single project's own scan).
             <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
               <div className="max-w-sm space-y-2">
-                <Radio size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                <Radio size={26} className="mx-auto text-zinc-600" aria-hidden="true" />
                 <p className="text-sm font-bold">{t('radar.empty')}</p>
               </div>
             </div>
@@ -1651,7 +1716,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
             <div className="space-y-2">
               <div className={`grid place-items-center rounded-xl p-8 text-center ${INNER_SURFACE}`}>
                 <div className="max-w-md space-y-2">
-                  <Radio size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
+                  <Radio size={26} className="mx-auto text-zinc-600" aria-hidden="true" />
                   {/* K3 (fresh-eyes round 2): the empty state never repeats a CTA the header already
                       shows. Newest run failed -> "No signals from this run." and NO second retry
                       (the job row above owns it). No agent connected -> "No signals yet." with a
@@ -1669,14 +1734,14 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                     ? <AgentNote text={job.tail} t={t} className="mx-auto max-w-md text-left" />
                     : job?.state === 'failed'
                       ? null
-                      : <p className="text-xs text-zinc-500 dark:text-zinc-400">{t(agentLive ? 'radar.empty.agentHint' : feed?.lastScan ? 'radar.empty.connectHintNext' : 'radar.empty.connectHint')}</p>}
+                      : <p className="text-xs text-zinc-600 dark:text-zinc-400">{t(agentLive ? 'radar.empty.agentHint' : feed?.lastScan ? 'radar.empty.connectHintNext' : 'radar.empty.connectHint')}</p>}
                   {/* WS2: suggested searches turn the dead end into a next action - one click adds
                       the query. No dead ends (canon). */}
                   {/* WS2: suggested searches turn the dead end into a next action - one click adds
                       the query (the same chip list the thin-scan row above reuses). No dead ends. */}
                   {suggestItems.length ? (
                     <div className="space-y-1.5 pt-1">
-                      <p className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">{t('radar.empty.suggest.title')}</p>
+                      <p className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400">{t('radar.empty.suggest.title')}</p>
                       <ul className="flex flex-wrap justify-center gap-1.5">{suggestItems}</ul>
                     </div>
                   ) : null}

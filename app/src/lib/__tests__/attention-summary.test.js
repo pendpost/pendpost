@@ -53,8 +53,12 @@ describe('attentionSummary: the sidebar chip and header beacon use the card\'s w
     expect(attentionSummary([])).toBeNull();
   });
 
-  it('every counted post is in the list the chip opens (overdue filter)', () => {
-    for (const p of [needsYou, overdue, lateDraft]) expect(matchesFilters(p, [], [], ['overdue'])).toBe(true);
+  // The status tabs are mutually exclusive (planner bulk round 2): a needs-you post lives under
+  // the needs-you filter the needs-you chip opens; the late ones under the overdue filter the
+  // overdue chip opens (that chip only shows while nothing needs you).
+  it('every counted post is in the list its chip opens', () => {
+    expect(matchesFilters(needsYou, [], [], ['needs-you'])).toBe(true);
+    for (const p of [overdue, lateDraft]) expect(matchesFilters(p, [], [], ['overdue'])).toBe(true);
   });
 
   it('the chip label reuses the card label verbatim in both packs', () => {

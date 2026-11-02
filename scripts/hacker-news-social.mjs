@@ -31,9 +31,63 @@ let JSON_MODE = false;
 // "counting", a product name matched "bookshops". So each keyword goes out as ONE quoted phrase with
 // advancedSyntax on (the quotes mean "this exact phrase") and typoTolerance off. Exported so a
 // test can assert the request without a network.
-export function hnSearchUrl(term) {
+// `sinceSec` (Radar 2.0 step 1): the lookback as a unix-seconds floor, sent as Algolia's
+// numericFilters=created_at_i>N, so the 25 hits per term are spent on posts inside the window
+// instead of years-old threads the seam would drop as stale anyway. Absent = no time filter.
+export function hnSearchUrl(term, { sinceSec = null } = {}) {
   const phrase = String(term || '').replace(/"/g, ' ').replace(/\s+/g, ' ').trim();
-  return `https://hn.algolia.com/api/v1/search_by_date?${new URLSearchParams({ query: `"${phrase}"`, tags: '(story,comment)', hitsPerPage: '25', advancedSyntax: 'true', typoTolerance: 'false' }).toString()}`;
+  const params = { query: `"${phrase}"`, tags: '(story,comment)', hitsPerPage: '25', advancedSyntax: 'true', typoTolerance: 'false' };
+  if (Number.isFinite(sinceSec) && sinceSec > 0) params.numericFilters = `created_at_i>${Math.floor(sinceSec)}`;
+  return `https://hn.algolia.com/api/v1/search_by_date?${new URLSearchParams(params).toString()}`;
+}
+
+// The unix-seconds floor for a lookback in days, or null when none is set.
+export function hnSinceSec(lookbackDays, now = Date.now()) {
+  const n = Number(lookbackDays);
+  return Number.isFinite(n) && n > 0 ? Math.floor(now / 1000 - n * 86_400) : null;
+}
+
+// Algolia returns story_text / comment_text as HN's HTML (<p>, <a>, <i>, entities). The feed and
+// the scorer want the words: paragraphs become blank lines, tags go, the common entities decode.
+const HN_NAMED_ENTITIES = Object.freeze({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' });
+export function hnPlainText(html) {
+  return String(html || '')
+    .replace(/<\s*(?:p|br)\s*\/?>/gi, '\n\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&([a-z]+);/gi, (m, n) => HN_NAMED_ENTITIES[n.toLowerCase()] ?? m)
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// One Algolia hit -> an unscored Signal. A STORY keeps its title AND its body (story_text: the
+// question of an Ask HN, the pitch of a Show HN), title first because the scorer reads the opening.
+// A COMMENT keeps its own words as text and carries the title of the story it sits under as
+// `threadTitle` (Algolia's story_title), so the pre-filter can tell a comment under someone else's
+// Show HN from one in an Ask HN thread, and a reader sees what the comment answers.
+export function hnHitToSignal(h) {
+  const hit = h && typeof h === 'object' ? h : {};
+  const tags = Array.isArray(hit._tags) ? hit._tags : [];
+  const isComment = tags.includes('comment') || (!hit.title && Boolean(hit.comment_text));
+  const body = hnPlainText(isComment ? hit.comment_text : hit.story_text);
+  const title = String(hit.title || '').trim();
+  const text = isComment ? body : [title, body].filter(Boolean).join('\n\n');
+  const threadTitle = isComment && typeof hit.story_title === 'string' && hit.story_title.trim() ? hit.story_title.trim() : null;
+  return {
+    source: 'hackernews',
+    externalId: String(hit.objectID || ''),
+    url: hit.objectID ? `https://news.ycombinator.com/item?id=${hit.objectID}` : null,
+    author: hit.author || null,
+    community: 'news.ycombinator.com',
+    text: text || String(hit.story_title || ''),
+    ...(threadTitle ? { threadTitle } : {}),
+    // Radar 2.0 step 2: a story's comment count rides the same Algolia hit (no extra call), so the
+    // judge and the inbox rank know how crowded the thread already is. Comments carry none.
+    ...(!isComment && Number.isFinite(hit.num_comments) ? { replyCount: hit.num_comments } : {}),
+    ts: Number.isFinite(hit.created_at_i) ? new Date(hit.created_at_i * 1000).toISOString() : (hit.created_at || null),
+  };
 }
 
 // The Radar (beta) SEARCH verb (spec 33, Pattern P3 read). Algolia search_by_date over
@@ -48,15 +102,8 @@ export async function cmdRadar(args) {
   const label = typeof query.label === 'string' ? query.label.trim() : '';
   const terms = (keywords.length ? keywords : [label]).map((t) => t.trim()).filter(Boolean).slice(0, 10);
   if (!terms.length) { RUN.results.push(radarOkRow('hackernews', [])); return; }
-  const mapHit = (h) => ({
-    source: 'hackernews',
-    externalId: String(h.objectID || ''),
-    url: h.objectID ? `https://news.ycombinator.com/item?id=${h.objectID}` : null,
-    author: h.author || null,
-    community: 'news.ycombinator.com',
-    text: h.title || h.comment_text || h.story_title || '',
-    ts: Number.isFinite(h.created_at_i) ? new Date(h.created_at_i * 1000).toISOString() : (h.created_at || null),
-  });
+  const mapHit = hnHitToSignal;
+  const sinceSec = hnSinceSec(query.lookbackDays);
   // ONE Algolia query per keyword. Algolia treats a space-joined `query` as AND, so the old
   // `keywords.join(' ')` returned ~nothing for any multi-keyword query. One search per term
   // gives OR semantics (what reddit-social.mjs gets from its ` OR `-join); a local Set dedupes
@@ -66,7 +113,7 @@ export async function cmdRadar(args) {
   let lastError = null; // transient/other search failure (5xx etc.)
   let anySearchOk = false;
   for (const q of terms) {
-    const url = hnSearchUrl(q);
+    const url = hnSearchUrl(q, { sinceSec });
     const { ok, status, json, retryAfter, error } = await radarHttp(url);
     if (!ok) {
       // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.

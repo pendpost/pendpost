@@ -1,4 +1,5 @@
-// radar-lookback.test.mjs - the scan LOOKBACK window (posting.radar.lookbackDays, default 90).
+// radar-lookback.test.mjs - the scan LOOKBACK window (posting.radar.lookbackDays, default 7; was 90
+// until Radar 2.0 step 1, 2026-10-29).
 //
 // The gap this closes: Radar surfaced a thread by RELEVANCE alone, so a question answered
 // seven years ago could enter the feed and - because the card leads with foundAt - read as a
@@ -7,7 +8,7 @@
 // from RADAR_RETENTION_DAYS (how long the feed KEEPS what it surfaced).
 //
 // What this pins:
-//   1. the default (90) and the validator bounds (1-3650, or null/0 = no limit).
+//   1. the default (7) and the validator bounds (1-3650, or null/0 = no limit).
 //   2. withinLookback's truth table, including the fail-CLOSED on an undated post (Wave 3 Q3,
 //      2026-09-04): it used to be kept fail-open, and the child learned that omitting ts was the
 //      cheap way past the window. Undated = outside the window; radarIngest itemizes the drop
@@ -48,8 +49,8 @@ try {
   const { radarScanPrompt } = await import('../lib/radar-prompt.mjs');
 
   // ---- (1) the default + the validator bounds -------------------------------
-  ok(RADAR_DEFAULTS.lookbackDays === 90,
-    'posting.radar.lookbackDays defaults to 90 days - a quarter of conversation is live, older is history');
+  ok(RADAR_DEFAULTS.lookbackDays === 7,
+    'posting.radar.lookbackDays defaults to 7 days - a reply can still join a thread that fresh (was 90 until Radar 2.0 step 1)');
   const set = (v) => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { radar: { lookbackDays: v } } } });
   const refused = (v) => set(v).code === 'invalid_input';
   ok(!refused(90) && !refused(1) && !refused(3650), 'config_set accepts a whole number of days 1-3650');

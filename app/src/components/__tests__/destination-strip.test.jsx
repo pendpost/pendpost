@@ -8,9 +8,11 @@
 
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import DestinationStrip, { destinationFor, shortId } from '../ui/DestinationStrip.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider, makeT } from '../../lib/i18n.js';
 
 const t = makeT('en');
@@ -62,12 +64,17 @@ function renderStrip(props, { expanded = true } = {}) {
   // Most tests pin the chip strip, which lives behind the disclosure: pre-seed the
   // preference so it renders expanded. Collapse tests pass { expanded: false }.
   if (expanded) store.set('pendpost-destination-collapsed', '0');
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, enabled: false } } });
   return render(
-    <I18nProvider locale="en">
-      <TooltipProvider>
-        <DestinationStrip {...props} />
-      </TooltipProvider>
-    </I18nProvider>,
+    <QueryClientProvider client={qc}>
+      <I18nProvider locale="en">
+        <TooltipProvider>
+          <ConfirmProvider>
+            <DestinationStrip {...props} />
+          </ConfirmProvider>
+        </TooltipProvider>
+      </I18nProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -143,9 +150,33 @@ describe('DestinationStrip', () => {
   it('a lane with NO account is an action, not a warning that dead-ends', async () => {
     const onNavigate = vi.fn();
     renderStrip({ platforms: ['linkedin'], accounts: noHandle, onNavigate });
-    const chip = screen.getByRole('button', { name: /No account is on file for LinkedIn/i });
-    await userEvent.click(chip);
-    expect(onNavigate).toHaveBeenCalledWith('setup');
+    // Said plainly, with the same Connect fix the post rows offer (an OAuth lane opens Setup
+    // with the sign-in started).
+    expect(screen.getByText('LinkedIn not connected')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Connect LinkedIn' }));
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'linkedin', { action: 'reconnect' });
+  });
+
+  // 2026-11-01: "No account on file" was vague and, beside rows judged by the setup, could
+  // contradict them. The strip now reads the same setup the rows read.
+  it('never says "No account on file"; the project setup decides "not connected"', () => {
+    renderStrip({
+      platforms: ['x', 'mastodon'],
+      // Accounts know no X handle, yet the setup says X is connected: it is connected.
+      accounts: { x: { handle: '' }, mastodon: { handle: '' } },
+      setup: { platforms: [{ platform: 'x', status: 'connected' }, { platform: 'mastodon', status: 'incomplete' }] },
+      onNavigate: vi.fn(),
+    });
+    expect(screen.queryByText(/no account on file/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('X not connected')).not.toBeInTheDocument();
+    expect(screen.getByText('Mastodon not connected')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Mastodon' })).toBeInTheDocument();
+  });
+
+  it('a lane the owner marked as not in use reads quietly, never as not connected', () => {
+    renderStrip({ platforms: ['x'], accounts: { x: { handle: '' } }, setup: { platforms: [{ platform: 'x', status: 'skipped' }] } });
+    expect(screen.getByText('Not in use')).toBeInTheDocument();
+    expect(screen.queryByText('X not connected')).not.toBeInTheDocument();
   });
 
   it('shows a skeleton while loading, not an empty row that reads as "no constraint"', () => {
@@ -186,6 +217,16 @@ describe('DestinationStrip disclosure', () => {
     expect(screen.getByText(t('destination.missingCount', { n: 1 }))).toBeInTheDocument();
   });
 
+  it('the unconnected count wears the rows\' halted rose ink and alert glyph, never amber', () => {
+    renderStrip({ platforms: ['instagram', 'linkedin'], accounts: noHandle }, { expanded: false });
+    const count = screen.getByText(t('destination.missingCount', { n: 1 }));
+    expect(count.getAttribute('data-tone')).toBe('halted');
+    expect(count.className).toMatch(/text-rose-700/);
+    expect(count.className).toMatch(/dark:text-rose-300/);
+    expect(count.className).not.toMatch(/amber/);
+    expect(count.querySelector('svg')).not.toBeNull();
+  });
+
   it('connected-only lanes never count as unconnected in the summary', () => {
     renderStrip({ platforms: ['telegram', 'reddit', 'discord'], accounts: connectedLanes }, { expanded: false });
     const trigger = screen.getByRole('button', { expanded: false });
@@ -204,8 +245,12 @@ describe('DestinationStrip disclosure', () => {
   it('expanded keeps the unconnected lane as a Setup deep-link', async () => {
     const onNavigate = vi.fn();
     renderStrip({ platforms: ['linkedin'], accounts: noHandle, onNavigate });
-    const chip = screen.getByRole('button', { name: /No account is on file for LinkedIn/i });
-    await userEvent.click(chip);
-    expect(onNavigate).toHaveBeenCalledWith('setup');
+    await userEvent.click(screen.getByRole('button', { name: 'Connect LinkedIn' }));
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'linkedin', { action: 'reconnect' });
+  });
+
+  it('the collapsed summary counts lanes "not connected"', () => {
+    renderStrip({ platforms: ['instagram', 'linkedin'], accounts: noHandle }, { expanded: false });
+    expect(screen.getByText('1 not connected')).toBeInTheDocument();
   });
 });

@@ -22,6 +22,11 @@ describe('isImageMedia (media-keyed, never type-keyed)', () => {
     }
   });
 
+  it('reads the extension of the served path, ahead of the clientId stamp', () => {
+    expect(isImageMedia({ url: '/media?p=data%2Fmedia%2Fshot.png&clientId=acme' })).toBe(true);
+    expect(isImageMedia({ url: '/media?p=data%2Fmedia%2Fclip.mp4&clientId=acme' })).toBe(false);
+  });
+
   it('reads a video (and a missing/empty media) as NOT an image', () => {
     for (const url of ['/m/a.mp4', '/m/a.mov', '/m/a.m4v', '/m/a.webm']) {
       expect(isImageMedia({ url })).toBe(false);

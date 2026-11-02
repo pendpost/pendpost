@@ -5,8 +5,9 @@ import { showToast } from '../components/AppToast.jsx';
 import { useT } from './i18n.js';
 import { approvePost, rejectPost, verifyPost, deletePost, unschedulePost, runPublishDue, reschedulePost, resumeLane } from './api.js';
 import { patchPlanRemove } from './useReschedule.js';
-import { canApprovePost, canRejectPost, canParkPost, canVerifyPost, canPublishNowPost, isHeldRetry, postHasPublishEvidence } from './postActions.js';
-import { publishRunOutcome } from './format.js';
+import { canApproveNow, canRejectPost, canParkPost, canVerifyPost, canPublishNowPost, isHeldRetry, postHasPublishEvidence } from './postActions.js';
+import { publishRunOutcome, unconnectedLanes } from './format.js';
+import { usePostSetup } from './setupByClient.js';
 import { humanizeAction, humanizeFailure } from './failureCopy.js';
 import { showApproveNotice } from './approveNotice.js';
 
@@ -36,11 +37,22 @@ import { showApproveNotice } from './approveNotice.js';
 // pin, discord event, edit-published) - those need the detail context and stay in the
 // drawer, one click away via the row itself. `onEdit` (open the Composer) is offered only
 // when the caller passes it.
-export function usePostActions(post, { onEdit } = {}) {
+//
+// `fix` (studio fix flow, package C): the post's one fix (lib/postIssue.js) as
+// { type, label }. The row shows that fix as a button on its status line, so the menu never
+// repeats it (polish 2026-11-01: the menu item duplicated the inline button), and an item that
+// would repeat it is dropped too: the lane resume when the fix IS the resume, the editor when
+// the fix opens the editor.
+//
+// `setup`: the post's project setup when the caller already holds it (else the cached one).
+// Freigeben is offered only where canApproveNow says so, the List's bulk bar's own gate: never
+// on a post whose lane is not connected (planner judge round 2, item 7).
+export function usePostActions(post, { onEdit, fix = null, setup } = {}) {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const prompt = usePrompt();
   const t = useT();
+  const postSetup = usePostSetup(post, { override: setup });
   const clientId = post?.clientId; // set only by the all-projects merge (App.jsx)
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['plans'] });
   // A publish settles a beat after the call returns (the daemon writes the native id /
@@ -54,7 +66,8 @@ export function usePostActions(post, { onEdit } = {}) {
 
   const approve = async () => {
     try {
-      showApproveNotice(await approvePost(post.campaign, post.id, undefined, clientId), t);
+      // `posts`: a Radar reply past its time goes out 5 minutes after this approval; the notice says so.
+      showApproveNotice(await approvePost(post.campaign, post.id, undefined, clientId), t, { posts: [post] });
     } catch (err) {
       showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {
@@ -241,11 +254,14 @@ export function usePostActions(post, { onEdit } = {}) {
   };
 
   // Ordered for the menu: open, approve, reject, park, verify, publish-now, resume, then
-  // the destructive delete last (RowMenu renders `danger` red). Falsy entries are dropped
-  // by RowMenu, so gating is just a boolean per row.
+  // the destructive delete last, set off by a divider (RowMenu renders `danger` red and a
+  // separator before a `divider` item). Falsy entries are dropped by RowMenu, so gating is
+  // just a boolean per row.
+  const fixType = fix?.type || null;
+  const fixOpensEditor = fixType === 'edit' && fix?.label === t('postDetail.action.openEditor');
   const items = [
-    onEdit && { key: 'edit', label: t('postDetail.action.openEditor'), Icon: Pencil, run: () => onEdit(post) },
-    canApprovePost(post) && { key: 'approve', label: t('approvals.action.approve'), Icon: CheckCircle, run: approve },
+    onEdit && !fixOpensEditor && { key: 'edit', label: t('postDetail.action.openEditor'), Icon: Pencil, run: () => onEdit(post) },
+    canApproveNow(post, { offlineLanes: unconnectedLanes(post, postSetup) }) && { key: 'approve', label: t('approvals.action.approve'), Icon: CheckCircle, run: approve },
     canRejectPost(post) && { key: 'reject', label: t('approvals.action.reject'), Icon: XCircle, run: reject },
     canParkPost(post) && { key: 'park', label: t('postDetail.action.parkIdle'), Icon: PauseCircle, run: park },
     // ux-audit dim-1 G3/R1a parity: a verify-FAILED post's menu carries the same
@@ -257,8 +273,8 @@ export function usePostActions(post, { onEdit } = {}) {
     publishNowAllowed && { key: 'publish-now', label: t(heldRetry ? 'postDetail.action.tryAgainIdle' : 'postDetail.action.publishNowIdle'), Icon: heldRetry ? RefreshCw : Send, run: publishNow },
     // A lane-halt (canPublishNowPost deliberately excludes it) gets the resume verb instead,
     // named for the platform ("Veröffentlichung fortsetzen"), not the internal word "Lane".
-    Boolean(post?.lastFailure?.halted) && { key: 'resume-lane', label: t('readiness.resumeLane'), Icon: PlugZap, run: resume },
-    { key: 'delete', label: t('postDetail.action.deleteMenu'), Icon: Trash2, danger: true, run: del },
+    Boolean(post?.lastFailure?.halted) && fixType !== 'resume' && { key: 'resume-lane', label: t('readiness.resumeLane'), Icon: PlugZap, run: resume },
+    { key: 'delete', label: t('postDetail.action.deleteMenu'), Icon: Trash2, danger: true, divider: true, run: del },
   ].filter(Boolean);
 
   return { items };

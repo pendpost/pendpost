@@ -241,7 +241,7 @@ function ReviewerRow({ clientId, reviewer, onInviteAgain }) {
     <li className={`flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl p-2.5 ${INNER_SURFACE}`}>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm font-bold">{reviewer.name}</span>
-        <span className="block font-mono text-[10px] text-zinc-500 dark:text-zinc-400">{t('review.list.tail', { tail: reviewer.tokenTail })}</span>
+        <span className="block font-mono text-[10px] text-zinc-600 dark:text-zinc-400">{t('review.list.tail', { tail: reviewer.tokenTail })}</span>
       </span>
       <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-zinc-600 dark:text-zinc-300">
         {status === 'active' ? <Check size={12} aria-hidden="true" /> : status === 'expired' ? <Clock size={12} aria-hidden="true" /> : <Ban size={12} aria-hidden="true" />}
@@ -350,7 +350,7 @@ export function ReviewSection({ clientId, clientName }) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h3 className="font-display text-sm font-bold">{t('review.section.title')}</h3>
-          <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">{t('review.section.subtitle', { client: clientName })}</p>
+          <p className="mt-0.5 text-[11px] text-zinc-600 dark:text-zinc-400">{t('review.section.subtitle', { client: clientName })}</p>
         </div>
         <button type="button" onClick={() => setInviteOpen(true)} className={`flex items-center gap-1.5 ${BTN_BRAND}`}>
           <UserPlus size={15} aria-hidden="true" />
@@ -359,9 +359,9 @@ export function ReviewSection({ clientId, clientName }) {
       </div>
 
       {isLoading ? (
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('review.list.loading')}</p>
+        <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('review.list.loading')}</p>
       ) : reviewers.length === 0 ? (
-        <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('review.list.empty')}</p>
+        <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('review.list.empty')}</p>
       ) : (
         <ul className="space-y-2">
           {reviewers.map((r) => (

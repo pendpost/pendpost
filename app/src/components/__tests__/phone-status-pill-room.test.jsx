@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ListView, PostCard } from '../Planner.jsx';
 import Freigaben from '../Freigaben.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
@@ -12,8 +12,8 @@ import { I18nProvider } from '../../lib/i18n.js';
 // line. jsdom has no layout, so these pin the CSS contract; the browser flows measure it.
 //  - The one status pill never grows past its container (max-w-full) and its word wraps
 //    instead of being cut, so a narrow Week card shows the whole word.
-//  - A List row whose pill shows on phone (an attention word) moves that pill to its own
-//    line under the title below md (order-last + basis-full), so the title keeps the width.
+//  - A List row on a phone says its status (every word, round 3) on its own line under the
+//    title (data-row-meta), so the title keeps the width.
 //  - The Freigaben card stacks the pill under the headline below sm.
 
 vi.mock('../../lib/api.js', () => ({
@@ -57,30 +57,52 @@ describe('status pill fits its container', () => {
   });
 });
 
-describe('List row on phone: an attention pill gets its own line', () => {
-  it('attention word: the pill slot drops under the title below md', () => {
+// Planner round 3 (judge round 2, item 4): on a phone EVERY row says its status, settled words
+// too (nobody ticks a published post blind), on its own line under the title, so the pill never
+// shares the title's line. From md up the pill keeps its slot beside the title.
+describe('List row on phone: the status rides its own line under the title', () => {
+  let original;
+  beforeEach(() => {
+    original = window.matchMedia;
+    window.matchMedia = (q) => ({ matches: q.includes('max-width: 767px'), media: q, addEventListener() {}, removeEventListener() {} });
+  });
+  afterEach(() => { window.matchMedia = original; });
+
+  it('attention word: the pill sits on the status line under the title, not beside it', () => {
     render(wrap(<ListView posts={[pending]} onSelect={() => {}} loading={false} lane={{}} />));
     const pill = pillOf('Wartet auf Freigabe');
-    const slot = pill.parentElement;
-    for (const c of ['order-last', 'basis-full', 'md:order-none', 'md:basis-auto']) expect(slot.className).toContain(c);
-    expect(pill.closest('li').className).toContain('flex-wrap');
+    expect(pill.closest('[data-row-meta]')).not.toBeNull();
+    expect(pill.closest('li').querySelector('[data-row-pill]')).toBeNull();
   });
 
-  it('settled word: the slot is layout-neutral (the pill stays hidden on phone as before)', () => {
+  it('settled word: shown on the phone too, on the same line', () => {
     render(wrap(<ListView posts={[approved]} onSelect={() => {}} loading={false} lane={{}} />));
     const pill = pillOf('Freigegeben');
-    expect(pill.parentElement.className).toContain('contents');
-    expect(pill.className).toContain('hidden md:inline-flex');
+    expect(pill.closest('[data-row-meta]')).not.toBeNull();
+    expect(pill.className).not.toContain('hidden');
   });
 });
 
-describe('Freigaben card on phone: the pill stacks under the headline', () => {
-  it('headline row is a column below sm and a row from sm', () => {
+describe('List row from md up: the pill keeps its slot beside the title', () => {
+  it('layout-neutral slot, shown', () => {
+    render(wrap(<ListView posts={[approved]} onSelect={() => {}} loading={false} lane={{}} />));
+    const pill = pillOf('Freigegeben');
+    expect(pill.parentElement).toHaveAttribute('data-row-pill');
+    expect(pill.parentElement.className).toContain('contents');
+  });
+});
+
+describe('Freigaben card on phone: nothing squeezes the headline', () => {
+  // The headline is its own full-width line in a column; status chips ride the meta line
+  // under it, so at 375px no pill can squeeze the headline to four characters.
+  it('the headline is its own line above the meta line', () => {
     const campaigns = [{ id: 'launch', active: true, posts: [pending] }];
     render(wrap(<Freigaben campaigns={campaigns} onOpen={() => {}} />));
     const headline = screen.getAllByText('Launch week recap with a long title').find((el) => el.className.includes('font-bold'));
-    const row = headline.parentElement;
-    expect(row.className).toContain('flex-col');
-    expect(row.className).toContain('sm:flex-row');
+    expect(headline.className).toMatch(/\bblock\b/);
+    expect(headline.className).toMatch(/\btruncate\b/);
+    const column = headline.parentElement;
+    expect(column.className).toContain('flex-col');
+    expect(column.querySelector('[data-row-meta]')).not.toBeNull();
   });
 });

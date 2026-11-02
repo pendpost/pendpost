@@ -160,6 +160,7 @@ try {
     const g = gaps(f.calls);
     ok(g[0] >= rss.RSS_BACKOFF_BASE_MS && g[1] >= 2 * rss.RSS_BACKOFF_BASE_MS, `the backoff grows exponentially (${g.join(',')} ms)`);
     ok(r.ok === false && r.error === 'rate_limited' && r.mode === 'rss' && r.items.length === 0, 'then the lane stops cleanly: ok:false, rate_limited, mode rss');
+    ok(r.degraded === true && r.detail === rss.REDDIT_RSS_LIMITED_DETAIL, `the 429 stop says degraded, plainly (${r.detail})`);
     ok(pacer.stopped && pacer.stopped.error === 'rate_limited' && pacer.skipped === 1, 'the stop is remembered for the scan and the unasked subreddit counts as skipped');
     const after = await rss.searchRedditRss({ keywords: ['b'] }, { pacer, fetch: f });
     ok(f.calls.length === 3 && after.ok === false && after.error === 'rate_limited', 'a later query in the same scan makes NO request and reports the stop');
@@ -177,6 +178,8 @@ try {
     const pacer = rss.createRedditRssPacer({ now: clock.now, sleep: clock.sleep, shared: freshShared() });
     const r = await rss.searchRedditRss({ keywords: ['a'], subreddits: ['one', 'two'] }, { pacer, fetch: f });
     ok(f.calls.length === 1 && r.ok === false && r.error === 'engine_failure' && /403/.test(r.detail || '') && pacer.stopped, 'a 403 stops the lane at once, no retry');
+    // Radar 2.0 step 3: no OAuth + a refused public feed reads as an honest degrade, with the way out.
+    ok(r.degraded === true && r.detail === rss.REDDIT_RSS_REFUSED_DETAIL && /Connect a Reddit app \(OAuth\)/.test(r.detail), `the 403 row says degraded, plainly (${r.detail})`);
   }
   {
     const clock = fakeClock();

@@ -1,9 +1,10 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import ConnectionStatus from '../ConnectionStatus.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { deriveDeliveryState, cloudTone } from '../../lib/deliveryState.js';
 
 // ConnectionStatus replaces the dismissible SchedulerChip with a persistent, merged
 // delivery + always-on control. We mock the cloud bridge so each merged state renders
@@ -15,14 +16,36 @@ let cloudState;
 let subState;
 let clientsState;
 let capsState;
+// The scheduler flag the delivery state reads (accounts.scheduler.running); renderStatus sets
+// it from its `running` argument, the way App used to pass it as a prop.
+let runningState;
+// useDeliveryState is the REAL derivation (lib/deliveryState.js) over the same mocked reads,
+// so these tests keep proving what the header shows for each cloud/scheduler state.
 vi.mock('../../lib/cloud.js', () => ({
   useCloud: () => cloudState,
   useCloudClients: () => clientsState,
   useCloudSubscription: () => subState,
   useCapabilities: () => capsState,
+  useDeliveryState: ({ allClients = false } = {}) => deriveDeliveryState({
+    allClients,
+    cloud: cloudState?.data,
+    cloudClients: clientsState?.data,
+    subFailed: Boolean(subState?.isError),
+    scheduler: typeof runningState === 'boolean' ? { running: runningState } : null,
+  }),
+  cloudTone: (h) => cloudTone(h),
+  recheckCloud: (...a) => recheckCloud(...a),
+  pushCloud: (...a) => pushCloud(...a),
+  useSetCloudSync: () => setCloudSync,
 }));
+// POST /api/cloud/recheck (contract: { ok, checkedAt, reached, sync }) and POST /api/cloud/push.
+const CLEAR_SYNC = { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] };
+const recheckCloud = vi.fn(() => Promise.resolve({ ok: true, checkedAt: '2026-10-16T08:05:00.000Z', reached: true, sync: CLEAR_SYNC }));
+const pushCloud = vi.fn(() => Promise.resolve({ ok: true, pushed: [], skipped: [], accepted: [], refused: [] }));
+const setCloudSync = vi.fn();
 
-function renderStatus(props) {
+function renderStatus({ running, ...props } = {}) {
+  runningState = running;
   return render(
     <I18nProvider locale="en">
       <TooltipProvider>
@@ -35,6 +58,9 @@ function renderStatus(props) {
 const trigger = () => screen.getByRole('button', { name: 'Delivery and 24/7 status' });
 
 beforeEach(() => {
+  recheckCloud.mockClear();
+  pushCloud.mockClear();
+  setCloudSync.mockClear();
   cloudState = { data: undefined, isLoading: true };
   subState = { data: undefined };
   clientsState = { data: { clients: [] } };
@@ -144,7 +170,7 @@ describe('ConnectionStatus', () => {
     const user = userEvent.setup();
     const onIssueAction = vi.fn();
     const onShowAtRisk = vi.fn();
-    cloudOnIssues([issue()]);
+    cloudOnIssues([issue({ terminal: true })]);
     renderStatus({ running: false, onIssueAction, onShowAtRisk });
     await user.click(trigger());
     expect(await screen.findByText('Launch day')).toBeInTheDocument();
@@ -174,13 +200,57 @@ describe('ConnectionStatus', () => {
     expect(onIssueAction).toHaveBeenCalledWith(expect.objectContaining({ kind: 'credential', lane: 'linkedin' }), 'reconnect');
   });
 
-  it('issues: unreachable offers "Check again", which refetches the status', async () => {
+  it('issues: unreachable offers "Check again", which probes the cloud (POST recheck) and writes the fresh sync', async () => {
     const user = userEvent.setup();
     cloudOnIssues([issue({ kind: 'unreachable', campaign: null, postId: null, title: null, lane: null, message: 'cloud request failed' })], { state: 'amber' });
     renderStatus({ running: false });
     await user.click(trigger());
     await user.click(await screen.findByRole('button', { name: 'Check again' }));
-    expect(cloudState.refetch).toHaveBeenCalled();
+    expect(recheckCloud).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('Fixed')).toBeInTheDocument();
+    await waitFor(() => expect(setCloudSync).toHaveBeenCalledWith(CLEAR_SYNC, false));
+  });
+
+  it('issues: a post the cloud still retries shows no button, only "pendpost will retry"', async () => {
+    const user = userEvent.setup();
+    cloudOnIssues([issue({ kind: 'post', code: null, terminal: false, message: 'linkedin: HTTP 500' })]);
+    renderStatus({ running: false, onIssueAction: vi.fn() });
+    await user.click(trigger());
+    expect(await screen.findByText('pendpost will retry')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open post' })).not.toBeInTheDocument();
+  });
+
+  // Cloud state consistency (2026-11-01): the retrying post's banner and planner card are
+  // neutral, so its popover row is too (the post banner's own failedDisplayKey decides). A row
+  // no retry can land keeps the red dot, and so does a circuit-broken lane.
+  const rowDot = (title) => screen.getByText(title).closest('li').querySelector('span.rounded-full');
+  it('issues: a retrying post row wears a neutral dot, never red; a terminal one stays red', async () => {
+    const user = userEvent.setup();
+    cloudOnIssues([
+      issue({ postId: 'p1', title: 'Fresh sourdough', terminal: false, recovery: null, halted: false, message: 'linkedin: HTTP 500' }),
+      issue({ postId: 'p2', title: 'Reply thread', lane: 'x', terminal: true, recovery: 'manual', halted: false, message: 'x: HTTP 403 - You can only reply to or quote posts where you are mentioned' }),
+    ]);
+    renderStatus({ running: false, onIssueAction: vi.fn() });
+    await user.click(trigger());
+    await screen.findByText('Fresh sourdough');
+    expect(rowDot('Fresh sourdough').className).toMatch(/bg-zinc-400/);
+    expect(rowDot('Fresh sourdough').className).not.toMatch(/red|rose/);
+    expect(rowDot('Reply thread').className).toMatch(/bg-red-500/);
+  });
+
+  it('issues: a row is "retrying" only where the post banner says so (recovery or a halted lane is a failure the owner acts on)', async () => {
+    const user = userEvent.setup();
+    cloudOnIssues([
+      issue({ postId: 'p3', title: 'Manual reply', lane: 'x', terminal: false, recovery: 'manual', halted: false, message: 'x: HTTP 403 - You can only reply to or quote posts where you are mentioned' }),
+      issue({ postId: 'p4', title: 'Halted lane', lane: 'x', terminal: false, recovery: null, halted: true, message: 'x: HTTP 402 - credits depleted' }),
+    ]);
+    renderStatus({ running: false, onIssueAction: vi.fn() });
+    await user.click(trigger());
+    await screen.findByText('Manual reply');
+    expect(screen.queryByText('pendpost will retry')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Open post' })).toHaveLength(2);
+    expect(rowDot('Manual reply').className).toMatch(/bg-red-500/);
+    expect(rowDot('Halted lane').className).toMatch(/bg-red-500/);
   });
 
   it('issues: at most 3 rows, then an "n more" row that opens the Cloud page; project names show with >1 project', async () => {
@@ -229,7 +299,7 @@ describe('ConnectionStatus', () => {
   it.each([
     ['Manage cloud', () => cloudOnIssues([], { state: 'green' })],
     ['2 more', () => cloudOnIssues([1, 2, 3, 4, 5].map((n) => issue({ postId: `p${n}`, title: `Post ${n}` })))],
-    ['Open post', () => cloudOnIssues([issue()])],
+    ['Open post', () => cloudOnIssues([issue({ terminal: true })])],
     ['Reconnect', () => cloudOnIssues([issue({ kind: 'credential', code: 'account_unresolved' })])],
   ])('a popover action (%s) closes the popover and leaves no status tooltip behind', async (name, arrange) => {
     const user = userEvent.setup();
@@ -266,12 +336,16 @@ describe('ConnectionStatus', () => {
     expect(onShowAtRisk).toHaveBeenCalledTimes(1);
   });
   // --- judge pass 2 ---------------------------------------------------------------------
-  it('green: an all-clear popover spends no colour (no header dot) and drops the billing line + honesty paragraph', async () => {
+  // Owner decision 2026-11-01 (q4 a): the delivery indicator gets its green dot back (the
+  // cloud is delivering), named in the button's accessible description. The popover body
+  // still spends no colour on the all-clear.
+  it('green: a green "delivering" dot on the header, and the popover drops the billing line + honesty paragraph', async () => {
     const user = userEvent.setup();
     cloudOnIssues([], { state: 'green' });
     subState = { data: { tier: 'studio', postsUsed: 12, postsIncluded: 300, checkoutEligible: false } };
     const { container } = renderStatus({ running: false });
-    expect(trigger().querySelector('.rounded-full')).toBeNull();
+    expect(trigger().querySelector('[data-tone]').className).toMatch(/\bbg-emerald-500\b/);
+    expect(trigger()).toHaveAccessibleDescription('Cloud is delivering');
     await user.click(trigger());
     expect(await screen.findByText('All delivered')).toBeInTheDocument();
     expect(screen.queryByText(/posts this month/)).not.toBeInTheDocument();
@@ -286,7 +360,7 @@ describe('ConnectionStatus', () => {
   it('subscription read failed: the dot turns amber (same source as the Cloud page pill) with a one-line reason + Check again', async () => {
     const user = userEvent.setup();
     cloudOnIssues([], { state: 'green' });
-    const refetchSub = vi.fn();
+    const refetchSub = vi.fn(() => Promise.resolve({ isError: false }));
     subState = { data: undefined, isError: true, refetch: refetchSub };
     renderStatus({ running: false });
     expect(trigger().querySelector('.bg-amber-500')).not.toBeNull();
@@ -296,11 +370,11 @@ describe('ConnectionStatus', () => {
     expect(screen.queryByText('Cloud delivery is limited')).not.toBeInTheDocument();
     expect(screen.getByText('Plan and billing show again once it loads. Delivery is not affected.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Check again' }));
-    expect(refetchSub).toHaveBeenCalled();
-    expect(cloudState.refetch).toHaveBeenCalled();
+    await waitFor(() => expect(refetchSub).toHaveBeenCalled());
+    expect(recheckCloud).toHaveBeenCalled();
   });
 
-  it('push pending (yellow): says why and offers Check again', async () => {
+  it('push pending (yellow): says why and offers Send again', async () => {
     const user = userEvent.setup();
     cloudOnIssues([], { state: 'yellow' });
     cloudState.data.sync.reason = 'push_pending';
@@ -308,17 +382,18 @@ describe('ConnectionStatus', () => {
     renderStatus({ running: false });
     await user.click(trigger());
     expect(await screen.findByText(/The cloud confirms the approved posts shortly/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeInTheDocument();
   });
 
-  // W1 (phase 3): waiting is not a warning. Only-waiting (yellow = push_pending) paints a
-  // neutral grey dot, the same verdict the Cloud page pill reads; real warnings stay warm.
-  it('push pending (yellow): the header dot is neutral grey, never amber', () => {
+  // W1 (phase 3): waiting is not a warning. Contract B (owner 2026-11-01): a self-resolving
+  // wait (yellow = push_pending) still means the cloud is delivering, so the header shows the
+  // green dot, never amber; real warnings stay warm.
+  it('push pending (yellow): the header dot is green, never amber', () => {
     cloudOnIssues([], { state: 'yellow' });
     cloudState.data.sync.reason = 'push_pending';
     cloudState.data.sync.pendingCount = 2;
     renderStatus({ running: false });
-    expect(trigger().querySelector('.bg-zinc-400')).not.toBeNull();
+    expect(trigger().querySelector('.bg-emerald-500')).not.toBeNull();
     expect(trigger().querySelector('.bg-amber-500')).toBeNull();
     expect(trigger().querySelector('.bg-red-500')).toBeNull();
   });
@@ -335,18 +410,22 @@ describe('ConnectionStatus', () => {
     await user.click(trigger());
     expect(await screen.findByText('Cloud delivery is limited')).toBeInTheDocument();
     expect(screen.getByText('The cloud has not confirmed approved posts for over 10 minutes. Until it does, posts go out from this computer.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+    // Send again = POST /api/cloud/push, then a real recheck.
+    await user.click(screen.getByRole('button', { name: 'Send again' }));
+    await waitFor(() => expect(recheckCloud).toHaveBeenCalled());
+    expect(pushCloud).toHaveBeenCalledTimes(1);
+    expect(pushCloud.mock.invocationCallOrder[0]).toBeLessThan(recheckCloud.mock.invocationCallOrder[0]);
   });
 
   // An on-flag drift heals itself (the next tick re-asserts the flag), so while it heals it
-  // is a wait: grey dot, never the push counter ("Syncing 0 approved posts"), and a sentence
-  // that says pendpost switches it back on.
-  it('flag drift while healing (yellow): grey dot, no push counter, the plain sentence', async () => {
+  // is a wait: green dot (contract B), never the push counter ("Syncing 0 approved posts"),
+  // and a sentence that says pendpost switches it back on.
+  it('flag drift while healing (yellow): green dot, no push counter, the plain sentence', async () => {
     const user = userEvent.setup();
     cloudOnIssues([], { state: 'yellow' });
     cloudState.data.sync.reason = 'flag_divergence';
     renderStatus({ running: false });
-    expect(trigger().querySelector('.bg-zinc-400')).not.toBeNull();
+    expect(trigger().querySelector('.bg-emerald-500')).not.toBeNull();
     expect(trigger().querySelector('.bg-amber-500')).toBeNull();
     await user.click(trigger());
     expect(await screen.findByText('Cloud delivery is limited')).toBeInTheDocument();
@@ -362,6 +441,23 @@ describe('ConnectionStatus', () => {
     cloudOnBroken('cloud_failures', { failedCount: 1 });
     renderStatus({ running: false });
     expect(trigger().querySelector('.bg-red-500')).not.toBeNull();
+  });
+
+  // Polish 2026-11-01: the status is never the dot's colour alone; the glyph changes too.
+  it('amber or red: the header shows the alert cloud glyph; green keeps the plain cloud', () => {
+    const glyphClass = () => trigger().querySelector('svg').getAttribute('class');
+    cloudOnIssues([issue({ kind: 'unreachable', campaign: null, postId: null, title: null, lane: null, message: 'x' })], { state: 'amber' });
+    const a = renderStatus({ running: true });
+    expect(glyphClass()).toMatch(/lucide-cloud-alert/);
+    a.unmount();
+    cloudOnBroken('cloud_failures', { failedCount: 1 });
+    const r = renderStatus({ running: true });
+    expect(glyphClass()).toMatch(/lucide-cloud-alert/);
+    r.unmount();
+    cloudOnIssues([], { state: 'green' });
+    renderStatus({ running: true });
+    expect(glyphClass()).toMatch(/lucide-cloud\b/);
+    expect(glyphClass()).not.toMatch(/cloud-alert/);
   });
 
   it('push pending plus a failed subscription read stays amber (unknown is never fine)', () => {
@@ -385,7 +481,7 @@ describe('ConnectionStatus', () => {
 
   it('the row action buttons carry a 44px hit area (TAP_TARGET) without a bigger painted box', async () => {
     const user = userEvent.setup();
-    cloudOnIssues([issue()]);
+    cloudOnIssues([issue({ terminal: true })]);
     renderStatus({ running: false, onIssueAction: vi.fn() });
     await user.click(trigger());
     const btn = await screen.findByRole('button', { name: 'Open post' });
@@ -399,7 +495,7 @@ describe('ConnectionStatus', () => {
     const { unmount } = renderStatus({ running: false });
     await user.click(trigger());
     // r5: the stale worker has its own title; the cloud answers, it is not unreachable.
-    expect(await screen.findByText('Cloud is not publishing right now')).toBeInTheDocument();
+    expect(await screen.findByText('Cloud not publishing')).toBeInTheDocument();
     expect(screen.queryByText('Cloud unreachable')).not.toBeInTheDocument();
     expect(screen.queryByText(/delivery service/)).not.toBeInTheDocument();
     unmount();
@@ -425,7 +521,64 @@ describe('ConnectionStatus', () => {
     cloudOnIssues([issue({ kind: 'worker_stale', campaign: null, postId: null, title: null, lane: null, message: 'x' })], { state: 'amber' });
     renderStatus({ running: false });
     await user.click(trigger());
-    await screen.findAllByText('Cloud is not publishing right now');
+    await screen.findAllByText('Cloud not publishing');
     expect(screen.queryByText(/^last (reached|active) /)).not.toBeInTheDocument();
+  });
+});
+
+// Contract B (owner 2026-11-01): "We have clearly two cloud setups active, but the icon shows
+// me the icon for the local publishing." The header reads the same delivery state as the
+// sidebar card: in All-projects mode a cloud glyph as soon as ANY project in view runs on the
+// cloud, with the dot rule green / amber / red, and amber when this computer is paused.
+describe('ConnectionStatus delivery icon (contract B)', () => {
+  const GREEN_SYNC = { state: 'green', reason: 'all_confirmed', pendingCount: 0, issues: [] };
+  const MIXED = [
+    { clientId: 'cafe', name: 'Corner Cafe', active: true, alwaysOn: false },
+    { clientId: 'acme', name: 'Acme Studio', active: false, alwaysOn: true },
+    { clientId: 'north', name: 'Northwind Bakery', active: false, alwaysOn: true },
+    { clientId: 'dune', name: 'Dune Surf', active: false, alwaysOn: false },
+  ];
+  const icon = () => trigger().querySelector('svg');
+  const connectedMixed = (sync = GREEN_SYNC) => {
+    cloudState = { data: { workspaceId: 'ws_1', enabled: true, apiKey: { present: true }, sync }, isLoading: false };
+    clientsState = { data: { clients: MIXED } };
+  };
+
+  it('All projects, 2 cloud + 2 local (active one local): cloud glyph with the green dot', () => {
+    connectedMixed();
+    renderStatus({ running: true, allClients: true });
+    expect(icon().getAttribute('class')).toMatch(/lucide-cloud\b/);
+    expect(trigger().querySelector('[data-tone]').className).toMatch(/\bbg-emerald-500\b/);
+    expect(trigger()).toHaveAccessibleDescription('Cloud is delivering');
+  });
+
+  it('single project scope, the active project local: monitor glyph, no dot', () => {
+    connectedMixed();
+    renderStatus({ running: true });
+    expect(icon().getAttribute('class')).toMatch(/lucide-monitor\b/);
+    expect(trigger().querySelector('[data-tone]')).toBeNull();
+    expect(trigger()).not.toHaveAttribute('aria-describedby');
+  });
+
+  it('All projects, cloud amber: cloud glyph with the amber dot, named', () => {
+    connectedMixed({ state: 'amber', reason: 'cloud_unreachable', pendingCount: 1, issues: [] });
+    renderStatus({ running: true, allClients: true });
+    expect(trigger().querySelector('[data-tone]').className).toMatch(/\bbg-amber-500\b/);
+    expect(trigger()).toHaveAccessibleDescription('Cloud needs a look');
+  });
+
+  it('local paused, no cloud: crossed-out monitor with the amber dot, named', () => {
+    cloudState = { data: { workspaceId: '', enabled: false }, isLoading: false };
+    renderStatus({ running: false });
+    expect(icon().getAttribute('class')).toMatch(/lucide-monitor-off\b/);
+    expect(trigger().querySelector('[data-tone]').className).toMatch(/\bbg-amber-500\b/);
+    expect(trigger()).toHaveAccessibleDescription('Publishing from this computer is paused');
+  });
+
+  it('mixed, cloud fine but this computer paused: the louder amber dot wins', () => {
+    connectedMixed();
+    renderStatus({ running: false, allClients: true });
+    expect(icon().getAttribute('class')).toMatch(/lucide-cloud\b/);
+    expect(trigger()).toHaveAccessibleDescription('Publishing from this computer is paused');
   });
 });

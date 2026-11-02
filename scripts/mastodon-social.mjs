@@ -1218,6 +1218,12 @@ async function cmdComments(args) {
   const { runLaneComments } = await import('../lib/comments.mjs');
   Object.assign(RUN, await runLaneComments('mastodon', args));
 }
+// Mentions anywhere (the comment inbox's `mentions` verb, lib/comments.mjs runLaneMentions):
+// what names or answers us outside the per-post read, with the login the lane already has.
+async function cmdMentions(args) {
+  const { runLaneMentions } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneMentions('mastodon', args));
+}
 async function cmdReply(args) {
   const { runLaneReply } = await import('../lib/comments.mjs');
   Object.assign(RUN, await runLaneReply('mastodon', args));
@@ -1255,7 +1261,14 @@ async function cmdRadar(args) {
   // bot + authorDomain feed the seam's pre-filters (lib/radar-prefilter.mjs): a self-declared bot
   // account and a relay/bridge home domain (fed.brid.gy, flipboard.social, ...) are dropped there.
   const hostOf = (u) => { try { return new URL(String(u)).hostname.toLowerCase(); } catch { return null; } };
-  const mapStatus = (s, community) => ({ source: 'mastodon', externalId: String(s.id || ''), url: s.url || s.uri || null, author: s.account?.acct || null, text: statusPlainText(s.content || ''), community: community || null, ts: s.created_at || null, bot: s.account?.bot === true, authorDomain: hostOf(s.account?.url) });
+  // authorName/authorBio/replyCount (Radar 2.0 step 2): judge context the Status entity already
+  // carries (account.display_name, account.note as HTML, replies_count), no extra request.
+  const mapStatus = (s, community) => ({
+    source: 'mastodon', externalId: String(s.id || ''), url: s.url || s.uri || null, author: s.account?.acct || null, text: statusPlainText(s.content || ''), community: community || null, ts: s.created_at || null, bot: s.account?.bot === true, authorDomain: hostOf(s.account?.url),
+    ...(s.account?.display_name ? { authorName: String(s.account.display_name) } : {}),
+    ...(s.account?.note ? { authorBio: statusPlainText(String(s.account.note)) } : {}),
+    ...(Number.isFinite(s.replies_count) ? { replyCount: s.replies_count } : {}),
+  });
   // Long-form federated objects (ActivityPub Article/Page, i.e. blog posts relayed into the
   // fediverse) come back from search as ordinary statuses: the REST Status entity carries no
   // object type, so their LENGTH is the tell. A 5k-76k-char essay is not a conversation anyone
@@ -1343,10 +1356,31 @@ export async function cmdRadarFollowup(args) {
   }
 }
 
+// READ-only (planner-bulk contract R6): every reply from ANYONE under our posted Radar
+// replies, any round, for the watch window (the whole /context subtree under our status).
+// Never writes the plan; cmdRadarFollowup above keeps the spec 44 author-reply stamp.
+export async function cmdRadarReplies(args) {
+  const { plan } = loadPlan(args.plan);
+  const { parseMastodonThreadReplies, radarReplyWatchTargets } = await import('../lib/radar.mjs');
+  const targets = radarReplyWatchTargets(plan.posts, 'mastodon', { windowDays: Number(args['window-days']) || 14 });
+  const ourIds = targets.map((p) => String(p.mastodonStatusId));
+  const own = readEnv('MASTODON_HANDLE') || '';
+  for (const post of targets) {
+    try {
+      const { data } = await masto('GET', `/api/v1/statuses/${encodeURIComponent(post.mastodonStatusId)}/context`);
+      RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'radar-replies', ok: true, items: parseMastodonThreadReplies(data, { ourIds, ownAuthor: own }) });
+    } catch (err) {
+      const code = err && (err.status === 404 || err.status === 410) ? 'radar_target_gone' : (err && (err.status === 401 || err.status === 403) ? 'needs_scope' : 'engine_failure');
+      RUN.results.push({ postId: post.id, platform: 'mastodon', action: 'radar-replies', ok: false, errorCode: code, errorMessage: String((err && err.message) || err).slice(0, 200) });
+    }
+  }
+}
+
 const COMMANDS = {
   auth: cmdAuth,
   connect: cmdAuth,
   comments: cmdComments,
+  mentions: cmdMentions,
   reply: cmdReply,
   moderate: cmdModerate,
   react: cmdReact,
@@ -1370,6 +1404,7 @@ const COMMANDS = {
   unfollow: cmdUnfollow,
   radar: cmdRadar,
   'radar-followup': cmdRadarFollowup,
+  'radar-replies': cmdRadarReplies,
 };
 
 async function main() {

@@ -163,7 +163,7 @@ export function AssetCard({ asset, onAttach, onDelete, onRename, selectedIndex =
             />
           ) : null}
         </div>
-        <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+        <p className="text-[10px] text-zinc-600 dark:text-zinc-400">
           {asset.probe?.durationSec ? `${asset.probe.durationSec}s · ` : ''}
           {fmtBytes(asset.bytes)}
         </p>
@@ -174,7 +174,7 @@ export function AssetCard({ asset, onAttach, onDelete, onRename, selectedIndex =
             </button>
           </Tip>
         ) : (
-          <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('assets.card.unused')}</p>
+          <p className="text-[10px] text-zinc-600 dark:text-zinc-400">{t('assets.card.unused')}</p>
         )}
         {/* "Posten" is the dominant action (item 12): a brand-filled, full-width primary.
             Rename + delete drop to quiet icon-only buttons beside it (mirroring the list row). */}
@@ -246,10 +246,10 @@ export function AssetRow({ asset, onAttach, onDelete, onRename, selectedIndex = 
               </button>
             </Tip>
           ) : (
-            <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('assets.card.unused')}</span>
+            <span className="text-[10px] text-zinc-600 dark:text-zinc-400">{t('assets.card.unused')}</span>
           )}
         </div>
-        <p className="text-[10px] text-zinc-500 dark:text-zinc-400">
+        <p className="text-[10px] text-zinc-600 dark:text-zinc-400">
           {asset.probe?.durationSec ? `${asset.probe.durationSec}s · ` : ''}
           {fmtBytes(asset.bytes)}
           {asset.modifiedAt ? ` · ${t('assets.row.modified', { when: fmtFull(asset.modifiedAt) })}` : ''}
@@ -490,7 +490,7 @@ export default function Assets({ onAttach }) {
               onClick={() => setView('grid')}
               aria-pressed={view === 'grid'}
               aria-label={t('assets.view.toGrid')}
-              className={`grid h-7 w-7 place-items-center rounded-lg transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${view === 'grid' ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : 'text-zinc-500 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60'}`}
+              className={`grid h-7 w-7 place-items-center rounded-lg transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${view === 'grid' ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60'}`}
             >
               <LayoutGrid size={14} aria-hidden="true" />
             </button>
@@ -501,7 +501,7 @@ export default function Assets({ onAttach }) {
               onClick={() => setView('list')}
               aria-pressed={view === 'list'}
               aria-label={t('assets.view.toList')}
-              className={`grid h-7 w-7 place-items-center rounded-lg transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${view === 'list' ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : 'text-zinc-500 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60'}`}
+              className={`grid h-7 w-7 place-items-center rounded-lg transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${view === 'list' ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-400 dark:hover:bg-zinc-700/60'}`}
             >
               <List size={14} aria-hidden="true" />
             </button>
@@ -532,16 +532,16 @@ export default function Assets({ onAttach }) {
         <ul role="status" aria-live="polite" className="space-y-1">
           {uploads.map((u) => (
             <li key={u.name} className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-[11px] ${INNER_SURFACE}`}>
-              {u.state === 'uploading' ? <Loader2 size={12} className="animate-spin text-zinc-500" aria-hidden="true" /> : u.state === 'done' ? <CheckCircle2 size={12} className="text-emerald-500" aria-hidden="true" /> : <AlertTriangle size={12} className="text-red-500" aria-hidden="true" />}
+              {u.state === 'uploading' ? <Loader2 size={12} className="animate-spin text-zinc-600" aria-hidden="true" /> : u.state === 'done' ? <CheckCircle2 size={12} className="text-emerald-500" aria-hidden="true" /> : <AlertTriangle size={12} className="text-red-500" aria-hidden="true" />}
               <span className="flex-1 truncate font-bold">{u.name}</span>
-              <span className={u.state === 'error' ? 'text-red-600 dark:text-red-300' : 'text-zinc-500 dark:text-zinc-400'}>{u.state === 'uploading' ? t('assets.upload.statusUploading') : u.state === 'done' ? t('assets.upload.statusDone') : u.error}</span>
+              <span className={u.state === 'error' ? 'text-red-600 dark:text-red-300' : 'text-zinc-600 dark:text-zinc-400'}>{u.state === 'uploading' ? t('assets.upload.statusUploading') : u.state === 'done' ? t('assets.upload.statusDone') : u.error}</span>
               {u.state === 'error' ? (
                 <Tip label={t('assets.upload.dismissTip')}>
                   <button
                     type="button"
                     onClick={() => dismissUpload(u.name)}
                     aria-label={t('assets.upload.dismissAria', { name: u.name })}
-                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
                   >
                     <X size={11} aria-hidden="true" />
                   </button>
@@ -607,7 +607,7 @@ export default function Assets({ onAttach }) {
             allKey="assets.select.all"
             clearKey="assets.select.clear"
           />
-          <span className="text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+          <span className="text-[11px] font-bold text-zinc-600 dark:text-zinc-400">
             {t('assets.select.count', { n: visibleSelected.length })}
           </span>
           <div className="ml-auto flex items-center gap-1.5">
@@ -619,7 +619,7 @@ export default function Assets({ onAttach }) {
             <button
               type="button"
               onClick={clearSelection}
-              className="rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
+              className="rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-600 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60"
             >
               {t('assets.select.clear')}
             </button>

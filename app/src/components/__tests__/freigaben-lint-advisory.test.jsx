@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
@@ -89,9 +89,10 @@ describe('Freigaben advisory brand-lint badge', () => {
     expect(screen.getByText('1 brand error')).toBeInTheDocument();
     // The advisory badge does NOT disable the actions.
     const approve = screen.getByRole('button', { name: /approve/i });
-    const reject = screen.getByRole('button', { name: /reject/i });
     expect(approve).toBeEnabled();
-    expect(reject).toBeEnabled();
+    // Reject leads the row menu, enabled there too.
+    fireEvent.click(screen.getByRole('button', { name: /^more actions$/i }));
+    expect(screen.getByRole('menuitem', { name: /reject/i })).toBeEnabled();
   });
 
   it('has no axe violations with the badge present', async () => {

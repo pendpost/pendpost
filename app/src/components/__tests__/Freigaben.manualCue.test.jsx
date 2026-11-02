@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
@@ -77,10 +77,11 @@ describe('Freigaben reddit warmth advisory (spec 37, reversed)', () => {
     expect(screen.queryByText('Heads-up')).not.toBeInTheDocument();
   });
 
-  it('an advisory never blocks the actions (reject + approve both present alongside it)', () => {
+  it('an advisory never blocks the actions (approve on the row, reject in the menu, both enabled)', () => {
     renderFreigaben([promoPost]);
-    expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Reject' })).toBeEnabled();
     expect(screen.getByText('Heads-up')).toBeInTheDocument();
   });
 });

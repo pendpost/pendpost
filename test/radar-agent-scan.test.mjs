@@ -40,7 +40,7 @@ fs.writeFileSync(ingestBin, `#!/usr/bin/env node
 const fs = require('fs');
 const args = process.argv.slice(2);
 const cfg = JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8'));
-const sig = (n) => ({ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/thread/' + n, text: 'what do you all use for scheduling posts?' });
+const sig = (n) => ({ authorRole: 'seeker', intent: 'ask_reco', replyable: true, source: 'web', ts: new Date().toISOString(), url: 'https://example.com/thread/' + n, text: 'what do you all use for scheduling posts?' });
 fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
     params: { name: 'radar_ingest', arguments: { actor: 'agent:radar-scan', queryId: 'q1', signals: [sig(1), sig(2)] } } }) })
@@ -66,7 +66,7 @@ const cfg = JSON.parse(fs.readFileSync(args[args.indexOf('--mcp-config') + 1], '
 fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
     params: { name: 'radar_ingest', arguments: { actor: 'agent:radar-scan', queryId: 'q1',
-      signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/found-before-stop', text: 'anyone know a good tool for this?' }] } } }) })
+      signals: [{ authorRole: 'seeker', intent: 'ask_reco', replyable: true, source: 'web', ts: new Date().toISOString(), url: 'https://example.com/found-before-stop', text: 'anyone know a good tool for this?' }] } } }) })
   .then(() => setInterval(() => {}, 1000));
 `);
 fs.chmodSync(hangBin, 0o755);
@@ -315,7 +315,7 @@ process.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: '
   ok(!jobsBlob.includes('sk-ant-oat01-fake'), 'no job row carries the credential');
 
   // ===== an ingest OUTSIDE a job still works (agents that scan on their own) =====
-  const solo = await asClient(() => radarIngest({ actor: 'agent:other', queryId: 'q1', signals: [{ source: 'web', ts: new Date().toISOString(), url: 'https://example.com/solo', text: 'looking for a tool' }] }));
+  const solo = await asClient(() => radarIngest({ actor: 'agent:other', queryId: 'q1', signals: [{ authorRole: 'seeker', intent: 'ask_reco', replyable: true, source: 'web', ts: new Date().toISOString(), url: 'https://example.com/solo', text: 'looking for a tool' }] }));
   ok(solo.ok === true && solo.accepted === 1, 'radar_ingest still works with NO job running - spec 38 is untouched');
 
   assert.ok(failures === 0, `${failures} assertion(s) failed`);

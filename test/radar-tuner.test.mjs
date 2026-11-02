@@ -83,8 +83,15 @@ try {
   const now = Date.now();
   ok(T.tuneDue({ shown: 3, less: 5, since: ago(1) }, now), '5 "not relevant" since the last tune -> due');
   ok(!T.tuneDue({ shown: 50, less: 9, lessAtTune: 5, tunedAt: ago(2), since: ago(30) }, now), '4 new since the last tune, tuned 2 days ago -> not due');
-  ok(T.tuneDue({ shown: 12, less: 0, since: ago(8) }, now), 'a week and >= 10 shown -> due');
+  // Radar 2.0 step 1: the weekly rule reads RATED finds (owner actions), not shown ones. The old
+  // assertion "a week and >= 10 shown -> due" encoded unrated volume as learning and is replaced.
+  ok(T.tuneDue({ shown: 12, less: 2, done: 7, replied: 1, since: ago(8) }, now), 'a week and >= 10 rated (acted + not relevant) -> due');
+  ok(!T.tuneDue({ shown: 50, less: 0, since: ago(8) }, now), 'a week and 50 shown but none rated -> not due (nothing to learn from)');
   ok(!T.tuneDue({ shown: 9, less: 0, since: ago(8) }, now), 'a week but under 10 shown -> not due');
+  ok(T.tuneDue({ shown: 9, less: 1, skipped: 4, since: ago(1) }, now), '5 not relevant + skipped since the last tune -> due');
+  ok(T.queryPrecision({ shown: 24, less: 0 }) === null, 'precision: 24 shown, nothing rated -> unknown (null), no longer 100%');
+  ok(T.queryPrecision({ shown: 30, less: 1, skipped: 1, done: 1, replied: 1 }) === 0.5, 'precision: acted (done + replied) over rated (acted + less + skipped)');
+  ok(T.queryPrecision({ shown: 30, drafted: 9 }) === null, 'precision: an agent draft is not an owner action');
   ok(!T.tuneDue({ shown: 40, less: 3, since: ago(3) }, now), 'under a week and under 5 "less" -> not due');
   const due = T.tuneCandidates(config.radar.queries, stats, feedback, now);
   ok(due.map((q) => q.id).join(',') === 'q1,q2', `the due searches, most "less" first: q1,q2 (got ${due.map((q) => q.id).join(',')})`);

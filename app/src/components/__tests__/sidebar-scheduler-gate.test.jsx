@@ -29,30 +29,30 @@ describe('Sidebar SchedulerToggle readiness gate (US-ONB-10)', () => {
     // The blocked control folds the waiting reason into its accessible name so an
     // AT user hears WHY it is disabled, not just "Start scheduler" (R2 a11y parity
     // with the canonical ReadinessChecklist Start button).
-    const btn = screen.getByRole('button', { name: /resolve the steps above first/i });
+    const btn = screen.getByRole('button', { name: /finish setup first/i });
     expect(btn).toBeDisabled();
   });
 
   it('enables Start scheduler when pendpost is ready', () => {
     wrap(<SchedulerToggle running={false} setupReady />);
-    expect(screen.getByRole('button', { name: /start scheduler/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /resume publishing/i })).toBeEnabled();
   });
 
   it('does not lock the toggle before the readiness signal has loaded (undefined)', () => {
     wrap(<SchedulerToggle running={false} setupReady={undefined} />);
-    expect(screen.getByRole('button', { name: /start scheduler/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /resume publishing/i })).toBeEnabled();
   });
 
   it('always allows stopping a running scheduler, regardless of readiness', () => {
     wrap(<SchedulerToggle running setupReady={false} />);
-    expect(screen.getByRole('button', { name: /stop scheduler/i })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /pause publishing from this computer/i })).toBeEnabled();
   });
 
   // US-ONB-10 finding 3: the start-state accessible name now lives under the
   // sidebar.* namespace (sidebar.scheduler.start), not readiness.startScheduler.
   it('names the start control from the sidebar scheduler namespace', () => {
     wrap(<SchedulerToggle running={false} setupReady />);
-    expect(screen.getByRole('button', { name: 'Start scheduler' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Resume publishing' })).toBeInTheDocument();
   });
 });
 

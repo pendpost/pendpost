@@ -47,7 +47,7 @@ describe('ReadinessChecklist scheduler explainer + gate (US-ONB-10)', () => {
     // When blocked, the disabled button folds the waiting reason into its
     // accessible name (a disabled button never surfaces its title to AT), so an
     // AT user learns WHY it is unavailable, not just that it is.
-    const btn = screen.getByRole('button', { name: /resolve the steps above first/i });
+    const btn = screen.getByRole('button', { name: /finish setup first/i });
     expect(btn).toBeDisabled();
     expect(screen.queryByRole('button', { name: /^start scheduler$/i })).not.toBeInTheDocument();
   });

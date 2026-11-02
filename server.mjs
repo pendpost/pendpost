@@ -21,6 +21,7 @@ import path from 'node:path';
 import { sendJson, errorBody, logLine, VERSION, daemonPort } from './lib/util.mjs';
 import { REPO_ROOT } from './lib/dashboard.mjs';
 import { handleApi } from './lib/api.mjs';
+import { selfUpdate } from './lib/self-update.mjs';
 import { handleMcp } from './lib/mcp.mjs';
 import { serveMedia } from './lib/media.mjs';
 import { serveStatic } from './lib/static.mjs';
@@ -34,6 +35,7 @@ import { healConnection, resealChangedBrands } from './lib/cloud-client.mjs';
 import { startHealthSchedule } from './lib/health.mjs';
 import { authGateEnabled, checkAuth } from './lib/flags.mjs';
 import { assertMockRootAllowed } from './lib/mode.mjs';
+import { setSessionOrigins, writeStudioTokenFile, STUDIO_TOKEN_HEADER } from './lib/studio-token.mjs';
 
 // Mock-mode root fence: refuse to boot PENDPOST_MODE=mock against a live
 // workspace (the mock driver would write fake platform ids into real client
@@ -95,6 +97,10 @@ if (authGateEnabled()) {
   }
 }
 
+// Spec 56: GET /api/session hands the Studio token to these same Origins (plus same-origin
+// fetch metadata), so the SPA served by the Vite dev server gets it too.
+setSessionOrigins(ALLOWED_ORIGINS);
+
 const server = http.createServer(async (req, res) => {
   const host = String(req.headers.host || '').toLowerCase();
   if (!ALLOWED_HOSTS.has(host)) {
@@ -110,7 +116,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version');
+    res.setHeader('Access-Control-Allow-Headers', `Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, ${STUDIO_TOKEN_HEADER}`);
   }
 
   if (req.method === 'OPTIONS') {
@@ -173,6 +179,10 @@ function startUpdateCheckSchedule() {
   const run = () => execFile(process.execPath, [script, 'git-check'], { cwd: REPO_ROOT }, () => {});
   setTimeout(run, 12_000).unref();
   setInterval(run, 30 * 60 * 1000).unref();
+  // The quiet local update (lib/self-update.mjs): commits merged into this checkout
+  // with no version change apply by themselves once HEAD is stable and nothing runs.
+  // PENDPOST_QUIET_UPDATES=0 switches it off.
+  selfUpdate.start();
 }
 
 server.listen(PORT, HOST, () => {
@@ -181,6 +191,12 @@ server.listen(PORT, HOST, () => {
   // data/clients/default/ - MUST run before the scheduler/sentinel touch state,
   // so they read the migrated per-client files (activeRoot()), not the originals.
   initMultiClient();
+  // Spec 56: the owner's CLI/curl path to the per-process Studio token (~/.pendpost/studio-token,
+  // 0600, overwritten on every boot, outside the served workspace). Best-effort: without the file the Studio still works, only hand-run owner
+  // calls lose their token source, so a write failure is logged, never fatal.
+  try { logLine('ok', `studio token written to ${writeStudioTokenFile()}`); } catch (err) {
+    logLine('warn', `could not write the studio token file: ${err.message}`);
+  }
   absorbMetaBlockSentinel();
   bootScheduler();
   bootApprovalNotifier();

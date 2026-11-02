@@ -96,6 +96,19 @@ describe('failureCopy', () => {
     expect(failureKey({ message: 'HTTP 400 - Bad Request' })).toBe('failure.rejected');
   });
 
+  it('a lane that was never connected says "not connected", never "a permission is missing" (Bluesky)', () => {
+    expect(failureKey({ code: 'not_connected', message: 'Bluesky is not connected (BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD not set)' })).toBe('issue.notConnected');
+    // A reply parked before the engine split, under the old needs_scope code.
+    expect(failureKey({ code: 'needs_scope', message: 'BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD not set' })).toBe('issue.notConnected');
+    // A stored app password the PDS refuses is still the permission sentence.
+    expect(failureKey({ code: 'needs_scope', message: 'bluesky session HTTP 401' })).toBe('failure.scope');
+    const copy = humanizeFailure({ lane: 'bluesky', code: 'not_connected', message: 'Bluesky is not connected' }, en);
+    expect(copy.known).toBe(true);
+    expect(copy.text).toMatch(/Bluesky is not connected/);
+    expect(copy.text).not.toMatch(/permission/i);
+    expect(humanizeFailure({ lane: 'bluesky', code: 'not_connected' }, de).text).toMatch(/Bluesky ist noch nicht verbunden/);
+  });
+
   it('the local engine errorCode wins over the text', () => {
     expect(failureKey({ code: 'media_missing', message: 'HTTP 500' })).toBe('failure.media');
     expect(failureKey({ code: 'needs_scope' })).toBe('failure.scope');

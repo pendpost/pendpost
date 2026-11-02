@@ -169,12 +169,12 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
     return (
       <div ref={popoverRef} role="dialog" aria-label={t('engager.popover.title')} className={`absolute right-0 top-full z-50 mt-1 w-72 max-w-[calc(100vw-2rem)] rounded-xl p-3 text-xs shadow-xl ring-1 ring-zinc-900/10 dark:ring-white/10 ${INNER_SURFACE}`}>
         <div className="flex items-center justify-between">
-          <span className="text-zinc-500 dark:text-zinc-400">{t('engager.popover.unavailable')}</span>
+          <span className="text-zinc-600 dark:text-zinc-400">{t('engager.popover.unavailable')}</span>
           <button
             type="button"
             onClick={onClose}
             aria-label={t('engager.popover.close')}
-            className="rounded-lg p-1 text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="rounded-lg p-1 text-zinc-600 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
           >
             <X size={13} aria-hidden="true" />
           </button>
@@ -227,7 +227,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
           type="button"
           onClick={onClose}
           aria-label={t('engager.popover.close')}
-          className="shrink-0 rounded-lg p-1 text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
+          className="shrink-0 rounded-lg p-1 text-zinc-600 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
         >
           <X size={13} aria-hidden="true" />
         </button>
@@ -243,7 +243,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
         <button
           type="button"
           onClick={() => setShown((n) => n + PAGE)}
-          className="text-[11px] font-bold text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
+          className="text-[11px] font-bold text-zinc-600 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
         >
           {t('engager.popover.loadMore', { n: Math.min(PAGE, remaining) })}
         </button>
@@ -257,15 +257,15 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
             const { lane: oLane, handle: oHandle } = otherParty(l);
             return (
               <li key={`link-${oLane}-${oHandle}-${i}`} className="flex items-center gap-2 text-[11px]">
-                <Link2 size={12} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate text-zinc-500 dark:text-zinc-400">
+                <Link2 size={12} className="shrink-0 text-zinc-600 dark:text-zinc-400" aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate text-zinc-600 dark:text-zinc-400">
                   {t('engager.popover.linked', { handle: oHandle, lane: PLATFORM_META[oLane]?.label || oLane })}
                 </span>
                 <button
                   type="button"
                   onClick={() => runLinkAction(unlinkEngagers, l)}
                   disabled={busy}
-                  className="inline-flex shrink-0 items-center gap-1 font-bold text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
+                  className="inline-flex shrink-0 items-center gap-1 font-bold text-zinc-600 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
                 >
                   <Unlink size={11} aria-hidden="true" /> {t('engager.popover.unlink')}
                 </button>
@@ -284,7 +284,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
             const { lane: oLane, handle: oHandle } = otherParty(s);
             return (
               <li key={`sug-${oLane}-${oHandle}-${i}`} className="space-y-1">
-                <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">
+                <span className="block text-[11px] text-zinc-600 dark:text-zinc-400">
                   {t('engager.popover.maybeLinked', { handle: oHandle, lane: PLATFORM_META[oLane]?.label || oLane })}
                 </span>
                 <div className="flex items-center gap-2">
@@ -300,7 +300,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
                     type="button"
                     onClick={() => runLinkAction(dismissLinkGuess, s)}
                     disabled={busy}
-                    className="text-[11px] font-bold text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
+                    className="text-[11px] font-bold text-zinc-600 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-100"
                   >
                     {t('engager.popover.linkIgnore')}
                   </button>
@@ -319,15 +319,15 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
       <div className="border-t border-zinc-900/5 pt-2 dark:border-white/10">
         {confirming ? (
           <div className="space-y-1.5">
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('engager.forget.explain')}</p>
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('engager.forget.noUndo')}</p>
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('engager.forget.explain')}</p>
+            <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('engager.forget.noUndo')}</p>
             {/* The plain sentence is the alert; the server's raw line rides the "?" beside it. */}
             {error ? <ActionError error={error} /> : null}
             <div className="flex items-center justify-end gap-1.5">
               <button
                 type="button"
                 onClick={() => { setConfirming(false); setError(null); }}
-                className="rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
+                className="rounded-lg px-2 py-1 text-[11px] font-bold text-zinc-600 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
               >
                 {t('engager.forget.cancel')}
               </button>
@@ -354,7 +354,7 @@ export default function HistoryPopover({ record, lane, handle, suggestions = [],
             type="button"
             onClick={() => setOverflowOpen(true)}
             aria-label={t('engager.popover.more')}
-            className="inline-flex items-center gap-1.5 text-[11px] font-bold text-zinc-500 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
+            className="inline-flex items-center gap-1.5 text-[11px] font-bold text-zinc-600 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
           >
             <MoreHorizontal size={13} aria-hidden="true" />
           </button>

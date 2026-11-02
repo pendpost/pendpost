@@ -14,7 +14,7 @@
 // all-clear result (a clean re-sync, a clean pull, an active plan) is quiet grey (CLEAN_RESULT).
 import { useEffect, useRef, useState } from 'react';
 import { Cloud as CloudIcon, CloudOff, Loader2, CheckCircle2, AlertCircle, ExternalLink, LogOut, ListChecks, ShieldCheck, RefreshCw, DownloadCloud, CreditCard, Receipt, X, AtSign, ChevronLeft, ArrowRight, ChevronDown, UserCog, RefreshCcw, UserPlus } from 'lucide-react';
-import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, enableStart, healCloud, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud } from '../lib/cloud.js';
+import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, enableStart, healCloud, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud, recheckCloud, useSetCloudSync } from '../lib/cloud.js';
 import { useClients } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { fmtDateShort } from '../lib/format.js';
@@ -27,7 +27,7 @@ import { Switch } from './ui/Switch.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 import { TAP_TARGET } from './ui/recipes.js';
-import { CloudIssueRow, RecheckButton, CONNECTIVITY, cloudHealth, healthDot } from './CloudIssues.jsx';
+import { CloudIssueRow, ReasonAction, CONNECTIVITY, cloudHealth, healthDot, projectHealth } from './CloudIssues.jsx';
 import { humanizeAction, humanizeFailure, laneLabel } from '../lib/failureCopy.js';
 
 // A platform's human name (Facebook, Instagram, ...), falling back to the raw key
@@ -98,6 +98,8 @@ const usdWhole = (cents) => (cents % 100 === 0 ? `$${cents / 100}` : usd(cents))
 // must NOT spin forever - it returns to the idle action with an error.
 const ENABLE_TIMEOUT_MS = 180_000;
 const ENABLE_POLL_MS = 2_500;
+// The silent re-check cadence while the Cloud page shows the cloud as paused/unreachable.
+const AUTO_RECHECK_MS = 60_000;
 
 // The off / not-connected view: an inert explainer + ONE "enable always-on" button.
 // No key is ever typed - clicking starts the loopback sign-in handshake (the server
@@ -140,7 +142,7 @@ function ReconnectView() {
         <h3 id="cloud-heal-heading" className="font-display text-sm font-bold">{t('cloud.reconnect.title')}</h3>
         <span className="ml-auto"><IconBadge icon={CloudOff} tone="warn" text={t('cloud.status.off')} /></span>
       </div>
-      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.reconnect.body')}</p>
+      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('cloud.reconnect.body')}</p>
       {state === 'error' && error ? (
         <ActionError error={error} className="flex items-center gap-1.5 text-[11px] font-bold text-red-600 dark:text-red-400">
           <AlertCircle size={13} aria-hidden="true" />
@@ -196,7 +198,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
         <h3 id="cloud-off-heading" className="font-display text-sm font-bold">{t(unfinished ? 'cloud.unfinished.title' : 'cloud.off.title')}</h3>
         <span className="ml-auto"><IconBadge icon={CloudOff} tone="neutral" text={t('cloud.status.off')} /></span>
       </div>
-      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t(unfinished ? 'cloud.unfinished.body' : 'cloud.off.body')}</p>
+      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t(unfinished ? 'cloud.unfinished.body' : 'cloud.off.body')}</p>
 
       {/* Honest hand-off from the website deep-link (/download?plan=<tier>): name the tier the
           operator chose so the choice is visible BEFORE sign-in, then the same sign-in below
@@ -235,7 +237,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
           unchanged; only the framing makes the account the headline. */}
       <div className="space-y-3">
         <h4 className={EYEBROW}>{t(unfinished ? 'cloud.connect.title' : 'cloud.signIn.title')}</h4>
-        {!unfinished ? <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.signIn.body')}</p> : null}
+        {!unfinished ? <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('cloud.signIn.body')}</p> : null}
 
         {state === 'waiting' ? (
           <div role="status" className="space-y-2 rounded-xl bg-brand/5 p-3 text-xs text-zinc-600 dark:bg-brand-light/10 dark:text-zinc-300">
@@ -260,7 +262,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
         ) : null}
 
         {state === 'starting' ? (
-          <p role="status" className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+          <p role="status" className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
             <Loader2 size={13} className="animate-spin text-brand dark:text-brand-light" aria-hidden="true" />
             {t('cloud.enable.starting')}
           </p>
@@ -272,7 +274,7 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
               {state === 'starting' ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <UserPlus size={14} aria-hidden="true" />}
               {state === 'error' ? t('cloud.enable.retry') : t(unfinished ? 'cloud.enable.action' : 'cloud.signIn.action')}
             </button>
-            {!unfinished ? <p className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('cloud.signIn.createHint')}</p> : null}
+            {!unfinished ? <p className="text-[10px] text-zinc-600 dark:text-zinc-400">{t('cloud.signIn.createHint')}</p> : null}
           </div>
         )}
       </div>
@@ -600,7 +602,7 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
     if (deepLinkPlan && onLaunchConsumed) onLaunchConsumed();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const confirm = useConfirm();
-  const { data: sub, isError: subFailed } = useCloudSubscription(true);
+  const { data: sub, isError: subFailed, refetch: refetchSub } = useCloudSubscription(true);
   const accountEmail = sub?.email || null;
   // The pill reads the delivery guarantee (sync), not just the subscription, through the
   // SAME cloudHealth derivation as the header dot, so the two can never disagree. A
@@ -610,6 +612,22 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
   // The cloud as a whole (one workspace) is unreachable: stated ONCE here, under the pill,
   // with its last good contact and the one action; each project row then shares the state.
   const connectivity = ((cloud.sync && cloud.sync.issues) || []).find((i) => CONNECTIVITY.has(i.kind)) || null;
+  // While that card is open, probe the cloud quietly every minute (GET /api/cloud only reads
+  // the last known contact), paused while the window is hidden, so the card clears itself.
+  const setSync = useSetCloudSync();
+  const hasConnectivity = Boolean(connectivity);
+  useEffect(() => {
+    if (!hasConnectivity) return undefined;
+    const id = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      recheckCloud().then((r) => { if (r && 'sync' in r) setSync(r.sync); }).catch(() => { /* silent: the card stays */ });
+    }, AUTO_RECHECK_MS);
+    return () => clearInterval(id);
+  }, [hasConnectivity]); // eslint-disable-line react-hooks/exhaustive-deps
+  // "Raise limit" on a stopped sync opens the spend-cap editor in Plan & billing below.
+  const [capRequest, setCapRequest] = useState(0);
+  const raiseCap = () => setCapRequest((n) => n + 1);
+  const subscriptionGone = async () => { const r = await refetchSub?.(); return r ? !r.isError : true; };
   const canManage = sub && (sub.status === 'active' || sub.status === 'past_due');
   const accountPortalUrl = cloud.accountPortalUrl || null;
   const tail = cloud.apiKey?.tail || null;
@@ -694,6 +712,9 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
           ? <IconBadge icon={CloudOff} tone="neutral" text={t('cloud.status.paused')} label={t('cloud.status.pausedTip')} />
           : syncState === 'red'
             ? <IconBadge icon={AlertCircle} tone="err" text={t('cloud.status.broken')} label={t('cloud.status.brokenTip')} />
+            // Amber with the connectivity card right below: the card already says it.
+            : syncState === 'amber' && connectivity
+              ? null
             : syncState === 'amber'
               ? <IconBadge icon={AlertCircle} tone="warn" text={t('cloud.status.attention')} label={health.reason === 'subscription_failed' ? t('cloud.status.unknownTip') : t('cloud.status.attentionTip')} />
               // All clear spends no colour: a neutral "On" (green is for nothing). Waiting for
@@ -717,12 +738,12 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
           reason lives on its row below. */}
       {connectivity ? (
         <ul aria-label={t('connection.issue.listAria')}>
-          <CloudIssueRow issue={connectivity} onRecheck={() => invalidate()} />
+          <CloudIssueRow issue={connectivity} />
         </ul>
       ) : health.reason === 'subscription_failed' ? (
         <div className="space-y-1.5">
           <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">{`${t('connection.sync.subscriptionFailed')}. ${t('connection.sync.reason.subscription_failed')}`}</p>
-          <RecheckButton onRecheck={() => invalidate()} />
+          <ReasonAction reason="subscription_failed" gone={subscriptionGone} />
         </div>
       ) : null}
 
@@ -733,10 +754,10 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
       {checkoutReturn ? <CheckoutReturn onDismiss={onReturnDismiss} /> : null}
 
       {/* (2) Marken - the primary control. Renders its own card (or nothing). */}
-      <CloudClients sync={cloud.sync || null} connectivity={connectivity} onIssueAction={onIssueAction} />
+      <CloudClients sync={cloud.sync || null} connectivity={connectivity} onIssueAction={onIssueAction} onRaiseCap={raiseCap} />
 
       {/* (3) Plan & Abrechnung - compact, full breakdown behind a toggle. */}
-      <SubscriptionMeter deepLinkPlan={deepLinkPlan} deepLinkInterval={deepLinkInterval} />
+      <SubscriptionMeter deepLinkPlan={deepLinkPlan} deepLinkInterval={deepLinkInterval} capRequest={capRequest} />
 
       {/* Maintenance results surface here, wherever they were triggered. */}
       <ActionError error={error} box={ALERT_BANNER} />
@@ -1087,7 +1108,7 @@ function CheckoutReturn({ onDismiss }) {
 // hard-stop banner above the same flow; an active/past_due subscription shows the Stripe
 // portal. Hidden until there is a plan (postsIncluded > 0); a grandfathered connection shows
 // nothing. The per-tier rates come from the view's OWN fields, never hardcoded.
-function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
+function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null, capRequest = 0 }) {
   const t = useT();
   const invalidate = useInvalidateCloud();
   const { data: sub } = useCloudSubscription(true);
@@ -1095,6 +1116,16 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
   const [error, setError] = useState(null);
   const [capOpen, setCapOpen] = useState(false);
   const [capDollars, setCapDollars] = useState('');
+  const detailsRef = useRef(null);
+  // "Raise limit" (a stopped sync's fix): open Details and the cap editor, and bring it into view.
+  useEffect(() => {
+    if (!capRequest) return;
+    setCapOpen(true);
+    if (detailsRef.current) {
+      detailsRef.current.open = true;
+      detailsRef.current.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+    }
+  }, [capRequest]);
 
   if (!sub || !(sub.postsIncluded > 0)) return null;
 
@@ -1250,7 +1281,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
 
       {/* Details - the full cost breakdown, rate basis, and the spend-cap control. Rarely
           needed day-to-day, so collapsed by default to keep the card calm. */}
-      <details className="group text-[11px]">
+      <details ref={detailsRef} className="group text-[11px]">
         <summary className={DISCLOSURE_SUMMARY}>
           <ChevronDown size={12} className="-rotate-90 transition group-open:rotate-0" aria-hidden="true" />
           {t('cloud.billing.details')}
@@ -1337,7 +1368,7 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null }) {
 // colour is spent on attention only, and the dot never stands alone - every dotted row also
 // carries its sentence.
 
-function CloudClients({ sync = null, connectivity = null, onIssueAction }) {
+function CloudClients({ sync = null, connectivity = null, onIssueAction, onRaiseCap }) {
   const t = useT();
   const confirm = useConfirm();
   const { data, isLoading } = useCloudClients();
@@ -1410,8 +1441,9 @@ function CloudClients({ sync = null, connectivity = null, onIssueAction }) {
           // EVERY issue of the project with the same row the header popover uses (title,
           // lane, plain reason, one fix), never just the first. A cloud that is unreachable
           // as a whole is every always-on project's state (it is one workspace), so an
-          // otherwise green row shares it instead of claiming all is well. A state without
-          // an issue row (push pending, sync stopped, on-flag drift) says its reason.
+          // otherwise green row shares its amber DOT; the words live once, in the card at
+          // the top. A state without an issue row (push pending, sync stopped, on-flag
+          // drift) says its reason with its one fix.
           const own = c.alwaysOn ? ((sync && sync.clients) || []).find((h) => h.clientId === c.clientId) : null;
           const rowIssues = own ? ((sync && sync.issues) || []).filter((i) => i.clientId === c.clientId && !CONNECTIVITY.has(i.kind)) : [];
           const shared = Boolean(c.alwaysOn && connectivity && (!own || own.state !== 'red'));
@@ -1420,8 +1452,9 @@ function CloudClients({ sync = null, connectivity = null, onIssueAction }) {
           const reasonText = reasonKey && t(reasonKey) !== reasonKey ? t(reasonKey) : null;
           // D12: waiting for the cloud to confirm (yellow = push_pending, "meist innert einer
           // Minute") is not a warning, so healthDot paints it neutral; amber stays for states
-          // that need a look.
-          const dotClass = healthDot(state);
+          // that need a look. A red that only posts pendpost still retries cause is that same
+          // neutral wait (projectHealth), as on those posts' banners and planner cards.
+          const dotClass = healthDot(projectHealth(state, rowIssues));
           return (
           // Tier-3 (phase 3): a two-column grid. The name line carries the switch; the detail
           // (issues, reason, caption) spans the full width below it, so on a phone the issue
@@ -1430,7 +1463,7 @@ function CloudClients({ sync = null, connectivity = null, onIssueAction }) {
             <p className="flex min-w-0 items-center gap-1.5 text-sm font-bold text-zinc-700 dark:text-zinc-200">
               {dotClass ? <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden="true" /> : null}
               <span className="truncate">{c.name}</span>
-              {c.active ? <span className="shrink-0 text-[10px] font-normal text-zinc-500 dark:text-zinc-400">{t('cloud.clients.active')}</span> : null}
+              {c.active ? <span className="shrink-0 text-[10px] font-normal text-zinc-600 dark:text-zinc-400">{t('cloud.clients.active')}</span> : null}
             </p>
             <Switch
               checked={c.alwaysOn}
@@ -1448,19 +1481,16 @@ function CloudClients({ sync = null, connectivity = null, onIssueAction }) {
                       key={`${issue.kind}:${issue.campaign || ''}:${issue.postId || i}`}
                       issue={issue}
                       onAction={onIssueAction}
-                      onRecheck={() => invalidate()}
                     />
                   ))}
                 </ul>
-              ) : shared ? (
-                <p className="truncate text-[11px] text-zinc-600 dark:text-zinc-300">{t(`connection.issue.kind.${connectivity.kind}`)}</p>
-              ) : reasonText ? (
+              ) : shared ? null : reasonText ? (
                 <div className="mt-0.5 space-y-1.5">
                   <p className="break-words text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">{reasonText}</p>
-                  {state !== 'red' ? <RecheckButton onRecheck={() => invalidate()} /> : null}
+                  <ReasonAction reason={own.reason} clientId={c.clientId} onRaiseCap={onRaiseCap} />
                 </div>
               ) : (
-                <p className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                <p className="truncate text-[11px] text-zinc-600 dark:text-zinc-400">
                   {c.alwaysOn ? t('cloud.clients.cloudCaption') : t('cloud.clients.localCaption')}
                 </p>
               )}
@@ -1544,7 +1574,7 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
       {isLoading || !cloud ? (
         <>
           <span className="sr-only" role="status" aria-live="polite">{t('cloud.loading')}</span>
-          <div className={`flex items-center gap-2 rounded-2xl p-4 text-sm text-zinc-500 dark:text-zinc-400 ${INNER_SURFACE}`} aria-hidden="true">
+          <div className={`flex items-center gap-2 rounded-2xl p-4 text-sm text-zinc-600 dark:text-zinc-400 ${INNER_SURFACE}`} aria-hidden="true">
             <Loader2 size={16} className="animate-spin" aria-hidden="true" />
             {t('cloud.loading')}
           </div>

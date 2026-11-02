@@ -90,7 +90,7 @@ function DueRow({ post, selected, onToggle }) {
         </span>
         <div className="flex items-center gap-1.5">
           <PlatformIcons platforms={post.platforms} />
-          <span className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{campaignBaseLabel(post.campaign)}</span>
+          <span className="truncate text-[11px] text-zinc-600 dark:text-zinc-400">{campaignBaseLabel(post.campaign)}</span>
         </div>
       </div>
     </li>

@@ -149,7 +149,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
     <form onSubmit={submit} className={`space-y-3 rounded-2xl p-4 ${INNER_SURFACE}`} aria-label={editing ? t('clientForm.ariaEdit') : t('clientForm.ariaNew')}>
       <div className="flex items-center justify-between">
         <h3 className="font-display text-sm font-bold">{editing ? t('clientForm.titleEdit', { name: initial.displayName }) : t('clientForm.titleNew')}</h3>
-        <button type="button" onClick={onCancel} aria-label={t('clientForm.cancel')} className="rounded-full p-1.5 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+        <button type="button" onClick={onCancel} aria-label={t('clientForm.cancel')} className="rounded-full p-1.5 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
           <X size={16} aria-hidden="true" />
         </button>
       </div>
@@ -165,7 +165,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
           {/* The slug as a stated fact under the name: what it is, why it exists,
               and that it is permanent - instead of a second input to fill. */}
           {!editing && !slugEditing ? (
-            <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[11px] text-zinc-600 dark:text-zinc-400">
               {form.id
                 ? t('clientForm.hint.slugDerived', { slug: form.id })
                 : t('clientForm.hint.slugPending')}
@@ -179,7 +179,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
             </p>
           ) : null}
           {editing ? (
-            <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1 text-[11px] text-zinc-600 dark:text-zinc-400">
               {t('clientForm.hint.slugEditShort', { slug: form.id })}
             </p>
           ) : null}
@@ -243,13 +243,13 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
               aria-describedby="logo-hint"
               className="block w-full text-xs text-zinc-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand file:px-3 file:py-1.5 file:text-xs file:font-bold file:text-white dark:text-zinc-300 dark:file:bg-brand-light dark:file:text-zinc-900"
             />
-            {logoUploading ? <Loader2 size={15} className="shrink-0 animate-spin text-zinc-500" aria-hidden="true" /> : null}
+            {logoUploading ? <Loader2 size={15} className="shrink-0 animate-spin text-zinc-600" aria-hidden="true" /> : null}
             {form.logo ? (
               <button
                 type="button"
                 onClick={() => { setField('logo', null); setLogoError(null); }}
                 aria-label={t('clientForm.field.logoClear')}
-                className="shrink-0 rounded-full p-1 text-zinc-500 dark:text-zinc-400 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
+                className="shrink-0 rounded-full p-1 text-zinc-600 dark:text-zinc-400 hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60"
               >
                 <X size={14} aria-hidden="true" />
               </button>
@@ -258,7 +258,7 @@ function ClientForm({ mode, initial, existingIds, onCancel, onSaved }) {
           {logoError ? (
             <ActionError error={logoError} />
           ) : (
-            <p id="logo-hint" className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('clientForm.hint.logo')}</p>
+            <p id="logo-hint" className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('clientForm.hint.logo')}</p>
           )}
         </div>
       </div>
@@ -530,7 +530,7 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
           <table className="w-full text-left text-sm max-md:block">
             <caption className="sr-only">{t('clients.tableCaption')}</caption>
             <thead className="max-md:sr-only">
-              <tr className="border-b border-zinc-200/70 text-[11px] tracking-tight text-zinc-500 dark:border-zinc-700/70 dark:text-zinc-400">
+              <tr className="border-b border-zinc-200/70 text-[11px] tracking-tight text-zinc-600 dark:border-zinc-700/70 dark:text-zinc-400">
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.client')}</th>
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.status')}</th>
                 <th scope="col" className="px-3 py-2 font-bold">{t('clients.col.health')}</th>
@@ -577,7 +577,7 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
                             </Tip>
                           ) : (
                             <Tip label={t('clients.delivery.local')}>
-                              <span className="inline-flex text-zinc-500 dark:text-zinc-400" role="img" aria-label={t('clients.delivery.local')}>
+                              <span className="inline-flex text-zinc-600 dark:text-zinc-400" role="img" aria-label={t('clients.delivery.local')}>
                                 <Monitor size={14} aria-hidden="true" />
                               </span>
                             </Tip>
@@ -596,12 +596,12 @@ export default function Clients({ createIntent = false, onCreateIntentConsumed }
                           </button>
                         ) : null}
                         <Tip label={t('clients.action.edit', { name: c.displayName })}>
-                          <button type="button" onClick={() => setForm({ mode: 'edit', client: c })} aria-label={t('clients.action.edit', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+                          <button type="button" onClick={() => setForm({ mode: 'edit', client: c })} aria-label={t('clients.action.edit', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
                             <Pencil size={14} aria-hidden="true" />
                           </button>
                         </Tip>
                         <Tip label={archived ? t('clients.action.restore', { name: c.displayName }) : t('clients.action.archive', { name: c.displayName })}>
-                          <button type="button" onClick={() => toggleArchive(c)} disabled={busy} aria-label={archived ? t('clients.action.restore', { name: c.displayName }) : t('clients.action.archive', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:hover:bg-zinc-700/60">
+                          <button type="button" onClick={() => toggleArchive(c)} disabled={busy} aria-label={archived ? t('clients.action.restore', { name: c.displayName }) : t('clients.action.archive', { name: c.displayName })} className="rounded-lg p-1.5 text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-60 dark:hover:bg-zinc-700/60">
                             {archived ? <ArchiveRestore size={14} aria-hidden="true" /> : <Archive size={14} aria-hidden="true" />}
                           </button>
                         </Tip>

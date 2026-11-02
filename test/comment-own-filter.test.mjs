@@ -1,12 +1,11 @@
 #!/usr/bin/env node
-// test/comment-own-filter.test.mjs - the inbox must show OTHERS' comments, plus the
-// owner's own SUBSTANTIVE replies, and hide only the owner's HOUSEKEEPING comments.
+// test/comment-own-filter.test.mjs - the inbox counts OTHERS' comments only.
 // pendpost posts a first-comment on its own IG/FB media as itself, and Mastodon reads
 // the whole thread (so our own replies come back). isOwnAuthor (lib/comments.mjs)
-// answers WHO wrote it; isOwnHousekeepingComment (owner decision 5, 2026-08-17)
-// answers whether it may be hidden: only the post.firstComment we posted ourselves,
-// or a hashtag-only comment - a substantive own reply stays visible so answers TO it
-// are caught and the conversation continues. Also pins the row-like capability
+// answers WHO wrote it, and nothing the owner wrote is ever an unanswered item: not the
+// first-comment, not a hashtag-only comment, not a substantive reply (2026-11-01). Answers
+// TO a substantive reply still surface, with our words as their parent line (see
+// test/comment-answered-on-platform.test.mjs). Also pins the row-like capability
 // annotation (reactActions) and the Instagram post-permalink fallback (from verify).
 import fs from 'node:fs';
 import os from 'node:os';
@@ -49,7 +48,7 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'camp1.json'), JSON.stringify({
 }, null, 2));
 
 const { commentSweep, commentInbox } = await import('../lib/comment-watch.mjs');
-const { isOwnAuthor, isOwnHousekeepingComment } = await import('../lib/comments.mjs');
+const { isOwnAuthor } = await import('../lib/comments.mjs');
 const { getConfig, setConfig } = await import('../lib/config.mjs');
 setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { commentWatch: { enabled: true } } } });
 
@@ -83,18 +82,7 @@ try {
   ok(isOwnAuthor('linkedin', { author: 'urn:li:person:xyz' }) === false, 'linkedin: a DIFFERENT person urn is not own');
   ok(isOwnAuthor('telegram', { author: 'anyone', authorId: 'x' }) === false, 'a lane with no stored own-id passes through (fail-open)');
 
-  // ---- isOwnHousekeepingComment unit (owner decision 5, 2026-08-17) --------
-  // The 8 cases: what may be hidden is exactly {firstComment echo, hashtag-only}.
-  ok(isOwnHousekeepingComment('our first comment #tags', 'our first comment #tags') === true, 'housekeeping: an exact firstComment echo is housekeeping');
-  ok(isOwnHousekeepingComment('  Our First   Comment #TAGS ', 'our first comment #tags') === true, 'housekeeping: normalized match - case/whitespace mangling still matches');
-  ok(isOwnHousekeepingComment('#launch #buildinpublic', '') === true, 'housekeeping: hashtag-only (every token starts with #) is housekeeping even with no firstComment');
-  ok(isOwnHousekeepingComment('#one', null) === true, 'housekeeping: a single hashtag token counts');
-  ok(isOwnHousekeepingComment('Great question - the export lives under Settings.', 'our first comment #tags') === false, 'housekeeping: a substantive own reply is NOT housekeeping');
-  ok(isOwnHousekeepingComment('check #this out', '') === false, 'housekeeping: mixed text with a hashtag is NOT hashtag-only');
-  ok(isOwnHousekeepingComment('', 'our first comment #tags') === false, 'housekeeping: an empty text matches nothing (fail-open, kept)');
-  ok(isOwnHousekeepingComment('thanks all', '') === false, 'housekeeping: with no firstComment on record, ordinary own text stays visible');
-
-  // ---- sweep filters own housekeeping, keeps strangers AND own substance ----
+  // ---- sweep keeps strangers, never anything the owner wrote ---------------
   await commentSweep({ force: true, now: NOW, readComments });
   const inbox = commentInbox();
   const byPost = Object.fromEntries(inbox.posts.map((g) => [g.postId, g]));
@@ -104,17 +92,17 @@ try {
   const igIds = (ig?.comments || []).map((c) => c.commentId).sort();
   ok(!igIds.includes('ig-own'), 'sweep: our own IG first-comment is filtered out (matched against post.firstComment, spacing/case-tolerant)');
   ok(!igIds.includes('ig-own-tags'), 'sweep: our own hashtag-only IG comment is filtered out');
-  ok(igIds.includes('ig-own-reply'), 'sweep: our own SUBSTANTIVE IG reply is KEPT - answers to it must be catchable (owner decision 5)');
+  // DELIBERATE FLIP (2026-11-01): owner decision 5 (2026-08-17) kept a substantive own reply
+  // in the inbox so answers TO it surface. They still do (a stranger's answer is its own item
+  // and carries our words as parent context), but our reply itself inflated the unanswered
+  // count, the digest and the push alerts. So it leaves the set like the housekeeping comments.
+  ok(!igIds.includes('ig-own-reply'), 'sweep: our own SUBSTANTIVE IG reply is not an unanswered item (deliberate flip of the decision-5 pin)');
   ok(igIds.includes('ig-stranger'), 'sweep: a stranger IG comment is kept');
   ok(igIds.includes('ig-noid'), 'sweep: an IG comment with no from.id is kept (fail-open)');
 
   const mIds = (mast?.comments || []).map((c) => c.commentId).sort();
-  // DELIBERATE FLIP (owner decision 5, 2026-08-17): this assertion used to read
-  // "!mIds.includes('m-own') - our own Mastodon reply is filtered out". The blanket
-  // own-filter hid SUBSTANTIVE replies too, so a conversation the operator was already
-  // holding went invisible in the inbox. 'thanks all' is not the firstComment and not
-  // hashtag-only, so it now STAYS.
-  ok(mIds.includes('m-own'), 'sweep: our own substantive Mastodon reply is KEPT (deliberate flip of the old blanket-suppression pin)');
+  // Flipped back (2026-11-01, see the IG note above): own items never count as unanswered.
+  ok(!mIds.includes('m-own'), 'sweep: our own substantive Mastodon reply is not an unanswered item');
   ok(mIds.includes('m-stranger'), 'sweep: a stranger Mastodon reply is kept');
 
   ok(inbox.unanswered === igIds.length + mIds.length, 'unanswered count excludes own comments');

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Info, Wrench, Pencil, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
-import { STATE_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, ATTENTION_WORDS, postStatusWord, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtStampShort } from '../lib/format.js';
+import { STATE_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, postStatusWord, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtStampShort } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
 import { MediaLightbox } from './ui/MediaLightbox.jsx';
@@ -12,7 +12,7 @@ import { TAP_TARGET, PILL_TONES, STATUS_INK } from './ui/recipes.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
 import { validateRowText, recoveryFor } from '../lib/blockerText.js';
-import { useQuery } from '@tanstack/react-query';
+import { usePostSetup } from '../lib/setupByClient.js';
 
 // The X (Twitter) brand glyph. lucide-react's `X` is the close/cross icon, and
 // lucide dropped brand marks, so the wordmark is an inline SVG here. fill follows
@@ -266,19 +266,23 @@ export function NextActorChip({ post, setup = null }) {
 // resolves from status.<key>; the lead icon is decorative (the label always carries the
 // meaning, WCAG 1.4.1).
 //
-// `setup` defaults to the pendpost-health payload already in the query cache (App.jsx
-// keeps usePendpostHealth live app-wide under this key); a cache-only read
-// (enabled:false, no queryFn) never starts a fetch of its own. The Month chip glyph reads the
-// same payload through the same hook, so chip and pill key one word.
-export function useCachedSetup(setup) {
-  const { data: health } = useQuery({ queryKey: ['pendpost-health'], enabled: false });
-  return setup === undefined ? health?.setup : setup;
+// `setup` defaults to the pendpost-health payload already in the query cache, read for the
+// POST'S OWN project (lib/setupByClient.js): a post another project owns (All-projects mode
+// stamps post.clientId) is judged by that project's connections, never the active one's. A
+// cache-only read never starts a fetch of its own (App keeps the active project's health
+// live, and fetches every project's in All-projects mode). Without a post it is the active
+// project's setup. The Month chip glyph reads the same payload through the same hook, so
+// chip and pill key one word.
+export function useCachedSetup(setup, post = null) {
+  return usePostSetup(post, { override: setup });
 }
 
-export function PostStatusPill({ post, setup, quietOnPhone = false }) {
+// `word`: a status key the caller already decided (the List row's approval pill beside its red
+// reason line, format.js approvalWord); otherwise postStatusWord decides.
+export function PostStatusPill({ post, setup, word = null }) {
   const t = useT();
-  const lanes = useCachedSetup(setup);
-  const key = postStatusWord(post, lanes);
+  const lanes = useCachedSetup(setup, post);
+  const key = word || postStatusWord(post, lanes);
   const meta = ROW_STATUS_META[key] || STATUS_PILL_META.scheduled;
   const Icon = meta.Icon;
   // Canon: no hover-only reveals, so the pill carries no native title. Each surface that
@@ -291,7 +295,7 @@ export function PostStatusPill({ post, setup, quietOnPhone = false }) {
     // max-w-full + a wrapping word: in a narrow container (a Week card at 375px) the pill
     // never runs past the card edge and never cuts its word ("Du postest selbs"); it wraps
     // to a second line instead. Where it has room it stays one line (shrink-0).
-    <span className={`${quietOnPhone && !ATTENTION_WORDS.has(key) ? 'hidden md:inline-flex' : 'inline-flex'} min-w-0 max-w-full shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold leading-tight ring-1 ${meta.cls}`}>
+    <span className={`inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold leading-tight ring-1 ${meta.cls}`}>
       {Icon ? <Icon size={11} className="shrink-0" aria-hidden="true" /> : null}
       <span className="min-w-0">{label}</span>
     </span>
@@ -463,7 +467,7 @@ export function LinkCardPreview({ image, title, link }) {
         <CardHero image={image} />
         <div className="space-y-0.5 p-3">
           <p className="break-words text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || 'pendpost'}</p>
-          {host ? <p className="break-words text-[11px] tracking-tight text-zinc-500 dark:text-zinc-400">{host}</p> : null}
+          {host ? <p className="break-words text-[11px] tracking-tight text-zinc-600 dark:text-zinc-400">{host}</p> : null}
         </div>
       </div>
     </div>
@@ -482,7 +486,7 @@ export function ArticleCardPreview({ image, title, excerpt }) {
         <CardHero image={image} />
         <div className="space-y-0.5 p-3">
           <p className="break-words text-sm font-bold leading-snug text-zinc-800 dark:text-zinc-100">{title || t('ui.articleCard.noTitle')}</p>
-          {excerpt ? <p className="break-words text-xs leading-snug text-zinc-500 dark:text-zinc-400">{excerpt}</p> : null}
+          {excerpt ? <p className="break-words text-xs leading-snug text-zinc-600 dark:text-zinc-400">{excerpt}</p> : null}
         </div>
       </div>
     </div>
@@ -498,7 +502,7 @@ function YoutubeMeta({ title, description, tags }) {
       {/* break-words: a long unbroken token (e.g. a tracking URL in the description)
           must wrap, not force the whole two-column body to scroll sideways. */}
       {description ? <p className="whitespace-pre-wrap break-words text-xs text-zinc-600 dark:text-zinc-300">{description}</p> : null}
-      {tags ? <p className="break-words text-[11px] text-zinc-500 dark:text-zinc-400">{tags}</p> : null}
+      {tags ? <p className="break-words text-[11px] text-zinc-600 dark:text-zinc-400">{tags}</p> : null}
     </div>
   );
 }
@@ -826,7 +830,7 @@ export function PlatformBlockers({ platformValidate, presubmit, validateMedia, a
     <div className={`space-y-2 rounded-xl p-2.5 ${INNER_SURFACE} ${className}`}>
       <p className={EYEBROW}>{t('blockers.title')}</p>
       {waitingApproval ? (
-        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('blockers.awaitingApproval')}</p>
+        <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('blockers.awaitingApproval')}</p>
       ) : null}
       {needsReApproval ? (
         <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">{t('blockers.editedSinceApproval')}</p>
@@ -990,7 +994,7 @@ export function Segmented({ label, value, options, onChange, disabled = false })
           disabled={disabled}
           aria-pressed={value === o.key}
           className={`flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${TAP_TARGET} ${
-            value === o.key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
+            value === o.key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-600 dark:text-zinc-400'
           }`}
         >
           {o.Icon ? <o.Icon size={13} aria-hidden="true" /> : null}

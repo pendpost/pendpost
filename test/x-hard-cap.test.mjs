@@ -59,6 +59,21 @@ const OVER = 'a'.repeat(150) + ' https://pendpost.com ' + 'b'.repeat(150); // > 
 
   const ig = brandLint({ text: OVER, platform: 'instagram' });
   ok(ig.clean !== false, 'the same length on Instagram is NOT an error (2200 cap, warn advisory only)');
+
+  // X counts a tweet weighted (lib/x-text.mjs): a link is 23, CJK and emoji are 2. The lint
+  // must count the same way the validator and the publisher do, or it blocks approval of a
+  // tweet X accepts and passes one X refuses.
+  const LINKY = 'c'.repeat(230) + ' https://pendpost.com/blog/a-very-long-article-slug-that-x-shortens-to-t-co';
+  assert.ok(LINKY.length > 280, 'fixture: raw length over 280');
+  const linky = brandLint({ text: LINKY, platform: 'x' });
+  ok(!(linky.findings || []).some((f) => f.rule === 'caption-hard-cap' || f.rule === 'caption-length'),
+    'a link-heavy tweet that X weighs under 280 trips neither cap');
+
+  const CJK = '日'.repeat(150);
+  assert.ok(CJK.length <= 280, 'fixture: raw length under 280');
+  const cjk = brandLint({ text: CJK, platform: 'x' });
+  const cjkErr = (cjk.findings || []).find((f) => f.rule === 'caption-hard-cap');
+  ok(Boolean(cjkErr) && /300/.test(cjkErr.match), 'a CJK tweet X weighs at 300 trips the hard cap and names 300');
 }
 
 // ---- 2. scheduler lint gate: over-cap X post blocks visibly, no engine spawn --------

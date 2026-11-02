@@ -123,6 +123,18 @@ export function makeT(locale) {
 // SAME resolved locale the UI renders in, so dates never split-brain against the
 // translated copy (i18n surface review). Defaults to the English baseline.
 let _activeLocale = DEFAULT_LOCALE;
+// A count in the singular or the plural: the `.one` key when n is 1 and the locale carries it
+// ("1 Signal", "Den 1 angezeigten entfernen"), the plural key otherwise. Both locales carry every
+// `.one` key a caller relies on, so a de-CH screen never falls back to an English singular.
+export function tCount(t, key, n, vars = {}) {
+  if (n === 1) {
+    const one = `${key}.one`;
+    const text = t(one, { n, ...vars });
+    if (text !== one) return text;
+  }
+  return t(key, { n, ...vars });
+}
+
 export function setActiveLocale(tag) { _activeLocale = matchPack(tag); }
 export function getActiveLocale() { return _activeLocale; }
 

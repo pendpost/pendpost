@@ -169,14 +169,51 @@ describe('CommentsPanel (spec 02 inbox seam)', () => {
   });
 
   it('shows an honest authorize affordance when the scope is not granted', () => {
-    commentsData = { ok: true, needsScope: true, scope: 'instagram_business_manage_comments', platform: 'meta', targetPlatform: 'instagram', postId: 'p1', items: [] };
+    commentsData = { ok: true, needsScope: true, scope: 'instagram_manage_comments', platform: 'meta', targetPlatform: 'instagram', postId: 'p1', items: [] };
     renderPanel();
     expect(screen.getByText(/authorize comments/i)).toBeInTheDocument();
-    expect(screen.getByText('instagram_business_manage_comments')).toBeInTheDocument();
+    expect(screen.getByText('instagram_manage_comments')).toBeInTheDocument();
   });
 
   it('is accessible (axe clean)', async () => {
     const { container } = renderPanel();
     expect(await axeClean(container)).toHaveNoViolations();
+  });
+});
+
+// Planner-bulk contract, package U: the per-post view of the same items as Radar "Replies to
+// you", now with replies to replies, threaded one level under their top-level comment.
+describe('CommentsPanel threads replies one level', () => {
+  beforeEach(() => {
+    commentsData = {
+      ok: true, platform: 'mastodon', targetPlatform: 'mastodon', postId: 'p1',
+      items: [
+        { kind: 'comment', commentId: 'c-2', author: 'cy', text: 'Second root', ts: '2026-11-01T10:30:00Z' },
+        { kind: 'comment', commentId: 'c-1', author: 'ana', text: 'Love the approval step', ts: '2026-11-01T10:00:00Z' },
+        { kind: 'reply', commentId: 'r-2', parentId: 'r-1', author: 'ben', text: 'Same here', ts: '2026-11-01T10:20:00Z' },
+        { kind: 'reply', commentId: 'r-1', parentId: 'c-1', author: 'us', text: 'Thank you!', ts: '2026-11-01T10:10:00Z' },
+      ],
+    };
+  });
+
+  it('nests every reply under its root, oldest first, and names who a deeper reply answers', () => {
+    renderPanel();
+    const thread = screen.getByRole('list', { name: 'Replies to ana' });
+    const replies = [...thread.querySelectorAll(':scope > li')].map((li) => li.textContent);
+    expect(replies[0]).toContain('Thank you!');
+    expect(replies[1]).toContain('Same here');
+    expect(replies[1]).toContain('In reply to us');
+    // The two roots stay top level, in delivered order.
+    const top = [...document.querySelectorAll('section > ul > li')].map((li) => li.querySelector('span.text-sm')?.textContent);
+    expect(top).toEqual(['cy', 'ana']);
+  });
+
+  it('a reply you send lands under the comment you answered', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getAllByRole('button', { name: /^reply$/i })[0]);
+    await user.type(screen.getByRole('textbox', { name: /reply/i }), 'Glad you like it');
+    await user.click(screen.getByRole('button', { name: /send/i }));
+    await waitFor(() => expect(screen.getByRole('list', { name: 'Replies to cy' })).toHaveTextContent('Glad you like it'));
   });
 });

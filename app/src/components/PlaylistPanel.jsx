@@ -115,7 +115,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
         <div className={`flex flex-wrap items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs text-red-600 dark:text-red-300 ${INNER_SURFACE}`}>
           <p role="alert" className="flex flex-wrap items-center gap-1.5">
             <AlertCircle size={13} aria-hidden="true" /> {t('postDetail.playlist.error')}
-            {loadAlert.text ? <span className="text-zinc-500 dark:text-zinc-400">{loadAlert.text}</span> : null}
+            {loadAlert.text ? <span className="text-zinc-600 dark:text-zinc-400">{loadAlert.text}</span> : null}
           </p>
           <InfoTip label={loadAlert.raw} />
         </div>
@@ -124,7 +124,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
           <p className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
             <ShieldAlert size={13} aria-hidden="true" /> {t('postDetail.playlist.needsScope')}
           </p>
-          {data.scope ? <p className="font-mono text-[11px] text-zinc-500 dark:text-zinc-400">{data.scope}</p> : null}
+          {data.scope ? <p className="font-mono text-[11px] text-zinc-600 dark:text-zinc-400">{data.scope}</p> : null}
         </div>
       ) : (
         <div className="space-y-2">
@@ -146,7 +146,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
               </button>
             </div>
           ) : (
-            <p className={`flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs text-zinc-500 dark:text-zinc-400 ${INNER_SURFACE}`}>
+            <p className={`flex items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs text-zinc-600 dark:text-zinc-400 ${INNER_SURFACE}`}>
               <ListPlus size={13} aria-hidden="true" /> {t('postDetail.playlist.empty')}
             </p>
           )}
@@ -177,7 +177,7 @@ export default function PlaylistPanel({ campaign, postId, enabled = true }) {
                 <button
                   type="button"
                   onClick={() => { setCreating(false); setTitle(''); }}
-                  className="rounded-xl px-2.5 py-1.5 text-xs font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
+                  className="rounded-xl px-2.5 py-1.5 text-xs font-bold text-zinc-600 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
                 >
                   {t('postDetail.comments.cancel')}
                 </button>

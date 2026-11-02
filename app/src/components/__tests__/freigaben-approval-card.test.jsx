@@ -107,8 +107,10 @@ const autoApprovedPost = {
   derivedState: 'waiting-due',
 };
 
-function renderFreigaben(posts, { onNavigate, locale = 'en' } = {}) {
+function renderFreigaben(posts, { onNavigate, locale = 'en', seed = [] } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // seed: [[queryKey, data]] pre-filled caches (e.g. another project's ['pendpost-health', id]).
+  for (const [key, data] of seed) qc.setQueryData(key, data);
   const campaigns = [{ id: 'spring', active: true, posts }];
   return render(
     <QueryClientProvider client={qc}>
@@ -219,10 +221,13 @@ describe('the queue tells the truth about a lane it cannot publish to', () => {
     expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument();
   });
 
-  it('replaces the approval pill with the consequence on the card too', () => {
+  // One status signal per row (2026-11-01): the hand-off button IS the state, so no pill
+  // repeats it beside the button and no "waiting for approval" chip contradicts it.
+  it('the hand-off button is the one state on the card: no pill beside it', () => {
     healthState = { data: { setup: { platforms: [{ platform: 'reddit', status: 'incomplete' }] } } };
     renderFreigaben([radarReplyPost]);
-    expect(screen.getByText(/you post this yourself/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy reply & open/i })).toBeInTheDocument();
+    expect(screen.queryByText(/you post this yourself/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/waiting for approval/i)).not.toBeInTheDocument();
   });
 
@@ -382,18 +387,26 @@ describe('Freigaben copy-lane hand-off on the card', () => {
   afterEach(() => {
     openSpy.mockRestore();
   });
+  // A blocked X post leads with its fix; the hand-off is one menu item away.
+  const openHandOff = async (name = /copy reply & open/i) => {
+    fireEvent.click(screen.getByRole('button', { name: /^(more actions|weitere aktionen)$/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name }));
+  };
 
-  it('renders Kopieren & oeffnen instead of Freigeben on the offline lane', () => {
+  it('a blocked X post leads with Connect X; the hand-off sits in the menu, Approve is gone', async () => {
     healthState = offlineX;
-    renderFreigaben([xReplyPost]);
-    expect(screen.getByRole('button', { name: /copy reply & open/i })).toBeInTheDocument();
+    renderFreigaben([xReplyPost], { onNavigate: vi.fn() });
+    expect(screen.getByRole('button', { name: 'Connect X' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /copy reply & open/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^more actions$/i }));
+    expect(await screen.findByRole('menuitem', { name: /copy reply & open/i })).toBeInTheDocument();
   });
 
   it('click copies the text, opens the thread, and reveals the link capture', async () => {
     healthState = offlineX;
     renderFreigaben([xReplyPost]);
-    fireEvent.click(screen.getByRole('button', { name: /copy reply & open/i }));
+    await openHandOff();
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(xReplyPost.caption));
     expect(openSpy).toHaveBeenCalledWith('https://x.com/someone/status/123', '_blank', 'noopener,noreferrer');
     // The capture row is revealed so the loop can close with evidence.
@@ -403,7 +416,7 @@ describe('Freigaben copy-lane hand-off on the card', () => {
   it('saving the URL calls markPosted and refreshes the plans', async () => {
     healthState = offlineX;
     renderFreigaben([xReplyPost]);
-    fireEvent.click(screen.getByRole('button', { name: /copy reply & open/i }));
+    await openHandOff();
     const input = await screen.findByLabelText(/Link to the published post/i);
     fireEvent.change(input, { target: { value: 'https://x.com/pendpost/status/456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Posted' }));
@@ -412,7 +425,7 @@ describe('Freigaben copy-lane hand-off on the card', () => {
 
   // A failed save speaks one plain sentence; the server's English line rides the "?" only.
   const saveLink = async () => {
-    fireEvent.click(screen.getByRole('button', { name: /copy reply & open/i }));
+    await openHandOff();
     const input = await screen.findByLabelText(/Link to the published post/i);
     fireEvent.change(input, { target: { value: 'https://x.com/pendpost/status/456' } });
     fireEvent.click(screen.getByRole('button', { name: 'Posted' }));
@@ -442,7 +455,7 @@ describe('Freigaben copy-lane hand-off on the card', () => {
     healthState = offlineX;
     writeText.mockImplementation(() => Promise.reject(new Error('denied')));
     renderFreigaben([xReplyPost]);
-    fireEvent.click(screen.getByRole('button', { name: /copy reply & open/i }));
+    await openHandOff();
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     // No tab opened, no capture revealed, no "Copied" claim.
     expect(openSpy).not.toHaveBeenCalled();
@@ -485,17 +498,19 @@ describe('Freigaben copy-lane hand-off on the card', () => {
     expect(screen.getByLabelText(/Link to the published post/i)).toBeInTheDocument();
   });
 
-  it('a normal post reads the generic label in German too', () => {
+  it('a normal post reads the generic label in German too', async () => {
     healthState = offlineX;
     renderFreigaben([{ ...plainRedditPost, id: 'plain-x-1', platforms: ['x'] }], { locale: 'de-CH' });
-    expect(screen.getByRole('button', { name: /^Kopieren und selbst posten$/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^weitere aktionen$/i }));
+    expect(await screen.findByRole('menuitem', { name: /^Kopieren und selbst posten$/ })).toBeInTheDocument();
     expect(screen.queryByText(/Antwort kopieren/)).not.toBeInTheDocument();
   });
 
-  it('a Radar reply still reads the reply wording in German', () => {
+  it('a Radar reply still reads the reply wording in German', async () => {
     healthState = offlineX;
     renderFreigaben([xReplyPost], { locale: 'de-CH' });
-    expect(screen.getByRole('button', { name: /^Antwort kopieren & Thread öffnen$/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^weitere aktionen$/i }));
+    expect(await screen.findByRole('menuitem', { name: /^Antwort kopieren & Thread öffnen$/ })).toBeInTheDocument();
   });
 });
 
@@ -554,8 +569,8 @@ describe('Freigaben next-actor consolidation', () => {
     // Approved posts live in the "All posts" tab.
     const user = (await import('@testing-library/user-event')).default;
     await user.click(screen.getByRole('button', { name: 'All posts' }));
-    // The hand-off truth renders...
-    expect(screen.getByText(/you post this yourself/i)).toBeInTheDocument();
+    // The hand-off truth renders (the row's one action, approved or not)...
+    expect(screen.getByRole('button', { name: /copy reply & open/i })).toBeInTheDocument();
     // ...and neither of the contradicting claims does.
     expect(screen.queryByText(/goes out/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Auto-approved')).not.toBeInTheDocument();
@@ -614,85 +629,75 @@ describe('Freigaben chip: blocked lane vs manual paste lane', () => {
     { platform: 'reddit', status: 'incomplete' },
   ] } } };
 
-  // D7 (phase 3): the reason is visible text on the card, so the pill no longer hides it in a
-  // native title (PostStatusPill stays the one status source, it just carries no reason tip).
-  it('a post on a lane that is not connected reads "Blocked", naming the lane on screen, never "You post this yourself"', () => {
+  // 2026-11-01 (owner: "a blocked pill, a reject button, and copy and post yourself: way too
+  // high cognitive load"): a blocked row carries ONE status signal, the status line under the
+  // title (the planner row's grammar: glyph, reason, the fix at its trailing edge), and no
+  // "Blocked" pill beside the fix.
+  it('a post on a lane that is not connected says so on its status line, offers the fix, and wears no Blocked pill', () => {
     healthState = offline;
-    renderFreigaben([tgPost]);
-    const pill = screen.getByText(/^Blocked$/).closest('span.rounded-full');
-    expect(pill).not.toBeNull();
-    expect(pill.getAttribute('title')).toBeNull();
-    expect(screen.getByText('Telegram is not connected')).toBeInTheDocument();
+    renderFreigaben([tgPost], { onNavigate: vi.fn() });
+    expect(screen.queryByText(/^Blocked$/)).not.toBeInTheDocument();
+    const line = screen.getByText('Telegram is not connected').closest('[data-row-status]');
+    expect(line).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'Connect Telegram' })).toBeInTheDocument();
+    expect(screen.getAllByText(/is not connected/)).toHaveLength(1);
     expect(screen.queryByText(/you post this yourself/i)).not.toBeInTheDocument();
   });
 
-  it('the reason and the verb share ONE line: "Telegram is not connected · Connect Telegram"', () => {
+  it('the status line sits outside the open-detail button; the fix sits in the row\'s one action slot', () => {
     healthState = offline;
     renderFreigaben([tgPost], { onNavigate: vi.fn() });
-    const verb = screen.getByRole('button', { name: 'Connect Telegram' });
-    const line = verb.parentElement;
-    // The dot is a CSS-spaced, aria-hidden separator; normalise its spacing for the read.
-    expect(line.textContent.replace(/\s*·\s*/, ' · ').trim()).toBe('Telegram is not connected · Connect Telegram');
-    // Exactly one line carries the reason (no added row).
-    expect(screen.getAllByText(/is not connected/)).toHaveLength(1);
+    const line = screen.getByText('Telegram is not connected').closest('[data-row-status]');
+    expect(line.closest('button')).toBeNull();
+    expect(within(line).queryByRole('button')).toBeNull();
+    const fix = screen.getByRole('button', { name: 'Connect Telegram' });
+    expect(fix.closest('[data-row-action]')).not.toBeNull();
+    expect(fix.closest('[data-row-action].ml-auto')).not.toBeNull();
   });
 
-  // At 375px the indented line was max-w-full PLUS ml-[76px], so 76px wider than the card:
-  // the reason truncated and the verb slid off the card. The line now fits its indent and
-  // wraps, so the reason reads in full and the verb (a 44px target) stays on the card.
-  it('the blocked line fits inside the card: it wraps, never truncates, and subtracts its indent', () => {
-    healthState = offline;
-    renderFreigaben([tgPost], { onNavigate: vi.fn() });
-    const line = screen.getByRole('button', { name: 'Connect Telegram' }).closest('p');
-    const cls = line.className.split(/\s+/);
-    expect(cls).toContain('flex-wrap');
-    // The comfortable card (the default) indents the line under the text column.
-    expect(cls).toContain('ml-[76px]');
-    expect(cls).not.toContain('max-w-full');
-    expect(cls).toContain('max-w-[calc(100%-76px)]');
-    expect(screen.getByText('Telegram is not connected').className).not.toMatch(/\btruncate\b/);
-  });
-
-  it('several blocked lanes read in the plural, joined like the verb', () => {
+  it('several blocked lanes read in the plural', () => {
     healthState = { data: { setup: { platforms: [
       { platform: 'telegram', status: 'incomplete' },
       { platform: 'discord', status: 'incomplete' },
     ] } } };
     renderFreigaben([{ ...tgPost, id: 'two', platforms: ['telegram', 'discord'] }], { onNavigate: vi.fn() });
-    const verb = screen.getByRole('button', { name: /^Connect Telegram, Discord$/ });
-    expect(verb.parentElement.textContent).toMatch(/^Telegram, Discord are not connected\s*·\s*Connect/);
+    expect(screen.getByText('Telegram, Discord are not connected')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Telegram' })).toBeInTheDocument();
   });
 
-  // r5-b1: the reason is no longer only in the pill's hover. One visible line names the fix
-  // ("Connect Telegram", the delivery row's own words) and IS the connect route, so the old
-  // unlabelled wrench is gone: one control, its words on screen.
-  it('shows the reason inline as one labelled line that opens Setup at that lane', () => {
-    healthState = offline;
+  it('an OAuth lane fix opens Setup at that lane with the sign-in started', () => {
+    healthState = { data: { setup: { platforms: [{ platform: 'x', status: 'incomplete' }] } } };
     const onNavigate = vi.fn();
-    renderFreigaben([tgPost], { onNavigate });
-    const line = screen.getByRole('button', { name: 'Connect Telegram' });
-    expect(line.textContent.trim()).toBe('Connect Telegram');
-    fireEvent.click(line);
-    expect(onNavigate).toHaveBeenCalledWith('setup', 'telegram');
-    // No icon-only connect control is left beside the actions.
-    const iconOnly = screen.getAllByRole('button').filter((b) => /connect/i.test(b.getAttribute('aria-label') || '') && !b.textContent.trim());
-    expect(iconOnly).toHaveLength(0);
+    renderFreigaben([{ ...tgPost, id: 'x-blocked', platforms: ['x'] }], { onNavigate });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect X' }));
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'x', { action: 'reconnect' });
   });
 
-  it('a blocked lane beside the paste lane still reads "Blocked", and the line names and opens only the blocked lane', () => {
-    healthState = offline;
+  it('an All-projects row is judged by ITS project and names that project to the navigation', () => {
+    // The active project has X; project B does not. B's post reads blocked by B's own setup.
+    healthState = { data: { setup: { platforms: [{ platform: 'x', status: 'connected' }] } } };
     const onNavigate = vi.fn();
-    renderFreigaben([{ ...tgPost, id: 'mixed', platforms: ['reddit', 'telegram'] }], { onNavigate });
-    expect(screen.getByText(/^Blocked$/)).toBeInTheDocument();
+    renderFreigaben([{ ...tgPost, id: 'x-blocked-b', platforms: ['x'], clientId: 'client-b', clientName: 'Client B' }], {
+      onNavigate,
+      seed: [[['pendpost-health', 'client-b'], { setup: { platforms: [{ platform: 'x', status: 'incomplete' }] } }]],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect X' }));
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'x', { action: 'reconnect' }, 'client-b');
+  });
+
+  it('a blocked lane beside the paste lane leads with the blocked lane\'s fix only', () => {
+    healthState = offline;
+    renderFreigaben([{ ...tgPost, id: 'mixed', platforms: ['reddit', 'telegram'] }], { onNavigate: vi.fn() });
+    expect(screen.queryByText(/^Blocked$/)).not.toBeInTheDocument();
     expect(screen.queryByText(/you post this yourself/i)).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Connect Telegram' }));
-    expect(onNavigate).toHaveBeenCalledWith('setup', 'telegram');
+    expect(screen.getByText('Telegram is not connected')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Telegram' })).toBeInTheDocument();
   });
 
-  it('the manual paste lane (reddit) still reads "You post this yourself", with no connect line (the hand-off is the path)', () => {
+  it('the manual paste lane (reddit) leads with the hand-off, with no connect fix (the hand-off is the path)', () => {
     healthState = offline;
     renderFreigaben([radarReplyPost], { onNavigate: vi.fn() });
-    expect(screen.getByText(/you post this yourself/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /copy reply & open/i })).toBeInTheDocument();
     expect(screen.queryByText(/^Blocked$/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^connect/i })).not.toBeInTheDocument();
   });
@@ -708,22 +713,58 @@ describe('Freigaben chip: blocked lane vs manual paste lane', () => {
   });
 
   // D12 (phase 3): reject is reversible (rejectPost only sets a verdict; the post can be
-  // approved again), so Reject is a quiet neutral button, never the red danger tone.
-  it('Reject reads quiet neutral, not red', () => {
+  // approved again), so it is never the red danger tone. It now leads the row menu.
+  it('Reject leads the row menu and reads neutral, not red', async () => {
     healthState = offline;
     renderFreigaben([tgPost], { onNavigate: vi.fn() });
-    const reject = screen.getByRole('button', { name: 'Reject' });
-    expect(reject.className).not.toMatch(/red-/);
-    expect(reject.className).toMatch(/text-zinc-700/);
+    expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^more actions$/i }));
+    const items = await screen.findAllByRole('menuitem');
+    expect(items[0]).toHaveTextContent('Reject');
+    expect(items[0].className).not.toMatch(/red-/);
   });
 
-  it('on a phone the two actions share one aligned row, the overflow stays on the row above', () => {
+  it('a blocked row shows ONE action: the fix; Reject and the hand-off are in the menu', async () => {
     healthState = offline;
     renderFreigaben([tgPost], { onNavigate: vi.fn() });
-    const reject = screen.getByRole('button', { name: 'Reject' });
-    const group = reject.parentElement;
-    expect(group.className).toMatch(/(^|\s)grid-cols-2(\s|$)/);
-    expect(group.className).toMatch(/max-sm:order-last/);
-    expect(within(group).getByRole('button', { name: /copy and post yourself/i })).toBeInTheDocument();
+    const row = screen.getByRole('listitem');
+    const rowButtons = within(row).getAllByRole('button').map((b) => b.getAttribute('aria-label') || b.textContent.trim());
+    expect(rowButtons).toContain('Connect Telegram');
+    expect(rowButtons.some((n) => /^(reject|approve|copy and post yourself)$/i.test(n))).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: /^more actions$/i }));
+    expect(await screen.findByRole('menuitem', { name: /copy and post yourself/i })).toBeInTheDocument();
+  });
+});
+
+// A Blocked card's reason is the recovery's WHY. At 375px the card footer squeezed the reason
+// beside "Connect ⋯" and clamped it to "Telegram ist nicht..." (seen 2026-11-01 in the
+// p4-status-gaps flow, phone light and dark), the bug the planner List row fixed in 65f9021b.
+// The reason now takes the card's full width on a phone and shares the line from sm up; jsdom
+// has no layout, so the contract is the wrapper's classes.
+describe('Freigaben Blocked card: the reason reads whole on a phone', () => {
+  const tgPost = {
+    ...textPost,
+    id: 'tg-1',
+    title: 'Planner tour',
+    caption: 'Planner tour for the Telegram channel, next steps inside.',
+    platforms: ['telegram'],
+    link: null,
+    image: null,
+  };
+  it('the reason line takes the full card width below sm and shares the line from sm up', () => {
+    healthState = { data: { setup: { platforms: [{ platform: 'telegram', status: 'incomplete' }] } } };
+    const { container } = renderFreigaben([tgPost], { onNavigate: vi.fn() });
+    const status = container.querySelector('[data-row-status]');
+    expect(status).not.toBeNull();
+    expect(status.textContent).toBe('Telegram is not connected');
+    const slot = status.parentElement;
+    expect(slot.className).toMatch(/(^|\s)basis-full(\s|$)/);
+    expect(slot.className).toMatch(/(^|\s)sm:basis-0(\s|$)/);
+    expect(slot.className).toMatch(/(^|\s)sm:flex-1(\s|$)/);
+    // The fix still closes the card, after the reason it fixes.
+    const action = container.querySelector('[data-row-action]');
+    expect(action).not.toBeNull();
+    expect(within(action).getByRole('button', { name: /connect telegram/i })).toBeInTheDocument();
+    expect(slot.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

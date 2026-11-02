@@ -4,7 +4,7 @@ import {
   ExternalLink, Reply, CircleSlash, Pencil, Radio, Globe, Pin, Bot, ChevronDown,
   Search, Check, FileText, Loader2, MessageSquareReply, MoreHorizontal, Copy, Sprout, AtSign, Link2,
   MessageCircleQuestion, Clock, CircleDashed, Undo2, AlertTriangle, Pause, Ban,
-  X, RefreshCw, Trash2, ThumbsUp, ThumbsDown,
+  X, RefreshCw, Trash2, ThumbsUp, ThumbsDown, Rss, CircleDot,
 } from 'lucide-react';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from '../ui/Popover.jsx';
 import { fmtRelative, fmtTime, mastodonThreadUrl, isAbsoluteHttpUrl, agentNoteIsForeign, agentNoteExcerpt, AGENT_JOB_CAP_MINUTES } from '../../lib/format.js';
@@ -21,6 +21,8 @@ import { Select } from '../ui/Select.jsx';
 import { useLint, LintPanel } from '../Composer.jsx';
 import { useLocale } from '../../lib/i18n.js';
 import InfoTip from '../ui/InfoTip.jsx';
+import { jumpToSignal, signalDomId } from '../../lib/radarJump.js';
+import { tCount } from '../../lib/i18n.js';
 
 // A failed Radar action is { text, raw, known } from lib/api.js errAlert (or errReason for a
 // "<verb> ging nicht. {reason}" line): one plain sentence, with the server's or the engine's raw
@@ -84,6 +86,10 @@ const SOURCE_META = {
   // publish lane, so it has no PLATFORM_META brand mark - a question glyph carries "a Q&A thread",
   // the same way `web` carries "from the open web" with a Globe.
   quora: { Icon: MessageCircleQuestion, color: 'text-rose-600' },
+  // Radar 2.0 step 3: the opt-in engine sources. No brand mark: a feed glyph for any RSS/Atom/JSON
+  // feed, the open-issue glyph for GitHub issues and discussions.
+  feed: { Icon: Rss, color: 'text-orange-600' },
+  github: { Icon: CircleDot, color: 'text-zinc-700 dark:text-zinc-200' },
 };
 // The "where from" label for a signal row: the community/subreddit when the source carried
 // one, else (spec 38) the url's domain for a web signal - so an open-web result always shows
@@ -550,28 +556,28 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
           // title is the honest minimum, "Scan", so the row reads "Scan · failed 10 minutes ago".
           <>
             <span className="-mx-1.5 text-zinc-300 dark:text-zinc-600" aria-hidden="true">·</span>
-            <span className="text-xs text-zinc-500 dark:text-zinc-400">{t(failed && job.reason !== 'stopped' ? 'radar.agent.job.failedAt' : 'radar.agent.job.finishedAt', { time: fmtRelative(job.finishedAt) })}</span>
+            <span className="text-xs text-zinc-600 dark:text-zinc-400">{t(failed && job.reason !== 'stopped' ? 'radar.agent.job.failedAt' : 'radar.agent.job.finishedAt', { time: fmtRelative(job.finishedAt) })}</span>
           </>
         ) : null}
         {running ? (
           <>
             {/* The phase, in words, + a live elapsed count. */}
-            <span className="text-zinc-500 dark:text-zinc-400">{phaseText}</span>
+            <span className="text-zinc-600 dark:text-zinc-400">{phaseText}</span>
             <span className="text-zinc-300 dark:text-zinc-600" aria-hidden="true">·</span>
-            <span className="text-zinc-500 dark:text-zinc-400"><Elapsed startedAt={job.startedAt} t={t} /></span>
+            <span className="text-zinc-600 dark:text-zinc-400"><Elapsed startedAt={job.startedAt} t={t} /></span>
             {/* LIVE counts: radar_ingest tallies onto the running job, so research can say what
                 it has found SO FAR, and drafting names how many threads were picked. A number
                 beats a bar that only promises one. */}
             {job.phase !== 'drafting' && job.accepted > 0 ? (
               <>
                 <span className="text-zinc-300 dark:text-zinc-600" aria-hidden="true">·</span>
-                <span className="text-zinc-500 dark:text-zinc-400">{t('radar.agent.job.found', { n: job.accepted })}</span>
+                <span className="text-zinc-600 dark:text-zinc-400">{t('radar.agent.job.found', { n: job.accepted })}</span>
               </>
             ) : null}
             {job.phase === 'drafting' && job.draftTargets ? (
               <>
                 <span className="text-zinc-300 dark:text-zinc-600" aria-hidden="true">·</span>
-                <span className="text-zinc-500 dark:text-zinc-400">{t('radar.agent.job.picked', { n: job.draftTargets })}</span>
+                <span className="text-zinc-600 dark:text-zinc-400">{t('radar.agent.job.picked', { n: job.draftTargets })}</span>
               </>
             ) : null}
             {/* Stage 3: the auto-retry backoff, so a transient blip does not read as a stall. */}
@@ -583,7 +589,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
             ) : null}
             {/* A job spends the operator's subscription. Anything spending money needs a way
                 out before the 10-minute timeout. */}
-            <button type="button" onClick={onStop} disabled={stopping} className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 disabled:opacity-50 dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-white/5">
+            <button type="button" onClick={onStop} disabled={stopping} className="ml-auto rounded-lg px-2 py-1 text-xs font-semibold text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 disabled:opacity-50 dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-white/5">
               {t('radar.agent.job.stop')}
             </button>
           </>
@@ -593,7 +599,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
           // (it counts pre-dedupe). The copy says "reported", not "new". autoPosted (spec C) is
           // appended only when the auto-reply gate actually fired, so nothing posts invisibly. A geo
           // recheck ingested no signals, so it reports "AI visibility checked", not a 0/0/0 tally.
-          <span className="text-zinc-500 dark:text-zinc-400">
+          <span className="text-zinc-600 dark:text-zinc-400">
             {isGeo
               ? t('radar.agent.job.geo.done')
               : t('radar.agent.job.done', { accepted: job.accepted, dropped: job.dropped, deduped: job.deduped })}
@@ -603,7 +609,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
         {/* B11: refusal suffix on the done tally - one quiet number, codes in the tooltip. */}
         {job.state === 'done' && !isGeo && refusedTotal ? (
           <Tip label={refusals.map(([code, n]) => `${code}: ${n}`).join(' · ')}>
-            <span className="cursor-help text-zinc-500 dark:text-zinc-400">{t('radar.agent.job.refused', { n: refusedTotal })}</span>
+            <span className="cursor-help text-zinc-600 dark:text-zinc-400">{t('radar.agent.job.refused', { n: refusedTotal })}</span>
           </Tip>
         ) : null}
         {failed ? (
@@ -644,7 +650,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
                 type="button"
                 aria-expanded={logOpen}
                 onClick={() => setLogOpen((v) => !v)}
-                className="inline-flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-zinc-900/5 dark:text-zinc-400 dark:hover:bg-white/5"
+                className="inline-flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-semibold text-zinc-600 transition hover:bg-zinc-900/5 dark:text-zinc-400 dark:hover:bg-white/5"
               >
                 {t('radar.agent.activity.label', { n: activity.length })}
                 <ChevronDown size={12} className={`transition ${logOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
@@ -677,7 +683,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
           {running ? (
             <div className="flex items-center gap-2">
               {latest ? (
-                <p aria-live="polite" className="min-w-0 flex-1 truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                <p aria-live="polite" className="min-w-0 flex-1 truncate text-[11px] text-zinc-600 dark:text-zinc-400">
                   {activityText(latest, t)}
                 </p>
               ) : null}
@@ -685,7 +691,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
                 type="button"
                 aria-expanded={logOpen}
                 onClick={() => setLogOpen((v) => !v)}
-                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-semibold text-zinc-500 transition hover:bg-zinc-900/5 dark:text-zinc-400 dark:hover:bg-white/5"
+                className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-lg px-1.5 py-0.5 text-[11px] font-semibold text-zinc-600 transition hover:bg-zinc-900/5 dark:text-zinc-400 dark:hover:bg-white/5"
               >
                 {t('radar.agent.activity.label', { n: activity.length })}
                 <ChevronDown size={12} className={`transition ${logOpen ? 'rotate-180' : ''}`} aria-hidden="true" />
@@ -700,17 +706,10 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
                 // the ingest keys; the row carries the matching DOM id). First key that is
                 // actually rendered wins - a deduped/dismissed finding just isn't there.
                 const jump = a.kind === 'found' && Array.isArray(a.keys) && a.keys.length ? () => {
-                  for (const k of a.keys) {
-                    const el = document.getElementById(`radar-sig-${encodeURIComponent(k)}`);
-                    if (el) {
-                      const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches;
-                      el.scrollIntoView({ behavior: calm ? 'auto' : 'smooth', block: 'center' });
-                      return;
-                    }
-                  }
+                  for (const k of a.keys) if (jumpToSignal(k)) return;
                 } : null;
                 return (
-                  <li key={`${a.ts}-${i}`} className="flex min-w-0 items-start gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  <li key={`${a.ts}-${i}`} className="flex min-w-0 items-start gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400">
                     <Icon size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
                     {jump ? (
                       <button type="button" onClick={jump} className="min-w-0 flex-1 break-words text-left underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">
@@ -719,7 +718,7 @@ function JobRow({ job, queries = [], onStop, stopping, t, onNavigate, onRetry, r
                     ) : (
                       <span className="min-w-0 flex-1 break-words">{activityText(a, t)}</span>
                     )}
-                    <span className="shrink-0 tabular-nums text-zinc-500 dark:text-zinc-400">
+                    <span className="shrink-0 tabular-nums text-zinc-600 dark:text-zinc-400">
                       {new Date(a.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>
                   </li>
@@ -782,7 +781,7 @@ function StatFilters({ counts, value, onChange, sortBy, onSort, t }) {
             (ui.jsx) instead of its own bespoke chip class - one filter-chip implementation
             app-wide, active state keeps FilterChip's filled-brand look. */}
         {SIGNAL_FILTERS.filter((f) => f.key === 'all' || f.key === 'new' || f.count(counts) > 0).map((f) => (
-          <FilterChip key={f.key} active={value === f.key} onClick={() => onChange(f.key)} icon={f.icon} label={t(f.label, { n: f.count(counts) })} />
+          <FilterChip key={f.key} active={value === f.key} onClick={() => onChange(f.key)} icon={f.icon} label={tCount(t, f.label, f.count(counts))} />
         ))}
       </div>
       {/* Sort, right-aligned: priority (best chances first), newly found (radar ingest time),
@@ -938,8 +937,9 @@ function TuneLine({ item, mode, onAction, t }) {
 // junk-producing query is obvious by its volume. Each row closes the loop: SHOW its signals in
 // the feed, TUNE it in Settings, or DISMISS all of them at once (watched are never swept). This
 // turns "hide bad rows one by one" into "fix the source of the noise".
-// Relevance plan 1d/1e: the count line also carries the search's precision (the share of what it
-// found that was NOT marked not relevant, from the server's per-search counters), and under it sit
+// Relevance plan 1d/1e: the count line also carries the search's precision (since Radar 2.0 step 1:
+// the share of the finds the owner rated that they acted on, from the server's per-search
+// counters; unrated finds count neither way), and under it sit
 // the tuner's lines for that search (TuneLine). No new screen: the loop lives where the noise is read.
 export function QueryQualityList({ groups, onShow, onTune, onDismissAll, onTuneAction, clearing, t }) {
   if (!groups.length) return <p className="px-1 py-3 text-xs text-zinc-500 dark:text-zinc-400">{t('radar.byQuery.empty')}</p>;
@@ -947,9 +947,13 @@ export function QueryQualityList({ groups, onShow, onTune, onDismissAll, onTuneA
     <ol className="space-y-2">
       {groups.map((g) => {
         const clearable = g.signals.filter((s) => s.watched !== true).length;
-        const shown = Number(g.stats?.shown) || 0;
-        const less = Math.min(shown, Number(g.stats?.less) || 0);
-        const precision = shown ? Math.round(((shown - less) / shown) * 100) : null;
+        // Radar 2.0 step 1: only the owner's actions count, the same rule as the server's
+        // queryPrecision (lib/radar-tuner.mjs). Acted = done + replied; rated adds not relevant +
+        // skipped; an unrated find counts neither way.
+        const n = (k) => Math.max(0, Number(g.stats?.[k]) || 0);
+        const acted = n('done') + n('replied');
+        const rated = acted + n('less') + n('skipped');
+        const precision = rated ? Math.round((acted / rated) * 100) : null;
         const proposals = onTuneAction ? (g.proposals || []) : [];
         const tuned = onTuneAction ? (g.tuned || []) : [];
         return (
@@ -964,7 +968,7 @@ export function QueryQualityList({ groups, onShow, onTune, onDismissAll, onTuneA
                 {precision != null ? (
                   <>
                     <span aria-hidden="true"> · </span>
-                    <Tip label={t('radar.byQuery.precision.tip', { less, shown })}>
+                    <Tip label={t('radar.byQuery.precision.tip', { acted, rated })}>
                       <span tabIndex={0} className="cursor-help rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand">{t('radar.byQuery.precision', { p: precision })}</span>
                     </Tip>
                   </>
@@ -1476,13 +1480,14 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
     // selection. Deliberately NOT a <button> - that would nest the card's own controls
     // inside an interactive element (Tier 1 nested-interactive).
     <li
-      id={`radar-sig-${encodeURIComponent(`${signal.source} ${signal.externalId}`)}`}
+      id={signalDomId(`${signal.source} ${signal.externalId}`)}
       onClick={(e) => {
         if (e.target.closest('button, a, input, select, textarea, label')) return;
         if (window.getSelection()?.toString()) return;
         toggleExpanded();
       }}
-      className={grouped
+      // Focusable only while a jump (lib/radarJump.js) lands here: the keyboard-focus ring.
+      className={`focus:outline-none focus:ring-2 focus:ring-brand ${grouped
         // Grouped lead: the group wrapper owns the border + padding, so the lead renders bare
         // (no ring/padding of its own) and the whole group reads as one card. A watched lead
         // keeps only its tint; an unseen lead gets the quieter brand wash.
@@ -1490,7 +1495,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
         // Unseen rows carry a quiet brand wash + accent ring (found since your last visit), a
         // dialled-down twin of the watched tint - scannable at 15-20 items without a colour-only
         // cue (the "Neu" chip carries the text). Watched wins when a row is both.
-        : `space-y-2 rounded-xl p-3 ring-1 transition ${watched ? 'bg-brand/5 ring-brand/30' : isNew ? 'bg-brand/[0.04] ring-brand/20' : 'ring-zinc-900/5 hover:bg-zinc-900/[0.02] dark:ring-white/10 dark:hover:bg-white/[0.03]'}`}
+        : `space-y-2 rounded-xl p-3 ring-1 transition ${watched ? 'bg-brand/5 ring-brand/30' : isNew ? 'bg-brand/[0.04] ring-brand/20' : 'ring-zinc-900/5 hover:bg-zinc-900/[0.02] dark:ring-white/10 dark:hover:bg-white/[0.03]'}`}`}
     >
       {/* ZONE 1 - META. Author is plain text; the thread link is the Open pill below (one URL,
           one control). Status sits right-aligned, one pill, always a next step. */}
@@ -1901,7 +1906,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
         <div className={`space-y-2 rounded-xl p-2.5 ${INNER_SURFACE}`}>
           {/* R11: in threaded mode the editor says WHOSE reply this continues, so the operator
               knows this turn lands under the author's answer, not at the thread root. */}
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{threadTo ? t('radar.reply.toReply.hint', { author: authorReplied?.author || signal.author }) : t('radar.reply.humanOnly')}</p>
+          <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{threadTo ? t('radar.reply.toReply.hint', { author: authorReplied?.author || signal.author }) : t('radar.reply.humanOnly')}</p>
           <label className="sr-only" htmlFor={`radar-reply-${signal.source}-${signal.externalId}`}>{t('radar.reply.draft')}</label>
           <textarea
             id={`radar-reply-${signal.source}-${signal.externalId}`}
@@ -1913,7 +1918,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           <LintPanel lint={replyLint} />
           <div className="flex flex-wrap items-center gap-2">
             {campaigns && campaigns.length ? (
-              <label className="inline-flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+              <label className="inline-flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
                 {/* A visible label, not sr-only: a bare dropdown showing a campaign name told the
                     operator nothing about what the control selects. The word is on screen now. */}
                 <span className={EYEBROW}>{t('radar.reply.campaign')}</span>
@@ -1926,7 +1931,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
               // (colour is spent only on attention). And no dead ends - the fix is offered,
               // not just described: this navigates to the planner, where an empty workspace
               // shows the create-a-campaign form (mirrors the GEO backlog's "connect a blog").
-              <button type="button" onClick={() => onNavigate?.('planner')} className="text-xs font-semibold text-zinc-500 underline-offset-2 transition hover:text-zinc-700 hover:underline dark:text-zinc-400 dark:hover:text-zinc-200">
+              <button type="button" onClick={() => onNavigate?.('planner')} className="text-xs font-semibold text-zinc-600 underline-offset-2 transition hover:text-zinc-700 hover:underline dark:text-zinc-400 dark:hover:text-zinc-200">
                 {t('radar.reply.noCampaign')}
               </button>
             )}

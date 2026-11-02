@@ -41,7 +41,7 @@ fs.writeFileSync(scanBin, `#!/usr/bin/env node
 const fs = require('fs');
 const a = process.argv.slice(2);
 const cfg = JSON.parse(fs.readFileSync(a[a.indexOf('--mcp-config') + 1], 'utf8'));
-const sig = (n) => ({ source: 'reddit', ts: new Date().toISOString(), externalId: 't3_' + n, url: 'https://reddit.com/r/x/' + n,
+const sig = (n) => ({ authorRole: 'seeker', intent: 'ask_reco', replyable: true, source: 'reddit', ts: new Date().toISOString(), externalId: 't3_' + n, url: 'https://reddit.com/r/x/' + n,
   text: 'looking for recommendations, what do you all use to schedule social posts? any good alternative to buffer?' });
 fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'radar_ingest',
@@ -175,8 +175,11 @@ try {
   // so an earlier build drafted NOTHING for them. pendpost picks what is ALLOWED; the model picks
   // what is WORTH answering.
   const feed = await asClient(() => listRadar({}));
-  ok(feed.items.every((s2) => s2.suggestedAction !== 'reply'),
-    'these signals are NOT scored `reply` by the regex - which is exactly the case that must still draft');
+  // Radar 2.0 step 2: the action now comes from the structured facts (seeker, replyable, a real
+  // intent), so these read `reply` - but their SCORE stays below the regex reply bar (40), which is
+  // the case an earlier build refused to draft.
+  ok(feed.items.every((s2) => Number(s2.intentScore) < 40),
+    'these signals score below the regex reply bar - which is exactly the case that must still draft');
 
   // Now the hostile drafter runs as phase 2 of the NEXT press.
   process.env[BIN_VAR] = hostileBin;

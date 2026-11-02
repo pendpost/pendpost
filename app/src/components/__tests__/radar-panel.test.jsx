@@ -17,6 +17,8 @@ import { TAP_TARGET } from '../ui/recipes.js';
 // write through config_set (saveConfig).
 
 let configData;
+// Replies to you (package U): the comment inbox body; undefined = the old no-inbox default.
+let inboxData;
 let feedData;
 let accountsData;
 let feedLoading = false;
@@ -73,7 +75,7 @@ vi.mock('../../lib/api.js', async (importOriginal) => { const real = await impor
   useConfig: () => ({ data: configData, isLoading: false }),
   useSignals: () => ({ data: feedData, isLoading: feedLoading, isError: feedIsError, refetch: feedRefetchMock }),
   // Direction C: the "On your posts" segment shows an unanswered count from the comment inbox.
-  useCommentInbox: () => ({ data: undefined }),
+  useCommentInbox: () => ({ data: inboxData }),
   // The per-source coverage rows still read accountStatus: those credentials stay real for
   // REPLIES, even though they no longer gate the scan control.
   useAccounts: () => ({ data: accountsData }),
@@ -148,6 +150,7 @@ const radarOn = (queries = []) => ({ rev: 'r1', posting: { radar: { enabled: tru
 const radarOff = () => ({ rev: 'r1', posting: { radar: { enabled: false, competitorsDefault: [], replyVoiceDefault: '', queries: [] } } });
 
 beforeEach(() => {
+  inboxData = undefined;
   saveConfigMock.mockClear();
   radarAgentScanMock.mockClear();
   radarAgentStopMock.mockClear();
@@ -2558,7 +2561,8 @@ describe('Radar panel (spec 32 listening seam)', () => {
       const mentionRow = screen.getByText('fan_person').closest('li');
       expect(within(mentionRow).getByText('Mention')).toBeInTheDocument();
       // The hide-at-zero chip is present (count 1) and narrows the feed to the mention.
-      const chip = screen.getByRole('button', { name: /1 mentions/i });
+      // Singular for one (judge round 2, item 15): "1 mention", never "1 mentions".
+      const chip = screen.getByRole('button', { name: /^1 mention$/i });
       await user.click(chip);
       expect(screen.getByText('fan_person')).toBeInTheDocument();
       expect(screen.queryByText('high_intent')).not.toBeInTheDocument();
@@ -3764,7 +3768,7 @@ describe('Radar panel - By search: precision and the query tuner (relevance plan
   };
   const withTune = () => {
     feedData.items = [{ ...feedData.items[0], matchedQuery: 'q1' }, feedData.items[1]];
-    feedData.queryStats = { q1: { shown: 20, less: 2, done: 1, drafted: 1, replied: 0, since: new Date().toISOString() } };
+    feedData.queryStats = { q1: { shown: 20, less: 1, done: 7, drafted: 1, replied: 2, since: new Date().toISOString() } };
     feedData.tune = {
       proposals: [{ id: 'tp1', queryId: 'q1', kind: 'keywords', add: ['Buffer alternative', 'Hootsuite too expensive'], why: 'x', status: 'open' }],
       log: [{ id: 'tl1', queryId: 'q1', kind: 'excludeKeywords', added: ['NFL'], before: [], after: ['NFL'], auto: true }],
@@ -3850,5 +3854,143 @@ describe('Radar panel - By search: precision and the query tuner (relevance plan
     expect(screen.getByRole('button', { name: /^übernehmen$/i })).toBeInTheDocument();
     expect(screen.getByText('90 % relevant')).toBeInTheDocument();
     expect(screen.getByText('Ausschlüsse ergänzt: NFL')).toBeInTheDocument();
+  });
+});
+
+// Radar 2.0 step 2 (spec 53): the top-N inbox. The server marks the top posting.radar.dailyTarget
+// actionable signals with inboxRank and ships an `inbox` summary; the panel shows those asks and
+// folds everything else into ONE collapsed "More signals" row. Never padded.
+describe('Radar panel - Radar 2.0 top-N inbox', () => {
+  const ask = (id, author, rank, extra = {}) => ({
+    source: 'reddit', externalId: id, url: `https://mock.reddit/${id}`, author, community: 'r/x',
+    text: `Which scheduler should I use for ${id}?`, ts: new Date().toISOString(), intentScore: 80,
+    intentTags: ['buying-question'], suggestedAction: 'reply', ...(rank ? { inboxRank: rank } : {}), ...extra,
+  });
+
+  it('shows only the ranked asks; the rest sit under one collapsed More row', async () => {
+    const user = userEvent.setup();
+    feedData.items = [ask('i1', 'top_ask', 1), ask('i2', 'below_target', null), ask('i3', 'peer_post', null, { suggestedAction: 'watch' })];
+    feedData.inbox = { target: 1, shown: 1, actionable: 2, more: 2 };
+    renderPanel();
+    expect(screen.getByText('top_ask')).toBeInTheDocument();
+    expect(screen.queryByText('below_target')).not.toBeInTheDocument();
+    const more = screen.getByRole('button', { name: /more signals/i });
+    expect(more).toHaveAttribute('aria-expanded', 'false');
+    expect(within(more).getByText("2 below today's top asks")).toBeInTheDocument();
+    await user.click(more);
+    expect(screen.getByText('below_target')).toBeInTheDocument();
+    expect(screen.getByText('peer_post')).toBeInTheDocument();
+  });
+
+  it('never pads: with no ranked ask it says so instead of showing weak rows inline', () => {
+    feedData.items = [ask('i4', 'only_watch', null, { suggestedAction: 'watch' })];
+    feedData.inbox = { target: 5, shown: 0, actionable: 0, more: 1 };
+    renderPanel();
+    expect(screen.getByText(/no sharp asks today/i)).toBeInTheDocument();
+    expect(screen.queryByText('only_watch')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /more signals/i })).toBeInTheDocument();
+  });
+
+  it('a watched signal stays inline even without an inbox rank', () => {
+    feedData.items = [ask('i5', 'pinned_one', null, { watched: true, suggestedAction: 'watch' })];
+    feedData.inbox = { target: 5, shown: 0, actionable: 0, more: 1 };
+    renderPanel();
+    expect(screen.getByText('pinned_one')).toBeInTheDocument();
+  });
+
+  it('renders the German copy with real umlauts', () => {
+    feedData.items = [ask('i6', 'top_de', 1), ask('i7', 'rest_de', null)];
+    feedData.inbox = { target: 1, shown: 1, actionable: 2, more: 1 };
+    renderPanel({ locale: 'de-CH' });
+    const more = screen.getByRole('button', { name: /weitere signale/i });
+    expect(within(more).getByText('1 nach den wichtigsten Anfragen von heute')).toBeInTheDocument();
+  });
+});
+
+// Package U follow-up: "Open in Radar" on an answer to one of our Radar replies lands ON that
+// signal - Discovered with the card made visible (whatever filter or fold hid it), scrolled into
+// view and focused with the keyboard-focus ring. A signal that is gone says so in one quiet line.
+describe('Radar panel - Replies to you jumps to the Radar card', () => {
+  const answered = { source: 'reddit', externalId: 'ghi789', url: 'https://mock.reddit/ghi789', author: 'thread_op', community: 'r/SaaS', text: 'Looking for a scheduling tool that keeps drafts local', ts: new Date(Date.now() - 86_400_000).toISOString(), intentScore: 70, intentTags: ['buying-question'], suggestedAction: 'reply', replied: { url: 'https://mock.reddit/ghi789/ours', via: 'permalink' } };
+  const radarReply = (id) => ({
+    key: `reddit::rr-${id}`, kind: 'radar-reply', lane: 'reddit', platform: 'reddit', commentId: `rr-${id}`, author: 'u/ops_tobi',
+    text: 'Not OP, but we switched for the same reason.', ts: new Date().toISOString(),
+    ref: { type: 'radar', id, title: 'Looking for a scheduling tool' },
+  });
+  const withInbox = (item) => {
+    configData = { ...configData, posting: { ...configData.posting, commentWatch: { enabled: true } } };
+    inboxData = { lastSweep: new Date().toISOString(), unanswered: 1, posts: [], elsewhere: [item], sources: {} };
+  };
+  let scrolled;
+  beforeEach(() => {
+    scrolled = [];
+    // jsdom has no layout: record which element was scrolled into view.
+    Element.prototype.scrollIntoView = function scrollIntoView() { scrolled.push(this.id); };
+    const store = {};
+    vi.stubGlobal('localStorage', { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } });
+  });
+
+  it('switches to Discovered, reveals the answered signal, scrolls it into view and focuses it', async () => {
+    feedData.items = [...feedData.items, answered];
+    withInbox(radarReply('reddit ghi789'));
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /^Replies to you/ }));
+    await user.click(screen.getByRole('button', { name: 'Open in Radar' }));
+    expect(screen.getByRole('button', { name: 'Discovered' })).toHaveAttribute('aria-pressed', 'true');
+    const id = `radar-sig-${encodeURIComponent('reddit ghi789')}`;
+    // The answered signal folds out of the default "open" worklist; the jump brings it back.
+    await waitFor(() => expect(document.getElementById(id)).not.toBeNull());
+    await waitFor(() => expect(scrolled).toContain(id));
+    const card = document.getElementById(id);
+    expect(card).toHaveFocus();
+    // The keyboard-focus treatment, not a new pattern: the brand focus ring.
+    expect(card.className).toMatch(/focus:ring-2/);
+    expect(card.className).toMatch(/focus:ring-brand/);
+    expect(screen.queryByText('Signal no longer in the list')).not.toBeInTheDocument();
+  });
+
+  it('a bare externalId in the ref resolves with the item lane', async () => {
+    feedData.items = [...feedData.items, answered];
+    withInbox(radarReply('ghi789'));
+    const user = userEvent.setup();
+    renderPanel();
+    await user.click(screen.getByRole('button', { name: /^Replies to you/ }));
+    await user.click(screen.getByRole('button', { name: 'Open in Radar' }));
+    await waitFor(() => expect(scrolled).toContain(`radar-sig-${encodeURIComponent('reddit ghi789')}`));
+  });
+
+  // Judge round 2 (item 13): a signal that is gone (archived) is not a dead end. The row drops
+  // "Im Radar öffnen" (there is no card to land on) and keeps Antworten, which queues the answer
+  // under that reply (parentExternalId) with the reply's own link as the thread. The queued
+  // answer is sent "Zur Freigabe" (item 12), never "Senden".
+  it('a gone signal keeps Antworten (queued for approval) and offers no Im Radar öffnen', async () => {
+    withInbox({ ...radarReply('reddit gone42'), commentId: 't1_gone42', permalink: 'https://www.reddit.com/r/x/comments/gone42/_/t1_gone42/' });
+    const user = userEvent.setup();
+    renderPanel({ locale: 'de-CH' });
+    await user.click(screen.getByRole('button', { name: /^Antworten an dich/ }));
+    expect(screen.queryByRole('button', { name: 'Im Radar öffnen' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Antworten' }));
+    await user.type(screen.getByRole('textbox', { name: 'Antwort an u/ops_tobi auf Reddit, geht nach der Freigabe raus' }), 'Danke');
+    expect(screen.queryByRole('button', { name: 'Senden' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Zur Freigabe' }));
+    await waitFor(() => expect(radarQueueReplyMock).toHaveBeenCalledWith({
+      campaign: 'c1', signalUrl: 'https://www.reddit.com/r/x/comments/gone42/_/t1_gone42/', source: 'reddit', externalId: 'gone42', parentExternalId: 't1_gone42', text: 'Danke', clientId: undefined,
+    }));
+    expect(scrolled).toEqual([]);
+  });
+});
+
+// Judge round 2 (item 15): one signal reads in the singular, in both languages.
+describe('Radar panel - singular counts', () => {
+  it.each([
+    ['de-CH', '1 Signal', 'Den 1 angezeigten entfernen'],
+    ['en', '1 signal', 'Dismiss the 1 shown'],
+  ])('%s: "%s" and "%s"', async (locale, chip, clear) => {
+    feedData.items = [feedData.items[0]];
+    const user = userEvent.setup();
+    renderPanel({ locale });
+    await user.click(await screen.findByRole('button', { name: chip }));
+    expect(screen.getByRole('button', { name: clear })).toBeInTheDocument();
   });
 });

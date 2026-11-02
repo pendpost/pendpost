@@ -95,7 +95,7 @@ Going live on a real platform means creating a developer app in each vendor's po
 Every capability is an MCP tool, and the dashboard mirrors it. Read-only tools can never publish; write tools create drafts and are gated by the approval rules above. Grouped by what they do:
 
 - **Read and inspect:** `plan_list`, `plan_get`, `account_status`, `assets_list`, `activity_log`, `validate_media`, `platform_validate`, `pendpost_health`, `publish_preview`, `brand_lint`, `generate_digest`, `config_get`, `clients_overview`.
-- **Compose:** `plan_create_post`, `plan_update_post`, `plan_delete_post`, `campaign_create`, `campaign_set_active`.
+- **Compose:** `plan_create_post`, `plan_update_post`, `plan_delete_post`, `restore_post`, `campaign_create`, `campaign_set_active`.
 - **Approve (the human gate):** `approve_post`, `reject_post`. Nothing publishes until it's approved; by default that's you.
 - **Schedule and publish:** `scheduler_set`, `publish_due_run`, `reschedule`, `unschedule`, `mark_posted`, `verify_post`.
 - **Covers and assets:** `set_cover`, `clear_cover`, `asset_upload`, `rename_asset`, `delete_asset`.
@@ -153,7 +153,7 @@ Captions run through a brand-lint pass before they can publish. The rule set liv
 
 ## Architecture
 
-pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 134 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are 14 publish engines in `scripts/` - one per platform (`meta-social.mjs` handles Facebook and Instagram) - each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
+pendpost is one zero-dependency Node process (`server.mjs`) with four faces: a REST API at `/api`, an MCP server at `/mcp` (streamable-HTTP, JSON-RPC 2.0, 137 tools), a `/media` face that range-streams local files under `data/`, and `/`, which serves the built React dashboard from `app/dist`. Backend logic lives in `lib/*.mjs`. There are 14 publish engines in `scripts/` - one per platform (`meta-social.mjs` handles Facebook and Instagram) - each spawned as a subprocess on a scheduler tick or on demand and each emitting a JSON envelope. Plans and state are local JSON. The workspace root holding `.env`, `config.json`, `state.json`, and `data/` is overridable via `PENDPOST_ROOT` (default: the install dir).
 
 ## Platforms
 

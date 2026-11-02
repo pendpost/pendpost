@@ -9,7 +9,9 @@ import { DISABLED_PRIMARY } from './tokens.js';
 // text tokens still clear AA at 50% against the app surfaces they sit on.
 const VARIANTS = {
   primary: `bg-brand text-white shadow-lg shadow-brand/20 hover:bg-brand/90 dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`,
-  subtle: 'bg-zinc-200/60 text-zinc-700 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60 disabled:opacity-50',
+  // Dark: zinc-700 (not zinc-800), so the pill keeps its shape on an INNER_SURFACE card (zinc-800),
+  // e.g. an Approvals row's Connect, and still reads on the darker glass panels.
+  subtle: 'bg-zinc-200/60 text-zinc-700 hover:bg-zinc-300/60 dark:bg-zinc-700/60 dark:text-zinc-200 dark:hover:bg-zinc-600/60 disabled:opacity-50',
   ghost: 'text-zinc-600 hover:bg-zinc-200/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60 disabled:opacity-50',
   outline: 'text-zinc-700 ring-1 ring-zinc-900/10 hover:bg-zinc-200/40 dark:text-zinc-200 dark:ring-white/10 dark:hover:bg-zinc-800/40 disabled:opacity-50',
   success: 'bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300 disabled:opacity-50',

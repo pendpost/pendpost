@@ -1,5 +1,8 @@
 import { AlertTriangle, BadgeCheck, CalendarClock, CheckCircle, Clock, Copy, OctagonX, PauseCircle, Pencil, PlugZap, RefreshCw, Send, UserRound } from 'lucide-react';
 import { getActiveLocale, makeT } from './i18n.js';
+// Circular on purpose: postIssue reads format.js helpers and format.js counts postIssue, both
+// only inside function bodies (never at module evaluation), which ESM resolves fine.
+import { postIssue } from './postIssue.js';
 
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
@@ -161,6 +164,19 @@ export function comparePostDate(a, b, dir = 1) {
 export function fmtTime(iso) {
   const loc = dateLocale();
   return new Intl.DateTimeFormat(loc, { timeZone: TZ, hour: '2-digit', minute: '2-digit', ...hour12For(loc) }).format(new Date(iso));
+}
+
+// The planner List's time column, sized to the clock fmtTime renders: a 12-hour "01:25 PM"
+// needs 68px to stay on one line, a 24-hour "13:25" fits the compact 44px. `indent` is the
+// column plus the row's 12px gap, so a line under the title starts on the title's edge.
+export function timeColumn() {
+  const loc = dateLocale();
+  const twelve = new Intl.DateTimeFormat(loc, { hour: '2-digit', ...hour12For(loc) }).resolvedOptions().hour12 === true;
+  // `indent` starts a List row's own second line (its status line) on the title edge: the
+  // selection checkbox slot (w-4) + gap-3, then the time column + gap-3 (planner bulk, package P).
+  // Below md it starts under the time instead (just past the checkbox): at 375px the title edge
+  // left the reason too narrow and cut "LinkedIn is not connected" to "LinkedIn is not...".
+  return twelve ? { col: 'w-[4.25rem]', indent: 'pl-7 md:pl-[6.75rem]' } : { col: 'w-11', indent: 'pl-7 md:pl-[5.25rem]' };
 }
 
 // The FULL stamp - every component (weekday + date + time) - as opposed to
@@ -337,11 +353,17 @@ export function fmtInt(n) {
 // (WCAG 1.4.1); the stops are told apart by icon + label, not hue alone.
 export const STAIR = {
   rejected: { cls: 'bg-red-500/15 text-red-700 dark:text-red-300 ring-red-500/40', bar: 'bg-red-600', strip: 'bg-red-500/10' },
-  halted: { cls: 'bg-rose-400/15 text-rose-700 dark:text-rose-300 ring-rose-400/30', bar: 'bg-rose-400', strip: 'bg-rose-400/10' },
-  pending: { cls: 'bg-zinc-500/12 text-zinc-600 dark:text-zinc-300 ring-zinc-500/25', bar: 'bg-zinc-400', strip: 'bg-zinc-500/10' },
+  halted: { cls: 'bg-rose-400/15 text-rose-700 dark:text-rose-300 ring-rose-400/30', bar: 'bg-rose-400', strip: 'bg-rose-400/10', ink: 'text-rose-700 dark:text-rose-300' },
+  pending: { cls: 'bg-zinc-500/12 text-zinc-600 dark:text-zinc-300 ring-zinc-500/25', bar: 'bg-zinc-400', strip: 'bg-zinc-500/10', ink: 'text-zinc-600 dark:text-zinc-300' },
   inMotion: { cls: 'bg-emerald-400/15 text-emerald-700 dark:text-emerald-400 ring-emerald-400/30', bar: 'bg-emerald-400', strip: 'bg-emerald-400/10' },
   published: { cls: 'bg-emerald-600/18 text-emerald-800 dark:text-emerald-300 ring-emerald-600/45', bar: 'bg-emerald-600', strip: 'bg-emerald-600/10' },
 };
+
+// The ONE "needs you" mark (studio fix flow polish, 2026-11-01): the header badge and the
+// planner tray's count wear the same halted (rose) stop and the same TriangleAlert glyph, in
+// light and dark alike, so the two read as one signal. `ink` above is the bare-text form of a
+// stop (an icon + reason line with no pill around it, e.g. the List row's status line).
+export const NEEDS_YOU_MARK = `inline-flex shrink-0 items-center gap-1 ring-1 ${STAIR.halted.cls}`;
 
 // Structural only: `cls` = pill tint,
 // `Icon` = a decorative (aria-hidden) lucide glyph the pills lead with, matching the
@@ -571,6 +593,18 @@ export function postStatusWord(post, setup = null) {
   return key;
 }
 
+// Where a post stands on the approval axis alone, without the lane check: the pill a List row
+// keeps BESIDE its red reason line (planner judge round 2, item 3). The red line already says
+// why the post needs the owner (a lane not connected, a refusal), so the pill answers the other
+// question: is it approved? A blocked post read "Blockiert" twice before, and its approval
+// nowhere. The tabs stay exclusive (statusBucket still files it under "Braucht dich").
+export function approvalWord(post) {
+  const key = postStatusKey(post);
+  if (key === 'posted' || key === 'rejected' || key === 'parked' || key === 'draft' || key === 'pending') return key;
+  if (post?.approval === 'approved') return post.editedSinceApproval ? 'edited' : 'approved';
+  return 'scheduled';
+}
+
 // The unconnected lanes that are meant to publish: unconnectedLanes minus the genuinely
 // manual paste lanes (MANUAL_LANES), whose hand-off is the path, not a fault. These are
 // the lanes "Blockiert" names and whose Setup card the connect route opens.
@@ -580,7 +614,7 @@ export function blockedLanes(post, setup) {
 
 // The words that ask the owner for something (the needsAttention buckets, as words, plus
 // the refinements the owner must act on). Settled words (approved, scheduled,
-// fired-assumed, posted, parked) may stay quiet on a phone row; these never do.
+// fired-assumed, posted, parked) ask nothing (a phone List row shows every word since round 3).
 // publish-retrying is deliberately NOT here: pendpost retries on its own, so the owner has
 // nothing to do yet (it turns into publish-failed / publish-needs-you when that changes).
 export const ATTENTION_WORDS = new Set(['draft', 'pending', 'rejected', 'overdue', 'verify-failed', 'publish-failed', 'publish-needs-you', 'blocked', 'postYourself', 'edited']);
@@ -604,9 +638,10 @@ export const ROW_STATUS_META = {
   postYourself: { cls: SKY_PILL, bar: '', strip: '', Icon: Copy },
 };
 
-// Title-case a campaign id's base segment: "meta-rollout" -> "Meta Rollout".
+// Title-case a campaign id's base segment: "meta-rollout" -> "Meta Rollout". A version number
+// slugged into the id keeps its dots: "release-2-10-0" -> "Release 2.10.0", not "Release 2 10 0".
 function titleizeBase(base) {
-  return base.replace(/-/g, ' ').replace(/\b\p{L}/gu, (c) => c.toUpperCase());
+  return base.replace(/(\d)-(?=\d)/g, '$1.').replace(/-/g, ' ').replace(/\b\p{L}/gu, (c) => c.toUpperCase());
 }
 
 // "full-rollout-2026-06-12" -> "Full Rollout · 6/12/2026" (en-US) / "... ·
@@ -1200,8 +1235,11 @@ export function gridDisplayAspect(post) {
 // and every consumer asks the question the same way. Drives the preview's img-vs-
 // video branch, the file-row icon, and the cover editor's gate - which is why it
 // lives here instead of being re-derived at each call site.
+// The served url is /media?p=<path>&clientId=<id> (lib/plans.mjs mediaUrl stamps the owning
+// client), so the extension ends the PATH, not the url: it may be followed by a query part.
+// Missing that read every unprobed still as a video, which errored into a document tile.
 export function isImageMedia(media) {
-  return media?.kind === 'image' || /\.(jpe?g|png)$/i.test(media?.url || '');
+  return media?.kind === 'image' || /\.(jpe?g|png)(?=$|[?&#])/i.test(media?.url || '');
 }
 // CI-2 / mirrors lib/plans.mjs#postNeedsMedia (server, kept as a small local copy
 // so the browser bundle never imports the server-only lib module - same pattern as
@@ -1842,6 +1880,8 @@ export function effectiveRadarSourcesClient(radar, capabilities, accounts, sourc
     const flag = f && typeof f === 'object' ? f.scan : undefined;
     if (flag === false) return false;
     if (flag === true) return true;
+    // Radar 2.0 step 3: an opt-in source (feed/github) is on only by its explicit switch.
+    if (capabilities[id]?.optIn === true) return false;
     if (skipped.includes(id === 'instagram' ? 'meta' : id)) return false;
     if (capabilities[id]?.search === true) return true;
     return platformConnected(id, accounts) || sourceStatus?.[id]?.ok === true;
@@ -1964,7 +2004,15 @@ export function effectiveDelivery(platform, { cloudOn = false, cloudLanes = [], 
 // filters on first. The scheduled-native / waiting-due / fired-assumed schedule
 // states all collapse to one "scheduled" bucket for filtering.
 export function postStatusKey(post) {
+  // Publish evidence beats the approval axis (planner bulk round 2): a post that is out reads
+  // "Veröffentlicht" even when it was marked posted by hand without an approval, so its pill
+  // and the toast that called it published can never disagree.
+  if (post.status === 'posted' || post.derivedState === 'posted' || post.derivedState === 'verified-live') return 'posted';
   if (post.approval === 'rejected') return 'rejected';
+  // A parked post (taken off the schedule) reads "Parkiert" whatever its approval, so a parked
+  // draft carries the marker too. deriveState also parks a rejected post; that one stays
+  // "Abgelehnt" above.
+  if (post.derivedState === 'parked') return 'parked';
   if (post.approval === 'draft') return 'draft';
   if (post.approval === 'pending') return 'pending';
   if (post.derivedState === 'overdue') return 'overdue';
@@ -1994,24 +2042,33 @@ export function isLate(post) {
   return post.derivedState === 'overdue' || postStatusKey(post) === 'overdue';
 }
 
-// What the ONE attention slot says (the sidebar chip, and the header beacon that stands in
-// for it on small screens). Its word comes from the SAME display state the card shows
-// (postDisplayState), so one post carries one word everywhere: a refusal only the operator
-// can fix reads "Wartet auf dich" on its card, so it is never counted as "Überfällig".
-// The slot names the next actor: while any late post waits on the operator it reads
-// "Wartet auf dich: n" and counts exactly those (nothing else will ever move them);
-// otherwise "Überfällig: n" over every late post, as before. Both open the at-risk list
-// (the 'overdue' filter), which contains every post either count includes.
-// A late post the platform refused with a TRANSIENT error reads "Wird wiederholt" on its
-// card: pendpost retries it on its own, so its next actor is not the operator and calling
-// it "Überfällig" contradicted the card. It is left out of the slot; once the retries run
-// out it turns publish-failed / needs-you and is counted under that word.
-// Returns { kind: 'needs-you' | 'overdue', count } or null when nothing is late.
-export function attentionSummary(posts) {
-  const late = (posts || []).filter((p) => isLate(p) && postDisplayState(p) !== 'publish-retrying');
-  const needsYou = late.filter((p) => postDisplayState(p) === 'publish-needs-you').length;
-  if (needsYou) return { kind: 'needs-you', count: needsYou };
+// What the ONE attention slot says (the header badge). Studio fix flow (2026-11-01, package
+// C): ONE count everywhere. While anything needs the owner the badge reads that count, and it
+// is exactly what the planner's "Needs you" tray lists:
+//   every post that needs the owner (lib/postIssue.js: Blocked AND Waiting on you; Blocked
+//   was skipped before, so a post that can never go out until a lane is connected was not
+//   counted) + the tray's system rows (lib/needsYou.js systemRows; pass their number).
+// Its click opens the planner List with the tray in view and the 'needs-you' filter, which
+// contains every counted post.
+// Only when nothing needs the owner does it fall back to the late posts ("Überfällig: n",
+// the 'overdue' filter): a post pendpost will still catch up, never one it is retrying on
+// its own (publish-retrying, its next actor is pendpost).
+// `setup`: the pendpost-health setup, or a function post -> setup so each project's posts are
+// judged against their own project's setup (all-projects counting). Without it no lane reads
+// Blocked, as before.
+// Returns { kind: 'needs-you' | 'overdue', count } or null when nothing needs attention.
+export function attentionSummary(posts, { setup = null, system = 0 } = {}) {
+  const list = posts || [];
+  const issues = list.filter((p) => postIssue(p, setupFor(setup, p))).length;
+  const count = issues + (Number(system) || 0);
+  if (count) return { kind: 'needs-you', count };
+  const late = list.filter((p) => isLate(p) && postDisplayState(p) !== 'publish-retrying');
   return late.length ? { kind: 'overdue', count: late.length } : null;
+}
+
+// A setup value or a per-post setup function (see attentionSummary).
+function setupFor(setup, post) {
+  return typeof setup === 'function' ? setup(post) : setup;
 }
 
 // A post the scheduler would act on RIGHT NOW, mirroring runDue's gate
@@ -2049,7 +2106,9 @@ export function isYouTubeReleaseDue(post) {
 
 // Status-filter chips, in owner-priority order, each with an IconBadge tone. The
 // chip label is resolved by the consumer via t('status.<key>').
+// 'needs-you' leads: every post the header badge counts (blocked + waiting on you).
 export const STATUS_FILTERS = [
+  { key: 'needs-you', tone: 'err' },
   { key: 'draft', tone: 'neutral' },
   { key: 'pending', tone: 'warn' },
   { key: 'rejected', tone: 'err' },
@@ -2062,7 +2121,9 @@ export const STATUS_FILTERS = [
 // Shared multi-select filter predicate (3g). Empty array = no constraint (all).
 // platformFilter matches if the post targets ANY selected platform; typeFilter
 // matches the post's single type; statusFilter matches its collapsed status key.
-export function matchesFilters(post, platformFilter = [], typeFilter = [], statusFilter = []) {
+// 'needs-you' matches every post postIssue says needs the owner; it needs the `setup` (or a
+// per-post setup function) to see Blocked posts, like attentionSummary.
+export function matchesFilters(post, platformFilter = [], typeFilter = [], statusFilter = [], setup = null) {
   const pOk = !platformFilter.length || (post.platforms || []).some((p) => platformFilter.includes(p));
   const tOk = !typeFilter.length || typeFilter.includes(post.type);
   // 'overdue' is the AT-RISK view, not just a pill bucket: it must CONTAIN every post
@@ -2070,10 +2131,46 @@ export function matchesFilters(post, platformFilter = [], typeFilter = [], statu
   // decision, whose collapsed bucket is 'draft'/'pending'. Matching on the bucket alone
   // would structurally hide exactly the posts the banner is shouting about, which is how
   // "Nicht veroeffentlicht: 1" could sit above an empty list.
-  const sOk = !statusFilter.length
-    || statusFilter.includes(postStatusKey(post))
-    || (statusFilter.includes('overdue') && isLate(post));
+  // One bucket per post (statusBucket): 'overdue' still CONTAINS every late post the alarm
+  // counts and 'needs-you' every post the badge counts, but a post is never under two tabs.
+  const sOk = !statusFilter.length || statusFilter.includes(statusBucket(post, setup));
   return pOk && tOk && sOk;
+}
+
+// The ONE status tab a post belongs to (planner bulk round 2): the tabs are mutually exclusive,
+// so their counts add up to "Alle" and a post never shows under two of them. First match wins:
+//   posted / rejected / parked  - settled, whatever else is true;
+//   needs-you                   - lib/postIssue.js says the owner must act (Blocked or Waiting
+//                                 on you): the header badge's set, so its jump lands on it;
+//   overdue                     - late (isLate, the alarm's predicate), so the overdue jump
+//                                 still contains every late post the alarm counts;
+//   draft / pending / scheduled - the approval axis.
+// `setup` as in matchesFilters (Blocked needs it).
+export function statusBucket(post, setup = null) {
+  const key = postStatusKey(post);
+  if (key === 'posted' || key === 'rejected' || key === 'parked') return key;
+  if (postIssue(post, setupFor(setup, post))) return 'needs-you';
+  if (isLate(post)) return 'overdue';
+  if (key === 'draft' || key === 'pending') return key;
+  return 'scheduled';
+}
+
+// The filter bar's status tabs (planner bulk 2026-11-01, package P): the five the owner reaches
+// for first, then the rarer three behind "More". Every key is a STATUS_FILTERS key, so a tab and
+// the predicate it filters by can never drift.
+export const STATUS_TABS = ['needs-you', 'draft', 'pending', 'scheduled', 'posted'];
+export const STATUS_MORE = ['rejected', 'overdue', 'parked'];
+
+// The live count on each status tab: what that tab WOULD show under the current platform + type
+// filters (never the status filter itself, or every other tab would read 0). `all` is the count
+// with no status. One bucket per post (statusBucket, the list's own predicate), so the tab counts
+// add up to `all` and a tab's number and the list it opens are one set by construction.
+export function statusCounts(posts, platformFilter = [], typeFilter = [], setup = null) {
+  const pool = (posts || []).filter((p) => matchesFilters(p, platformFilter, typeFilter, [], setup));
+  const counts = { all: pool.length };
+  for (const { key } of STATUS_FILTERS) counts[key] = 0;
+  for (const p of pool) counts[statusBucket(p, setup)] += 1;
+  return counts;
 }
 
 // Actionable = still needs an approval decision, so it belongs in the "To review" queue

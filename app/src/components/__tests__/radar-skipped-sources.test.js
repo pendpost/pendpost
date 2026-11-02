@@ -30,3 +30,16 @@ describe('effectiveRadarSourcesClient + skippedPlatforms', () => {
     expect(effectiveRadarSourcesClient({}, CAPS, accounts(), { instagram: { ok: true } }, ['meta'])).not.toContain('instagram');
   });
 });
+
+// Radar 2.0 step 3: the opt-in engine sources (feed/github) are on only by their explicit switch.
+describe('effectiveRadarSourcesClient + opt-in sources', () => {
+  const OPT = { ...CAPS, feed: { search: true, optIn: true }, github: { search: true, optIn: true } };
+  it('an opt-in source stays out by default, even though it is searchable', () => {
+    const got = effectiveRadarSourcesClient({}, OPT, accounts(), {});
+    expect(got).not.toContain('feed');
+    expect(got).not.toContain('github');
+  });
+  it('its switch turns it on', () => {
+    expect(effectiveRadarSourcesClient({ sources: { github: { scan: true } } }, OPT, accounts(), {})).toContain('github');
+  });
+});

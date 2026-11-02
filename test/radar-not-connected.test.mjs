@@ -40,7 +40,9 @@ try {
   const engines = {
     reddit: { script: 'scripts/reddit-social.mjs', scope: 'reddit_oauth' },
     mastodon: { script: 'scripts/mastodon-social.mjs', scope: 'read:search' },
-    bluesky: { script: 'scripts/bluesky-social.mjs', scope: 'bluesky_app_password' },
+    // bluesky left this list in Radar 2.0 step 1: with no app password its SEARCH runs against the
+    // public AppView (test/radar-bluesky-public.test.mjs), so a never-configured Bluesky lane is
+    // no longer not_connected for scanning. Its no-credential row is asserted just below.
   };
   for (const [source, { script, scope }] of Object.entries(engines)) {
     const out = execFileSync(process.execPath, [path.join(REPO, script), 'radar', '--query', '{}', '--json', '--actor', 'radar'], {
@@ -53,6 +55,18 @@ try {
     ok(row && row.ok === false && row.error === 'not_connected',
       `${source}: NEVER configured => error 'not_connected', not 'needs_scope' (got ${row && row.error})`);
     ok(row && row.scope === scope, `${source}: the not_connected row still carries scope ${scope} for the connect deep-link`);
+  }
+
+  {
+    // An empty query makes no request at all, so this stays hermetic: no app password and no terms
+    // is a plain empty ok row, not not_connected.
+    const out = execFileSync(process.execPath, [path.join(REPO, 'scripts/bluesky-social.mjs'), 'radar', '--query', '{}', '--json', '--actor', 'radar'], {
+      cwd: REPO,
+      env: { PATH: process.env.PATH, HOME: os.homedir(), PENDPOST_ROOT: WS, PENDPOST_MODE: 'live' },
+      encoding: 'utf8',
+    });
+    const row = (JSON.parse(String(out).trim().split('\n').pop()).results || []).find((r) => r && r.action === 'radar');
+    ok(row && row.ok === true && Array.isArray(row.items), `bluesky: NEVER configured still searches (public AppView), so no not_connected row (got ${row && (row.error || 'ok')})`);
   }
 
   // ===== (2) runLaneRadar maps not_connected exactly like needs_scope (present-but-failed row) =====

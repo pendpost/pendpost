@@ -5,7 +5,9 @@
 // Before this fix, linkedin was enumerated, its read 403'd, and the inbox surfaced a false
 // "Kommentare auf LinkedIn koennen gerade nicht gelesen werden" + a misleading reconnect link -
 // a dead-end error (canon), because no re-auth grants the pending CMA product. Now the lane is
-// skipped (no source row, no nag) and the GUI greys it in settings via the capabilities map.
+// skipped (never read) and the GUI greys it in settings via the capabilities map. Since the
+// planner-bulk contract (2026-11-01) its source row is the honest needs_owner one (never a
+// silent zero, never a reconnect).
 import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,8 +43,8 @@ const { getConfig, setConfig } = await import('../lib/config.mjs');
 const enable = () => setConfig({ ifRev: getConfig().rev, actor: 'owner', set: { posting: { commentWatch: { enabled: true } } } });
 
 // A stub that returns a stranger comment for EVERY target it is asked to read. If linkedin were
-// enumerated, its target would be read here and would appear in sources - so its ABSENCE proves
-// the skip. LinkedIn's real read would 403; the point is we never even call it.
+// enumerated, its target would be read here (readTargets) and its row would read ok:true - so the
+// needs_owner row plus its absence from readTargets prove the skip. LinkedIn's real read would 403; the point is we never even call it.
 const readTargets = [];
 async function readComments({ campaign, postId, platform }) {
   readTargets.push(platform);
@@ -56,7 +58,8 @@ try {
 
   ok(!readTargets.includes('linkedin'), 'sweep: linkedin is never read (skipped before the read)');
   ok(readTargets.includes('youtube'), 'sweep: youtube (available lane) IS read');
-  ok(!inbox.sources.linkedin, 'inbox: no linkedin source row -> no false "cannot be read" degrade');
+  ok(inbox.sources.linkedin && inbox.sources.linkedin.ok === false && inbox.sources.linkedin.reason === 'needs_owner' && inbox.sources.linkedin.detail === 'linkedin_cma_pending',
+    'inbox: linkedin reports needs_owner (CMA pending), never a reconnect or a silent zero');
   ok(inbox.sources.youtube && inbox.sources.youtube.ok === true, 'inbox: youtube reads ok');
   ok(inbox.posts.some((p) => p.platform === 'youtube'), 'inbox: the youtube post surfaces its comment');
   ok(!inbox.posts.some((p) => p.platform === 'linkedin'), 'inbox: no linkedin post in the feed');

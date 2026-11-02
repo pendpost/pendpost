@@ -56,7 +56,7 @@ const cfg = JSON.parse(fs.readFileSync(a[a.indexOf('--mcp-config') + 1], 'utf8')
 const call = (name, args) => fetch(cfg.mcpServers.pendpost.url, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) }).then((r) => r.json());
 call('radar_ingest', { clientId: 'default', actor: 'agent:radar-scan', queryId: 'q1', signals: [{
-  source: 'hackernews', ts: new Date().toISOString(), externalId: 'hn1', url: 'https://news.ycombinator.com/item?id=1',
+  authorRole: 'seeker', intent: 'ask_reco', replyable: true, source: 'hackernews', ts: new Date().toISOString(), externalId: 'hn1', url: 'https://news.ycombinator.com/item?id=1',
   text: 'I would love a social media management tool, all the ones I found were insanely expensive or unusable.', score: 70, reason: 'open pain point' }] })
   .then(() => call('radar_queue_reply', { clientId: 'default', actor: 'agent:radar-draft', confirm: true,
     source: 'hackernews', externalId: 'hn1', signalUrl: 'https://news.ycombinator.com/item?id=1',
@@ -98,8 +98,8 @@ try {
   // ===== (1) capability derivation ==========================================
   ok(RADAR_CAPABILITIES.hackernews.reply === false && RADAR_CAPABILITIES.hackernews.copyDraft === true,
     'hackernews stays reply:false and gains copyDraft:true');
-  ok(JSON.stringify([...RADAR_COPY_DRAFT_SOURCES]) === JSON.stringify(['hackernews', 'x', 'linkedin', 'instagram', 'quora']),
-    'RADAR_COPY_DRAFT_SOURCES derives to exactly [hackernews, x, linkedin, instagram, quora] (no stranger-reply API for any of them; nostr flipped to the reply lane, wave 5)');
+  ok(JSON.stringify([...RADAR_COPY_DRAFT_SOURCES]) === JSON.stringify(['hackernews', 'x', 'linkedin', 'instagram', 'quora', 'feed', 'github']),
+    'RADAR_COPY_DRAFT_SOURCES derives to exactly [hackernews, x, linkedin, instagram, quora, feed, github] (no stranger-reply API for any of them; nostr flipped to the reply lane, wave 5; feed/github are the Radar 2.0 step 3 opt-in sources)');
   ok(!RADAR_REPLY_SOURCES.includes('hackernews'),
     'RADAR_REPLY_SOURCES is untouched - the reply-post validator and auto-reply lanes never see HN');
   ok(RADAR_COPY_DRAFT_SOURCES.every((s) => !RADAR_REPLY_SOURCES.includes(s)),
@@ -119,7 +119,7 @@ try {
   // The drafting brief tells the child about the copy path, and drops the campaign line
   // when there is no campaign (the copy-only run).
   const brief = radarDraftPrompt([{ source: 'hackernews', ts: new Date().toISOString(), externalId: 'hn1', url: 'u', text: 't' }], { campaign: null });
-  ok(/hackernews, x, linkedin, instagram, quora have no reply path from pendpost/.test(brief), 'the drafting brief explains the copy-paste path (derived - nostr auto-dropped on its reply flip)');
+  ok(/hackernews, x, linkedin, instagram, quora, feed, github have no reply path from pendpost/.test(brief), 'the drafting brief explains the copy-paste path (derived - nostr auto-dropped on its reply flip)');
   ok(!/campaign: "/.test(brief), 'with no campaign, the brief omits the campaign line instead of interpolating null');
 
   // ===== (2) the full press, campaign-less ==================================

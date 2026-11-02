@@ -36,14 +36,22 @@ vi.mock('../../lib/api.js', async (importOriginal) => {
   };
 });
 
-const issue = { clientId: 'globex', clientName: 'Globex', campaign: 'bakery', postId: 'g1', title: 'Sourdough Saturday', lane: 'linkedin', message: 'linkedin: HTTP 500', code: null, at: new Date().toISOString(), terminal: false, kind: 'post' };
+const issue = { clientId: 'globex', clientName: 'Globex', campaign: 'bakery', postId: 'g1', title: 'Sourdough Saturday', lane: 'linkedin', message: 'linkedin: HTTP 500', code: null, at: new Date().toISOString(), terminal: true, kind: 'post' };
 vi.mock('../../lib/cloud.js', async (importOriginal) => {
   const actual = await importOriginal();
+  // Built lazily: the factory is hoisted above `issue` and CLIENTS.
+  const cloud = () => ({ workspaceId: 'ws_1', enabled: true, apiKey: { present: true }, sync: { state: 'red', reason: 'cloud_failures', pendingCount: 0, overdueCount: 0, failedCount: 1, issues: [issue] } });
+  const cloudClients = { clients: [{ clientId: 'acme', active: true, alwaysOn: true }, { clientId: 'globex', active: false, alwaysOn: true }] };
   return {
     ...actual,
-    useCloud: () => ({ data: { workspaceId: 'ws_1', enabled: true, apiKey: { present: true }, sync: { state: 'red', reason: 'cloud_failures', pendingCount: 0, overdueCount: 0, failedCount: 1, issues: [issue] } }, isLoading: false, refetch: vi.fn() }),
-    useCloudClients: () => ({ data: { clients: [{ clientId: 'acme', active: true, alwaysOn: true }, { clientId: 'globex', active: false, alwaysOn: true }] } }),
+    useCloud: () => ({ data: cloud(), isLoading: false, refetch: vi.fn() }),
+    useCloudClients: () => ({ data: cloudClients }),
     useCloudSubscription: () => ({ data: undefined }),
+    // The real derivation over the same mocked reads (the real hook would call the module's
+    // own, unmocked fetch hooks).
+    useDeliveryState: ({ allClients = false } = {}) => actual.deriveDeliveryState({
+      allClients, cloud: cloud(), cloudClients, registry: { clients: CLIENTS, activeClientId: 'acme' },
+    }),
   };
 });
 

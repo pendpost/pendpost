@@ -148,6 +148,63 @@ describe('muted text contrast (canon Tier 1, brand/DESIGN.md standing bar: WCAG 
   });
 });
 
+// The muted pairing passes on the PAGE, not on a card. INNER_SURFACE (ui/tokens.js) fills a card
+// with zinc-100, and zinc-500 on zinc-100 measures 4.40:1: the planner judge (round 2, 2026-11-01)
+// read "Ausstehend" in the post detail's delivery rows at exactly that. On zinc-200 it is 3.79.
+// So light muted text that sits on such a surface steps up to zinc-600 (7.0:1 on zinc-100).
+//
+// A line regex cannot see this (the surface is an ancestor, often lines away), so this walks
+// the JSX tree: an element whose className names INNER_SURFACE or a light bg-zinc-100 / -200
+// opens a surface, a white or slate-50 fill closes it again, and no light text-zinc-500 may
+// sit inside. It sees one file's tree only (a child component rendered onto a card elsewhere
+// is the browser flows' job: verify-planner-bulk samples the computed colours). espree is
+// eslint's own parser (eslint is a devDependency, so it is always installed with it).
+describe('muted text on a card surface (zinc-100 / zinc-200)', () => {
+  const ZINC_100 = '#f4f4f5';
+  const ZINC_200 = '#e4e4e7';
+
+  it('the maths: zinc-500 fails on zinc-100 and zinc-200, zinc-600 passes on both', () => {
+    expect(contrastRatio(ZINC[500], ZINC_100)).toBeLessThan(AA); // 4.40
+    expect(contrastRatio(ZINC[500], ZINC_200)).toBeLessThan(AA); // 3.79
+    expect(contrastRatio(ZINC[600], ZINC_100)).toBeGreaterThan(AA); // 7.0
+    expect(contrastRatio(ZINC[600], ZINC_200)).toBeGreaterThan(AA); // 6.0
+  });
+
+  it('no light text-zinc-500 inside an INNER_SURFACE / bg-zinc-100 / bg-zinc-200 element', async () => {
+    const espree = await import('espree');
+    const SURFACE = /\bINNER_SURFACE\b|(?<![\w:-])bg-zinc-(?:100|200)(?![\w/-])|(?<![\w:-])bg-zinc-100\/(?:[6-9]\d|100)\b/;
+    const RESET = /(?<![\w:-])bg-(?:white|slate-50|zinc-50)(?![\w/-])/;
+    const MUTED = /(?<![\w:-])text-zinc-500\b/;
+    const bad = [];
+    for (const f of sources().filter((x) => x.endsWith('.jsx'))) {
+      const src = fs.readFileSync(f, 'utf8');
+      const ast = espree.parse(src, { ecmaVersion: 'latest', sourceType: 'module', ecmaFeatures: { jsx: true }, range: true, loc: true });
+      const classOf = (el) => {
+        const a = el.openingElement.attributes.find((x) => x.type === 'JSXAttribute' && x.name?.name === 'className');
+        return a?.value ? src.slice(a.value.range[0], a.value.range[1]) : '';
+      };
+      const visit = (node, onSurface) => {
+        if (!node || typeof node !== 'object') return;
+        if (Array.isArray(node)) { node.forEach((n) => visit(n, onSurface)); return; }
+        if (node.type === 'JSXElement') {
+          const c = classOf(node);
+          const s = SURFACE.test(c) ? true : RESET.test(c) ? false : onSurface;
+          if (s && MUTED.test(c)) bad.push(`${path.relative(process.cwd(), f)}:${node.loc.start.line}`);
+          node.openingElement.attributes.forEach((a) => visit(a, s));
+          node.children.forEach((ch) => visit(ch, s));
+          return;
+        }
+        for (const k of Object.keys(node)) {
+          if (k === 'loc' || k === 'range') continue; // eslint-disable-line no-continue
+          if (node[k] && typeof node[k] === 'object') visit(node[k], onSurface);
+        }
+      };
+      visit(ast, false);
+    }
+    expect(bad, `text-zinc-500 on a zinc-100 card is 4.40:1 (AA needs 4.5). Use text-zinc-600 dark:text-zinc-400 there.\n${bad.join('\n')}`).toEqual([]);
+  });
+});
+
 // WP10: the FIELD_SURFACE token (ui.jsx) - entry fields sit on WHITE in light mode (they read
 // active against the zinc-tinted panels; INNER_SURFACE's zinc-100 made them look disabled) and
 // zinc-800/60 in dark. The field TEXT tokens must clear AA on those fills.

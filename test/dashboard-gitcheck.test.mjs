@@ -12,8 +12,8 @@ import { execFileSync } from 'node:child_process';
 let pass = 0;
 const ok = (c, m) => { assert.ok(c, m); console.log(`  ok - ${m}`); pass += 1; };
 
-const { gitCheck } = await import('../scripts/dashboard-build.mjs');
-const { readUpdateStatus } = await import('../lib/dashboard.mjs');
+const { gitCheck, apply } = await import('../scripts/dashboard-build.mjs');
+const { readUpdateStatus, headSha } = await import('../lib/dashboard.mjs');
 
 // Scrub the git env that git exports to hooks (GIT_DIR/GIT_WORK_TREE/
 // GIT_INDEX_FILE/GIT_PREFIX/GIT_COMMON_DIR). When this test runs under the
@@ -67,6 +67,45 @@ try {
   fs.writeFileSync(path.join(A, 'dirty.txt'), 'uncommitted');
   gitCheck({ repo: A, statusDir: A, fetch: false });
   ok(readUpdateStatus(A).clean === false, 'untracked file -> clean:false');
+
+  // headSha reads .git directly and must agree with git itself.
+  ok(headSha(A) === g(['rev-parse', 'HEAD'], A), 'headSha matches git rev-parse HEAD (loose ref)');
+  g(['pack-refs', '--all'], A);
+  ok(headSha(A) === g(['rev-parse', 'HEAD'], A), 'headSha matches git rev-parse HEAD (packed ref)');
+
+  // apply(): a fresh clone D, upstream one commit ahead. The status file lives
+  // outside D (in the real repo data/ is gitignored) so it never dirties the tree.
+  const D = path.join(ROOT, 'D');
+  g(['clone', remote, D], ROOT);
+  const E = path.join(ROOT, 'E');
+  g(['clone', remote, E], ROOT);
+  writeCommit(E, 'n.txt', 'new', 'upstream');
+  g(['push'], E);
+  const appDir = path.join(ROOT, 'app');
+  fs.mkdirSync(path.join(appDir, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(appDir, 'dist', 'index.html'), '<html></html>'); // no inputs -> not stale, no vite
+  const statusDir = path.join(ROOT, 'status');
+
+  fs.writeFileSync(path.join(D, 'wip.txt'), 'uncommitted');
+  let r = await apply({ pull: true, repo: D, appDir, statusDir });
+  ok(r.ok === false && r.step === 'check' && r.reason === 'dirty-tree', 'apply refuses a dirty tree before pulling');
+  ok(!fs.existsSync(path.join(D, 'n.txt')), 'dirty refusal pulled nothing');
+  fs.rmSync(path.join(D, 'wip.txt'));
+
+  g(['fetch'], D);
+  r = await apply({ pull: true, repo: D, appDir, statusDir });
+  ok(r.ok === true && r.step === 'done', 'clean + fast-forwardable -> apply ok');
+  ok(fs.existsSync(path.join(D, 'n.txt')), 'apply fast-forwarded the upstream commit');
+  ok(readUpdateStatus(statusDir).ahead === 0, 'apply refreshed the status: nothing left ahead');
+
+  writeCommit(D, 'local.txt', 'mine', 'local only');
+  writeCommit(E, 'n2.txt', 'newer', 'upstream 2');
+  g(['push'], E);
+  g(['fetch'], D);
+  const before = g(['rev-parse', 'HEAD'], D);
+  r = await apply({ pull: true, repo: D, appDir, statusDir });
+  ok(r.ok === false && r.step === 'pull', 'diverged -> ff-only pull fails, reported as the pull step');
+  ok(g(['rev-parse', 'HEAD'], D) === before, 'a failed pull leaves local history untouched');
 
   // a non-git directory -> git:false, never offers an update
   const plain = path.join(ROOT, 'plain');

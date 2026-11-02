@@ -9,6 +9,11 @@
 // minimally here (same fetch + error contract: a non-2xx throws an Error whose
 // .code carries the server's machine-readable code).
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { studioFetch } from './studioToken.js';
+import { useAccounts, useClients } from './api.js';
+import { deriveDeliveryState, cloudConnected } from './deliveryState.js';
+
+export { cloudHealth, cloudTone, localTone, deriveDeliveryState } from './deliveryState.js';
 
 async function getJson(path) {
   const res = await fetch(path);
@@ -17,7 +22,7 @@ async function getJson(path) {
 }
 
 async function sendJson(method, path, body) {
-  const res = await fetch(path, {
+  const res = await studioFetch(path, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
@@ -72,6 +77,12 @@ export const setCloudEnabled = (enabled) => postJson('/api/cloud/enabled', { ena
 // (http_error/network_error/presign_failed/upload_failed).
 export const pushCloud = () => postJson('/api/cloud/push', {});
 
+// POST /api/cloud/recheck -> { ok, checkedAt, reached, sync }. Probes the cloud NOW (a GET of
+// /api/cloud only reads the last known contact) and returns the fresh roll-up, the same
+// shape GET /api/cloud carries in .sync. The fix buttons and the Cloud page's silent
+// re-check call it, then write .sync into the ['cloud'] cache (useSetCloudSync).
+export const recheckCloud = () => postJson('/api/cloud/recheck', {});
+
 // POST /api/cloud/reconcile -> { ok, patched[], skipped[], refused[] }. The PULL
 // inverse of push: polls the cloud's terminal job results and writes the minted
 // platform ids back into the local plans (clearing "overdue" for posts the cloud
@@ -109,28 +120,6 @@ export function useCloudClients(enabled = true) {
     queryFn: () => getJson('/api/cloud/clients'),
     enabled,
     staleTime: 30_000,
-    refetchInterval: 60_000,
-  });
-}
-
-// GET /api/cloud/events -> { ok, events: [{ eventId, type, platform, clientId, postId,
-// externalPostId, author, text, reaction, parentId, permalink, ts }] }. The webhook/
-// realtime ingestion seam READ (spec 23): the normalized inbound-event feed (comment/
-// mention/message/reaction), pulled from the cloud's stored, workspace-scoped webhook
-// store (a REQUIRED pendpost-cloud companion change, NOT this repo - the receiver has
-// not shipped yet, so the honest state today is always an empty feed). FAILS OPEN
-// server-side - a cloud-down/not-connected/transport-error pull resolves to
-// { ok:true, events:[] }, never a thrown error - so this read never surfaces a NEW
-// error state; the existing header cloud dot already reflects a degraded connection.
-// Unlike useCloud/useCloudClients/useCapabilities/useCloudSubscription (workspace-wide,
-// not client-scoped), this feed IS scoped to the active/bound client, so its query key
-// rides CLIENT_SCOPED_KEYS (app/src/lib/api.js) and refetches on a client switch.
-export function useInboundEvents(enabled = true) {
-  return useQuery({
-    queryKey: ['cloud', 'events'],
-    queryFn: () => getJson('/api/cloud/events'),
-    enabled,
-    staleTime: 15_000,
     refetchInterval: 60_000,
   });
 }
@@ -201,6 +190,24 @@ export function useCloudDelivery() {
   return { cloudOn, cloudLanes, localOnlyTypes, resolved };
 }
 
+// The ONE delivery state for the sidebar Delivery card, the header ConnectionStatus button and
+// App's DeliveryExplainer gate (contract B, 2026-11-01): where the projects in view publish
+// from and whether that is healthy. In All-projects mode (`allClients`, the browser setting
+// pendpost.allClients) it counts EVERY listed project; otherwise it describes the selected
+// one. Each read is shared with the other surfaces by its react-query key, so this costs no
+// extra request; the cloud reads only run when the install is connected.
+// -> { scope, connected, cloud: { count, names, health, reason }, local: { count, names, running, lastRun } }
+// (the derivation itself is pure: lib/deliveryState.js deriveDeliveryState)
+export function useDeliveryState({ allClients = false } = {}) {
+  const { data: cloud } = useCloud();
+  const connected = cloudConnected(cloud);
+  const { data: registry } = useClients();
+  const { data: cloudClients } = useCloudClients(connected);
+  const { isError: subFailed } = useCloudSubscription(connected);
+  const { data: accounts } = useAccounts();
+  return deriveDeliveryState({ allClients, cloud, registry, cloudClients, subFailed, scheduler: accounts?.scheduler });
+}
+
 // POST /api/cloud/checkout { plan, interval } -> { ok, url }. Opens a Stripe Checkout
 // (card 4242 in test) to subscribe to a tier; the server also opens the browser.
 export const startCheckout = (plan, interval) => postJson('/api/cloud/checkout', { plan, interval });
@@ -223,6 +230,17 @@ export const handTokens = () => postJson('/api/cloud/hand-tokens', {});
 // After any cloud mutation the read must refetch so the UI reflects the new
 // connection/enabled state. A push also records activity, so it invalidates the
 // activity feed too (mirrors api.js's query-key invalidation discipline).
+// Writes a fresh sync roll-up (from recheckCloud) into the ['cloud'] cache, so the header
+// dot, the popover and the Cloud page all move at once without a second round trip. A push
+// also records activity, so alsoActivity refreshes the feed too.
+export function useSetCloudSync() {
+  const queryClient = useQueryClient();
+  return (sync, alsoActivity = false) => {
+    queryClient.setQueryData(['cloud'], (old) => (old ? { ...old, sync: sync ?? null } : old));
+    if (alsoActivity) queryClient.invalidateQueries({ queryKey: ['activity'] });
+  };
+}
+
 export function useInvalidateCloud() {
   const queryClient = useQueryClient();
   return (alsoActivity = false) => {

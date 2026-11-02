@@ -33,6 +33,11 @@ describe('prettyCampaign — locale-aware day form', () => {
   it('a plain slug with no trailing date is just title-cased', () => {
     expect(prettyCampaign('meta-rollout')).toBe('Meta Rollout');
   });
+
+  it('a version number slugged into the id keeps its dots', () => {
+    expect(prettyCampaign('release-2-10-0')).toBe('Release 2.10.0');
+    expect(prettyCampaign('top-10-tips')).toBe('Top 10 Tips');
+  });
 });
 
 describe('fmtInt — locale-grouped integer (Insights)', () => {

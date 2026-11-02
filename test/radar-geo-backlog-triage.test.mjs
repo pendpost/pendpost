@@ -90,6 +90,10 @@ try {
   ok((await listRadar({})).geo.comparisonBacklog.some((b) => b.key === 'buffer'), 'after clear, the next scan surfaces the entry again (honest undo)');
 
   // ---- (g) signal triage is byte-unchanged by the extension ------------------
+  // Mock mode has no relevance judge, so every engine hit lands `unjudged`, and listRadar never
+  // surfaces an unjudged hit (Radar 2.0 step 1). This check is about the scan and the list, not the
+  // judge, so it reads the feed as a judged one would.
+  { const { loadState: ls, saveState: ss } = await import('../lib/state.mjs'); const st = ls(); for (const s of st.radar.signals || []) delete s.unjudged; ss(); }
   const feed = await listRadar({});
   const victim = feed.items[0];
   if (victim) {

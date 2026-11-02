@@ -75,17 +75,30 @@ describe('one post, one status word on card, list row and detail', () => {
     expect(within(card).queryByText('Approved')).not.toBeInTheDocument();
   });
 
-  it('the List row carries the same word, at every width (it asks the owner to act)', () => {
+  // Studio fix flow (package C): a List row that needs the owner wears its ONE fix in the
+  // status slot instead of the word (one signal per row), at every width; never "Approved".
+  it('the List row carries the fix for that word, at every width (it asks the owner to act)', () => {
     wrap(<ListView posts={[tgPost]} onSelect={() => {}} loading={false} showAllDays />);
-    const pill = screen.getByText('Blocked').closest('span.rounded-full');
-    expect(pill.className).not.toMatch(/(^|\s)hidden(\s|$)/);
-    expect(screen.queryByText('Approved')).not.toBeInTheDocument();
+    const btn = screen.getByRole('button', { name: 'Connect Telegram' });
+    expect(btn.closest('[data-row-status]').className).not.toMatch(/(^|\s)hidden(\s|$)/);
+    // Planner round 3 (judge item 3): beside its red "not connected" line the row keeps its
+    // APPROVAL pill, never a second "Blocked" (the red line already says what blocks it).
+    const row = btn.closest('li');
+    expect(row.querySelector('[data-row-pill]')).toHaveTextContent('Approved');
+    expect(within(row).queryByText('Blocked')).not.toBeInTheDocument();
   });
 
-  it('a settled word stays quiet on a phone List row (desktop only), as before', () => {
-    wrap(<ListView posts={[liPost]} onSelect={() => {}} loading={false} showAllDays />);
-    const pill = screen.getByText('Approved').closest('span[title], span');
-    expect(pill.closest('span.rounded-full').className).toContain('hidden md:inline-flex');
+  it('a settled word shows on a phone List row too, under the title (planner round 3, judge item 4)', () => {
+    const original = window.matchMedia;
+    window.matchMedia = (q) => ({ matches: q.includes('max-width: 767px'), media: q, addEventListener() {}, removeEventListener() {} });
+    try {
+      wrap(<ListView posts={[liPost]} onSelect={() => {}} loading={false} showAllDays />);
+      const pill = screen.getByText('Approved').closest('span.rounded-full');
+      expect(pill.className).not.toContain('hidden');
+      expect(pill.closest('[data-row-meta]')).not.toBeNull();
+    } finally {
+      window.matchMedia = original;
+    }
   });
 
   it('the detail header says the same ONE word, and the delivery row uses it too', () => {
@@ -93,7 +106,11 @@ describe('one post, one status word on card, list row and detail', () => {
     const header = screen.getByRole('dialog').querySelector('header');
     const words = within(header).queryAllByText(pillWords).map((n) => n.textContent);
     expect(words).toEqual(['Blocked']);
-    expect(screen.getByText('Blocked: connect Telegram')).toBeInTheDocument();
+    // The delivery row says the same word; its connect now lives on the IssueCard (ONE
+    // control per lane), which names what is missing and carries the fix.
+    expect(screen.getAllByText('Blocked').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('Telegram not connected')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Connect Telegram' })).toBeInTheDocument();
   });
 
   it('a connected, approved post reads "Approved" on the card AND in the detail (never "Scheduled" there)', () => {

@@ -33,7 +33,9 @@ const setRadar = (radar) => setConfig({ ifRev: getConfig().rev, actor: 'owner', 
 const findSignal = async (source, externalId) => (await listRadar({})).items.find((s) => s.source === source && s.externalId === externalId);
 const ledgerEntry = (externalId) => (loadState().radar.copyPosted || []).find((e) => e.externalId === externalId);
 
-const BEFORE = '2026-08-01T10:00:00.000Z';
+// Two days ago: inside the default 7-day lookback (Radar 2.0 step 1). A fixed date here aged out
+// of the window and made the ingest below drop the seed as stale.
+const BEFORE = new Date(Date.now() - 2 * 86_400_000).toISOString();
 
 try {
   setRadar({ enabled: true, queries: [{ id: 'q1', label: 'q', sources: ['hackernews'], keywords: ['schedule'] }] });

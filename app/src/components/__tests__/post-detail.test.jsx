@@ -171,6 +171,33 @@ describe('PostDetail i18n migration (en)', () => {
   });
 });
 
+// Planner judge round 2, item 9: the post detail opened from the List (Enter / e).
+describe('PostDetail delivery rows and the platform picker (planner round 3)', () => {
+  it('"Ausstehend" on a delivery row reads at zinc-600 (zinc-500 on the zinc-100 row is 4.40:1)', () => {
+    renderDetail({ locale: 'de-CH' });
+    const pending = screen.getAllByText('Ausstehend');
+    expect(pending.length).toBeGreaterThan(0);
+    for (const el of pending) {
+      const ink = el.closest('span');
+      expect(ink.className).toMatch(/(?<![\w:-])text-zinc-600\b/);
+      expect(ink.className).not.toMatch(/(?<![\w:-])text-zinc-500\b/);
+    }
+  });
+
+  it('a post with no composer platform (a Bluesky Radar reply) renders no empty "Plattformen" heading', () => {
+    renderDetail({
+      locale: 'de-CH',
+      post: { ...basePost, platforms: ['bluesky'], type: 'text', media: { file: null, exists: false, items: [] }, radarReplyTo: { url: 'https://bsky.app/profile/a/post/1', source: 'bluesky', externalId: 'at://a/1' } },
+    });
+    expect(screen.queryByText('Plattformen')).toBeNull();
+  });
+
+  it('a post on composer platforms keeps its platform picker', () => {
+    renderDetail({ locale: 'de-CH' });
+    expect(screen.getAllByText('Plattformen').length).toBeGreaterThan(0);
+  });
+});
+
 describe('PostDetail i18n migration (de-CH)', () => {
   it('renders a backfilled German Section title', () => {
     renderDetail({ locale: 'de-CH' });

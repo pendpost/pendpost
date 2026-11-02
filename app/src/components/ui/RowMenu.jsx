@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { Fragment, useState, useRef, useEffect } from 'react';
 import { MoreHorizontal } from 'lucide-react';
 import { BTN_GHOST, TAP_TARGET, MENU_ITEM, MENU_ITEM_HEIGHT, MENU_ITEM_TONES } from './recipes.js';
 import { Tip } from './Tooltip.jsx';
@@ -20,7 +20,8 @@ import { Tip } from './Tooltip.jsx';
 // met without the row growing. It is a sibling of any open-detail control, never
 // nested inside it (the interactive-nesting contract the cards already honour).
 //
-// items: [{ key, label, Icon, danger?, disabled?, reason?, run }]. `run` fires on click
+// items: [{ key, label, Icon, danger?, divider?, disabled?, reason?, run }]. `divider` draws a
+// separator above the item (the destructive delete sits apart from the rest). `run` fires on click
 // (the menu closes first). A falsy entry is skipped, so callers can inline `cond && {...}`.
 
 // The popover's own furniture around the item stack: `p-1` top and bottom (8px) plus the
@@ -86,19 +87,23 @@ export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right
           role="menu"
           className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} z-30 ${dropUp ? 'bottom-full mb-1' : 'top-full mt-1'} min-w-[11rem] rounded-xl bg-white p-1 shadow-lg ring-1 ring-zinc-900/10 dark:bg-zinc-800 dark:ring-white/10`}
         >
-          {visible.map(({ key, label: itemLabel, Icon, danger, disabled, reason, run }) => (
-            <Tip key={key} label={disabled && reason ? reason : undefined}>
-              <button
-                type="button"
-                role="menuitem"
-                disabled={disabled}
-                onClick={(e) => { swallow(e); setOpen(false); run?.(); }}
-                className={`${MENU_ITEM} ${danger ? MENU_ITEM_TONES.danger : MENU_ITEM_TONES.default}`}
-              >
-                {Icon ? <Icon size={14} className="shrink-0" aria-hidden="true" /> : null}
-                <span className="min-w-0 flex-1 truncate">{itemLabel}</span>
-              </button>
-            </Tip>
+          {visible.map(({ key, label: itemLabel, Icon, danger, divider, disabled, reason, run }, i) => (
+            <Fragment key={key}>
+              {/* A `divider` item (the destructive delete) is set off from the rest by a rule. */}
+              {divider && i > 0 ? <div role="separator" className="mx-2 my-1 h-px bg-zinc-900/10 dark:bg-white/10" /> : null}
+              <Tip label={disabled && reason ? reason : undefined}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={disabled}
+                  onClick={(e) => { swallow(e); setOpen(false); run?.(); }}
+                  className={`${MENU_ITEM} ${danger ? MENU_ITEM_TONES.danger : MENU_ITEM_TONES.default}`}
+                >
+                  {Icon ? <Icon size={14} className="shrink-0" aria-hidden="true" /> : null}
+                  <span className="min-w-0 flex-1 truncate">{itemLabel}</span>
+                </button>
+              </Tip>
+            </Fragment>
           ))}
         </div>
       ) : null}

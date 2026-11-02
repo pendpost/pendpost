@@ -38,6 +38,15 @@ export function canApprovePost(post) {
   return Boolean((post?.approval !== 'approved' || post?.editedSinceApproval) && post?.derivedState !== 'posted');
 }
 
+// The ONE "may Freigeben run on this post now" (planner judge round 2, item 7): approvable, and
+// every lane connected. Approving publishes nothing on an unconnected lane, so the row's ⋯ menu,
+// the List's bulk bar, Approvals and the detail (which hands such a post off instead) all read
+// this, and none of them offers an approve another one refuses. `offlineLanes` =
+// format.js unconnectedLanes(post, setup).
+export function canApproveNow(post, { offlineLanes = [] } = {}) {
+  return canApprovePost(post) && offlineLanes.length === 0;
+}
+
 // Reject is offered until the post is rejected or posted.
 export function canRejectPost(post) {
   return post?.approval !== 'rejected' && post?.derivedState !== 'posted';

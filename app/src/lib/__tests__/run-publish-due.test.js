@@ -20,8 +20,11 @@ describe('runPublishDue', () => {
 
     await runPublishDue();
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [path, init] = fetchMock.mock.calls[0];
+    // Spec 56: the write first reads the Studio token (GET /api/session); the write itself is
+    // the one non-session call.
+    const writes = fetchMock.mock.calls.filter(([p]) => p !== '/api/session');
+    expect(writes).toHaveLength(1);
+    const [path, init] = writes[0];
     expect(path).toBe('/api/run/publish-due');
     expect(init.method).toBe('POST');
     const sent = JSON.parse(init.body);

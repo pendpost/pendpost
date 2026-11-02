@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // scripts/dashboard-build.mjs - rebuild app/dist safely. Run by launcher/serve.sh
-// on boot (`build --if-stale`, backgrounded) and spawned by the server on demand.
+// on boot (`build --if-stale`, backgrounded) and spawned by the server on demand
+// (`git-check` every 30 min, `apply [--pull]` for the one-click update).
 //
 // SAFE BY CONSTRUCTION:
 //   - a build LOCK prevents concurrent builds (two boots, or boot + on-demand);
@@ -124,23 +125,35 @@ export function gitCheck({ repo = REPO_ROOT, statusDir = path.join(REPO_ROOT, 'd
   if (!up.ok) { writeUpdateStatus(statusDir, { git: true, ahead: 0, branch, clean: cleanTree(repo), diverged: false }); return; }
   const ahead = Number(git(['rev-list', '--count', 'HEAD..@{u}'], { cwd: repo }).out || '0'); // upstream commits we lack
   const behind = Number(git(['rev-list', '--count', '@{u}..HEAD'], { cwd: repo }).out || '0'); // local-only commits
-  writeUpdateStatus(statusDir, { git: true, ahead, branch, clean: cleanTree(repo), diverged: ahead > 0 && behind > 0 });
+  // What an update would install: the upstream commit and its package version, so
+  // the Studio can say "2.9.0 (a1b2c3d) -> 2.10.0 (f4e5d6c)" instead of "a new version".
+  const upstreamSha = git(['rev-parse', '@{u}'], { cwd: repo }).out || null;
+  let upstreamVersion = null;
+  try { upstreamVersion = JSON.parse(git(['show', '@{u}:package.json'], { cwd: repo }).out).version || null; } catch { /* no package.json upstream */ }
+  writeUpdateStatus(statusDir, { git: true, ahead, branch, clean: cleanTree(repo), diverged: ahead > 0 && behind > 0, upstreamSha, upstreamVersion });
 }
 
-// One-click update: fast-forward pull, then rebuild. SAFE - it refuses on a
-// non-git install or a dirty tree, and `git pull --ff-only` CANNOT overwrite
-// local history (it fails rather than merge/rebase), so local commits are never
-// clobbered. On any failure it refreshes the status and leaves dist untouched.
-export async function pullBuild() {
-  if (!isGitRepo(REPO_ROOT)) { console.error('[dashboard-build] not a git checkout - cannot pull'); return false; }
-  if (!cleanTree(REPO_ROOT)) { console.error('[dashboard-build] working tree not clean - refusing to pull'); return false; }
-  if (!git(['pull', '--ff-only'], { cwd: REPO_ROOT, timeout: 120_000 }).ok) {
-    console.error('[dashboard-build] git pull --ff-only failed (diverged?) - not building');
-    gitCheck({ fetch: false });
-    return false;
+// One-click update: optionally fast-forward pull, then rebuild the bundle if it
+// is stale. SAFE - it refuses on a non-git install or a dirty tree (so it never
+// builds or restarts into uncommitted edits), and `git pull --ff-only` CANNOT
+// overwrite local history (it fails rather than merge/rebase). On any failure
+// dist stays untouched, so the last good bundle keeps serving. The server that
+// spawned this restarts itself only on {ok:true}. Returns {ok, step} where step
+// names the stage that failed: check | pull | build. onStep(name) reports progress
+// as each stage starts ('downloading' before the pull, 'installing' before the
+// build), so the Studio shows the real step instead of a guess.
+export async function apply({ pull = false, repo = REPO_ROOT, appDir = APP_DIR, statusDir = path.join(repo, 'data'), onStep = () => {} } = {}) {
+  if (!isGitRepo(repo)) return { ok: false, step: 'check', reason: 'not-a-git-checkout' };
+  if (!cleanTree(repo)) return { ok: false, step: 'check', reason: 'dirty-tree' };
+  if (pull) onStep('downloading');
+  if (pull && !git(['pull', '--ff-only'], { cwd: repo, timeout: 120_000 }).ok) {
+    gitCheck({ repo, statusDir, fetch: false });
+    return { ok: false, step: 'pull', reason: 'pull-failed' };
   }
-  gitCheck({ fetch: false });
-  return build(APP_DIR, { ifStale: false });
+  gitCheck({ repo, statusDir, fetch: false });
+  onStep('installing');
+  if (!(await build(appDir, { ifStale: true }))) return { ok: false, step: 'build', reason: 'build-failed' };
+  return { ok: true, step: 'done' };
 }
 
 // CLI entry - only when executed directly, never when imported (tests/server).
@@ -152,8 +165,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   } else if (cmd === 'git-check') {
     gitCheck();
     process.exit(0);
-  } else if (cmd === 'pull-build') {
-    pullBuild().then((okBuild) => process.exit(okBuild ? 0 : 1));
+  } else if (cmd === 'apply') {
+    // Progress lines ({"progress":"downloading"}) stream as each stage starts; the
+    // LAST stdout line is the machine-readable result the server parses.
+    const onStep = (name) => console.log(JSON.stringify({ progress: name }));
+    apply({ pull: process.argv.includes('--pull'), onStep }).then((r) => {
+      console.log(JSON.stringify(r));
+      process.exit(r.ok ? 0 : 1);
+    });
   } else {
     console.error(`[dashboard-build] unknown command: ${cmd}`);
     process.exit(2);

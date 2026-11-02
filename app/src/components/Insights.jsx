@@ -417,10 +417,10 @@ function WorkingChip({ label, name, avg, posts, Icon, iconColor, t }) {
       className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1 ${INNER_SURFACE}`}
       aria-label={t('insights.working.sr', { label, name, avg, posts })}
     >
-      <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{label}</span>
+      <span className="text-[10px] text-zinc-600 dark:text-zinc-400">{label}</span>
       {Icon ? <Icon size={13} className={iconColor} aria-hidden="true" /> : null}
       <span className="text-[11px] font-bold text-zinc-800 dark:text-zinc-100">{name}</span>
-      <span className="text-[10px] text-zinc-500 dark:text-zinc-400">{t('insights.working.avg', { n: fmtInt(avg) })}</span>
+      <span className="text-[10px] text-zinc-600 dark:text-zinc-400">{t('insights.working.avg', { n: fmtInt(avg) })}</span>
     </span>
   );
 }
@@ -968,7 +968,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
                       className="inline-flex items-center gap-1 text-[10px]"
                       aria-label={t('insights.metric.aria', { platform: meta?.label || b.platform, metric: metricLabel(k), value: fmtInt(v) })}
                     >
-                      <span className="text-zinc-500 dark:text-zinc-400">{metricLabel(k)}</span>
+                      <span className="text-zinc-600 dark:text-zinc-400">{metricLabel(k)}</span>
                       <span className="font-bold text-zinc-800 dark:text-zinc-100">{fmtInt(v)}</span>
                     </span>
                   ))}
@@ -1179,7 +1179,7 @@ export default function Insights({ active, platformFilter = [], campaignFilter =
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <p className="text-sm font-bold">{t('insights.settings.xLabel')}</p>
-                  <p className="mt-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+                  <p className="mt-0.5 text-[11px] text-zinc-600 dark:text-zinc-400">
                     {xLive ? t('insights.settings.xHint') : t('insights.settings.xDisabled')}
                   </p>
                 </div>

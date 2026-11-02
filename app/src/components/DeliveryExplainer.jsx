@@ -1,15 +1,16 @@
 import { useState } from 'react';
-import { Info, ExternalLink, ArrowRight } from 'lucide-react';
+import { Info, ExternalLink } from 'lucide-react';
 import { useT } from '../lib/i18n.js';
 
 // One-time delivery + always-on explainer. Shown once per machine and then
 // remembered, framing the open-source/free trade-off: pendpost is 100% open
 // source and free to run yourself, but your computer has to be on for posts to
 // go out - OR, if you'd rather not keep it running, the optional 24/7 managed
-// cloud publishes for you round-the-clock. Two calm CTAs: an in-app jump to the
-// Cloud page (onNavigate) and an external link to the plans/pricing page (the
-// app's standard <a target="_blank"> pattern). KISS persistence mirrors the
-// module-key preference pattern in lib/format.js.
+// cloud publishes for you round-the-clock. It is mounted on the 24/7 cloud page
+// itself (App.jsx), so its one CTA is the external plans/pricing link (the app's
+// standard <a target="_blank"> pattern); an in-app "set up" jump would lead to the
+// page it already sits on. KISS persistence mirrors the module-key preference
+// pattern in lib/format.js.
 const SEEN_KEY = 'pendpost-explainer-delivery-v1';
 function hasSeen() {
   try {
@@ -29,7 +30,7 @@ function markSeen() {
 // The live plans/pricing page. ?from=app flips its managed CTA to "enable always-on".
 const SERVICES_URL = 'https://pendpost.com/services?from=app';
 
-export default function DeliveryExplainer({ onNavigate, suppressed = false }) {
+export default function DeliveryExplainer({ suppressed = false }) {
   const t = useT();
   const [show, setShow] = useState(() => !hasSeen());
   // Never upsell 24/7 to a user already on 24/7: when the active client is
@@ -49,18 +50,6 @@ export default function DeliveryExplainer({ onNavigate, suppressed = false }) {
           {t('explainer.delivery.body')}
         </p>
         <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
-          {/* In-app: jump straight to the Cloud page to set always-on up. */}
-          <button
-            type="button"
-            onClick={() => {
-              onNavigate?.('cloud');
-              dismiss();
-            }}
-            className="inline-flex items-center gap-1 text-xs font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
-          >
-            {t('connection.setup')}
-            <ArrowRight size={12} aria-hidden="true" />
-          </button>
           {/* External: the plans/pricing page (was a dead /faq link). */}
           <a
             href={SERVICES_URL}
