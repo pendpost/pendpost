@@ -126,6 +126,10 @@ try {
   ] } }));
   const scan = await runRadarScan({});
   ok(scan.scanned === 6, 'a scan covers every ENABLED query (reddit 3 + mastodon 3 = 6); the paused query is excluded');
+  // Mock mode has no relevance judge, so every engine hit lands `unjudged`, and listRadar never
+  // surfaces an unjudged hit (Radar 2.0 step 1). This check is about the scan and the list, not the
+  // judge, so it reads the feed as a judged one would.
+  { const { loadState: ls, saveState: ss } = await import('../lib/state.mjs'); const st = ls(); for (const s of st.radar.signals || []) delete s.unjudged; ss(); }
   ok((await listRadar({})).items.some((s) => s.source === 'mastodon'), 'the second enabled (mastodon) query WAS scanned - its signals are in the feed');
 
   // ---- (review #3) panel (listRadar) and digest read the SAME persisted backlog ----

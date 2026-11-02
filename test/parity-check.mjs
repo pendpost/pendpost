@@ -162,7 +162,7 @@ const READ_ONLY_TOOLS = new Set([
   'plan_list', 'plan_get', 'account_status', 'assets_list', 'activity_log',
   'validate_media', 'platform_validate', 'pendpost_health', 'publish_preview', 'brand_lint',
   'generate_digest', 'config_get', 'health_recheck', 'agent_recheck', 'client_list', 'clients_overview',
-  'cloud_status', 'cloud_capabilities', 'cloud_clients', 'cloud_subscription',
+  'cloud_status', 'cloud_capabilities', 'cloud_clients', 'cloud_subscription', 'cloud_recheck',
   // Client review link (spec 48 R10): listing a brand's reviewers is a read (GET twin
   // /api/clients/<id>/reviewers) - tail-only, never a live token. reviewer_create /
   // reviewer_revoke are the paired owner-gated WRITEs (they carry an optional clientId).

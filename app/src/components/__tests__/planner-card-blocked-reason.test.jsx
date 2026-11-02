@@ -82,12 +82,20 @@ function renderList(posts) {
 const row = (title) => screen.getByText(title).closest('li');
 
 describe('Planner Blockiert list row reason', () => {
-  it('one lane: the row names the lane that is not connected, visible and neutral', () => {
+  // Studio fix flow (package C): the row's one status signal for a Blockiert post is its
+  // Connect fix, not the pill; the reason line stays. Polish 2026-11-01 (fresh-eyes review):
+  // that line is the canon's Tier-2 status, icon + the HALTED staircase ink (rose), never
+  // neutral grey and never the deep rejected red.
+  it('one lane: the row names the lane that is not connected, visible, in the halted rose ink', () => {
     renderList([{ ...base, title: 'Tour', platforms: ['telegram', 'linkedin'] }]);
     const li = row('Tour');
-    expect(within(li).getByText('Blockiert')).toBeInTheDocument();
+    expect(within(li).getByRole('button', { name: 'Telegram verbinden' })).toBeInTheDocument();
+    expect(within(li).queryByText('Blockiert')).toBeNull();
     const why = within(li).getByText('Telegram ist nicht verbunden');
-    expect(RED.test(why.getAttribute('class') || '')).toBe(false);
+    const cls = why.getAttribute('class') || '';
+    expect(cls).toMatch(/(?:^|\s)text-rose-700(?:\s|$)/);
+    expect(cls).not.toMatch(/(?:^|\s)(?:dark:)?text-red-/);
+    expect(why.closest('[data-row-status]').querySelector('svg')).not.toBeNull();
     expect(why.closest('.sr-only')).toBeNull();
   });
 

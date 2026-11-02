@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi } from 'vitest';
 import { ListView } from '../Planner.jsx';
@@ -48,35 +49,42 @@ const wrap = (ui, locale = 'de-CH') => (
   </QueryClientProvider>
 );
 
-describe('Planner List row meta: campaign label, never the raw post slug', () => {
-  it('reads "Launch · Text" with the raw ids only on the hover title', () => {
+// Studio fix flow (2026-11-01, package C): the List row no longer carries a "Launch · Text"
+// meta line; the owner picked wide rows whose second and third lines are the post's own
+// caption (the type shows as the thumbnail or its absence, the campaign in the detail). The
+// raw slugs still never show.
+describe('Planner List row: never the raw post slug', () => {
+  it('names the post by its title (else its first caption line) and shows the caption, no ids', () => {
     const { container } = render(wrap(<ListView posts={[liScope, tgReview]} onSelect={() => {}} loading={false} lane={{}} />));
     expect(container.textContent).not.toContain('li-scope');
     expect(container.textContent).not.toContain('tg-review');
-    const meta = screen.getAllByText('Launch · Text');
-    expect(meta).toHaveLength(2);
-    expect(meta[0]).toHaveAttribute('title', 'launch / li-scope');
+    expect(screen.queryByText('Launch · Text')).toBeNull();
     // The headline still names the post: its title, else its first caption line.
     expect(screen.getByText('Launch week recap')).toBeInTheDocument();
+    expect(screen.getByText('The approval gate now covers LinkedIn.')).toBeInTheDocument();
     expect(screen.getAllByText('Planner tour for the Telegram channel, next steps inside.').length).toBeGreaterThan(0);
   });
 });
 
 describe('Freigaben card meta: campaign label, never the raw post slug', () => {
-  it('reads "Kampagne: Launch" with the raw ids only on the hover title', () => {
+  // 2026-11-01 (owner: "remove the campaign display, it can be a hover or in the details"): the
+  // row's meta line carries glyph, date and type only; the campaign rides a real tooltip on
+  // the date, never visible row text, and the raw slug never reaches the screen.
+  it('the campaign is no longer row text and the raw slug never shows', () => {
     const campaigns = [{ id: 'launch', active: true, posts: [liScope, tgReview] }];
     const { container } = render(wrap(<Freigaben campaigns={campaigns} onOpen={() => {}} />));
     expect(container.textContent).not.toContain('li-scope');
     expect(container.textContent).not.toContain('tg-review');
-    const meta = screen.getAllByText('Kampagne: Launch');
-    expect(meta.length).toBeGreaterThanOrEqual(2);
-    expect(meta.map((m) => m.getAttribute('title'))).toEqual(expect.arrayContaining(['launch / li-scope', 'launch / tg-review']));
+    expect(container.textContent).not.toContain('Kampagne:');
   });
 
-  it('the English pack drops the id too', () => {
+  it('the date carries the campaign in a real tooltip', async () => {
+    const user = userEvent.setup();
     const campaigns = [{ id: 'launch', active: true, posts: [tgReview] }];
     const { container } = render(wrap(<Freigaben campaigns={campaigns} onOpen={() => {}} />, 'en'));
+    expect(container.textContent).not.toContain('Campaign: Launch');
+    await user.hover(container.querySelector('[data-row-meta] .tabular-nums'));
+    expect((await screen.findAllByText('Campaign: Launch')).length).toBeGreaterThan(0);
     expect(container.textContent).not.toContain('tg-review');
-    expect(screen.getAllByText('Campaign: Launch').length).toBeGreaterThan(0);
   });
 });

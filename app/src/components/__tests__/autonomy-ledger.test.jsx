@@ -318,7 +318,7 @@ describe('scheduler row mirrors the same publishing switch', () => {
   it('toggling the scheduler calls setSchedulerRunning', async () => {
     const user = userEvent.setup();
     renderLedger();
-    await user.click(screen.getByRole('switch', { name: /stop scheduler/i }));
+    await user.click(screen.getByRole('switch', { name: /pause publishing from this computer/i }));
     expect(setSchedulerRunningMock).toHaveBeenCalledWith(false);
   });
 });
@@ -696,7 +696,7 @@ describe('AutonomyLedger - failures speak a plain sentence, raw line behind the 
     const user = userEvent.setup();
     setSchedulerRunningMock.mockImplementationOnce(() => Promise.reject(new Error('HTTP 500 internal')));
     renderLedger();
-    await user.click(screen.getByRole('switch', { name: /stop scheduler/i }));
+    await user.click(screen.getByRole('switch', { name: /pause publishing from this computer/i }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Could not save, try again');
     expect(alert).not.toHaveTextContent(/HTTP 500/);
@@ -707,7 +707,7 @@ describe('AutonomyLedger - failures speak a plain sentence, raw line behind the 
     const user = userEvent.setup();
     setSchedulerRunningMock.mockImplementationOnce(() => Promise.reject(new Error()));
     renderLedger();
-    await user.click(screen.getByRole('switch', { name: /stop scheduler/i }));
+    await user.click(screen.getByRole('switch', { name: /pause publishing from this computer/i }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not save, try again');
     expect(screen.queryByRole('button', { name: /more about this/i })).toBeNull();
   });

@@ -1,17 +1,16 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench, Star, Send, CornerDownRight, AlertCircle, ShieldAlert, ShieldCheck, Info, ExternalLink } from 'lucide-react';
-import { useActivity, useReviews, replyToReview, replyToInboundEvent } from '../lib/api.js';
-import { useInboundEvents } from '../lib/cloud.js';
+import { CheckCircle2, XCircle, Clock, Activity as ActivityIcon, AlertTriangle, RefreshCw, ChevronRight, Wrench, ShieldCheck, Info } from 'lucide-react';
+import { useActivity } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { Skeleton, PLATFORM_META, INNER_SURFACE, FIELD_MULTILINE, DISABLED_PRIMARY } from './ui.jsx';
+import { Skeleton, PLATFORM_META } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { PROJECT_CHIP, STATUS_INK } from './ui/recipes.js';
 import { ClientAvatar } from './ClientSwitcher.jsx';
-import { dayKey, fmtTime, dateLocale, X_PORTAL_URL, GCP_APIS_CONSOLE_URL, isAbsoluteHttpUrl } from '../lib/format.js';
+import { dayKey, fmtTime, dateLocale, X_PORTAL_URL, GCP_APIS_CONSOLE_URL, isAbsoluteHttpUrl, prettyCampaign } from '../lib/format.js';
 import InfoTip from './ui/InfoTip.jsx';
-import { humanizeAction, humanizeCheck, humanizeFailure, laneLabel } from '../lib/failureCopy.js';
+import { humanizeCheck, humanizeFailure, laneLabel } from '../lib/failureCopy.js';
 
 // Map a FAILED activity entry to a one-click fix (data, not UI - like ACTION_LABEL
 // above). The source of truth for the setup-class strings is platformValidate()'s
@@ -89,6 +88,8 @@ const ACTION_LABEL = {
   'post-create': 'activity.action.postCreate',
   'post-update': 'activity.action.postUpdate',
   'post-delete': 'activity.action.postDelete',
+  // Planner-bulk package T: a deleted post put back from the campaign trash (Undo).
+  'post-restore': 'activity.action.postRestore',
   'meta-block': 'activity.action.metaBlock',
   'meta-unblock': 'activity.action.metaUnblock',
   // The generic lane breaker's resume (lib/writes.mjs resumeLane): the owner
@@ -120,10 +121,10 @@ const ACTION_LABEL = {
   'comment-moderate': 'activity.action.commentModerate',
   'comment-react': 'activity.action.commentReact',
   // Own-post comment monitor: the sweep found new comments on your own posts (logged once
-  // per batch that found some). Inbound engagement, files into the SAME inbox group.
+  // per batch that found some). Audit only; the items live in Radar "Replies to you".
   'comments-new': 'activity.action.commentsNew',
   // GBP reviews (spec 03): a review received (logged on read) + an owner reply the
-  // operator sent. Both file into the SAME inbox group as the comment actions.
+  // operator sent. Audit rows in the 'other' group, like the comment actions.
   'review-received': 'activity.action.reviewReceived',
   'review-reply': 'activity.action.reviewReply',
   // GBP location media + attributes (spec 19, account management): a gallery photo/
@@ -314,21 +315,6 @@ function rowNote(entry, t) {
   return { text: mapped.text || t('error.action'), raw };
 }
 
-// A failed action's alert, the Setup anatomy: the plain sentence ({ text, raw } from
-// humanizeAction) is the alert, and the raw server line rides the house "?" beside it, never
-// inline and never inside the alert. `children` is the alert's leading glyph.
-function ActionError({ error, children = null }) {
-  if (!error) return null;
-  return (
-    <div className="flex items-start gap-1">
-      <p role="alert" className="flex items-center gap-1.5 text-[11px] text-red-600 dark:text-red-300">
-        {children} {error.text}
-      </p>
-      <InfoTip label={error.raw && error.raw !== error.text ? error.raw : null} />
-    </div>
-  );
-}
-
 // C7: a SMALL fixed set of action GROUPS (curated, like STATUS_FILTERS) that
 // fold the ~30 ACTION_LABEL ids above into one chip each. Data, not UI - the
 // labels resolve through t() at render via the activity.action.group.* keys.
@@ -369,12 +355,9 @@ export const ACTION_GROUPS = [
   // block/unblock actions (the same lane-halt lifecycle) and stays in the feed.
   { key: 'meta-block', label: 'activity.action.group.metaBlock', actions: ['circuit-breaker', 'meta-block', 'meta-unblock', 'lane-resumed', 'engage-lane-cooldown', 'engage-lane-resumed', 'cadence-defer'] },
   { key: 'campaign', label: 'activity.action.group.campaign', actions: ['campaign-create', 'campaign-activate', 'campaign-deactivate'] },
-  // The inbound-engagement (inbox) bucket (spec 02, Pattern P6): the cross-post reply
-  // feed. Specs 06 (moderation) + 24 (reactions) file their actions into THIS group;
-  // spec 03 (GBP reviews) adds review-received/review-reply to the SAME one chip.
-  // 'radar-author-replied' is inbound engagement (an author answered your Radar
-  // reply), so it files with the reply feed - and stays in the default feed.
-  { key: 'inbox', label: 'activity.action.group.inbox', actions: ['comment-reply', 'comment-received', 'comment-moderate', 'comment-react', 'comments-new', 'review-received', 'review-reply', 'radar-author-replied'] },
+  // No inbox group: replies, reviews and X events live in ONE place now, Radar
+  // "Replies to you" (planner-bulk contract, package U). Their audit rows (comment-reply,
+  // comments-new, review-received, radar-author-replied, ...) fall into 'other' below.
   // 'radar-agent-scan' is DELIBERATELY claimed by 'other', not 'system': the
   // default feed hides system successes, and the paid overnight research run is
   // exactly the row the operator opens Activity to see (spend legibility, G5).
@@ -448,6 +431,8 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
   // control inside the row button: the post detail it opens carries the failure's "?".
   // A row that is not a button keeps the raw line behind the house "?" beside its note.
   const openable = Boolean(entry.campaign && entry.postId && onOpenPost) && !remediation;
+  // The words a person recognises for the post: its title, or "a post in <campaign>".
+  const postLabel = entry.postId ? (postTitle || t('activity.row.postIn', { campaign: prettyCampaign(entry.campaign || '') })) : null;
   // A defer (cadence throttle, missing media/render) is a deferral, not a success
   // or failure - render it with the design system's amber "waiting/held" token
   // (Clock), and tone its message amber rather than red (it is informational, the
@@ -497,13 +482,10 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
             </span>
           ) : null}
           {entry.postId ? (
-            // Humanize the reference: the post's own headline when the plan still
-            // carries it (what the operator recognises), the raw campaign/post ids
-            // as the hover fallback - and as the visible fallback when the post is
-            // gone from the plan (deleted, other client).
-            <span title={`${entry.campaign} / ${entry.postId}`} className="ml-1.5 font-normal text-zinc-500 dark:text-zinc-400">
-              {postTitle || `${entry.campaign} / ${entry.postId}`}
-            </span>
+            // Humanize the reference: the post's own headline when the plan still carries it
+            // (what the operator recognises), else a readable label naming its campaign (the
+            // post is gone: deleted, other project). Raw ids never reach the screen.
+            <span className="ml-1.5 font-normal text-zinc-600 dark:text-zinc-400">{postLabel}</span>
           ) : null}
           {count > 1 ? (
             <span className="ml-1.5 rounded-full bg-zinc-900/[0.06] px-1.5 align-middle text-[10px] font-bold tabular-nums text-zinc-500 dark:bg-white/10 dark:text-zinc-400">×{count}</span>
@@ -554,7 +536,7 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
     return (
       <button
         type="button"
-        aria-label={t('activity.row.open', { campaign: entry.campaign, postId: entry.postId })}
+        aria-label={t('activity.row.open', { post: postLabel })}
         onClick={() => onOpenPost({ campaign: entry.campaign, id: entry.postId, clientId: entry.clientId })}
         className={cls}
       >
@@ -563,429 +545,6 @@ function Row({ entry, onOpenPost, onNavigate, postTitle = null }) {
     );
   }
   return <div className={cls}>{inner}</div>;
-}
-
-// A single GBP review row (spec 03, Pattern P6). A review is about the LOCATION, not
-// any pendpost post, so it has no PostDetail to open - the reply affordance lives on the
-// row itself (the new inbound-reply control this spec adds). Star rating + author +
-// one-tone text; a review that already carries an owner reply - or one just replied to -
-// renders a neutral "replied" note with an Edit affordance instead of the box. The reply
-// upserts idempotently (PUT), so editing re-sends and an empty send removes.
-
-function ReviewRow({ review, onReply, t }) {
-  const [draft, setDraft] = useState('');
-  const [open, setOpen] = useState(false);
-  const [error, setError] = useState(null);
-  const [sentReply, setSentReply] = useState(undefined); // undefined = untouched; string|null = local override
-  const [busy, setBusy] = useState(false);
-  const meta = PLATFORM_META.gbp;
-  const rating = Number(review.rating) || 0;
-  // The effective reply: a locally-sent one overrides the server value (append-only feed
-  // means the server row won't refresh until the next fetch); null = locally removed.
-  const currentReply = sentReply === undefined ? (review.reply || null) : sentReply;
-  const submit = async (removing) => {
-    const text = removing ? '' : draft.trim();
-    if (!removing && !text) return;
-    setError(null);
-    setBusy(true);
-    try {
-      await onReply(review.commentId, text);
-      setSentReply(removing ? null : text);
-      setDraft('');
-      setOpen(false);
-    } catch (err) {
-      setError(humanizeAction(err, t, { fallbackKey: 'reviews.reply.error', lane: 'gbp' }));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <li className={`space-y-2 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        {meta?.Icon ? <meta.Icon size={13} className={meta.color} aria-hidden="true" /> : null}
-        <span className="text-sm font-bold">{review.author || t('reviews.unknownAuthor')}</span>
-        {rating ? (
-          <span className="inline-flex items-center gap-0.5" role="img" aria-label={t('reviews.rating.aria', { n: rating })}>
-            {[1, 2, 3, 4, 5].map((i) => (
-              <Star key={i} size={12} className={i <= rating ? 'fill-amber-400 text-amber-400' : 'text-zinc-300 dark:text-zinc-600'} aria-hidden="true" />
-            ))}
-            <span className="ml-0.5 text-[11px] tabular-nums text-zinc-500 dark:text-zinc-400">{rating}/5</span>
-          </span>
-        ) : null}
-      </div>
-      {review.text ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{review.text}</p> : null}
-      {open ? (
-        <div className="space-y-1.5">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            aria-label={t('reviews.reply.placeholder')}
-            placeholder={t('reviews.reply.placeholder')}
-            rows={2}
-            className={`${FIELD_MULTILINE} w-full resize-y`}
-          />
-          <ActionError error={error}>
-            <AlertCircle size={11} aria-hidden="true" />
-          </ActionError>
-          <div className="flex flex-wrap items-center gap-1.5">
-            <button
-              type="button"
-              onClick={() => submit(false)}
-              disabled={busy || !draft.trim()}
-              className={`inline-flex items-center gap-1.5 rounded-xl bg-brand px-2.5 py-1.5 text-xs font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${DISABLED_PRIMARY}`}
-            >
-              <Send size={13} aria-hidden="true" /> {t('reviews.reply.submit')}
-            </button>
-            {currentReply ? (
-              <button
-                type="button"
-                onClick={() => submit(true)}
-                disabled={busy}
-                className="rounded-xl px-2.5 py-1.5 text-xs font-bold text-red-600 transition hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-red-300"
-              >
-                {t('reviews.reply.remove')}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => { setOpen(false); setDraft(''); setError(null); }}
-              className="rounded-xl px-2.5 py-1.5 text-xs font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
-            >
-              {t('reviews.reply.cancel')}
-            </button>
-          </div>
-        </div>
-      ) : currentReply ? (
-        <div className="flex flex-wrap items-start gap-x-3 gap-y-1">
-          <p className={`flex min-w-0 items-start gap-1.5 text-[11px] ${STATUS_INK.ok}`}>
-            <CornerDownRight size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
-            <span className="break-words">{currentReply}</span>
-          </p>
-          <button
-            type="button"
-            onClick={() => { setDraft(currentReply); setOpen(true); }}
-            className="ml-auto inline-flex items-center gap-1 text-[11px] font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            <CornerDownRight size={11} aria-hidden="true" /> {t('reviews.reply.edit')}
-          </button>
-        </div>
-      ) : (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="inline-flex items-center gap-1.5 text-xs font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
-        >
-          <CornerDownRight size={12} aria-hidden="true" /> {t('reviews.reply.open')}
-        </button>
-      )}
-    </li>
-  );
-}
-
-// The webhook/realtime ingestion seam (spec 23, Pattern P8 -> feeds P6): one row per
-// normalized inbound event (comment/mention/message/reaction/follow). It shows WHAT
-// arrived, per platform, newest first - and, for the events that carry a thread
-// (mention/comment/message), an inline reply box so the operator can answer without
-// leaving the Activity page. A reaction/follow carries no thread, so it gets NO reply
-// control at all.
-const EVENT_TYPE_KEY = { comment: 'inbox.event.comment', mention: 'inbox.event.mention', message: 'inbox.event.message', reaction: 'inbox.event.reaction', follow: 'inbox.event.follow' };
-// Only these three inbound-event types are repliable (they name a thread the reply lands
-// on). A reaction/follow has no target thread, so no reply affordance ever renders for it.
-const REPLIABLE_EVENT_TYPES = new Set(['mention', 'comment', 'message']);
-// A tweet reply (mention/comment) is hard-capped at 280 by X - the counter turns red and
-// Send disables past it, so the operator never hands the engine a doomed >280 draft. A DM
-// (message) is not 280-bound; a generous soft cap keeps a runaway paste in check without
-// blocking a normal long reply.
-const TWEET_REPLY_LIMIT = 280;
-const DM_REPLY_SOFT_LIMIT = 4000;
-
-// The inline reply control on a repliable inbound-event row (a sibling of ReviewRow,
-// modelled on it + CommentsPanel's CommentRow box). States: idle = a "Reply" text button
-// (CornerDownRight); open = textarea + live counter + Send/Cancel; sending = disabled/
-// busy; success = collapse + a neutral "replied" marker; error = the server code mapped
-// to a remediation (needs_scope -> authorize X in Setup, credits -> top-up, target_gone
-// -> an inline "gone" note, anything else -> a generic red row).
-function InboundReplyBox({ event, onReply, onNavigate, t }) {
-  const [draft, setDraft] = useState('');
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [replied, setReplied] = useState(false);
-  const [error, setError] = useState(null); // null | { code, text, raw }
-  const isDM = event.type === 'message';
-  const limit = isDM ? DM_REPLY_SOFT_LIMIT : TWEET_REPLY_LIMIT;
-  const len = draft.length;
-  const over = len > limit;
-  const submit = async () => {
-    const text = draft.trim();
-    if (!text || over || busy) return;
-    setError(null);
-    setBusy(true);
-    try {
-      await onReply(event, text);
-      setReplied(true);
-      setDraft('');
-      setOpen(false);
-    } catch (err) {
-      const code = err?.code;
-      setError({ code, ...humanizeAction(err, t, { fallbackKey: 'inbox.reply.error', lane: event.platform || null }) });
-      // needs_scope / credits / target_gone are terminal for this send: collapse the box
-      // and let the mapped remediation stand in its place (retrying the same draft would
-      // fail the same way). A generic error keeps the box open so the operator can retry.
-      if (code === 'needs_scope' || code === 'credits' || code === 'target_gone') setOpen(false);
-    } finally {
-      setBusy(false);
-    }
-  };
-  // Success marker: the reply landed, so the box collapses to a quiet neutral note
-  // (append-only feed - the source thread won't refresh until the next pull).
-  if (replied) {
-    return (
-      <p className={`flex items-center gap-1.5 text-[11px] ${STATUS_INK.ok}`}>
-        <CornerDownRight size={11} aria-hidden="true" /> {t('inbox.reply.replied')}
-      </p>
-    );
-  }
-  // Error remediations that stand IN PLACE of the box (terminal - the collapse above ran).
-  if (error?.code === 'needs_scope') {
-    return (
-      <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
-        <span className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
-          <ShieldAlert size={13} aria-hidden="true" /> {t('inbox.reply.needsScope')}
-        </span>
-        <button
-          type="button"
-          onClick={() => onNavigate?.('setup', 'x')}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 transition hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300 dark:ring-amber-400/30"
-        >
-          <Wrench size={12} aria-hidden="true" /> {t('inbox.reply.authorize')}
-        </button>
-      </div>
-    );
-  }
-  if (error?.code === 'credits') {
-    return (
-      <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
-        <span className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
-          <AlertCircle size={13} aria-hidden="true" /> {t('inbox.reply.credits')}
-        </span>
-        <button
-          type="button"
-          onClick={() => window.open(X_PORTAL_URL, '_blank', 'noopener,noreferrer')}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 transition hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300 dark:ring-amber-400/30"
-        >
-          <Wrench size={12} aria-hidden="true" /> {t('action.topUpCredits')}
-        </button>
-      </div>
-    );
-  }
-  if (error?.code === 'target_gone') {
-    return (
-      <p className="flex items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
-        <AlertCircle size={11} aria-hidden="true" /> {t('inbox.reply.targetGone')}
-      </p>
-    );
-  }
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-1.5 text-xs font-bold text-brand hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light"
-      >
-        <CornerDownRight size={12} aria-hidden="true" /> {t('inbox.reply.open')}
-      </button>
-    );
-  }
-  return (
-    <div className="space-y-1.5">
-      <textarea
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        aria-label={t('inbox.reply.placeholder')}
-        placeholder={t('inbox.reply.placeholder')}
-        rows={2}
-        className={`${FIELD_MULTILINE} w-full resize-y`}
-      />
-      <div className="flex items-center justify-between gap-2">
-        {/* Live counter: only the tweet lanes are hard-bound, so only they turn the count
-            red. The DM soft cap is enforced (Send disables) but not paraded as a limit. */}
-        {isDM ? <span /> : (
-          <span className={`text-[11px] tabular-nums ${over ? 'font-bold text-red-600 dark:text-red-300' : 'text-zinc-500 dark:text-zinc-400'}`}>
-            {t('inbox.reply.charCount', { n: len, max: limit })}
-          </span>
-        )}
-        <div className="flex items-center gap-1.5">
-          <button
-            type="button"
-            onClick={submit}
-            disabled={busy || !draft.trim() || over}
-            className={`inline-flex items-center gap-1.5 rounded-xl bg-brand px-2.5 py-1.5 text-xs font-bold text-white transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${DISABLED_PRIMARY}`}
-          >
-            <Send size={13} aria-hidden="true" /> {busy ? t('inbox.reply.sending') : t('inbox.reply.send')}
-          </button>
-          <button
-            type="button"
-            onClick={() => { setOpen(false); setDraft(''); setError(null); }}
-            className="rounded-xl px-2.5 py-1.5 text-xs font-bold text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100"
-          >
-            {t('inbox.reply.cancel')}
-          </button>
-        </div>
-      </div>
-      {/* A generic (non-mapped) failure keeps the box open with an inline red row so the
-          operator can adjust and retry. */}
-      {error && error.code !== 'needs_scope' && error.code !== 'credits' && error.code !== 'target_gone' ? (
-        <ActionError error={error}>
-          <AlertCircle size={11} aria-hidden="true" />
-        </ActionError>
-      ) : null}
-    </div>
-  );
-}
-
-function InboundEventRow({ event, onReply, onNavigate, t }) {
-  const meta = event.platform ? PLATFORM_META[event.platform] : null;
-  const author = event.author?.displayName || event.author?.handle || t('reviews.unknownAuthor');
-  const repliable = onReply && REPLIABLE_EVENT_TYPES.has(event.type);
-  return (
-    <li className={`space-y-2 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
-      <div className="flex items-start gap-3">
-        {meta?.Icon ? <meta.Icon size={13} className={`mt-0.5 shrink-0 ${meta.color}`} aria-hidden="true" /> : null}
-        <div className="min-w-0 flex-1">
-          <p className="text-xs font-bold">
-            {EVENT_TYPE_KEY[event.type] ? t(EVENT_TYPE_KEY[event.type]) : event.type}
-            <span className="ml-1.5 font-normal text-zinc-500 dark:text-zinc-400">{author}</span>
-          </p>
-          {event.text ? <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{event.text}</p> : null}
-          {/* NIT-6 (spec 23 review): the reaction glyph must carry its own accessible
-              value - aria-hidden left a screen reader announcing "Reaction · author ·
-              time" with no indication of WHICH reaction. Not aria-hidden, so the emoji's
-              own accessible name (e.g. "thumbs up") is read exactly like the reaction
-              row it mirrors in postDetail's comment thread. */}
-          {event.reaction ? <p className="text-sm">{event.reaction}</p> : null}
-        </div>
-        <p className="shrink-0 whitespace-nowrap text-[11px] text-zinc-500 dark:text-zinc-400">
-          {fmtTime(event.ts)}
-          {meta ? ` · ${meta.label}` : ''}
-        </p>
-        {/* Open the post this reply/mention/reaction landed on - the same glyph-only affordance
-            the comment inbox carries (CommentInbox.jsx). The inbound event already carries its
-            permalink end-to-end. isAbsoluteHttpUrl gates the scheme: a permalink is external,
-            attacker-influenced data, so a non-http(s) value (javascript:/data:) must never reach
-            an href - a missing or unsafe url just renders no link. */}
-        {isAbsoluteHttpUrl(event.permalink) ? (
-          <a href={event.permalink} target="_blank" rel="noopener noreferrer" className="mt-0.5 shrink-0 text-zinc-500 transition hover:text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-brand-light" aria-label={t('comments.inbox.openPost')}>
-            <ExternalLink size={13} aria-hidden="true" />
-          </a>
-        ) : null}
-      </div>
-      {repliable ? <InboundReplyBox event={event} onReply={onReply} onNavigate={onNavigate} t={t} /> : null}
-    </li>
-  );
-}
-
-// The inbound-event feed block (spec 23): rides the SAME inbox chip as the GBP reviews
-// block above (no new page, no competing chip) - it just answers "what arrived" instead
-// of "what needs a reply". The feed is READ-ONLY here (pull-on-demand, refetches while
-// the Activity page is open); it is EMPTY until the pendpost-cloud webhook receiver
-// ships (§4c, a separate-repo companion), so the honest, expected state today is the
-// neutral empty note below - never a fake feed. A background-fetch failure keeps
-// react-query's last-known `data` (fails open server-side, so there is no distinct error
-// state to render - the header cloud dot already reflects a degraded connection).
-function InboundEventsInbox({ active, platformFilter, onNavigate, t }) {
-  const { data, isLoading } = useInboundEvents(active);
-  const queryClient = useQueryClient();
-  // Send one inbound-event reply, then invalidate the feed it rode in on (so a fresh pull
-  // reflects the landed reply) + the engager relationship cache (the reply is a 'me'-
-  // direction exchange). clientId threads the reply to a foreign-project event's workspace
-  // in the all-projects inbox; undefined single-client, a no-op.
-  const onReply = async (event, text) => {
-    await replyToInboundEvent({ eventId: event.eventId, text, clientId: event.clientId });
-    queryClient.invalidateQueries({ queryKey: ['cloud', 'events'] });
-    queryClient.invalidateQueries({ queryKey: ['engager'] });
-  };
-  const items = Array.isArray(data?.events) ? data.events : [];
-  const filtered = items.filter((e) => !platformFilter.length || platformFilter.includes(e.platform));
-  if (isLoading && !data) {
-    return <div className="space-y-1.5">{[0, 1].map((i) => <Skeleton key={i} className="h-12 w-full" />)}</div>;
-  }
-  if (filtered.length === 0) {
-    return <p className="px-1 text-xs text-zinc-500 dark:text-zinc-400">{t('inbox.empty')}</p>;
-  }
-  return <ul className="space-y-1.5">{filtered.map((e) => <InboundEventRow key={e.eventId} event={e} onReply={onReply} onNavigate={onNavigate} t={t} />)}</ul>;
-}
-
-// The GBP reviews inbox (spec 03): reviews ride the SAME Activity inbox chip as comments
-// (no new page, no competing chip), but - unlike comments - have NO PostDetail, so this
-// is the ONE interactive surface. Reading also logs new reviews as review-received
-// Activity entries server-side (audit); those are filtered out of the day feed below so
-// the review is not shown twice. Every state is icon+text: loading -> skeleton; a project
-// pending Google approval -> an amber "authorize in Setup" affordance (the same setup
-// wrench pattern the feed's resolveRemediation uses); empty -> the shared empty copy;
-// error -> an inline red row; success -> the review rows with their reply boxes.
-function ReviewsInbox({ active, onNavigate }) {
-  const t = useT();
-  const queryClient = useQueryClient();
-  const { data, isLoading, isError } = useReviews(active);
-  const onReply = async (reviewId, text) => {
-    await replyToReview(reviewId, text);
-    queryClient.invalidateQueries({ queryKey: ['reviews'] });
-    queryClient.invalidateQueries({ queryKey: ['activity'] });
-  };
-  const items = Array.isArray(data?.items) ? data.items : [];
-  // A not-connected GBP lane (the account/location ids are unset) is NOT an error - the
-  // engine returns code:'not_configured', which the operator sees as SILENCE: render the
-  // WHOLE section as nothing, so there is no red alert AND no lingering "Reviews" header
-  // that would misread as "zero reviews" (spec-06 paused-lane honesty). The error block
-  // below stays reserved for a genuine read failure (engine_failure / network).
-  if (data && data.ok === false && data.code === 'not_configured') return null;
-  let body;
-  if (isLoading) {
-    body = <div className="space-y-1.5">{[0, 1].map((i) => <Skeleton key={i} className="h-16 w-full" />)}</div>;
-  } else if (isError || (data && data.ok === false)) {
-    body = (
-      // The engine's own read error (English) rides the "?" beside the plain sentence,
-      // never inline and never inside the alert.
-      <div className={`flex items-start gap-1 rounded-xl px-3 py-2.5 ${INNER_SURFACE}`}>
-        <p role="alert" className="flex flex-wrap items-center gap-1.5 text-xs text-red-600 dark:text-red-300">
-          <AlertCircle size={13} aria-hidden="true" /> {t('reviews.error')}
-        </p>
-        <InfoTip label={data?.message || data?.error || null} />
-      </div>
-    );
-  } else if (data?.needsScope) {
-    body = (
-      <div className={`flex flex-wrap items-center gap-2 rounded-xl px-3 py-2.5 text-xs ${INNER_SURFACE}`}>
-        <span className="flex items-center gap-1.5 font-bold text-amber-700 dark:text-amber-300">
-          <ShieldAlert size={13} aria-hidden="true" /> {t('reviews.scope.pending')}
-        </span>
-        <button
-          type="button"
-          onClick={() => onNavigate?.('setup', 'gbp')}
-          className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-amber-700 ring-1 ring-amber-500/30 transition hover:bg-amber-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-amber-300 dark:ring-amber-400/30"
-        >
-          <Wrench size={12} aria-hidden="true" /> {t('reviews.scope.authorize')}
-        </button>
-      </div>
-    );
-  } else if (items.length === 0) {
-    body = (
-      <div className="grid min-h-24 place-items-center">
-        <div className="max-w-sm space-y-1 text-center">
-          <p className="text-sm font-bold">{t('reviews.empty.title')}</p>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('reviews.empty.body')}</p>
-        </div>
-      </div>
-    );
-  } else {
-    body = <ul className="space-y-1.5">{items.map((r) => <ReviewRow key={r.commentId} review={r} onReply={onReply} t={t} />)}</ul>;
-  }
-  return (
-    <section className="space-y-1.5" aria-label={t('reviews.title')}>
-      <h3 className="mb-1.5 px-1 font-display text-sm font-bold text-zinc-500 dark:text-zinc-400">{t('reviews.title')}</h3>
-      {body}
-    </section>
-  );
 }
 
 // The quiet one-click path to the hidden system bookkeeping: a text button, not a
@@ -1040,23 +599,6 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
   //   start/stop, run) visible even when a platform is selected.
   // - Outcome (failures-only): keep only entry.ok === false.
   // - Action group: keep only entries whose action falls in a selected group.
-  // Reviews (spec 03) ride the inbox chip; the interactive rows render in ReviewsInbox
-  // below. The block respects the SAME filters as the day feed (MINOR-5): it only shows
-  // when the inbox group is selected AND gbp is not excluded by the platform filter AND
-  // failures-only is off (a review is inbound engagement, never a failure - nothing to
-  // show under failures-only). When the block IS showing, its audit 'review-received'
-  // entries are filtered OUT of the day feed (never shown twice); when it is NOT showing,
-  // those entries STAY in the day feed as plain audit rows so they are never permanently
-  // invisible (NIT-7). The operator-action 'review-reply' entries always stay in the feed
-  // as audit, exactly like 'comment-reply'.
-  const gbpInFilter = !platformFilter.length || platformFilter.includes('gbp');
-  const showReviews = actionGroups.includes('inbox') && gbpInFilter && !failuresOnly;
-  // The inbound-event feed (spec 23) rides the SAME inbox chip - it spans several
-  // platforms (not one lane like GBP reviews), so it is not gated by gbpInFilter; its
-  // own platformFilter narrowing happens inside InboundEventsInbox. A review is inbound
-  // engagement, never a failure, and neither is a raw inbound event - so it is likewise
-  // hidden under failures-only (mirrors showReviews).
-  const showInbound = actionGroups.includes('inbox') && !failuresOnly;
   // The DEFAULT feed (no group chip selected) answers "what happened to my
   // content", so successful SYSTEM bookkeeping (scheduler ticks, probes, token
   // refreshes, metrics sweeps, cloud reconciliation) stays out of it - a system
@@ -1066,11 +608,10 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
     () =>
       rows.filter(
         (e) =>
-          (!showReviews || e.action !== 'review-received') &&
           (!platformFilter.length || e.platform == null || platformFilter.includes(e.platform)) &&
           (!failuresOnly || e.ok === false),
       ),
-    [rows, platformFilter, failuresOnly, showReviews],
+    [rows, platformFilter, failuresOnly],
   );
   const activity = useMemo(
     () =>
@@ -1097,18 +638,6 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
     }
     return m;
   }, [campaigns]);
-  // Prepend the inbound-event feed + the GBP reviews inbox when the inbox chip is
-  // selected. When neither shows, the feed renders byte-identically to before (no
-  // wrapper), so no other view is touched.
-  const withInboxExtras = (feed) => ((showInbound || showReviews)
-    ? (
-      <div className="space-y-5">
-        {showInbound ? <InboundEventsInbox active={active} platformFilter={platformFilter} onNavigate={onNavigate} t={t} /> : null}
-        {showReviews ? <ReviewsInbox active={active} onNavigate={onNavigate} /> : null}
-        {feed}
-      </div>
-    )
-    : feed);
   const groups = useMemo(() => {
     const out = [];
     let cur = null;
@@ -1136,13 +665,13 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
   }, [activity, t]);
 
   if (isLoading) {
-    return withNotice(withInboxExtras(<div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>));
+    return withNotice(<div className="space-y-2">{[0, 1, 2].map((i) => <Skeleton key={i} className="h-14 w-full" />)}</div>);
   }
   // A per-client read failure in the overview rides the inline notice above, never this
   // page-level error - one dead project never blanks the merged feed (mirrors App's
   // isError = allClients ? false : plansIsError).
   if (!allClients && isError) {
-    return withInboxExtras(
+    return (
       <div className="grid h-full min-h-48 place-items-center">
         <div className="max-w-sm space-y-3 text-center">
           <AlertTriangle className="mx-auto text-amber-500" size={26} aria-hidden="true" />
@@ -1165,7 +694,7 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
     // (the opposite of the truth) - mirror the sibling surfaces (planner, assets,
     // published) and point at the filter bar above when any filter is active.
     const filtered = Boolean(platformFilter.length || failuresOnly || actionGroups.length);
-    return withNotice(withInboxExtras(
+    return withNotice(
       <div className="grid h-full min-h-48 place-items-center">
         <div className="max-w-sm space-y-2 text-center">
           <ActivityIcon className="mx-auto text-zinc-500" size={26} aria-hidden="true" />
@@ -1184,9 +713,9 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
           <SystemRevealLine count={hiddenSystemCount} onShowSystem={onShowSystem} t={t} center />
         </div>
       </div>,
-    ));
+    );
   }
-  return withNotice(withInboxExtras(
+  return withNotice(
     <div className="space-y-5">
       {/* #48: the platform chips above scope the feed to entries TOUCHING the
           selected platform. The short scoped cue stays inline; the fuller
@@ -1219,5 +748,5 @@ export default function ActivityView({ active, platformFilter = [], failuresOnly
       </div>
       <SystemRevealLine count={hiddenSystemCount} onShowSystem={onShowSystem} t={t} />
     </div>,
-  ));
+  );
 }

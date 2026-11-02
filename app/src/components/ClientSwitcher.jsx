@@ -162,11 +162,11 @@ export default function ClientSwitcher({ onManage, onCreate, onBeforeSwitch, all
               <span className="truncate text-sm font-bold leading-tight">{allClients ? t('clientSwitcher.all') : (active?.displayName || t('clientSwitcher.noClient'))}</span>
               {allClients ? null : <ClientHealthDot client={active} t={t} />}
             </span>
-            <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">
+            <span data-switcher-sub="" className="block text-[11px] text-zinc-600 dark:text-zinc-400">
               {allClients ? t('clientSwitcher.allSub', { n: listed.length }) : t('clientSwitcher.activeSublabel')}
             </span>
           </span>
-          <ChevronsUpDown size={15} className="shrink-0 text-zinc-500" aria-hidden="true" />
+          <ChevronsUpDown size={15} className="shrink-0 text-zinc-600" aria-hidden="true" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-60" aria-labelledby="clients-switcher-heading">

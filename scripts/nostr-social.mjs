@@ -263,6 +263,66 @@ function pointAdd(P, Q) {
   return { x, y: mod(l * (P.x - x) - P.y, SECP_P) };
 }
 
+// Jacobian-coordinate arithmetic for the VERIFY path: one modular inverse per verification
+// instead of one per add/double (the affine path above inverts ~500 times). The comment inbox
+// checks every relay event's signature (security review 2026-11-01), and at ~250 ms per affine
+// verify a busy note would blow the read budget; this keeps a check to a few milliseconds.
+// Points are [X, Y, Z] (x = X/Z^2, y = Y/Z^3), null is the point at infinity; secp256k1 has a = 0.
+function jDouble(P) {
+  if (!P) return null;
+  const [X, Y, Z] = P;
+  if (Y === 0n) return null;
+  const YY = mod(Y * Y, SECP_P);
+  const S = mod(4n * X * YY, SECP_P);
+  const M = mod(3n * X * X, SECP_P);
+  const X3 = mod(M * M - 2n * S, SECP_P);
+  return [X3, mod(M * (S - X3) - 8n * YY * YY, SECP_P), mod(2n * Y * Z, SECP_P)];
+}
+function jAdd(P, Q) {
+  if (!P) return Q;
+  if (!Q) return P;
+  const [X1, Y1, Z1] = P;
+  const [X2, Y2, Z2] = Q;
+  const Z1Z1 = mod(Z1 * Z1, SECP_P);
+  const Z2Z2 = mod(Z2 * Z2, SECP_P);
+  const U1 = mod(X1 * Z2Z2, SECP_P);
+  const U2 = mod(X2 * Z1Z1, SECP_P);
+  const S1 = mod(Y1 * Z2 * Z2Z2, SECP_P);
+  const S2 = mod(Y2 * Z1 * Z1Z1, SECP_P);
+  if (U1 === U2) return S1 === S2 ? jDouble(P) : null;
+  const H = mod(U2 - U1, SECP_P);
+  const R = mod(S2 - S1, SECP_P);
+  const HH = mod(H * H, SECP_P);
+  const HHH = mod(H * HH, SECP_P);
+  const V = mod(U1 * HH, SECP_P);
+  const X3 = mod(R * R - HHH - 2n * V, SECP_P);
+  return [X3, mod(R * (V - X3) - S1 * HHH, SECP_P), mod(H * Z1 * Z2, SECP_P)];
+}
+function jToAffine(P) {
+  if (!P || P[2] === 0n) return null;
+  const zi = modInv(P[2], SECP_P);
+  const zi2 = mod(zi * zi, SECP_P);
+  return { x: mod(P[0] * zi2, SECP_P), y: mod(P[1] * zi2 * zi, SECP_P) };
+}
+// a*A + b*B in one pass (Shamir's trick), affine in, affine out.
+function doubleMul(a0, A, b0, B) {
+  const a = mod(a0, SECP_N);
+  const b = mod(b0, SECP_N);
+  const JA = A ? [A.x, A.y, 1n] : null;
+  const JB = B ? [B.x, B.y, 1n] : null;
+  const JAB = jAdd(JA, JB);
+  let R = null;
+  for (let i = BigInt(Math.max(a.toString(2).length, b.toString(2).length)) - 1n; i >= 0n; i -= 1n) {
+    R = jDouble(R);
+    const abit = (a >> i) & 1n;
+    const bbit = (b >> i) & 1n;
+    if (abit && bbit) R = jAdd(R, JAB);
+    else if (abit) R = jAdd(R, JA);
+    else if (bbit) R = jAdd(R, JB);
+  }
+  return jToAffine(R);
+}
+
 // Double-and-add scalar multiplication.
 function pointMul(k0, P) {
   let k = mod(k0, SECP_N);
@@ -330,7 +390,7 @@ function schnorrVerify(msg, pub, sig) {
   const s = bytesToBig(sig.subarray(32));
   if (r >= SECP_P || s >= SECP_N) return false;
   const e = mod(bytesToBig(taggedHash('BIP0340/challenge', sig.subarray(0, 32), pub, msg)), SECP_N);
-  const R = pointAdd(pointMul(s, G), pointMul(SECP_N - e, P)); // s*G - e*P
+  const R = doubleMul(s, G, SECP_N - e, P); // s*G - e*P (Jacobian, one inversion)
   if (!R) return false;
   if ((R.y & 1n) === 1n) return false;
   return R.x === r;
@@ -483,10 +543,15 @@ function fetchEventFromRelay(url, id) {
 // fetchEventFromRelay (which stops at the first match) to collect ALL matches,
 // since reaction/zap counts need every event, not just one.
 function fetchEventsForNote(url, eventId, kinds) {
+  return fetchEventsByFilter(url, { kinds, '#e': [eventId], limit: 500 });
+}
+
+// The same REQ for ANY NIP-01 filter (the comment inbox asks '#e', '#q' and '#p').
+function fetchEventsByFilter(url, filter) {
   const subId = `pendpost-${crypto.randomBytes(4).toString('hex')}`;
   const events = [];
   return relayExchange(url, {
-    onOpen: (ws) => ws.send(JSON.stringify(['REQ', subId, { kinds, '#e': [eventId], limit: 500 }])),
+    onOpen: (ws) => ws.send(JSON.stringify(['REQ', subId, filter])),
     onFrame: (frame, ws, done) => {
       if (frame[0] === 'EVENT' && frame[1] === subId) events.push(frame[2]);
       if (frame[0] === 'EOSE' && frame[1] === subId) {
@@ -1869,7 +1934,90 @@ function parseArgs(argv) {
 // { items } / { id } envelope; a needs_scope degrade sets ok:false (P9).
 async function cmdComments(args) {
   const { runLaneComments } = await import('../lib/comments.mjs');
-  Object.assign(RUN, await runLaneComments('nostr', args));
+  Object.assign(RUN, await runLaneComments('nostr', { ...args, ...relayReadSeams() }));
+}
+// Mentions anywhere (the comment inbox's `mentions` verb): events tagging our pubkey ('#p')
+// on every relay - mentions, replies under our notes, zaps and reposts.
+async function cmdMentions(args) {
+  const { runLaneMentions } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneMentions('nostr', { ...args, ...relayReadSeams() }));
+}
+
+// The comment inbox's relay seams: a transport (one filter, EVERY configured relay in parallel,
+// via relayExchange - the same bounded socket the publish/insights paths use) and the event
+// check every classified event must pass (verifyRelayEvent: NIP-01 id recompute + BIP340 sig,
+// the zap PAY path's guard against a rogue relay). The check is memoized per event object so
+// the transport's verify-before-dedupe and the lib's classification pay for one check.
+// nostrQuery is null when this runtime has no WebSocket or no relay is configured, so the lib
+// degrades honestly instead of crashing.
+function relayReadSeams() {
+  const relays = relayUrls();
+  const verified = new WeakSet();
+  const verifyEvent = (e) => {
+    if (!e || typeof e !== 'object') return false;
+    if (verified.has(e)) return true;
+    if (!verifyRelayEvent(e)) return false;
+    verified.add(e);
+    return true;
+  };
+  const nostrQuery = (typeof WebSocket === 'undefined' || !relays.length) ? null : (filter) => queryRelays(relays, filter, fetchEventsByFilter, verifyEvent);
+  return { nostrQuery, verifyEvent, bolt11Msat: bolt11AmountMsat };
+}
+// Signature checks per query are budgeted PER RELAY (security review 2026-11-01, round two): a
+// rogue relay that answers first with junk spends only its own share, so an honest relay's real
+// event is still checked. ceil(400 / relays), at least 50 each; a failed check counts against
+// the relay that sent it.
+const RELAY_VERIFY_TOTAL = 400;
+const RELAY_VERIFY_MIN = 50;
+export function relayVerifyBudget(relayCount) {
+  return Math.max(RELAY_VERIFY_MIN, Math.ceil(RELAY_VERIFY_TOTAL / Math.max(1, Number(relayCount) || 1)));
+}
+// Every relay is asked; a relay that errors or stays silent contributes nothing (the
+// gatherNoteEngagement posture); only "every relay failed" rejects. Events are checked BEFORE
+// they are deduped by id, so a forged copy one relay returns can never shadow the real event
+// another relay has: the first copy that passes the check takes the id.
+export async function queryRelays(relays, filter, fetchOne = fetchEventsByFilter, verify = verifyRelayEvent) {
+  const rows = await Promise.allSettled(relays.map((url) => fetchOne(url, filter)));
+  const okRows = rows.filter((r) => r.status === 'fulfilled');
+  if (!okRows.length) throw new Error('every relay failed');
+  const budget = relayVerifyBudget(relays.length);
+  const byId = new Map();
+  for (const r of okRows) {
+    let checks = 0;
+    for (const e of r.value || []) {
+      if (!e || typeof e.id !== 'string' || byId.has(e.id)) continue;
+      if (checks >= budget) break;
+      checks += 1;
+      if (verify(e)) byId.set(e.id, e);
+    }
+  }
+  return [...byId.values()];
+}
+
+// OUR zap provider (security review 2026-11-01, round two): the LNURL `nostrPubkey` behind our
+// own profile's Lightning address (lud16/lud06). A zap receipt is only worth its stated amount
+// when that provider signed it; anyone can mint a receipt with any bolt11 amount. Reuses the
+// zap PAY path's resolver (our kind-0, signature-checked, then the LNURL pay params), pointed
+// at ourselves. The comment sweep calls this verb at most once a day and caches the answer;
+// it is never called per zap. RUN.zapProvider = { nostrPubkey } or null (+ zapProviderError).
+export async function cmdZapProvider(args = {}, { resolve = resolveRecipientPayParams, hasWebSocket = typeof WebSocket !== 'undefined' } = {}) {
+  void args;
+  const ours = String(readEnv('NOSTR_PUBLIC_KEY') || '').trim().toLowerCase();
+  const relays = relayUrls();
+  if (!/^[0-9a-f]{64}$/.test(ours) || !relays.length || !hasWebSocket) {
+    RUN.zapProvider = null;
+    RUN.zapProviderError = 'not_configured';
+    return;
+  }
+  try {
+    const params = await resolve(relays, ours);
+    const pk = String((params && params.nostrPubkey) || '').trim().toLowerCase();
+    RUN.zapProvider = /^[0-9a-f]{64}$/.test(pk) ? { nostrPubkey: pk } : null;
+    if (!RUN.zapProvider) RUN.zapProviderError = 'no_nostr_pubkey';
+  } catch (err) {
+    RUN.zapProvider = null;
+    RUN.zapProviderError = String((err && err.message) || err).slice(0, 200);
+  }
 }
 async function cmdReply(args) {
   const { runLaneReply } = await import('../lib/comments.mjs');
@@ -1998,6 +2146,8 @@ const COMMANDS = {
   auth: cmdAuth,
   connect: cmdAuth,
   comments: cmdComments,
+  mentions: cmdMentions,
+  'zap-provider': cmdZapProvider,
   reply: cmdReply,
   react: cmdReact,
   refresh: cmdRefresh,
@@ -2100,7 +2250,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 // before-parse logic in-process against a stubbed global.WebSocket, with no live
 // relay/network/subprocess.
 export {
-  gatherNoteEngagement, schnorrVerify, nip04Encrypt, nip04Decrypt, buildEvent,
+  gatherNoteEngagement, schnorrVerify, nip04Encrypt, nip04Decrypt, buildEvent, pointMul, pointAdd, doubleMul,
   cmdProfile, RUN, fetchProfileFromRelay,
   cmdRelayListSet, cmdListSet, cmdListGet,
 };

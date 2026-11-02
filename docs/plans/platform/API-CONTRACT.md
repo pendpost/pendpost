@@ -56,6 +56,68 @@ Radar to file it, they need the composer. It carries its own tool rather than re
 `lib/auto-approve.mjs` has nothing to refuse it BY, and the broad auto-approve policy could match and
 PUBLISH content that was seeded by untrusted threads. This one forces `approval:'draft'`.
 
+`POST /api/plans/<campaign>/posts/<postId>/agent-fix` (`agent_fix_post`, studio fix flow
+2026-11-01) has the operator's own agent fix ONE post's content problems. Body `{ clientId }`,
+answer `{ ok, state: 'running', job }` at once (the MCP twin waits by default); `409 agent_busy`
+while any agent job runs for that client (or a fix runs in another project); `agent_unavailable`
+when no agent is connected (nothing spawned); `not_fixable` when the post has no content problem
+(a missing connection is the owner's, never the agent's). The child holds `plan_get`,
+`platform_validate`, `plan_update_post` and `brand_lint` (plus `reschedule` for an overdue-only
+post), behind a server-side fence that refuses any write to another post and fails the job; every
+edit sends an approved post back for approval (`editedSinceApproval`). `GET /api/agent-fix` (no MCP
+twin, UI-facing) lists the recent fixes per client, newest first:
+`{ ok, clientId, autoFix, running, fixes: [{ campaign, postId, state: running|done|failed|nothing, summary, at, ... }] }`,
+or with `?all=1` `{ ok, all, running, clients: [{ clientId, displayName, autoFix, running, fixes }], fixes }`.
+Job state lives in the client's `state.json` (`agentFix`), never on the post (a new post field would
+move the approval content hash). Auto mode is `posting.radar.agent.autoFix` (owner-only, default
+false): the scheduler tick queues at most one fix per client, never twice for the same content hash.
+
+`DELETE /api/plans/<campaign>/posts/<postId>` (`plan_delete_post`) keeps the removed post in the
+campaign's trash for 30 days (planner bulk contract 2026-11-01): a file beside the plan,
+`post-plan.trash.json`, never a post field, so the content hash, the manifest and every plan reader
+are untouched and a trashed post is never published, counted or listed. The answer adds
+`{ trashed: true, restorableUntil: <ISO> }` (`trashed: false` without `restorableUntil` when the
+trash could not be written; the delete is then final). The publish-evidence gate is unchanged.
+`POST /api/plans/<campaign>/posts/<postId>/restore` (`restore_post`) undoes it, client bound like
+the DELETE (body `clientId`), body `{ actor? }` (defaults to `owner` on REST; the MCP twin requires
+it). Answer `{ ok, restored: { id }, post: { id, approval, status, executionMode, scheduledAt }, rev,
+approvalKept: true|false|null, nativeCancelled, rescheduleNeeded, parked, note }`; `404
+not_in_trash` (never deleted, already restored, or older than 30 days), `409 conflict` (the id
+exists again, nothing changed). An approved post stays approved only when its content hash is
+unchanged; a restore never approves. A platform-side schedule the delete cancelled leaves no stale
+id, so the scheduler schedules the post again (`rescheduleNeeded: true`); a slot that came due
+while the post was in the trash comes back `parked: true`. Expired entries are purged on the
+scheduler tick, at most once an hour per client.
+
+## Owner proof: the Studio token (spec 56)
+
+Reaching `/api` is not owner proof. Each server process mints one random token; the REST face
+treats a request as the owner only when it carries that token in the
+**`X-Pendpost-Studio-Token`** header (timing-safe compare).
+
+- **Owner markers.** `POST /api/config` sets `CONFIG_OWNER_ACTION`, and `POST /api/radar/triage`,
+  `/api/radar/triage-bulk`, `/api/radar/mark-copy-posted` and `/api/radar/reply` set
+  `RADAR_OWNER_ACTION`, only when the header matches. Without it the write still runs, at agent
+  level (exactly what the MCP twin gets).
+- **Owner-only routes.** `POST /api/dashboard-update` refuses a request without the token:
+  403 `owner_token_required`.
+- **Wrong token.** A header that does not match this process is refused on every route:
+  403 `studio_token_invalid`. The token changes on every restart; refetch it.
+- **The Studio** reads the token from `GET /api/session` (answers only same-origin fetch metadata
+  or one of pendpost's own Origins, `Cache-Control: no-store`; a GET, so it needs no MCP twin) and
+  sends it on every mutating request.
+- **CLI and curl.** The server writes the token on boot to `~/.pendpost/studio-token` (0600, in a
+  0700 dir; a server on another `PENDPOST_PORT` writes `~/.pendpost/studio-token-<port>`;
+  `PENDPOST_STUDIO_TOKEN_DIR` overrides the directory). It is outside the workspace on purpose, so
+  no `/media` path and no workspace-relative tool argument can reach it.
+
+```bash
+curl -X POST http://127.0.0.1:8090/api/dashboard-update \
+  -H "X-Pendpost-Studio-Token: $(cat ~/.pendpost/studio-token)"
+```
+
+MCP tools never carry owner proof; nothing about the MCP face changes.
+
 ## Parity exemptions
 
 Capabilities that are intentionally present on only one face. Add an entry here
@@ -90,11 +152,19 @@ optional `clientId` for schema parity, and never reads or writes a credential VA
 read twin; reads are safe.)
 
 `POST /api/dashboard-update` remains operator/dashboard-only: it fast-forward-pulls
-the operator's git checkout (`scripts/dashboard-build.mjs` runs `git pull --ff-only`
-with `cwd: REPO_ROOT`) and rebuilds the dashboard. An agent must never pull or
-rebuild the operator's working tree, so no `confirm` gate can make it safe to
-expose; it stays deliberately UI-only (triggered from the in-app "update available"
-prompt).
+the operator's git checkout when upstream is ahead (`scripts/dashboard-build.mjs
+apply --pull` runs `git pull --ff-only` with `cwd: REPO_ROOT`), rebuilds the
+dashboard, then restarts the server once no publish run and no agent job is in
+flight (`lib/self-update.mjs`, exit 75 so launchd relaunches it). It is also
+offered when commits landed on disk since the server booted. An agent must never
+pull, rebuild or restart the operator's install, so no `confirm` gate can make it
+safe to expose; it stays deliberately UI-only (triggered from the in-app "update
+available" prompt) and is refused by the read-only dev and mock instances. Its
+status is the read `GET /api/dashboard-update` (no token, no MCP twin): `update`
+names what runs (`running`: package version + boot commit) and what would be
+installed (`target`), walks `state` through `downloading`, `installing`,
+`waiting` (for publishing or an agent), `restarting` (or `manual`), and keeps the
+`lastRun` result with its `target`. It never offers the commit already running.
 
 `POST /api/connect` is the OPERATOR-ONLY platform connect ceremony. It kicks off the
 engine's own connect command (`yt/linkedin/x-social.mjs auth`, or `meta-social.mjs
@@ -150,7 +220,11 @@ cloud / always-on state (it previously could not read it at all): `GET /api/clou
 -> `cloud_clients`, `GET /api/cloud/subscription` -> `cloud_subscription`. They are strictly
 read-only, carry NO secrets (the api key never leaves `.env`, tokens never leave the vault) and
 NO confirm gate; `cloud_capabilities` / `cloud_subscription` proxy the cloud over the network and
-degrade gracefully. The cloud CONTROL routes (`push`, `reconcile`, `enabled`, `clients/always-on`)
+degrade gracefully. `POST /api/cloud/recheck` -> `cloud_recheck` is the ACTIVE twin of
+`cloud_status`: it re-probes the cloud now (`/v1/health` for reach + worker liveness, then the
+subscription view, each best-effort) and returns `{ ok, checkedAt, reached, sync }` with the same
+`sync` roll-up; it writes only local contact bookkeeping, so it is classified with the reads.
+The cloud CONTROL routes (`push`, `reconcile`, `enabled`, `clients/always-on`)
 and the connect/billing ceremonies above stay operator-only and are NOT twinned. (`GET /api/cloud/enable/callback`
 is a plain loopback redirect and needs no exemption.)
 
@@ -265,6 +339,7 @@ one, not added.
     "/api/engagers/dismiss-link"
   ],
   "agentOnly": {
+    "/api/cloud/events": "The raw cloud inbound-event read (X activity: mentions, replies, quotes). Since the replies build of 2026-11-01 the operator sees these events in ONE place, Radar > Antworten an dich: the comment sweep merges the cached events into GET /api/comments/inbox as elsewhere[] items of kind event, and that list is the GUI face (it also replies through POST /api/inbound/reply). The Activity page Inbox that read this route directly was removed as a duplicate surface (net-simplify). Agents keep list_inbound_events for its since/type/postId filters, which a human browsing the unified list does not need.",
     "/api/radar/draft-comparison": "The spawned child's own tool: the operator presses Draft it (which is /api/radar/comparison-draft, GUI-reachable), their agent writes the page, and calls this to file it. Its required argument is the page body, so a human calling it directly would already have written the page and would want the composer instead. It exists as its own tool, rather than plan_create_post, so that auto-approve cannot match a post seeded by untrusted threads.",
     "/api/radar/scan": "Spec 41 made Studio scanning AGENT-ONLY: Scan now spawns the operator's own agent (POST /api/radar/agent-scan), and a scan that cannot use an agent does not run rather than falling back to a keyword match pretending to be research. radar_scan / runLaneRadar stay SHIPPED for agents and headless callers that still want the credentialed keyword scan - deleting that machinery is its own net-simplify diff, not a rider on this feature. Until then it is genuinely agent-only, and a dead GUI helper kept alive to satisfy this check would fake the gate green.",
     "/api/preview": "Read-only publish dry-run (C3): reports which due posts would fire, on which lanes, in which mode, with what blockers. The operator's equivalent is the Planner itself, which shows the same state in situ; a second read-only mirror of it would be a duplicate surface, and the net-simplify bar rejects that. Agents need it because they cannot see the Planner.",

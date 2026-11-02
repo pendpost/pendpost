@@ -132,7 +132,7 @@ try {
   ok(engineDropReason(MENTION, Q_BRAND, ctx()) === null, 'a brand mention skips the phrase gate');
   ok(engineDropReason(SWITCH_POSITIVE, Q_SWITCH, ctx()) === null, 'POSITIVE: "I\'d love a social media management tool ... insanely expensive" survives');
   ok(engineDropReason(DE_POSITIVE, Q_DE, ctx()) === null, 'POSITIVE: the German postiz find survives the lang:de search');
-  ok(Object.keys(emptyDropTally()).join(',') === 'noAnchor,bot,relay,own,muted,lang,dup', 'the drop tally names every reason');
+  ok(Object.keys(emptyDropTally()).join(',') === 'noAnchor,bot,relay,own,muted,lang,dup,foreign_launch_thread', 'the drop tally names every reason (foreign_launch_thread added in Radar 2.0 step 1)');
 
   // ---- Part 2: the same fixtures through the real scan seam -------------------------------
   const fixture = {

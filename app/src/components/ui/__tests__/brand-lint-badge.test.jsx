@@ -45,15 +45,15 @@ beforeEach(() => {
 });
 
 describe('BrandLintBadge', () => {
-  it('renders a quiet error-count badge with an advisory label when a target platform trips errors', async () => {
+  it('renders a quiet error-count badge whose label says approval waits on the fix', async () => {
     lintText.mockResolvedValue(envelope({ errors: 1 }));
     renderBadge({ caption: 'bad caption', platforms: ['instagram'] });
     // The badge surfaces the error count.
     const badge = await screen.findByText(/1 brand error/i);
     expect(badge).toBeInTheDocument();
-    // Its accessible label names it advisory, not a gate.
+    // Since #40 brand-rule errors block approval, and the label says so.
     const labelled = screen.getByRole('status');
-    expect(labelled).toHaveAttribute('aria-label', expect.stringMatching(/advisory/i));
+    expect(labelled).toHaveAttribute('aria-label', expect.stringMatching(/approval is refused/i));
   });
 
   it('renders nothing when the caption is clean', async () => {

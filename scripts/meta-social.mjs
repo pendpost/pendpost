@@ -956,7 +956,8 @@ async function cmdSetupSystemUser(args) {
     console.error('Usage: node scripts/meta-social.mjs setup-system-user --system-user-token <SYSTEM_USER_TOKEN> [--page-id P] [--app-id X --app-secret Y]');
     console.error('  Mint it in Business Settings > Users > System users > (an ADMIN system user) > Generate new token,');
     console.error('  with your Meta app selected, "Token never expires" ON, and scopes: pages_show_list,');
-    console.error('  pages_manage_posts, pages_read_engagement, business_management, instagram_basic, instagram_content_publish.');
+    console.error('  pages_manage_posts, pages_read_engagement, business_management, instagram_basic, instagram_content_publish,');
+    console.error('  instagram_manage_comments.');
     console.error('  The Page + linked IG professional account must be ASSIGNED to that System User (Assign assets).');
     process.exit(2);
   }
@@ -971,6 +972,10 @@ async function cmdSetupSystemUser(args) {
       console.log(`[info] Token type=${d.type || '?'} app=${d.app_id || '?'} valid=${d.is_valid} expires=${exp}`);
       if (d.expires_at && d.expires_at !== 0) {
         console.log('[warn] This token EXPIRES. Regenerate the System User token with "Token never expires" ON for a durable identity.');
+      }
+      // Issue #44: without this scope Meta hides who wrote each Instagram comment and refuses replies.
+      if (Array.isArray(d.scopes) && !d.scopes.includes('instagram_manage_comments')) {
+        console.log('[warn] The token lacks instagram_manage_comments: Instagram comment authors stay hidden and Instagram replies fail. Add it to the System User token to read and answer comments.');
       }
     } catch (err) {
       console.log(`[warn] debug_token check skipped: ${err.message}`);

@@ -217,10 +217,19 @@ try {
   // no MCP twin by design - routes exemption), so routes go +2, tools +1, the 1 UI-only unchanged.
   // 160 routes / 134 tools = +radar_tune (relevance plan 1e, the query tuner) with its REST twin
   // POST /api/radar/tune (+1 each).
-  ok(/160 routes, 134 tools.*1 documented UI-only/.test(parityOut),
+  // 161 routes / 135 tools = +cloud_recheck (the active re-probe behind the Cloud page's
+  // re-check button) with its REST twin POST /api/cloud/recheck (+1 each).
+  // 162 routes / 135 tools = +GET /api/session (spec 56, the Studio token hand-off: a UI-only
+  // read, no MCP twin by design), routes +1.
+  // 164 routes / 136 tools = +agent_fix_post with its REST twin POST /api/plans/<c>/posts/<id>/agent-fix
+  // (studio fix flow 2026-11-01) and the UI-facing GET /api/agent-fix (no MCP twin): routes +2, tools +1.
+  // 165 routes / 136 tools = +GET /api/dashboard-update (the update toast status read, no MCP twin), routes +1.
+  // 166 routes / 137 tools = +restore_post with its REST twin POST /api/plans/<c>/posts/<id>/restore
+  // (post trash, planner bulk 2026-11-01): +1 each.
+  ok(/166 routes, 137 tools.*1 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 160/134 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 166/137 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

@@ -1,5 +1,10 @@
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { humanizeAction } from './failureCopy.js';
+// Spec 56: every mutating call carries the Studio token (owner proof); reads pass straight through.
+import { studioFetch } from './studioToken.js';
+// The pendpost-health query options (bare = active project, keyed = that project) live with
+// their one reader, lib/setupByClient.js, so a post is judged by its own project's setup.
+import { pendpostHealthQuery } from './setupByClient.js';
 
 async function getJson(path) {
   const res = await fetch(path);
@@ -110,6 +115,20 @@ export function useBuildStatus() {
   });
 }
 
+// The one-click update's status (GET /api/dashboard-update): what runs, what is on
+// offer, the step in progress. Polled every 1.5 s while an update runs (fast), else
+// every 30 s. No retry: during the restart the server is briefly gone, and the
+// toast reads that gap itself (isError) instead of waiting out retries.
+export function useUpdateStatus(fast = false) {
+  return useQuery({
+    queryKey: ['dashboard-update'],
+    queryFn: () => getJson('/api/dashboard-update'),
+    refetchInterval: fast ? 1500 : 30_000,
+    refetchIntervalInBackground: true,
+    retry: false,
+  });
+}
+
 export function useAssets(enabled) {
   return useQuery({
     queryKey: ['assets'],
@@ -178,12 +197,7 @@ export const revokeAutonomy = () => postJson('/api/autonomy/revoke', { actor: AC
 // nextDue[] } from GET /api/pendpost-health (lib/writes.mjs pendpostHealth). Read-only
 // and client-scoped server-side; the checklist renders blockers as actionable steps.
 export function usePendpostHealth(enabled) {
-  return useQuery({
-    queryKey: ['pendpost-health'],
-    queryFn: () => getJson('/api/pendpost-health'),
-    enabled,
-    refetchInterval: 60_000,
-  });
+  return useQuery({ ...pendpostHealthQuery(), enabled });
 }
 
 // Read-only per-platform publish readiness (B2): { ok, postId, platforms:{<p>:
@@ -288,31 +302,12 @@ export function useCommentInboxAll(clients, enabled) {
   });
 }
 
-// GBP reviews (spec 03, Pattern P6 engagement): the location's Google Business reviews
-// from GET /api/reviews (lib/writes.mjs listReviews). Always resolves 200 with a
-// structured body ({ ok, items, averageRating, totalReviewCount, needsScope?, scope?,
-// error? }) so the Activity reviews inbox renders an honest state (populated / empty /
-// needs-scope / error) rather than a thrown query error. Reading also logs any NEW
-// review as a review-received Activity entry server-side. enabled-gated so it only
-// fetches when the inbox chip is open; a client switch invalidates ['reviews'].
-// Pull-on-demand (staleTime only, NO refetchInterval - mirrors useComments): each read
-// spawns a gbp subprocess and the Business Profile API quota is tight, so reviews refresh
-// when the inbox is (re)opened, never on a background timer.
-export function useReviews(enabled = true) {
-  return useQuery({
-    queryKey: ['reviews'],
-    queryFn: () => getJson('/api/reviews'),
-    enabled,
-    staleTime: 15_000,
-  });
-}
-
 // The Radar (beta) listening seam (spec 32, Pattern P4-read): the cached, scored
 // signal feed from GET /api/radar (lib/writes.mjs listRadar). A PURE cache read (it
 // never scans) so it always resolves 200 with a structured body ({ ok, enabled,
 // items:[Signal], lastScan, capabilities }); the Radar panel renders an honest state
 // (disabled / empty / populated) rather than a thrown query error. Pull-on-demand
-// (staleTime only, mirrors useReviews) - the feed refreshes when the panel (re)mounts
+// (staleTime only) - the feed refreshes when the panel (re)mounts
 // or after an explicit Scan now; a client switch invalidates ['radar'].
 // Spec 41: while an agent job is RUNNING the feed also carries live progress, so it polls -
 // but only then. An idle Radar keeps its pull-on-demand cost, and the moment the job settles
@@ -437,7 +432,7 @@ export function usePinterestBoardSections(boardId, enabled = true) {
 // on success, or { ok:false, error } on a failed read) so the panel renders an
 // honest state (populated / empty / unavailable) rather than a thrown query
 // error. MOUNT-gated, not enabled-gated (spec 29 review, NIT-7): `enabled`
-// defaults to true here (mirrors useReviews/useGbpMedia's pull-on-demand
+// defaults to true here (mirrors useGbpMedia's pull-on-demand
 // shape) - it only fetches once BoardManager itself mounts, which happens
 // only when the connected Pinterest card is expanded.
 export function useBoards(enabled = true) {
@@ -454,7 +449,7 @@ export function useBoards(enabled = true) {
 // (lib/writes.mjs listGbpMedia). Always resolves 200 with a structured body ({ ok,
 // items, needsScope?, scope?, error? }) so the Setup gallery panel renders an honest
 // state (populated / empty / needs-scope / error) rather than a thrown query error.
-// Pull-on-demand (staleTime only, mirrors useReviews) - each read spawns a gbp
+// Pull-on-demand (staleTime only) - each read spawns a gbp
 // subprocess and the Business Profile API quota is tight.
 export function useGbpMedia(enabled = true) {
   return useQuery({
@@ -666,7 +661,7 @@ async function sendJson(method, path, body, { timeoutMs } = {}) {
   const budget = timeoutMs ?? writeTimeoutFor(path);
   const timer = setTimeout(() => ctrl.abort(), budget);
   try {
-    const res = await fetch(path, {
+    const res = await studioFetch(path, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {}),
@@ -796,6 +791,13 @@ export const createPost = (campaign, post) => postJson(`/api/plans/${campaign}/p
 // other one. Single-client callers omit it and nothing changes.
 export const updatePost = (campaign, postId, ifRev, fields, clientId) => sendJson('PATCH', `/api/plans/${campaign}/posts/${postId}`, { ifRev, fields, actor: ACTOR, clientId });
 export const deletePost = (campaign, postId, force = false, clientId) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}`, { force, actor: ACTOR, clientId });
+// Planner bulk (2026-11-01, docs/plans/planner-bulk-2026-11-01/contract.md, "trash"): a delete
+// moves the post into its campaign's trash for 30 days, and this puts it back (the bulk delete
+// toast's Undo). Refusals: code 'not_in_trash' (404, purged or never deleted) and 'conflict'
+// (409, a post with that id exists again). Answers { ok, restored, post, rev, parked, ... };
+// parked:true means its slot passed while it sat in the trash, so it came back paused.
+// clientId + actor ride the JSON body like deletePost (handleApi reads clientId from a JSON body).
+export const restorePost = (campaign, postId, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/restore`, { actor: ACTOR, clientId });
 // The thrown error is stamped action:'approve', so the alert can say "the approval failed"
 // for the codes that only mean that (failureCopy approveRefusal).
 export const approvePost = (campaign, postId, note, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/approve`, { actor: ACTOR, note, clientId })
@@ -807,6 +809,14 @@ export const reschedulePost = (campaign, postId, scheduledAt, confirm = false, c
 // leaves the publish-due queue. Never publishes; externalUrl is optional. An
 // optional platform records manual completion for THAT lane only (a mixed
 // multi-lane post keeps owing its other lanes) - R5 lane-scoped completion.
+// Studio fix flow (docs/plans/studio-fix-flow-2026-11-01/contract.md, A + D): ask the owner's
+// agent to fix the content issue that blocks one post. POST .../agent-fix { clientId } ->
+// { ok, state }; 409 while a fix job already runs for that project. The agent edits the post
+// (it comes back for approval) and never approves, connects or touches a secret.
+export const agentFixPost = (campaign, postId, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/agent-fix`, { ...(clientId ? { clientId } : {}) });
+// The recent agent fixes of one project (the lib/agentFix.js read, as a plain call): the List's
+// bulk "Fix with agent" polls it to start the next post only once this one's job has settled.
+export const getAgentFixes = (clientId) => getJson(clientId ? `/api/agent-fix?clientId=${encodeURIComponent(clientId)}` : '/api/agent-fix');
 export const markPosted = (campaign, postId, externalUrl, platform, clientId) => postJson(`/api/plans/${campaign}/posts/${postId}/mark-posted`, { externalUrl, platform, actor: ACTOR, clientId });
 // Read a handed-off post back from its platforms to confirm it is live (writes a
 // non-destructive verify block; never publishes). The caller invalidates ['plans'].
@@ -821,7 +831,9 @@ export const refreshXToken = () => postJson('/api/accounts/x/refresh', {});
 // lands in account_status.<platform>.live. An optional platform scopes the probe
 // to a single lane (C4); omitting it probes all lanes - existing no-arg callers
 // (App.jsx, Sidebar.jsx) keep their whole-instance recheck unchanged.
-export const recheckHealth = (platform) => postJson('/api/health/recheck', platform ? { platform } : {});
+// `clientId` (optional trailing): the project to probe, for a fix run from the all-projects
+// view (resolveClientId reads it from the body); omitted, the active project as before.
+export const recheckHealth = (platform, clientId) => postJson('/api/health/recheck', { ...(platform ? { platform } : {}), ...(clientId ? { clientId } : {}) });
 // Spec 41: prove the operator's agent CLI can actually run Radar research. Spawns it once
 // and requires it to call pendpost_health back over MCP - "live" only if that call really
 // landed. SPENDS the operator's subscription (one short turn), so it is only ever wired to
@@ -1026,16 +1038,17 @@ export const refreshCommentInbox = () => postJson('/api/comments/inbox/refresh',
 export const resolveInboxComment = (key, reason, clientId) => postJson('/api/comments/inbox/resolve', { key, reason, actor: ACTOR, clientId });
 // GBP reviews WRITE (spec 03): upsert/remove the owner reply on one review (POST
 // /api/reviews/reply -> lib/writes.mjs replyToReview). reviewId is the full resource
-// name (from useReviews items[].commentId); an empty text REMOVES the reply. Operator-
+// name (a review item's commentId in the Replies inbox); an empty text REMOVES the reply. Operator-
 // triggered; the UI always acts as the owner. Low-risk + reversible - no confirm gate.
 // Resolves { ok, id, reviewId } or throws (sendJson surfaces the server message + code,
 // e.g. not_configured when the Business Profile API is pending approval). The caller
-// invalidates ['activity'] + ['reviews'] on success.
-export const replyToReview = (reviewId, text) => postJson('/api/reviews/reply', { reviewId, text, actor: ACTOR });
+// resolves the inbox item on success. `clientId` (optional): the all-projects inbox scopes the
+// reply to the review's own project; single-client callers omit it and nothing changes.
+export const replyToReview = (reviewId, text, clientId) => postJson('/api/reviews/reply', { reviewId, text, actor: ACTOR, clientId });
 // Inbound-event reply WRITE (spec 23 close-the-loop): answer one normalized inbound
-// event - an X mention/reply or a DM - straight from the Activity inbox (POST
+// event - an X mention/reply or a DM - straight from Radar "Replies to you" (POST
 // /api/inbound/reply -> the engine posts a native reply on the source thread). eventId
-// is the feed row's eventId (from useInboundEvents). Operator-triggered; the UI always
+// is the event item's commentId in the Replies inbox. Operator-triggered; the UI always
 // acts as the owner. Resolves { ok, id, platform, eventId } or throws (sendJson surfaces
 // the server message + code): needs_scope (403, the lane lacks the write permission),
 // credits (402, the paid lane is halted), target_gone (410, the post is deleted),
@@ -1167,14 +1180,16 @@ export const fetchConfig = () => getJson('/api/config');
 // the operator entered (youtube/linkedin/x: clientId+clientSecret; meta: systemUserToken).
 // Resolves { started, interactive } - the caller then polls recheckHealth until the lane
 // flips. The secret stays on this machine (a 127.0.0.1 POST into the local .env).
-export const connectPlatform = (platform, creds = {}) => postJson('/api/connect', { platform, ...creds });
+// `clientId` (optional trailing): the project the ceremony is FOR (the fix-in-place modal passes
+// the post's own project); omitted, the active project as before.
+export const connectPlatform = (platform, creds = {}, clientId) => postJson('/api/connect', { platform, ...creds, ...(clientId ? { clientId } : {}) });
 
 // Imperative read of the engine connect ceremony's live state for one platform
 // (GET /api/connect/status?platform=<p>). Resolves { ok, state:'idle'|'running'|
 // 'failed'|'connected', detail, authUrl, at }. The ConnectPanel polls this while
 // 'waiting' so it can surface the consent link and a hard failure instead of a
 // dead-end spinner. Mirrors the file's other GETs (getJson throws on a non-2xx).
-export const connectStatus = (platform) => getJson('/api/connect/status?platform=' + encodeURIComponent(platform));
+export const connectStatus = (platform, clientId) => getJson('/api/connect/status?platform=' + encodeURIComponent(platform) + (clientId ? `&clientId=${encodeURIComponent(clientId)}` : ''));
 
 // Operator-only platform disconnect (POST /api/disconnect): clear ALL stored
 // credentials for the platform from the active client's .env - the inverse of connect.
@@ -1187,7 +1202,7 @@ export const disconnectPlatform = (platform) => postJson('/api/disconnect', { pl
 export const setCoverFrame = (campaign, postId, frameSec) => postJson(`/api/plans/${campaign}/posts/${postId}/cover`, { frameSec });
 export const clearCover = (campaign, postId) => sendJson('DELETE', `/api/plans/${campaign}/posts/${postId}/cover`, undefined);
 export async function uploadCover(campaign, postId, file) {
-  const res = await fetch(`/api/plans/${campaign}/posts/${postId}/cover`, {
+  const res = await studioFetch(`/api/plans/${campaign}/posts/${postId}/cover`, {
     method: 'POST',
     headers: { 'Content-Type': file.type || 'image/jpeg' },
     body: file,
@@ -1212,7 +1227,7 @@ export const renameAsset = (file, toName, confirm = false) => postJson(`/api/ass
 // --- Assets ingestion (WP6): stream a new media file into data/media. The
 // filename + actor ride the query string (the CORS header allowlist is fixed).
 export async function uploadAssetFile(file) {
-  const res = await fetch(`/api/assets/upload?filename=${encodeURIComponent(file.name)}&actor=${ACTOR}`, {
+  const res = await studioFetch(`/api/assets/upload?filename=${encodeURIComponent(file.name)}&actor=${ACTOR}`, {
     method: 'POST',
     headers: { 'Content-Type': file.type || 'application/octet-stream' },
     body: file,

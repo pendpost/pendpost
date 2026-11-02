@@ -11,7 +11,8 @@
 // lane once black-holed posts; keeping it search-only avoids re-introducing that).
 // Zero-dep: fetch + node builtins only.
 //
-// Auth: BYO app-password (https://bsky.app/settings/app-passwords). createSession
+// Auth: the `radar` SEARCH needs none (it falls back to the public AppView, see cmdRadar);
+// replying needs a BYO app-password (https://bsky.app/settings/app-passwords). createSession
 // mints a short-lived JWT; NEVER the account password. Env keys:
 //   BLUESKY_IDENTIFIER    the handle or DID (e.g. you.bsky.social)
 //   BLUESKY_APP_PASSWORD  an app-password (NOT the account password)
@@ -19,6 +20,7 @@
 //
 // Usage:
 //   radar --query <json>   run a RadarQuery via app.bsky.feed.searchPosts.
+//   auth                   prove BLUESKY_IDENTIFIER + BLUESKY_APP_PASSWORD (the Studio connect).
 //
 // Mock: `radar` is in MOCKABLE_COMMANDS, so `main()` routes it to the mock driver's
 // handleRadar (credential-free) exactly like every other mockable verb.
@@ -28,15 +30,15 @@ import { fileURLToPath } from 'node:url';
 import { resolveMode, isMockableCommand } from '../lib/mode.mjs';
 import { enforceCeremonyClient } from '../lib/cli-client.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
-import { readEnv } from '../lib/util.mjs';
+import { readEnv, writeEnvVars } from '../lib/util.mjs';
 
 export const RUN = { results: [] };
 let JSON_MODE = false;
 
 // The Radar (beta) SEARCH verb (spec 33, Pattern P3 read + P9). createSession (app-
-// password) -> app.bsky.feed.searchPosts. Creds via readEnv (never requireEnv): a
-// missing app-password degrades to needs_scope (not a process.exit), a 429 to
-// rate_limited, a session failure to needs_scope - never a throw (P9). Keywords +
+// password) -> app.bsky.feed.searchPosts, or with no app-password the unauthenticated public
+// AppView. Creds via readEnv (never requireEnv): a 429 degrades to rate_limited, a session
+// failure to needs_scope, a public-search refusal to not_connected - never a throw (P9). Keywords +
 // hashtags each get their OWN searchPosts call (see the loop). Mock mode NEVER reaches
 // here (main() routes `radar` to the mock driver via MOCKABLE_COMMANDS).
 // The searchPosts request for ONE term (2026-09-30). A query with a `lang` ("de", "de-CH") asks
@@ -49,6 +51,10 @@ export function bskySearchUrl(pds, term, lang) {
   return `${pds}/xrpc/app.bsky.feed.searchPosts?${new URLSearchParams(params).toString()}`;
 }
 
+// The public Bluesky AppView that serves searchPosts without a login (see cmdRadar). Override with
+// BLUESKY_PUBLIC_API_URL (a self-hosted AppView, or a test stub).
+export const BLUESKY_PUBLIC_API = 'https://api.bsky.app';
+
 export async function cmdRadar(args) {
   const { radarOkRow, radarNeedsScopeRow, radarNotConnectedRow, radarRateLimitedRow, radarErrorRow, radarHttp } = await import('../lib/radar.mjs');
   let query = {};
@@ -56,22 +62,29 @@ export async function cmdRadar(args) {
   const identifier = readEnv('BLUESKY_IDENTIFIER') || readEnv('BLUESKY_HANDLE');
   const appPassword = readEnv('BLUESKY_APP_PASSWORD');
   const pds = (readEnv('BLUESKY_PDS_URL') || 'https://bsky.social').replace(/\/+$/, '');
-  // L4: no app password was EVER configured => not_connected ("connect"), never the lying
-  // "access expired, reconnect" a needs_scope renders as.
-  if (!identifier || !appPassword) { RUN.results.push(radarNotConnectedRow('bluesky', 'bluesky_app_password')); return; }
-
-  const sess = await radarHttp(`${pds}/xrpc/com.atproto.server.createSession`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ identifier, password: appPassword }),
-  });
-  if (!sess.ok || !sess.json?.accessJwt) {
-    if (sess.status === 429) { RUN.results.push(radarRateLimitedRow('bluesky', sess.retryAfter)); return; }
-    // A stored-but-refused app password IS needs_scope (reconnect); the PDS's own words
-    // survive in `detail` instead of being discarded (L4).
-    RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password', sess.json?.message || sess.error || (sess.status ? `HTTP ${sess.status}` : null)));
-    return;
+  // SEARCH WITHOUT A LOGIN (Radar 2.0 step 1, 2026-10-29). Reading public posts needs no account:
+  // the Bluesky AppView answers app.bsky.feed.searchPosts unauthenticated at api.bsky.app (verified
+  // 200 on 2026-10-29; public.api.bsky.app answered 403 for search). So a client with no app
+  // password still gets the Bluesky lane, at no cost. With an app password configured, the authed
+  // path below is used as before. Replying and posting still need the app password.
+  const authed = Boolean(identifier && appPassword);
+  let base = (readEnv('BLUESKY_PUBLIC_API_URL') || BLUESKY_PUBLIC_API).replace(/\/+$/, '');
+  let headers = {};
+  if (authed) {
+    const sess = await radarHttp(`${pds}/xrpc/com.atproto.server.createSession`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ identifier, password: appPassword }),
+    });
+    if (!sess.ok || !sess.json?.accessJwt) {
+      if (sess.status === 429) { RUN.results.push(radarRateLimitedRow('bluesky', sess.retryAfter)); return; }
+      // A stored-but-refused app password IS needs_scope (reconnect); the PDS's own words
+      // survive in `detail` instead of being discarded (L4).
+      RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password', sess.json?.message || sess.error || (sess.status ? `HTTP ${sess.status}` : null)));
+      return;
+    }
+    base = pds;
+    headers = { Authorization: `Bearer ${sess.json.accessJwt}` };
   }
-  const jwt = sess.json.accessJwt;
 
   const keywords = Array.isArray(query.keywords) ? query.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
   const hashtags = Array.isArray(query.hashtags) ? query.hashtags.map((h) => `#${String(h).replace(/^#/, '').trim()}`).filter((h) => h.length > 1) : [];
@@ -89,6 +102,10 @@ export async function cmdRadar(args) {
       community: null,
       text: p.record?.text || '',
       ts: p.indexedAt || null,
+      // Radar 2.0 step 2: judge context the searchPosts PostView already carries (ProfileViewBasic
+      // has a display name but no bio; a bio would cost a getProfiles call, so it is left out).
+      ...(typeof p.author?.displayName === 'string' && p.author.displayName.trim() ? { authorName: p.author.displayName } : {}),
+      ...(Number.isFinite(p.replyCount) ? { replyCount: p.replyCount } : {}),
     };
   };
   // ONE searchPosts call per term (each keyword, each #hashtag). searchPosts treats a
@@ -99,16 +116,23 @@ export async function cmdRadar(args) {
   const items = [];
   const seenIds = new Set();
   let authFailed = false; // 401/403: the JWT was refused mid-run -> reconnect
+  let publicRefused = null; // 401/403 on the UNauthenticated path: public search refused -> connect
   let lastError = null;   // transient/other search failure (5xx etc.)
   let anySearchOk = false;
   for (const q of terms) {
-    const url = bskySearchUrl(pds, q, query.lang);
-    const { ok, status, json, retryAfter, error } = await radarHttp(url, { headers: { Authorization: `Bearer ${jwt}` } });
+    const url = bskySearchUrl(base, q, query.lang);
+    const { ok, status, json, retryAfter, error } = await radarHttp(url, { headers });
     if (!ok) {
       // A rate-limit only aborts if we have nothing yet; otherwise keep the collected items.
       if (status === 429) { if (!items.length) { RUN.results.push(radarRateLimitedRow('bluesky', retryAfter)); return; } break; }
-      // A refused token fails every further term the same way: stop here.
-      if (status === 401 || status === 403) { authFailed = true; break; }
+      // A refused token fails every further term the same way: stop here. Without a login, a
+      // refusal means the public endpoint closed its search: the lane degrades to "connect an app
+      // password" (not_connected), never a crash and never a fake "expired".
+      if (status === 401 || status === 403) {
+        if (authed) authFailed = true;
+        else publicRefused = `public search refused (HTTP ${status})`;
+        break;
+      }
       lastError = error || `HTTP ${status}`;
       continue;
     }
@@ -125,11 +149,13 @@ export async function cmdRadar(args) {
     // state.radar.sources (mirrors mastodon-social.mjs D6).
     const okRow = radarOkRow('bluesky', items);
     if (authFailed) okRow.degrade = { error: 'needs_scope', scope: 'bluesky_app_password' };
+    if (publicRefused) okRow.degrade = { error: 'not_connected', scope: 'bluesky_app_password', detail: publicRefused };
     RUN.results.push(okRow);
     return;
   }
   // Nothing matched: pick the HONEST degrade in priority order.
   if (authFailed) { RUN.results.push(radarNeedsScopeRow('bluesky', 'bluesky_app_password')); return; }
+  if (publicRefused) { RUN.results.push({ ...radarNotConnectedRow('bluesky', 'bluesky_app_password'), detail: publicRefused }); return; }
   if (lastError && !anySearchOk) { RUN.results.push(radarErrorRow('bluesky', lastError)); return; } // every term errored
   RUN.results.push(radarOkRow('bluesky', [])); // a genuine empty result (search worked, no hits)
 }
@@ -183,9 +209,13 @@ async function savePlan(abs, plan, touchedIds = null) {
 // target). It reached here only after a DISTINCT human approved the reply-post (the
 // approval gate + no-self-approval + never-auto-approve). createSession -> resolve the
 // target's { uri, cid } + thread root via getPosts -> createRecord an app.bsky.feed.post
-// with the reply block. Fail-closed: a gone/400/404 target => radar_target_gone; a missing
-// app-password => needs_scope. Reads creds via readEnv (never requireEnv) - never throws.
-async function cmdPublishDue(args) {
+// with the reply block. Fail-closed: a gone/400/404 target => radar_target_gone; no
+// credentials at all => not_connected (the owner never connected Bluesky, so the Studio
+// offers Connect, not "a permission is missing"); a stored app-password the PDS refuses
+// (createSession not ok, or a 401/403 on the write) => needs_scope (reconnect). Both park
+// the post with recovery 'reconnect' (lib/publish-hold.mjs CREDENTIAL_CODES). Reads creds
+// via readEnv (never requireEnv) - never throws.
+export async function cmdPublishDue(args) {
   const { radarHttp } = await import('../lib/radar.mjs');
   const abs = path.resolve(String(args.plan));
   const now = Date.now();
@@ -211,7 +241,7 @@ async function cmdPublishDue(args) {
     if (Number.isNaN(dueMs) || dueMs > now) continue;
     const body = String(post.caption || '').trim();
     if (!body) { RUN.results.push({ postId: post.id, platform: 'bluesky', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: 'radar reply needs a caption' }); continue; }
-    if (!identifier || !appPassword) { RUN.results.push({ postId: post.id, platform: 'bluesky', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: 'BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD not set' }); continue; }
+    if (!identifier || !appPassword) { RUN.results.push({ postId: post.id, platform: 'bluesky', action: 'publish', ok: false, errorCode: 'not_connected', errorMessage: 'Bluesky is not connected (BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD not set)' }); continue; }
     if (!session) {
       const s = await radarHttp(`${pds}/xrpc/com.atproto.server.createSession`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier, password: appPassword }) });
       if (!s.ok || !s.json?.accessJwt) { RUN.results.push({ postId: post.id, platform: 'bluesky', action: 'publish', ok: false, errorCode: 'needs_scope', errorMessage: `bluesky session HTTP ${s.status}` }); continue; }
@@ -284,7 +314,65 @@ export async function cmdRadarFollowup(args) {
   }
 }
 
-const COMMANDS = { radar: cmdRadar, 'publish-due': cmdPublishDue, 'radar-followup': cmdRadarFollowup };
+// The connect ceremony's proof step (lib/api.mjs STATIC_LANES.bluesky): the Studio wrote
+// BLUESKY_IDENTIFIER + BLUESKY_APP_PASSWORD to the client's .env and spawns `auth` with no
+// flags. One createSession on the PDS proves the pair works; exit 0 means connected, so the
+// connect run flips to 'connected' and the parked replies are released. The session's own
+// handle is persisted as BLUESKY_HANDLE (the account id the cloud vault keys on, lib/cloud-
+// client.mjs PLATFORM_ACCOUNT_IDS.bluesky), the same way mastodon's auth writes its handle.
+// The password is never printed; a refusal reports only the HTTP status and the PDS's words.
+// `writeEnv` is injectable for tests.
+export async function cmdAuth(args = {}, { writeEnv = writeEnvVars } = {}) {
+  const { radarHttp } = await import('../lib/radar.mjs');
+  const identifier = readEnv('BLUESKY_IDENTIFIER') || readEnv('BLUESKY_HANDLE');
+  const appPassword = readEnv('BLUESKY_APP_PASSWORD');
+  const pds = (readEnv('BLUESKY_PDS_URL') || 'https://bsky.social').replace(/\/+$/, '');
+  if (!identifier || !appPassword) {
+    throw new Error('Bluesky is not connected: BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD missing in .env');
+  }
+  const s = await radarHttp(`${pds}/xrpc/com.atproto.server.createSession`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier, password: appPassword }) });
+  if (!s.ok || !s.json?.accessJwt) {
+    const why = typeof s.json?.message === 'string' && s.json.message.trim() ? `: ${s.json.message.trim().slice(0, 160)}` : '';
+    throw new Error(`bluesky sign-in refused (HTTP ${s.status || 0})${why}`);
+  }
+  const handle = typeof s.json.handle === 'string' && s.json.handle.trim() ? s.json.handle.trim() : null;
+  if (handle) writeEnv({ BLUESKY_HANDLE: handle });
+  console.log(`[ok] authenticated as @${handle || identifier}`);
+  RUN.results.push({ platform: 'bluesky', action: 'auth', ok: true, detail: `@${handle || identifier}` });
+}
+
+// READ-only (planner-bulk contract R6): every reply from ANYONE under our posted Radar
+// replies, any round, for the watch window (getPostThread depth 6 on our post). Never writes
+// the plan; cmdRadarFollowup above keeps the spec 44 author-reply stamp.
+export async function cmdRadarReplies(args) {
+  const { radarHttp, parseBlueskyThreadReplies, radarReplyWatchTargets } = await import('../lib/radar.mjs');
+  const plan = JSON.parse(fs.readFileSync(path.resolve(String(args.plan)), 'utf8'));
+  const targets = radarReplyWatchTargets(plan.posts, 'bluesky', { windowDays: Number(args['window-days']) || 14 });
+  if (!targets.length) return;
+  const identifier = readEnv('BLUESKY_IDENTIFIER') || readEnv('BLUESKY_HANDLE');
+  const appPassword = readEnv('BLUESKY_APP_PASSWORD');
+  const pds = (readEnv('BLUESKY_PDS_URL') || 'https://bsky.social').replace(/\/+$/, '');
+  const fail = (post, errorCode, errorMessage) => RUN.results.push({ postId: post.id, platform: 'bluesky', action: 'radar-replies', ok: false, errorCode, errorMessage });
+  if (!identifier || !appPassword) { for (const post of targets) fail(post, 'needs_scope', 'BLUESKY_IDENTIFIER / BLUESKY_APP_PASSWORD not set'); return; }
+  const s = await radarHttp(`${pds}/xrpc/com.atproto.server.createSession`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ identifier, password: appPassword }) });
+  if (!s.ok || !s.json?.accessJwt) { for (const post of targets) fail(post, 'needs_scope', `bluesky session HTTP ${s.status}`); return; }
+  const ourIds = targets.map((p) => String(p.blueskyPostId));
+  const own = readEnv('BLUESKY_HANDLE') || s.json.handle || identifier;
+  for (const post of targets) {
+    const gp = await radarHttp(`${pds}/xrpc/app.bsky.feed.getPostThread?${new URLSearchParams({ uri: String(post.blueskyPostId), depth: '6' }).toString()}`, { headers: { Authorization: `Bearer ${s.json.accessJwt}` } });
+    if (!gp.ok) { fail(post, (gp.status === 400 || gp.status === 404) ? 'radar_target_gone' : ((gp.status === 401 || gp.status === 403) ? 'needs_scope' : 'engine_failure'), `bluesky getPostThread HTTP ${gp.status}`); continue; }
+    RUN.results.push({ postId: post.id, platform: 'bluesky', action: 'radar-replies', ok: true, items: parseBlueskyThreadReplies(gp.json, { ourIds, ownAuthor: own }) });
+  }
+}
+
+// Mentions anywhere (the comment inbox's `mentions` verb, lib/comments.mjs runLaneMentions):
+// listNotifications for mention / reply / quote with the existing app-password session.
+export async function cmdMentions(args = {}) {
+  const { runLaneMentions } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneMentions('bluesky', args));
+}
+
+const COMMANDS = { radar: cmdRadar, 'publish-due': cmdPublishDue, 'radar-followup': cmdRadarFollowup, auth: cmdAuth, mentions: cmdMentions, 'radar-replies': cmdRadarReplies };
 
 function parseArgs(argv) {
   const args = { _: [] };

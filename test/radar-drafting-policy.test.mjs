@@ -80,7 +80,7 @@ try {
     sn += 1;
     const externalId = `t3_${sn}`;
     const url = `https://reddit.com/r/x/${sn}`;
-    const signal = { source: 'reddit', ts: new Date().toISOString(), externalId, url, author: `u${sn}`, community: 'r/test', text };
+    const signal = { authorRole: 'seeker', intent: 'ask_reco', replyable: true, source: 'reddit', ts: new Date().toISOString(), externalId, url, author: `u${sn}`, community: 'r/test', text };
     if (score != null) signal.score = score;
     const res = await asClient(() => radarIngest({ queryId: 'q1', signals: [signal], actor: 'agent:claude' }));
     assert.ok(res.ok, `ingest ok: ${JSON.stringify(res)}`);

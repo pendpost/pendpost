@@ -232,7 +232,9 @@ describe('App filter bar wiring (C7)', () => {
     window.location.hash = '#published';
     renderApp();
     // Filter bar still renders for published, but the activity-only controls do not.
-    await screen.findByText('Filter');
+    // The bar names itself to assistive tech (aria-label); the visible "Filter" eyebrow went in
+    // the planner-bulk filter bar (FilterBar.jsx), which spends the row on the filters instead.
+    await screen.findByRole('group', { name: 'Filter' });
     expect(screen.queryByRole('button', { name: /failures only/i })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^action$/i })).not.toBeInTheDocument();
   });
@@ -318,7 +320,7 @@ describe('Activity error remediation', () => {
     ];
     renderActivity({ onNavigate, onOpenPost });
     expect(screen.queryByRole('button', { name: /fix in setup/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /open c \/ p/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open a post in C' })).toBeInTheDocument();
   });
 
   // spec-15 follow-on: a disabled API (the YouTube Data/Analytics API off in the GCP
@@ -440,7 +442,7 @@ describe('Activity failed-row notes speak a plain sentence', () => {
       { ts: '2026-06-16T09:00:00.000Z', action: 'publish', ok: false, platform: 'linkedin', campaign: 'c', postId: 'p', errorMessage: 'boom' },
     ];
     renderActivity({ onOpenPost: vi.fn() });
-    const row = screen.getByRole('button', { name: /open c \/ p/i });
+    const row = screen.getByRole('button', { name: 'Open a post in C' });
     expect(within(row).getByText('LinkedIn did not accept the post.')).toBeInTheDocument();
     expect(within(row).queryByText(/boom/)).toBeNull();
     expect(within(row).queryByRole('button')).toBeNull();

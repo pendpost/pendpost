@@ -1260,6 +1260,184 @@ export async function xDm(args = {}) {
 async function cmdReply(args) { Object.assign(RUN, await xReply(args)); }
 async function cmdDm(args) { Object.assign(RUN, await xDm(args)); }
 
+// ---------- radar: X API v2 recent search + list reads (Radar 2.0 step 3, spec 54) ----------
+//
+// The OPTIONAL X engine search: fresh posts through the official API instead of web-search
+// leftovers. Read-only, never posts. The seam (lib/writes.mjs runRadarScan) runs it only while the
+// owner turned posting.radar.x.search on and the credentials exist, and passes the month's
+// remaining read budget as `readBudget`: X bills per post read (about $0.005), so this verb never
+// asks for more posts than the budget allows and stops with `capReached` when it cannot start a
+// page. The seam keeps the month counter from the `reads` this verb reports.
+//
+//   search   GET /2/tweets/search/recent  query = (kw1 OR "kw two") -is:retweet [lang:xx]
+//   watch    GET /2/tweets/search/recent  query = (from:a OR from:b) -is:retweet   (the watchlist)
+//   lists    GET /2/lists/:id/tweets                                                 (posting.radar.x.lists)
+//
+// Every request asks for the author expansion (username, name, description, public_metrics) so the
+// judge sees the author's bio and the inbox knows the reply count. Auth: X_BEARER_TOKEN (app-only)
+// when set, else the posting credentials (OAuth 1.0a user context or the OAuth 2.0 user token).
+export const X_QUERY_MAX = 512;
+export const X_PAGE_MIN = 10;
+export const X_PAGE_MAX = 100;
+const X_RADAR_TIMEOUT_MS = 15_000;
+const X_TWEET_FIELDS = 'created_at,public_metrics,conversation_id,lang,author_id';
+const X_USER_FIELDS = 'username,name,description,public_metrics';
+
+const xTerm = (t) => {
+  const s = String(t || '').replace(/["()]/g, ' ').replace(/\s+/g, ' ').trim();
+  return /\s/.test(s) ? `"${s}"` : s;
+};
+
+/** The recent-search query for a RadarQuery's keywords (else its label), within X's 512 chars. */
+export function xRadarSearchQuery(query = {}) {
+  const kws = Array.isArray(query.keywords) ? query.keywords.filter((k) => typeof k === 'string' && k.trim()) : [];
+  const label = typeof query.label === 'string' ? query.label.trim() : '';
+  const terms = (kws.length ? kws : [label]).map(xTerm).filter(Boolean);
+  if (!terms.length) return null;
+  const lang = typeof query.lang === 'string' && query.lang.trim() ? query.lang.trim().toLowerCase().split(/[-_]/)[0] : '';
+  const tail = ` -is:retweet${/^[a-z]{2}$/.test(lang) ? ` lang:${lang}` : ''}`;
+  let picked = terms.slice(0, 25);
+  const build = (ts) => `${ts.length > 1 ? `(${ts.join(' OR ')})` : ts[0]}${tail}`;
+  while (picked.length > 1 && build(picked).length > X_QUERY_MAX) picked = picked.slice(0, -1);
+  const q = build(picked);
+  return q.length <= X_QUERY_MAX ? q : null;
+}
+
+/** The `from:` queries for the watched handles, as few as fit in 512 chars each (at most 3). */
+export function xRadarFromQueries(handles = []) {
+  const clean = [...new Set((Array.isArray(handles) ? handles : []).map((h) => String(h || '').trim().replace(/^@/, '')).filter((h) => /^[A-Za-z0-9_]{1,15}$/.test(h)))];
+  const out = [];
+  let cur = [];
+  const build = (hs) => `${hs.length > 1 ? `(${hs.map((h) => `from:${h}`).join(' OR ')})` : `from:${hs[0]}`} -is:retweet`;
+  for (const h of clean) {
+    if (cur.length && build([...cur, h]).length > X_QUERY_MAX) { out.push(build(cur)); cur = []; }
+    cur.push(h);
+  }
+  if (cur.length) out.push(build(cur));
+  return out.slice(0, 3);
+}
+
+// Recent search reaches back 7 days at most; X refuses a start_time older than that.
+export function xStartTime(lookbackDays, now = Date.now()) {
+  const n = Number(lookbackDays);
+  const days = Number.isFinite(n) && n > 0 ? Math.min(n, 7) : 7;
+  const floor = now - 7 * 86_400_000 + 60_000;
+  return new Date(Math.max(now - days * 86_400_000, floor)).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/** One v2 tweet (+ the includes.users map) -> an unscored Signal. */
+export function xTweetToSignal(tweet, usersById = new Map(), { community = 'x.com' } = {}) {
+  const t = tweet && typeof tweet === 'object' ? tweet : {};
+  const u = usersById.get(t.author_id) || {};
+  const handle = u.username || null;
+  const pm = t.public_metrics || {};
+  return {
+    source: 'x',
+    externalId: String(t.id || ''),
+    url: handle && t.id ? `https://x.com/${handle}/status/${t.id}` : (t.id ? `https://x.com/i/web/status/${t.id}` : null),
+    author: handle,
+    ...(u.name ? { authorName: u.name } : {}),
+    ...(u.description ? { authorBio: u.description } : {}),
+    community,
+    text: String(t.text || ''),
+    ...(Number.isFinite(pm.reply_count) ? { replyCount: pm.reply_count } : {}),
+    ts: t.created_at || null,
+  };
+}
+
+// The Authorization header for a GET (app-only bearer, else the posting credentials).
+async function xReadAuth(method, url, query) {
+  const bearer = readEnv('X_BEARER_TOKEN');
+  if (bearer) return `Bearer ${bearer}`;
+  const o1 = oauth1Creds();
+  if (o1) return oauth1Header(method, `${url.origin}${url.pathname}`, query, o1);
+  return `Bearer ${await ensureFreshToken()}`;
+}
+
+async function xRadarGet(pathname, query, { fetch: fetchImpl = globalThis.fetch, auth = xReadAuth } = {}) {
+  const url = new URL(`${API}${pathname}`);
+  for (const [k, v] of Object.entries(query)) url.searchParams.set(k, String(v));
+  let authorization;
+  try { authorization = await auth('GET', url, query); } catch (err) { return { ok: false, status: 401, error: String((err && err.message) || err).slice(0, 200) }; }
+  try {
+    const res = await fetchImpl(url.toString(), { headers: { Authorization: authorization }, signal: AbortSignal.timeout(X_RADAR_TIMEOUT_MS) });
+    const text = await res.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : {}; } catch { json = null; }
+    const h = (k) => (res.headers && typeof res.headers.get === 'function' ? res.headers.get(k) : null);
+    return { ok: res.ok, status: res.status, json, reset: h('x-rate-limit-reset') };
+  } catch (err) {
+    return { ok: false, status: 0, json: null, error: String((err && err.message) || err).slice(0, 200) };
+  }
+}
+
+/**
+ * The radar verb's body, importable for tests. `query` carries the RadarQuery plus what the seam
+ * adds: readBudget (posts left this month), watchHandles (the watchlist's X handles, first query of
+ * a scan only), xLists (list ids, first query only), lookbackDays. Returns the RUN row; its `reads`
+ * is { posts, requests, capReached }.
+ */
+export async function xRadar(query = {}, { fetch: fetchImpl = globalThis.fetch, auth = xReadAuth, now = Date.now() } = {}) {
+  const { radarOkRow, radarRateLimitedRow, radarErrorRow, radarNeedsScopeRow } = await import('../lib/radar.mjs');
+  let budget = Number.isFinite(Number(query.readBudget)) ? Math.max(0, Math.floor(Number(query.readBudget))) : X_PAGE_MAX;
+  const reads = { posts: 0, requests: 0, capReached: false };
+  const startTime = xStartTime(query.lookbackDays, now);
+  const searches = [];
+  const main = xRadarSearchQuery(query);
+  if (main) searches.push({ kind: 'search', q: main, community: 'x.com' });
+  for (const q of xRadarFromQueries(query.watchHandles)) searches.push({ kind: 'search', q, community: 'x.com' });
+  for (const id of (Array.isArray(query.xLists) ? query.xLists : []).map((l) => String(l || '').trim()).filter((l) => /^\d{1,30}$/.test(l)).slice(0, 5)) {
+    searches.push({ kind: 'list', id, community: `x-list:${id}` });
+  }
+  const items = [];
+  const seen = new Set();
+  let degrade = null;
+  for (const s of searches) {
+    if (budget < X_PAGE_MIN) { reads.capReached = true; break; }
+    const page = Math.min(X_PAGE_MAX, budget);
+    const common = { max_results: page, 'tweet.fields': X_TWEET_FIELDS, expansions: 'author_id', 'user.fields': X_USER_FIELDS };
+    const r = s.kind === 'list'
+      ? await xRadarGet(`/lists/${s.id}/tweets`, common, { fetch: fetchImpl, auth })
+      : await xRadarGet('/tweets/search/recent', { ...common, query: s.q, start_time: startTime }, { fetch: fetchImpl, auth });
+    reads.requests += 1;
+    if (!r.ok) {
+      const reset = Number(r.reset);
+      const retryAfter = Number.isFinite(reset) ? Math.max(1, Math.round(reset - now / 1000)) : null;
+      const detail = (r.json && (r.json.detail || r.json.title)) || r.error || `HTTP ${r.status}`;
+      const err = r.status === 429 ? { error: 'rate_limited', retryAfter }
+        : (r.status === 401 || r.status === 403) ? { error: 'needs_scope', detail: `X search refused (HTTP ${r.status}): ${String(detail).slice(0, 150)}` }
+          : { error: 'engine_failure', detail: `X search: ${String(detail).slice(0, 150)}` };
+      if (!items.length && s === searches[0]) {
+        if (err.error === 'rate_limited') return { ...radarRateLimitedRow('x', err.retryAfter), reads };
+        if (err.error === 'needs_scope') return { ...radarNeedsScopeRow('x', 'tweet.read', err.detail), reads };
+        return { ...radarErrorRow('x', err.detail), detail: err.detail, reads };
+      }
+      degrade = degrade || err;
+      if (err.error === 'rate_limited') break;
+      continue;
+    }
+    const data = r.json && Array.isArray(r.json.data) ? r.json.data : [];
+    const users = new Map(((r.json && r.json.includes && r.json.includes.users) || []).map((u) => [u.id, u]));
+    reads.posts += data.length;
+    budget -= data.length;
+    for (const t of data) {
+      if (!t || !t.id || seen.has(String(t.id))) continue;
+      seen.add(String(t.id));
+      items.push(xTweetToSignal(t, users, { community: s.community }));
+    }
+  }
+  console.error(`[radar] x read ${reads.posts} post(s) in ${reads.requests} request(s)${reads.capReached ? ', monthly read cap reached' : ''}`);
+  const row = { ...radarOkRow('x', items), reads };
+  if (degrade) row.degrade = degrade;
+  return row;
+}
+
+async function cmdRadar(args) {
+  let query = {};
+  try { query = args.query ? JSON.parse(String(args.query)) : {}; } catch { query = {}; }
+  RUN.results.push(await xRadar(query));
+}
+
 // ---------- main ----------
 
 function parseArgs(argv) {
@@ -1292,6 +1470,7 @@ const COMMANDS = {
   discover: cmdDiscover,
   reply: cmdReply,
   dm: cmdDm,
+  radar: cmdRadar,
 };
 
 async function main() {
@@ -1315,6 +1494,8 @@ async function main() {
       platform: 'x', command: commandName,
       planPath: typeof args.plan === 'string' ? path.resolve(String(args.plan)) : null,
       only: typeof args.only === 'string' ? args.only : null,
+      // Radar 2.0 step 3: the radar verb's RadarQuery, so the mock echoes the query like every lane.
+      query: typeof args.query === 'string' ? args.query : null,
     });
     if (JSON_MODE) process.stdout.write(`${JSON.stringify(envelope)}\n`);
     else console.error(`[mock] x ${commandName}: ${envelope.results.length} result(s)`);

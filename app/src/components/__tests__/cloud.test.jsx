@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -28,6 +28,11 @@ const setClientAlwaysOn = vi.fn(() => Promise.resolve({ ok: true, clientId: 'glo
 const startCheckout = vi.fn(() => Promise.resolve({ ok: true, url: 'https://checkout.test' }));
 const startBillingPortal = vi.fn(() => Promise.resolve({ ok: true, url: 'https://portal.test' }));
 const setSpendCap = vi.fn(() => Promise.resolve({ ok: true, spendCapCents: 5000 }));
+// POST /api/cloud/recheck (contract: { ok, checkedAt, reached, sync }) and POST /api/cloud/push.
+const CLEAR_SYNC = { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] };
+const recheckCloud = vi.fn(() => Promise.resolve({ ok: true, checkedAt: '2026-10-16T08:05:00.000Z', reached: true, sync: CLEAR_SYNC }));
+const pushCloud = vi.fn(() => Promise.resolve({ ok: true, pushed: [], skipped: [], accepted: [], refused: [] }));
+const setCloudSync = vi.fn();
 
 vi.mock('../../lib/cloud.js', () => ({
   useCloud: () => cloudState,
@@ -57,19 +62,25 @@ vi.mock('../../lib/cloud.js', () => ({
   migrateCloud: (...a) => migrateCloud(...a),
   reconcileCloud: (...a) => reconcileCloud(...a),
   useInvalidateCloud: () => invalidate,
+  recheckCloud: (...a) => recheckCloud(...a),
+  pushCloud: (...a) => pushCloud(...a),
+  useSetCloudSync: () => setCloudSync,
 }));
 
 function renderCloud(props = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const tree = () => (
     <QueryClientProvider client={qc}>
       <TooltipProvider>
         <ConfirmProvider>
           <Cloud {...props} />
         </ConfirmProvider>
       </TooltipProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const result = render(tree());
+  // Re-render after the test swaps cloudState (what the fresh sync write would do).
+  return { ...result, rerenderCloud: () => result.rerender(tree()) };
 }
 
 const loading = () => ({ data: undefined, isLoading: true });
@@ -88,6 +99,9 @@ beforeEach(() => {
   startCheckout.mockClear();
   startBillingPortal.mockClear();
   setSpendCap.mockClear();
+  recheckCloud.mockClear();
+  pushCloud.mockClear();
+  setCloudSync.mockClear();
   clientsState = { data: { ok: true, connection: {}, clients: [] }, isLoading: false };
   subState = { data: undefined };
   try { sessionStorage.clear(); } catch { /* jsdom always has it */ }
@@ -680,29 +694,113 @@ describe('Cloud', () => {
       { clientId: 'acme', name: 'Acme', active: true, alwaysOn: true },
       { clientId: 'globex', name: 'Globex', active: false, alwaysOn: true },
     ]);
-    const user = userEvent.setup();
     renderCloud();
-    expect(screen.getByText('Attention')).toBeInTheDocument();
+    // Stated ONCE: the card says it, so the Attention pill above it is dropped, and the
+    // project rows keep only their amber dot (no repeated sub-line).
+    expect(screen.queryByText('Attention')).not.toBeInTheDocument();
     expect(screen.getByText(/^last reached /)).toBeInTheDocument();
-    // Globex is NOT green while the one workspace is unreachable: both rows say so in words.
-    expect(screen.getAllByText('Cloud unreachable').length).toBeGreaterThanOrEqual(3);
+    expect(screen.getAllByText('Cloud unreachable')).toHaveLength(1);
     expect(screen.queryByText(/publishes through the cloud/i)).not.toBeInTheDocument();
-    invalidate.mockClear();
-    await user.click(screen.getByRole('button', { name: 'Check again' }));
-    expect(invalidate).toHaveBeenCalled();
+    const globex = screen.getByText('Globex').closest('li');
+    expect(globex.querySelector('.bg-amber-500')).not.toBeNull();
+    // The handover glyph carries the full sentence as its accessible name (no title attribute).
+    const glyph = screen.getByRole('img', { name: /posts go out from this computer/ });
+    expect(glyph).not.toHaveAttribute('title');
+    expect(screen.getByText('This computer takes over')).toBeInTheDocument();
+  });
+
+  describe('fix in place (connectivity card)', () => {
+    const conn = { clientId: 'acme', clientName: 'Acme', campaign: null, postId: null, title: null, lane: null, message: 'cloud request failed: fetch failed', code: 'cloud_unreachable', at: '2026-10-16T08:00:00.000Z', lastOkAt: '2026-10-16T07:21:00.000Z', terminal: false, kind: 'unreachable' };
+    const stuckSync = { state: 'amber', reason: 'cloud_unreachable', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [conn], clients: [{ clientId: 'acme', state: 'amber', reason: 'cloud_unreachable' }] };
+    beforeEach(() => {
+      cloudState = connected({ sync: stuckSync });
+      subState = activeSub();
+      withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    });
+
+    it('Check again probes the cloud (POST recheck, not a refetch); while working it is disabled + aria-busy', async () => {
+      let resolve;
+      recheckCloud.mockImplementationOnce(() => new Promise((r) => { resolve = r; }));
+      const user = userEvent.setup();
+      renderCloud();
+      const btn = screen.getByRole('button', { name: 'Check again' });
+      const width = btn.textContent;
+      await user.click(btn);
+      expect(recheckCloud).toHaveBeenCalledTimes(1);
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(btn).toBeDisabled();
+      expect(btn).toHaveAttribute('aria-busy', 'true');
+      expect(btn.textContent).toBe(width); // the label never changes, so the width holds
+      resolve({ ok: true, checkedAt: '2026-10-16T08:05:00.000Z', reached: true, sync: CLEAR_SYNC });
+      await waitFor(() => expect(btn).not.toHaveAttribute('aria-busy'));
+    });
+
+    it('fixed: says so, folds the row, writes the fresh sync, and the row is gone once the data no longer has it', async () => {
+      const user = userEvent.setup();
+      const { rerenderCloud } = renderCloud();
+      await user.click(screen.getByRole('button', { name: 'Check again' }));
+      expect(await screen.findByText('Fixed')).toBeInTheDocument();
+      const row = screen.getByText('Cloud unreachable').closest('li');
+      expect(row.className).toMatch(/grid-rows-\[0fr\]/);
+      await waitFor(() => expect(setCloudSync).toHaveBeenCalledWith(CLEAR_SYNC, false));
+      cloudState = connected({ sync: setCloudSync.mock.calls[0][0] });
+      rerenderCloud();
+      expect(screen.queryByText('Cloud unreachable')).not.toBeInTheDocument();
+    });
+
+    it('still: a quiet "Not yet · HH:MM" line, the row stays', async () => {
+      recheckCloud.mockResolvedValueOnce({ ok: true, checkedAt: '2026-10-16T08:05:00.000Z', reached: false, sync: stuckSync });
+      const user = userEvent.setup();
+      renderCloud();
+      await user.click(screen.getByRole('button', { name: 'Check again' }));
+      const line = await screen.findByText(/^Not yet · /);
+      expect(line).toHaveAttribute('aria-live', 'polite');
+      expect(screen.getByText('Cloud unreachable')).toBeInTheDocument();
+      expect(screen.queryByText('Fixed')).not.toBeInTheDocument();
+    });
+
+    it('error: "Check failed", and the button stays live to retry', async () => {
+      recheckCloud.mockRejectedValueOnce(new Error('HTTP 502'));
+      const user = userEvent.setup();
+      renderCloud();
+      await user.click(screen.getByRole('button', { name: 'Check again' }));
+      expect(await screen.findByText('Check failed')).toBeInTheDocument();
+      const btn = screen.getByRole('button', { name: 'Check again' });
+      expect(btn).not.toBeDisabled();
+      await user.click(btn);
+      expect(recheckCloud).toHaveBeenCalledTimes(2);
+    });
+
+    it('auto re-check: probes silently every 60s while the card is open, pauses while hidden', async () => {
+      vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+      try {
+        renderCloud();
+        expect(recheckCloud).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(recheckCloud).toHaveBeenCalledTimes(1);
+        const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(recheckCloud).toHaveBeenCalledTimes(1);
+        hidden.mockRestore();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   it('SUBSCRIPTION READ FAILED: one line says so (with Check again) instead of silently dropping Plan & billing', async () => {
     cloudState = connected({ sync: { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] } });
-    subState = { data: undefined, isError: true };
+    const refetch = vi.fn(() => Promise.resolve({ isError: false }));
+    subState = { data: undefined, isError: true, refetch };
     const user = userEvent.setup();
     renderCloud();
     expect(screen.getByText('Attention')).toBeInTheDocument();
     // r5: a failed read of the plan info, said as such, and that delivery is not touched.
     expect(screen.getByText('Subscription could not be loaded. Plan and billing show again once it loads. Delivery is not affected.')).toBeInTheDocument();
-    invalidate.mockClear();
     await user.click(screen.getByRole('button', { name: 'Check again' }));
-    expect(invalidate).toHaveBeenCalled();
+    await waitFor(() => expect(refetch).toHaveBeenCalled());
+    expect(recheckCloud).toHaveBeenCalled();
+    expect(await screen.findByText('Fixed')).toBeInTheDocument();
   });
 
   // --- r5 (final2 judge): copy that says exactly what is true ------------------------------
@@ -728,13 +826,72 @@ describe('Cloud', () => {
     ]);
     renderCloud();
     expect(screen.queryByText('Cloud unreachable')).not.toBeInTheDocument();
-    // The row under the pill and both shared project rows carry the same, accurate title.
-    expect(screen.getAllByText('Cloud is not publishing right now').length).toBeGreaterThanOrEqual(3);
+    // Said once, in the card at the top; the project rows do not repeat it.
+    expect(screen.getAllByText('Cloud not publishing')).toHaveLength(1);
     expect(screen.getByText(/^last active /)).toBeInTheDocument();
-    expect(screen.getByText(/The cloud answers but is not publishing right now\./)).toBeInTheDocument();
+    // The old sentence is the glyph's name (and tooltip), no longer a paragraph.
+    expect(screen.getByRole('img', { name: /The cloud answers but is not publishing right now\./ })).toBeInTheDocument();
   });
 
-  it('PUSH PENDING (yellow): the project row carries its reason sentence and Check again', () => {
+  it('PUSH STUCK: the project row offers Send again, which pushes (POST /api/cloud/push) and then rechecks', async () => {
+    cloudState = connected({ sync: { state: 'amber', reason: 'push_stuck', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [], clients: [{ clientId: 'acme', state: 'amber', reason: 'push_stuck' }] } });
+    subState = activeSub();
+    withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('button', { name: 'Send again' }));
+    await waitFor(() => expect(recheckCloud).toHaveBeenCalled());
+    expect(pushCloud).toHaveBeenCalledTimes(1);
+    expect(pushCloud.mock.invocationCallOrder[0]).toBeLessThan(recheckCloud.mock.invocationCallOrder[0]);
+    expect(await screen.findByText('Fixed')).toBeInTheDocument();
+  });
+
+  it('SYNC STOPPED: the project row offers Raise cap, which opens the spend-cap editor', async () => {
+    cloudState = connected({ sync: { state: 'amber', reason: 'sync_stopped', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [{ clientId: 'acme', state: 'amber', reason: 'sync_stopped' }] } });
+    subState = activeSub();
+    withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    const user = userEvent.setup();
+    renderCloud();
+    expect(screen.queryByRole('button', { name: 'Save cap' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Raise cap' }));
+    expect(await screen.findByRole('button', { name: 'Save cap' })).toBeInTheDocument();
+  });
+
+  it('PROJECT ROWS: a post the cloud still retries shows no button, only "pendpost will retry"', () => {
+    const post = { clientId: 'acme', clientName: 'Acme', campaign: 'c', postId: 'p1', title: 'Launch day', lane: 'linkedin', message: 'linkedin: HTTP 500', code: null, at: new Date().toISOString(), terminal: false, kind: 'post' };
+    cloudState = connected({ sync: { state: 'red', reason: 'cloud_failures', pendingCount: 0, overdueCount: 0, failedCount: 1, issues: [post], clients: [{ clientId: 'acme', state: 'red', reason: 'cloud_failures' }] } });
+    subState = activeSub();
+    withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
+    renderCloud({ onIssueAction: vi.fn() });
+    expect(screen.getByText('pendpost will retry')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open post' })).not.toBeInTheDocument();
+  });
+
+  // Cloud state consistency (2026-11-01 flow repair): the retrying post's banner and planner card
+  // are neutral, so its project row and its issue row are too. A project with a failure no retry
+  // fixes keeps its red dot. Both rows read the post banner's own derivation (failedDisplayKey).
+  it('PROJECT ROWS: a project whose only problem is a post pendpost still retries wears a neutral dot; a terminal failure stays red', () => {
+    const retrying = { clientId: 'northwind', clientName: 'Northwind', campaign: 'c', postId: 'p1', title: 'Fresh sourdough', lane: 'linkedin', message: 'linkedin: POST /rest/posts: HTTP 500 - internal error', code: null, at: new Date().toISOString(), terminal: false, recovery: null, halted: false, kind: 'post' };
+    const refused = { clientId: 'acme', clientName: 'Acme', campaign: 'c', postId: 'p2', title: 'Reply thread', lane: 'x', message: 'x: HTTP 403 - You can only reply to or quote posts where you are mentioned', code: null, at: new Date().toISOString(), terminal: true, recovery: 'manual', halted: false, kind: 'post' };
+    cloudState = connected({ sync: { state: 'red', reason: 'cloud_failures', pendingCount: 0, overdueCount: 0, failedCount: 2, issues: [refused, retrying], clients: [{ clientId: 'acme', state: 'red', reason: 'cloud_failures' }, { clientId: 'northwind', state: 'red', reason: 'cloud_failures' }] } });
+    subState = activeSub();
+    withClients([
+      { clientId: 'acme', name: 'Acme', active: true, alwaysOn: true },
+      { clientId: 'northwind', name: 'Northwind', active: false, alwaysOn: true },
+    ]);
+    renderCloud({ onIssueAction: vi.fn() });
+    const nwRow = screen.getByText('Northwind', { selector: 'span' }).closest('li');
+    const nwDot = nwRow.querySelector('p > span.rounded-full.h-2');
+    expect(nwDot.className).toMatch(/bg-zinc-400/);
+    expect(nwRow.querySelector('.bg-red-500')).toBeNull();
+    const nwIssueDot = within(nwRow).getByText('Fresh sourdough').closest('li').querySelector('span.rounded-full');
+    expect(nwIssueDot.className).toMatch(/bg-zinc-400/);
+    const acmeRow = screen.getByText('Acme', { selector: 'span' }).closest('li');
+    expect(acmeRow.querySelector('p > span.rounded-full.h-2').className).toMatch(/bg-red-500/);
+    expect(within(acmeRow).getByText('Reply thread').closest('li').querySelector('span.rounded-full').className).toMatch(/bg-red-500/);
+  });
+
+  it('PUSH PENDING (yellow): the project row carries its reason sentence and Send again', () => {
     cloudState = connected({ sync: { state: 'yellow', reason: 'push_pending', pendingCount: 1, overdueCount: 0, failedCount: 0, issues: [], clients: [{ clientId: 'acme', state: 'yellow', reason: 'push_pending' }] } });
     subState = activeSub();
     withClients([{ clientId: 'acme', name: 'Acme', active: true, alwaysOn: true }]);
@@ -742,7 +899,7 @@ describe('Cloud', () => {
     expect(screen.queryByText('Attention')).not.toBeInTheDocument();
     expect(screen.getByText('On')).toBeInTheDocument();
     expect(screen.getByText(/The cloud confirms the approved posts shortly/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Send again' })).toBeInTheDocument();
   });
 
   // D12 (phase 3): waiting for the cloud to confirm is not a warning, so the project row's dot

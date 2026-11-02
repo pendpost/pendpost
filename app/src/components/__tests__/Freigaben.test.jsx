@@ -172,15 +172,15 @@ describe('Freigaben focused-card a/r keyboard shortcuts', () => {
     expect(approvePost).not.toHaveBeenCalled();
   });
 
-  it("pressing 'a'/'r' while focus is on the card's Reject button does NOT approve or reject the card", async () => {
+  it("pressing 'a'/'r' while focus is on the card's Approve button does NOT approve or reject the card", async () => {
     const user = userEvent.setup();
     renderFreigaben([pendingPost]);
     const card = cardFor('Spring promo');
-    // Focus a CHILD control of the card (the Reject button). The card-level
-    // a/r shortcut is advertised on the <li> itself, so a key dispatched from a
-    // child must not bubble up and silently approve/reject the whole card.
-    const rejectBtn = within(card).getByRole('button', { name: t('approvals.action.reject') });
-    rejectBtn.focus();
+    // Focus a CHILD control of the card (the Approve button; Reject now lives in the row
+    // menu). The card-level a/r shortcut is advertised on the <li> itself, so a key
+    // dispatched from a child must not bubble up and silently approve/reject the card.
+    const approveBtn = within(card).getByRole('button', { name: t('approvals.action.approve') });
+    approveBtn.focus();
     await user.keyboard('a');
     await user.keyboard('r');
     expect(approvePost).not.toHaveBeenCalled();
@@ -338,8 +338,8 @@ describe('Freigaben settles rejected posts out of the queue', () => {
     const editedApproved = { ...approvedPost, id: 'p4', title: 'Edited after approval', editedSinceApproval: true };
     renderFreigaben([editedApproved]);
     const card = cardFor('Edited after approval');
-    // Still actionable: the reject action is offered, so it is in the review queue.
-    expect(within(card).getByText(t('approvals.action.reject'))).toBeInTheDocument();
+    // Still actionable: the approve action is offered, so it is in the review queue.
+    expect(within(card).getByRole('button', { name: t('approvals.action.approve') })).toBeInTheDocument();
   });
 });
 

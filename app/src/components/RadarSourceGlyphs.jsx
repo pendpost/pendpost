@@ -1,4 +1,4 @@
-import { Globe, Radio, MessageCircleQuestion } from 'lucide-react';
+import { Globe, Radio, MessageCircleQuestion, Rss, CircleDot } from 'lucide-react';
 import { PLATFORM_META } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
@@ -28,6 +28,9 @@ const GLYPH_META = {
   // signal-row glyph in radar/RadarFeed.jsx so the two renderings can never disagree.
   quora: { Icon: MessageCircleQuestion, color: 'text-rose-600' },
   web: { Icon: Globe, color: 'text-sky-500' },
+  // Radar 2.0 step 3: the opt-in engine sources (same glyphs as radar/RadarFeed.jsx SOURCE_META).
+  feed: { Icon: Rss, color: 'text-orange-600' },
+  github: { Icon: CircleDot, color: 'text-zinc-700 dark:text-zinc-200' },
 };
 
 export default function RadarSourceGlyphs({ sources = [], size = 15, className = '' }) {

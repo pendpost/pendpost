@@ -1,7 +1,9 @@
 import { useState } from 'react';
-import { ChevronDown, ExternalLink, Wrench } from 'lucide-react';
+import { ChevronDown, TriangleAlert } from 'lucide-react';
 import { PLATFORM_META, INNER_SURFACE, EYEBROW, Skeleton } from '../ui.jsx';
 import { Tip } from './Tooltip.jsx';
+import IssueFixButton from '../IssueFixButton.jsx';
+import { setupIdOf, STAIR } from '../../lib/format.js';
 import { useT } from '../../lib/i18n.js';
 
 // DestinationStrip - "posts from this project publish to THESE accounts", stated once
@@ -24,6 +26,12 @@ import { useT } from '../../lib/i18n.js';
 // Setup to give it a name. A lane with no identifier at all is the only "not connected"
 // state. Loading is a skeleton matching this row, and a failed read says so: a strip that
 // silently vanishes would read as "no constraint", which for a destination is a lie.
+//
+// ONE PROJECT ONLY. The accounts belong to one project, so the Approvals page hides the strip
+// in All-projects mode (a single row cannot be true for several projects). And "not connected"
+// is the SAME fact the post rows judge Blocked by (the project's pendpost-health setup, passed
+// as `setup`): the strip says "X not connected" with the same Connect fix the rows offer
+// (IssueFixButton), never a vaguer "no account on file" beside rows that say something else.
 
 /** Long machine ids render short, with the full value in the tooltip. */
 export function shortId(value) {
@@ -108,7 +116,26 @@ function readCollapsed() {
   }
 }
 
-export default function DestinationStrip({ platforms = [], accounts = null, isLoading = false, isError = false, onNavigate = null }) {
+// The project's setup row for a lane (lib/setup.mjs), or null when the setup is unknown.
+function setupRowFor(platform, setup) {
+  const rows = setup?.platforms;
+  if (!Array.isArray(rows)) return null;
+  return rows.find((r) => r.platform === platform || r.platform === setupIdOf(platform)) || null;
+}
+
+// A lane is not connected when the project's setup says so (status 'incomplete', the rows'
+// Blocked rule, format.js unconnectedLanes). Without a setup, the accounts payload decides:
+// nothing on file at all.
+function laneState(platform, accounts, setup) {
+  const dest = destinationFor(platform, accounts);
+  const row = setupRowFor(platform, setup);
+  if (row?.status === 'incomplete') return { dest, missing: true };
+  if (row?.status === 'skipped') return { dest, skipped: true };
+  if (row) return { dest: dest || { connected: true }, missing: false };
+  return { dest, missing: !dest };
+}
+
+export default function DestinationStrip({ platforms = [], accounts = null, setup = null, isLoading = false, isError = false, onNavigate = null }) {
   const t = useT();
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const lanes = [...platforms].filter((p) => PLATFORM_META[p]);
@@ -150,9 +177,9 @@ export default function DestinationStrip({ platforms = [], accounts = null, isLo
   // The one-line summary the collapsed state shows: the first three resolvable
   // account names, how many more lanes are fine, and - only when true - how many
   // lanes have no account at all.
-  const dests = lanes.map((p) => destinationFor(p, accounts));
-  const missingCount = dests.filter((d) => !d).length;
-  const labels = dests.filter((d) => d?.handle || d?.id).map((d) => d.handle || shortId(d.id));
+  const states = lanes.map((p) => laneState(p, accounts, setup));
+  const missingCount = states.filter((s) => s.missing).length;
+  const labels = states.filter((s) => !s.missing && (s.dest?.handle || s.dest?.id)).map((s) => s.dest.handle || shortId(s.dest.id));
   const shown = labels.slice(0, 3);
   const moreCount = lanes.length - missingCount - shown.length;
 
@@ -169,8 +196,13 @@ export default function DestinationStrip({ platforms = [], accounts = null, isLo
           <span className="truncate text-[11px] text-zinc-500 dark:text-zinc-400">{shown.join(' · ')}</span>
         ) : null}
         {moreCount > 0 ? <span className="text-[11px] text-zinc-500 dark:text-zinc-400">+{moreCount}</span> : null}
+        {/* The same fact the rows below state ("X is not connected"), so the same halted rose
+            ink and alert glyph as their status line, never a second (amber) tone for it. */}
         {missingCount > 0 ? (
-          <span className="text-[11px] text-amber-700 dark:text-amber-300">{t('destination.missingCount', { n: missingCount })}</span>
+          <span data-tone="halted" className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium ${STAIR.halted.ink}`}>
+            <TriangleAlert size={11} className="shrink-0" aria-hidden="true" />
+            {t('destination.missingCount', { n: missingCount })}
+          </span>
         ) : null}
         <ChevronDown size={13} className={`shrink-0 text-zinc-500 dark:text-zinc-400 transition-transform ${collapsed ? '-rotate-90' : ''}`} aria-hidden="true" />
       </button>
@@ -185,46 +217,47 @@ export default function DestinationStrip({ platforms = [], accounts = null, isLo
     <section className="space-y-1.5">
       {trigger}
       <div className="flex flex-wrap gap-1.5">
-        {lanes.map((p) => {
+        {lanes.map((p, i) => {
           const meta = PLATFORM_META[p];
           const { Icon } = meta;
-          const dest = destinationFor(p, accounts);
-          const missing = !dest;
-          // Connected-but-nameless: a credential exists, no identifier to show. Quiet
-          // zinc, never amber - the lane works.
-          const connectedOnly = !!dest?.connected && !dest?.handle && !dest?.id;
-          const label = dest?.handle || (dest?.id ? shortId(dest.id) : connectedOnly ? t('destination.connected') : t('destination.notConnected'));
+          const { dest, missing, skipped } = states[i];
+          const cls = `inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold ${INNER_SURFACE}`;
+          // Not connected: the one actionable state, so it carries the lane's Connect fix (the
+          // same IssueFixButton the post rows use: a key lane connects right here, an OAuth
+          // lane opens its Setup card with the sign-in started).
+          if (missing) {
+            const lane = setupIdOf(p);
+            const issue = { kind: 'blocked', lane, lanes: [p], clientId: null, cause: `connect:${lane}`, code: null, fix: { type: 'connect', lane, agent: false } };
+            const tip = t('destination.notConnectedTip', { platform: meta.label });
+            return (
+              <span key={p} className={`${cls} py-0.5 pr-0.5`}>
+                <Tip label={tip}>
+                  <span className="inline-flex items-center gap-1.5" aria-label={tip}>
+                    <Icon size={13} className={meta.color} aria-hidden="true" />
+                    <span>{t('destination.notConnected', { platform: meta.label })}</span>
+                  </span>
+                </Tip>
+                <IssueFixButton issue={issue} post={null} onNavigate={onNavigate} size="sm" variant="ghost" />
+              </span>
+            );
+          }
+          // Connected-but-nameless (or a lane the owner marked as not in use): quiet zinc,
+          // never amber - nothing is wrong.
+          const connectedOnly = !skipped && !!dest?.connected && !dest?.handle && !dest?.id;
+          const label = skipped ? t('destination.skipped')
+            : dest?.handle || (dest?.id ? shortId(dest.id) : t('destination.connected'));
           // The tooltip carries the full, unabbreviated truth in every case.
-          const tip = missing
-            ? t('destination.notConnectedTip', { platform: meta.label })
-            : connectedOnly
+          const tip = skipped
+            ? t('destination.skippedTip', { platform: meta.label })
+            : connectedOnly || (!dest?.handle && !dest?.id)
               ? t('destination.connectedTip', { platform: meta.label })
               : t('destination.tip', { platform: meta.label, account: dest.handle ? `${dest.handle}${dest.id ? ` (${dest.id})` : ''}` : dest.id });
-          const body = (
-            <>
-              <Icon size={13} className={missing ? 'text-zinc-500 dark:text-zinc-400' : meta.color} aria-hidden="true" />
-              <span className={missing ? 'text-amber-700 dark:text-amber-300' : connectedOnly ? 'text-zinc-500 dark:text-zinc-400' : ''}>{label}</span>
-              {missing ? <Wrench size={11} aria-hidden="true" /> : null}
-            </>
-          );
-          const cls = `inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold ${INNER_SURFACE}`;
-          // A missing destination is the one actionable state, so it is the one that is
-          // a control: it routes to Setup rather than dead-ending on a warning.
-          return missing && onNavigate ? (
+          return (
             <Tip key={p} label={tip}>
-              <button
-                type="button"
-                onClick={() => onNavigate('setup')}
-                aria-label={tip}
-                className={`${cls} transition hover:ring-1 hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
-              >
-                {body}
-                <ExternalLink size={11} className="text-zinc-500" aria-hidden="true" />
-              </button>
-            </Tip>
-          ) : (
-            <Tip key={p} label={tip}>
-              <span className={cls} aria-label={tip}>{body}</span>
+              <span className={cls} aria-label={tip}>
+                <Icon size={13} className={meta.color} aria-hidden="true" />
+                <span className={connectedOnly || skipped ? 'text-zinc-500 dark:text-zinc-400' : ''}>{label}</span>
+              </span>
             </Tip>
           );
         })}

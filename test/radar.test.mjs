@@ -66,7 +66,20 @@ function isSignal(s) {
 
 try {
   const { scoreSignal, scoreInto, runLaneRadar, RADAR_SOURCES, RADAR_CAPABILITIES, signalKey, mergeSignals, isExcluded, normalizeSignal } = await import('../lib/radar.mjs');
-  const { runRadarScan, listRadar, triageSignal, triageSignalsBulk, restoreSignals } = await import('../lib/writes.mjs');
+  const { runRadarScan, listRadar: listRadarRaw, triageSignal, triageSignalsBulk, restoreSignals } = await import('../lib/writes.mjs');
+  // Mock mode has no relevance judge, so every engine hit lands `unjudged`, and listRadar never
+  // surfaces an unjudged hit (Radar 2.0 step 1, proven in radar-ambiguous-terms.test.mjs). This
+  // file is about the scan, the list filters and triage, not the judge, so every read here sees
+  // the feed as a judged one would: the flags are lifted for the read and put back after it, so
+  // the next scan still re-tries those hits exactly as before.
+  const { loadState: lsU, saveState: ssU } = await import('../lib/state.mjs');
+  const listRadar = async (args) => {
+    const held = new Set((lsU().radar.signals || []).filter((s) => s && s.unjudged === true).map((s) => `${s.source} ${s.externalId}`));
+    { const st = lsU(); for (const s of st.radar.signals || []) delete s.unjudged; ssU(); }
+    try { return await listRadarRaw(args); } finally {
+      const st = lsU(); for (const s of st.radar.signals || []) if (held.has(`${s.source} ${s.externalId}`)) s.unjudged = true; ssU();
+    }
+  };
 
   // ---- (a) the intent scorer -----------------------------------------------
   const buyingQ = scoreSignal('What tool should I use to schedule social posts across platforms?', { competitors: [] });

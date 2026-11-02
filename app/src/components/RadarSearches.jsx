@@ -46,7 +46,7 @@ const DEFAULT_SOURCE_IDS = ['reddit', 'hackernews', 'mastodon'];
 // A query with NO sources scans every engine (lib/writes.mjs falls back to all sources when the
 // array is absent or empty), so the draft keeps that as an empty array and never substitutes the
 // defaults on an existing query. Only a brand-new draft pre-selects DEFAULT_SOURCE_IDS.
-const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', excludeKeywords: '', minScore: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', warmup: false, mention: false, paused: false };
+const EMPTY_DRAFT = { id: '', label: '', brief: '', keywords: '', excludeKeywords: '', minScore: '', sources: [...DEFAULT_SOURCE_IDS], competitors: '', subreddits: '', hashtags: '', feeds: '', githubRepos: '', warmup: false, mention: false, paused: false };
 
 function toDraft(q) {
   return {
@@ -61,6 +61,9 @@ function toDraft(q) {
     competitors: (q.competitors || []).join(', '),
     subreddits: (q.subreddits || []).join(', '),
     hashtags: (q.hashtags || []).join(', '),
+    // Radar 2.0 step 3: the feed URLs and GitHub repos this search reads (opt-in sources).
+    feeds: (q.feeds || []).join(', '),
+    githubRepos: (q.githubRepos || []).join(', '),
     warmup: q.warmup === true,
     mention: q.mention === true,
     // A paused search keeps all its config but is skipped by every scan (enabled:false). The
@@ -73,6 +76,7 @@ function toDraft(q) {
 const hasNarrowing = (d) => Boolean(
   String(d.keywords || '').trim() || String(d.excludeKeywords || '').trim() || String(d.competitors || '').trim()
   || String(d.subreddits || '').trim() || String(d.hashtags || '').trim() || String(d.minScore ?? '').trim()
+  || String(d.feeds || '').trim() || String(d.githubRepos || '').trim()
   || d.warmup === true || d.mention === true,
 );
 const splitList = (s) => String(s || '').split(',').map((x) => x.trim()).filter(Boolean);
@@ -111,6 +115,9 @@ function buildQuery(draft) {
     competitors: splitList(draft.competitors),
     subreddits: splitList(draft.subreddits).map((s) => s.replace(/^r\//i, '')),
     hashtags: splitList(draft.hashtags).map((s) => s.replace(/^#/, '')),
+    // Written only when set, so a search that never used them saves exactly as before.
+    ...(splitList(draft.feeds).length ? { feeds: splitList(draft.feeds) } : {}),
+    ...(splitList(draft.githubRepos).length ? { githubRepos: splitList(draft.githubRepos).map((s) => s.replace(/^https?:\/\/github\.com\//i, '').replace(/\/+$/, '')) } : {}),
     // A warm-up query is a Reddit karma builder, so the flag only means anything when Reddit is
     // one of its sources; drop reddit and the flag goes with it (never a stale true on a query
     // that no longer touches Reddit).
@@ -188,7 +195,7 @@ function DailyRunBlock({ radar, config, onNavigate, setError, t }) {
       {dailyEnabled ? (
         <>
           {!agentConnected ? (
-            <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">
+            <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">
               {t('settings.agentDaily.needsAgent')}{' '}
               {onNavigate ? (
                 <button type="button" onClick={() => onNavigate('setup')} className="font-semibold text-brand underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light">{t('settings.radar.dailyRun.needsAgent.link')}</button>
@@ -209,10 +216,10 @@ function DailyRunBlock({ radar, config, onNavigate, setError, t }) {
           </label>
           {/* D3 consequence sentence: the daily scan consumes budget 1, so unattended x/youtube
               follow-up checks need at least 2 - stated where the knob lives. */}
-          <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.radar.budget.consequence')}</p>
+          <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">{t('settings.radar.budget.consequence')}</p>
         </>
       ) : (
-        <p className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('settings.radar.autoScan.offHint')}</p>
+        <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">{t('settings.radar.autoScan.offHint')}</p>
       )}
     </div>
   );
@@ -224,7 +231,7 @@ function DailyRunBlock({ radar, config, onNavigate, setError, t }) {
 // narrowing is real but optional, so it lives one disclosure down, off the first-contact surface.
 // `sourceIds` is the effective SEARCHABLE scan set (aligned with the Setup-card scan flags), so a
 // chip only appears for a lane Radar would actually search; an already-picked lane stays visible.
-function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
+function QueryForm({ draft, onChange, onClose, saved, sourceIds, optionalOn = [], t }) {
   const toggleSource = (id) => {
     const has = draft.sources.includes(id);
     onChange({ ...draft, sources: has ? draft.sources.filter((s) => s !== id) : [...draft.sources, id] });
@@ -248,7 +255,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
             <Check size={12} aria-hidden="true" />{t('radar.query.saved')}
           </span>
         ) : null}
-        <button type="button" onClick={onClose} aria-label={t('radar.query.close')} className={`shrink-0 rounded-lg p-1 text-zinc-500 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300 ${TAP_TARGET}`}>
+        <button type="button" onClick={onClose} aria-label={t('radar.query.close')} className={`shrink-0 rounded-lg p-1 text-zinc-600 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300 ${TAP_TARGET}`}>
           <X size={14} aria-hidden="true" />
         </button>
       </div>
@@ -275,7 +282,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
       {/* Structured narrowing, one disclosure down (canon: config never stacks on the intent it
           refines). Everything here is optional; the brief above already makes a search complete. */}
       <details open={advancedOpen} onToggle={(e) => setAdvancedOpen(e.currentTarget.open)} className="group rounded-xl">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1 text-xs font-semibold text-zinc-500 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 py-1 text-xs font-semibold text-zinc-600 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
           <ChevronDown size={13} aria-hidden="true" className="transition-transform group-open:rotate-180" />
           {t('radar.query.advanced')}
         </summary>
@@ -296,7 +303,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
             <legend className="flex items-center gap-1">
               <span className={EYEBROW}>{t('radar.query.sources')}</span>
               <Tip label={t('radar.query.sources.tip')}>
-                <button type="button" aria-label={t('radar.fieldHelp', { field: t('radar.query.sources') })} className="rounded text-zinc-500 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
+                <button type="button" aria-label={t('radar.fieldHelp', { field: t('radar.query.sources') })} className="rounded text-zinc-600 transition hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-300">
                   <HelpCircle size={12} aria-hidden="true" />
                 </button>
               </Tip>
@@ -311,7 +318,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
                     type="button"
                     onClick={() => toggleSource(id)}
                     aria-pressed={on}
-                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 transition ${on ? 'bg-brand/15 text-brand ring-brand/40 dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400 ring-zinc-300/60 dark:ring-zinc-600/60'}`}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 transition ${on ? 'bg-brand/15 text-brand ring-brand/40 dark:text-brand-light' : 'text-zinc-600 dark:text-zinc-400 ring-zinc-300/60 dark:ring-zinc-600/60'}`}
                   >
                     <Icon size={13} className={on ? color : ''} aria-hidden="true" />
                     {sourceLabel(t, id)}
@@ -320,7 +327,7 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
               })}
             </div>
             {draft.sources.length === 0 ? (
-              <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('radar.query.sources.all')}</p>
+              <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('radar.query.sources.all')}</p>
             ) : null}
           </fieldset>
           {scans(draft, 'reddit') ? (
@@ -333,6 +340,20 @@ function QueryForm({ draft, onChange, onClose, saved, sourceIds, t }) {
             <div className="space-y-1">
               <FieldLabel htmlFor="radar-q-hashtags" label={t('radar.query.hashtags')} tip={t('radar.query.hashtags.tip')} t={t} />
               <input id="radar-q-hashtags" className={`${FIELD} w-full`} value={draft.hashtags} placeholder={t('radar.query.hashtagsPlaceholder')} onChange={(e) => onChange({ ...draft, hashtags: e.target.value })} />
+            </div>
+          ) : null}
+          {/* Radar 2.0 step 3: the opt-in sources' per-search inputs, shown once their switch is on
+              (or the search already carries them, so nothing saved is ever hidden). */}
+          {optionalOn.includes('feed') || String(draft.feeds || '').trim() ? (
+            <div className="space-y-1">
+              <FieldLabel htmlFor="radar-q-feeds" label={t('radar.query.feeds')} tip={t('radar.query.feeds.tip')} t={t} />
+              <input id="radar-q-feeds" className={`${FIELD} w-full`} value={draft.feeds} placeholder={t('radar.query.feedsPlaceholder')} onChange={(e) => onChange({ ...draft, feeds: e.target.value })} />
+            </div>
+          ) : null}
+          {optionalOn.includes('github') || String(draft.githubRepos || '').trim() ? (
+            <div className="space-y-1">
+              <FieldLabel htmlFor="radar-q-github" label={t('radar.query.githubRepos')} tip={t('radar.query.githubRepos.tip')} t={t} />
+              <input id="radar-q-github" className={`${FIELD} w-full`} value={draft.githubRepos} placeholder={t('radar.query.githubReposPlaceholder')} onChange={(e) => onChange({ ...draft, githubRepos: e.target.value })} />
             </div>
           ) : null}
           {/* The per-query surface floor: signals scoring below it stay cached but hidden from
@@ -398,6 +419,35 @@ function SourceCoverage({ radar, capabilities, accounts, sourceStatus, skippedPl
   );
 }
 
+// Radar 2.0 step 3: the OPTIONAL sources (X search through the API, feeds, GitHub), one house
+// on/off row each plus one line on what it costs. The list and each source's readiness come from
+// the server (feed.optionalSources, lib/radar.mjs radarOptionalSources): a source whose credential
+// is missing is not shown at all. X writes the owner-only posting.radar.x.search; feed and github
+// write their posting.radar.sources[id].scan flag, the same flag the Setup cards use.
+// The switch state reads the saved config (it updates the moment the save lands); readiness and the
+// cost code come from the server.
+const optionalOnIn = (radar, id) => (id === 'x' ? radar?.x?.search === true : radar?.sources?.[id]?.scan === true);
+function OptionalSources({ radar, options, onPersist, t }) {
+  const ready = (Array.isArray(options) ? options : []).filter((o) => o && o.ready === true).map((o) => ({ ...o, on: optionalOnIn(radar, o.id) }));
+  if (!ready.length) return null;
+  const toggle = (o) => {
+    if (o.id === 'x') return onPersist({ ...radar, x: { ...(radar.x || {}), search: !o.on } });
+    const flags = radar.sources && typeof radar.sources === 'object' ? radar.sources : {};
+    return onPersist({ ...radar, sources: { ...flags, [o.id]: { ...(flags[o.id] || {}), scan: !o.on } } });
+  };
+  return (
+    <div className="space-y-2">
+      <p className={EYEBROW}>{t('radar.optional.title')}</p>
+      {ready.map((o) => (
+        <div key={o.id} className="space-y-0.5">
+          <ToggleRow label={t(`radar.optional.${o.id}.label`)} tip={t(`radar.optional.${o.id}.tip`)} checked={o.on === true} onChange={() => toggle(o)} />
+          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t(`radar.optional.cost.${o.costNote}`, { cap: o.monthlyReadCap ?? '' })}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // The Settings-hosted Radar searches section. Self-contained config read/write, its own editing
 // state + debounced auto-save (same shape the Radar page used to carry). `focus === 'radar'`
 // scrolls it into view when the Radar page's settings link deep-links here.
@@ -418,6 +468,8 @@ export default function RadarSearches({ focus = false, focusQueryId = null, onNa
   // what the form offers matches what a scan touches. Empty while the feed loads -> show all four.
   const effectiveSearchable = effectiveRadarSourcesClient(radar, feed?.capabilities, accounts, feed?.sources, config?.posting?.skippedPlatforms).filter((id) => SOURCE_IDS.includes(id));
   const sourceIds = effectiveSearchable.length ? effectiveSearchable : SOURCE_IDS;
+  // The opt-in sources switched on (Radar 2.0 step 3): their per-search fields show in the editor.
+  const optionalOn = (Array.isArray(feed?.optionalSources) ? feed.optionalSources : []).filter((o) => o && o.ready && optionalOnIn(radar, o.id)).map((o) => o.id);
 
   const sectionRef = useRef(null);
   const [error, setError] = useState(null);
@@ -484,6 +536,8 @@ export default function RadarSearches({ focus = false, focusQueryId = null, onNa
         const merged = { ...queries[idx], ...built };
         if (!('sources' in built)) delete merged.sources;
         if (!('minScore' in built)) delete merged.minScore;
+        if (!('feeds' in built)) delete merged.feeds;
+        if (!('githubRepos' in built)) delete merged.githubRepos;
         queries[idx] = merged;
       } else {
         queries.push(built);
@@ -532,7 +586,7 @@ export default function RadarSearches({ focus = false, focusQueryId = null, onNa
       {!enabled ? (
         // Radar off: the honest opt-in. Enabling it here is the same write the old panel offered.
         <div className={`space-y-2 rounded-xl p-4 ${INNER_SURFACE}`}>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.disabled.body')}</p>
+          <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.disabled.body')}</p>
           <button type="button" onClick={onEnable} className="rounded-xl bg-brand px-3 py-1.5 text-xs font-bold text-white dark:bg-brand-light dark:text-zinc-900">
             {t('radar.disabled.enable')}
           </button>
@@ -541,7 +595,7 @@ export default function RadarSearches({ focus = false, focusQueryId = null, onNa
         <>
           <DailyRunBlock radar={radar} config={config} onNavigate={onNavigate} setError={setError} t={t} />
           {editing === 'new' ? (
-            <QueryForm draft={draft} onChange={setDraft} onClose={closeEdit} saved={saved} sourceIds={sourceIds} t={t} />
+            <QueryForm draft={draft} onChange={setDraft} onClose={closeEdit} saved={saved} sourceIds={sourceIds} optionalOn={optionalOn} t={t} />
           ) : null}
           {!hasQueries && editing == null ? (
             <SetupPanel t={t} onAddByHand={startAdd} />
@@ -557,7 +611,7 @@ export default function RadarSearches({ focus = false, focusQueryId = null, onNa
               return (
               <li key={q.id}>
                 {editing === q.id ? (
-                  <QueryForm draft={draft} onChange={setDraft} onClose={closeEdit} saved={saved} sourceIds={sourceIds} t={t} />
+                  <QueryForm draft={draft} onChange={setDraft} onClose={closeEdit} saved={saved} sourceIds={sourceIds} optionalOn={optionalOn} t={t} />
                 ) : (
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl px-3 py-2 ring-1 ring-zinc-900/5 dark:ring-white/10">
                     {/* Title + source list stack and TRUNCATE; the full text is one tooltip away.
@@ -599,6 +653,7 @@ export default function RadarSearches({ focus = false, focusQueryId = null, onNa
           {hasQueries ? (
             <SourceCoverage radar={radar} capabilities={feed?.capabilities} accounts={accounts} sourceStatus={feed?.sources} skippedPlatforms={config?.posting?.skippedPlatforms} />
           ) : null}
+          <OptionalSources radar={radar} options={feed?.optionalSources} onPersist={persistRadar} t={t} />
           {/* The Radar AUTONOMY (auto-reply score + X Enterprise) stays in the Autonomy ledger
               (ux-audit R7): one surface for "what may pendpost do without me". The daily research
               fire-time + budget moved back HERE (UX issue 4, DailyRunBlock above): it is Radar
@@ -807,7 +862,7 @@ export function RadarBrand() {
           </div>
         ) : null}
         {!facts ? (
-          <p className={`rounded-xl px-3 py-2 text-xs ${INNER_SURFACE} text-zinc-500 dark:text-zinc-400`}>{t('settings.brand.usingDefault')}</p>
+          <p className={`rounded-xl px-3 py-2 text-xs ${INNER_SURFACE} text-zinc-600 dark:text-zinc-400`}>{t('settings.brand.usingDefault')}</p>
         ) : null}
       </div>
 

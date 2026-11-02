@@ -71,11 +71,10 @@ describe('isLate + the overdue filter (count and list can never disagree)', () =
     expect(matchesFilters(onTime, [], [], ['overdue'])).toBe(false);
   });
 
-  it('leaves the other status filters untouched (a late draft is still a draft)', () => {
-    // The widening is scoped to the 'overdue' chip: every other bucket still resolves
-    // through postStatusKey alone, so a late pending post stays findable under 'pending'
-    // and an approved one never leaks into it.
-    expect(matchesFilters(lateDraft, [], [], ['pending'])).toBe(true);
+  it('keeps the tabs exclusive: a late draft is under overdue, not also under pending', () => {
+    // Planner bulk round 2: one tab per post (format.js statusBucket), so the tab counts add up
+    // to "Alle". The late draft stays reachable through the overdue filter above.
+    expect(matchesFilters(lateDraft, [], [], ['pending'])).toBe(false);
     expect(matchesFilters(lateApproved, [], [], ['pending'])).toBe(false);
     expect(matchesFilters({ ...onTime, approval: 'approved' }, [], [], ['scheduled'])).toBe(true);
     expect(matchesFilters(onTime, [], [], ['pending'])).toBe(true);

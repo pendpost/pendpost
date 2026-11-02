@@ -90,7 +90,7 @@ try {
     feedback: { sched: { less: [{ excerpt: 'a vendor announcing a launch' }], more: [{ excerpt: 'which scheduler do you use?' }] } },
   });
   ok(prompt.includes('Acme: a booking tool for coaches.'), 'the prompt carries the brand fact sheet');
-  ok(/vendors, bots, news, existing happy users, the brand itself, and\s+off-topic posts are never signals/i.test(prompt), 'the prompt states the strict rubric');
+  ok(/competitors, bots, news, happy existing users, the\s+brand itself, and off-topic posts are never signals/i.test(prompt), 'the prompt states the strict rubric');
   ok(prompt.includes('"a vendor announcing a launch"') && prompt.includes('"which scheduler do you use?"'), "the owner's less/more examples ride under their search");
   ok(prompt.includes('{"id":"c1","search":"s1"') && prompt.includes('\\"quoted\\"'), 'candidate text is passed as JSON data (escaped), never as prose');
   ok(!prompt.includes(String.fromCharCode(0x2014)), 'no em dash in the judge prompt');

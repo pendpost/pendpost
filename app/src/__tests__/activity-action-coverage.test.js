@@ -119,10 +119,12 @@ describe('activity action-id label coverage (B8 drift guard, G5)', () => {
     expect(labels['radar-author-replied']).toBe('activity.action.radarAuthorReplied');
     const src = fs.readFileSync(ACTIVITY_JSX, 'utf8');
     const groupsBlock = src.match(/export const ACTION_GROUPS = \[([\s\S]*?)\n\];/)[1];
-    // radar-author-replied files under inbox; radar-agent-scan is claimed by a
-    // group that is NOT system (system successes are hidden from the default
-    // feed - the overnight spend must stay visible).
-    expect(groupsBlock).toMatch(/key: 'inbox'[^\n]*'radar-author-replied'/);
+    // Neither is claimed by 'system' (system successes are hidden from the default
+    // feed - the overnight spend and an author's answer must stay visible). The
+    // Activity inbox group is gone (replies live in Radar "Replies to you"), so
+    // radar-author-replied falls into 'other'.
+    expect(groupsBlock).not.toMatch(/key: 'inbox'/);
+    expect(groupsBlock).not.toMatch(/key: 'system'[^\n]*'radar-author-replied'/);
     expect(groupsBlock).toMatch(/'radar-agent-scan'/);
     expect(groupsBlock).not.toMatch(/key: 'system'[^\n]*'radar-agent-scan'/);
   });

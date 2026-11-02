@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import App from '../../App.jsx';
@@ -192,7 +192,15 @@ describe('all-clients mode (issue 6)', () => {
     const user = userEvent.setup();
     renderApp();
     // The viewed project (Acme, via the empty usePlans mock) has nothing late; the chip still counts Globex.
-    const chip = screen.getByRole('button', { name: 'Waiting on you: 1. Open the list' });
+    // Studio fix flow (package C): the badge counts everything the Needs you tray lists.
+    const chip = screen.getByRole('button', { name: 'Needs you: 1. Open the list' });
+    // Polish 2026-11-01: ONE needs-you mark. The badge wears the halted rose stop and the
+    // TriangleAlert, the same as the planner tray's count (needs-you-tray.test.jsx), with the
+    // same classes in light and dark (no theme-only red).
+    expect(chip).toHaveAttribute('data-needs-you-mark');
+    for (const c of ['bg-rose-400/15', 'text-rose-700', 'dark:text-rose-300', 'ring-rose-400/30']) expect(chip.className).toContain(c);
+    expect(chip.className).not.toMatch(/\bred-\d/);
+    expect(chip.querySelector('svg').getAttribute('class')).toMatch(/lucide-triangle-alert/);
     await user.click(chip);
     expect(window.localStorage.getItem('pendpost.allClients')).toBe('1');
     expect(await screen.findByText('Globex failed reel')).toBeInTheDocument();
@@ -233,7 +241,7 @@ describe('all-clients mode — Activity (node A)', () => {
     renderApp();
     // The Globex 'approve' row belongs to a project that is NOT the active one
     // (acme); opening it must switch the active client to globex first.
-    await user.click(screen.getByRole('button', { name: 'Open promo / g1' }));
+    await user.click(screen.getByRole('button', { name: 'Open a post in Promo' }));
     expect(spies.setActiveClient).toHaveBeenCalledWith('globex');
   });
 
@@ -358,11 +366,11 @@ describe('Insights weighted-average rates (node B)', () => {
   });
 });
 
-// Node C — Radar's own-post comment inbox, aggregated in the all-projects overview.
-// App fans useCommentInboxAll out per client and merges each inbox's `posts` with project
-// stamps; CommentInbox renders the merged list, badges each post with its project, and
-// threads the post's clientId through its reply/moderate/react/resolve writes. Tested by
-// rendering CommentInbox directly with the merged, project-stamped posts.
+// Node C — Radar's "Replies to you", aggregated in the all-projects overview.
+// App fans useCommentInboxAll out per client and merges each inbox (posts[] + elsewhere[])
+// with project stamps (lib/replies.js mergeInboxAll); CommentInbox renders the merged list,
+// badges each row with its project, and threads the row's clientId through its writes.
+// Tested by rendering CommentInbox directly with the merged, project-stamped body.
 describe('Radar comment inbox all-projects (node C)', () => {
   const group = (over) => ({
     campaign: 'launch', postId: 'p1', platform: 'mastodon', caption: 'Our launch post',
@@ -385,33 +393,40 @@ describe('Radar comment inbox all-projects (node C)', () => {
   }
 
   it('renders the merged inbox and badges every post with its project', () => {
-    renderInbox({ allPosts: [
+    renderInbox({ allInbox: { unanswered: 2, elsewhere: [], posts: [
       group({ clientId: 'acme', clientName: 'Acme', accent: '#0f766e', caption: 'Acme launch' }),
       group({ postId: 'p2', clientId: 'globex', clientName: 'Globex', accent: '#7c3aed', caption: 'Globex promo', comments: [{ commentId: 'c2', key: 'k-c2', author: 'other', text: 'hi', foundAt: '2026-06-16T10:00:00.000Z' }] }),
-    ] });
-    expect(screen.getByText('Acme launch')).toBeInTheDocument();
-    expect(screen.getByText('Globex promo')).toBeInTheDocument();
+    ] } });
+    expect(screen.getByText('Your post · Acme launch')).toBeInTheDocument();
+    expect(screen.getByText('Your post · Globex promo')).toBeInTheDocument();
     // Every post carries its project chip.
     expect(screen.getByText('Acme')).toBeInTheDocument();
     expect(screen.getByText('Globex')).toBeInTheDocument();
   });
 
-  it('threads the post\'s clientId through the resolve write (mark handled)', async () => {
+  it('threads the post\'s clientId through the resolve write (Done)', async () => {
     const { default: userEvent } = await import('@testing-library/user-event');
-    const user = userEvent.setup();
-    renderInbox({ allPosts: [group({ clientId: 'globex', clientName: 'Globex', accent: '#7c3aed' })] });
-    // Mark handled is ONE click now (owner-requested) -> resolves each comment scoped to globex.
-    await user.click(screen.getByRole('button', { name: 'Mark handled' }));
-    await new Promise((r) => setTimeout(r, 0));
-    expect(spies.resolveInbox).toHaveBeenCalledWith('k-c1', 'dismissed', 'globex');
+    const { UNDO_MS } = await import('../radar/CommentInbox.jsx');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      renderInbox({ allInbox: { posts: [group({ clientId: 'globex', clientName: 'Globex', accent: '#7c3aed' })], elsewhere: [], unanswered: 1 } });
+      // Done is ONE click (owner-requested); once its undo window passes it resolves each
+      // comment scoped to globex.
+      await user.click(screen.getByRole('button', { name: 'Done' }));
+      await act(async () => { vi.advanceTimersByTime(UNDO_MS + 50); });
+      expect(spies.resolveInbox).toHaveBeenCalledWith('k-c1', 'dismissed', 'globex');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows the per-project inbox failure notice without blocking the merged list', () => {
     renderInbox({
-      allPosts: [group({ clientId: 'globex', clientName: 'Globex', accent: '#7c3aed', caption: 'Globex promo' })],
+      allInbox: { posts: [group({ clientId: 'globex', clientName: 'Globex', accent: '#7c3aed', caption: 'Globex promo' })], elsewhere: [], unanswered: 1 },
       allFailed: [{ q: { refetch: vi.fn() }, client: { id: 'acme', displayName: 'Acme' } }],
     });
     expect(screen.getByText("Couldn't load Acme.")).toBeInTheDocument();
-    expect(screen.getByText('Globex promo')).toBeInTheDocument();
+    expect(screen.getByText('Your post · Globex promo')).toBeInTheDocument();
   });
 });

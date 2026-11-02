@@ -1295,6 +1295,12 @@ async function cmdComments(args) {
   const { runLaneComments } = await import('../lib/comments.mjs');
   Object.assign(RUN, await runLaneComments('reddit', args));
 }
+// Mentions anywhere (the comment inbox's `mentions` verb, lib/comments.mjs runLaneMentions):
+// what names or answers us outside the per-post read, with the login the lane already has.
+async function cmdMentions(args) {
+  const { runLaneMentions } = await import('../lib/comments.mjs');
+  Object.assign(RUN, await runLaneMentions('reddit', args));
+}
 async function cmdReply(args) {
   const { runLaneReply } = await import('../lib/comments.mjs');
   Object.assign(RUN, await runLaneReply('reddit', args));
@@ -1373,6 +1379,10 @@ async function cmdRadar(args) {
         author: d.author, community: d.subreddit ? `r/${d.subreddit}` : null,
         text: isComment ? (d.body || '') : `${d.title || ''}${d.selftext ? `\n\n${d.selftext}` : ''}`.trim(),
         ts: d.created_utc ? new Date(d.created_utc * 1000).toISOString() : null,
+        // Radar 2.0 step 2: judge context in the same listing (no extra call): the thread a
+        // comment sits under and how many comments a post already has.
+        ...(isComment && d.link_title ? { threadTitle: String(d.link_title) } : {}),
+        ...(!isComment && Number.isFinite(d.num_comments) ? { replyCount: d.num_comments } : {}),
       });
     }
   }
@@ -1430,10 +1440,47 @@ export async function cmdRadarFollowup(args) {
   }
 }
 
+// READ-only (planner-bulk contract R6): every reply from ANYONE under our posted Radar
+// replies, any round, for the watch window - not just the original author's first answer
+// (that is cmdRadarFollowup above, which stays as it is). Never writes the plan. One row per
+// watched reply: { postId, action:'radar-replies', ok, items:[{ commentId, author, text, ts,
+// permalink, parentId }] }.
+export async function cmdRadarReplies(args) {
+  const { plan } = loadPlan(args.plan);
+  const { radarHttp, parseRedditThreadReplies, radarReplyWatchTargets } = await import('../lib/radar.mjs');
+  const targets = radarReplyWatchTargets(plan.posts, 'reddit', { windowDays: Number(args['window-days']) || 14 });
+  const ourIds = targets.map((p) => String(p.redditPostId));
+  const own = readEnv('REDDIT_USERNAME') || '';
+  let token = null;
+  for (const post of targets) {
+    try { token = token || await mintToken(); } catch (err) {
+      RUN.results.push({ postId: post.id, platform: 'reddit', action: 'radar-replies', ok: false, errorCode: 'needs_scope', errorMessage: String(err.message || err).slice(0, 200) });
+      continue;
+    }
+    const headers = { Authorization: `Bearer ${token}`, 'User-Agent': userAgent() };
+    const rr = post.radarReplyTo;
+    let article = /^t3_/.test(String(rr.externalId || '')) ? String(rr.externalId).replace(/^t3_/, '') : null;
+    if (!article) {
+      const info = await radarHttp(`https://oauth.reddit.com/api/info?id=${encodeURIComponent(post.redditPostId)}`, { headers });
+      const linkId = info?.json?.data?.children?.[0]?.data?.link_id;
+      article = linkId ? String(linkId).replace(/^t3_/, '') : null;
+    }
+    if (!article) { RUN.results.push({ postId: post.id, platform: 'reddit', action: 'radar-replies', ok: true, items: [] }); continue; }
+    const comment = String(post.redditPostId).replace(/^t1_/, '');
+    const { ok, status, json } = await radarHttp(`https://oauth.reddit.com/comments/${article}?comment=${comment}&depth=8&limit=200&sort=new&raw_json=1`, { headers });
+    if (!ok) {
+      RUN.results.push({ postId: post.id, platform: 'reddit', action: 'radar-replies', ok: false, errorCode: status === 404 ? 'radar_target_gone' : (status === 401 || status === 403 ? 'needs_scope' : 'engine_failure'), errorMessage: `reddit radar-replies HTTP ${status}` });
+      continue;
+    }
+    RUN.results.push({ postId: post.id, platform: 'reddit', action: 'radar-replies', ok: true, items: parseRedditThreadReplies(json, { ourId: post.redditPostId, ourIds, ownAuthor: own }) });
+  }
+}
+
 const COMMANDS = {
   auth: cmdAuth,
   connect: cmdConnect,
   comments: cmdComments,
+  mentions: cmdMentions,
   reply: cmdReply,
   moderate: cmdModerate,
   refresh: cmdRefresh,
@@ -1449,6 +1496,7 @@ const COMMANDS = {
   flairs: cmdFlairs,
   radar: cmdRadar,
   'radar-followup': cmdRadarFollowup,
+  'radar-replies': cmdRadarReplies,
 };
 
 async function main() {

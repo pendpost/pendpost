@@ -61,7 +61,7 @@ try {
   // A draftable (high-score, reply-lane) signal - the drafting phase would run if it could.
   const r0 = await asClient(() => radarIngest({
     queryId: 'q1',
-    signals: [{ source: 'reddit', ts: new Date().toISOString(), externalId: 't3_1', url: 'https://reddit.com/r/x/1', author: 'u1', community: 'r/test', text: 'Can anyone recommend a tool to schedule social posts?', score: 90 }],
+    signals: [{ authorRole: 'seeker', intent: 'ask_reco', replyable: true, source: 'reddit', ts: new Date().toISOString(), externalId: 't3_1', url: 'https://reddit.com/r/x/1', author: 'u1', community: 'r/test', text: 'Can anyone recommend a tool to schedule social posts?', score: 90 }],
     actor: 'agent:claude',
   }));
   assert.ok(r0.ok && r0.accepted === 1, `seed ingest: ${JSON.stringify(r0)}`);

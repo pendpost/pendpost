@@ -61,7 +61,9 @@ try {
 
   // Turn Radar ON with one query over all sources + a competitorsDefault.
   const configPath = path.join(WS, 'config.json');
-  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, competitorsDefault: COMPETITORS_DEFAULT, queries: [QUERY] } }));
+  // lookbackDays: 90 is explicit (it was the default until Radar 2.0 step 1 made it 7), so the
+  // retention-vs-lookback windows below keep their documented 30 / 60 / 90 / 200-day shape.
+  fs.writeFileSync(configPath, JSON.stringify({ radar: { enabled: true, lookbackDays: 90, competitorsDefault: COMPETITORS_DEFAULT, queries: [QUERY] } }));
 
   // ---- (c) actor + queryId + shape gates ------------------------------------
   ok((await radarIngest({ actor: '', queryId: 'q1', signals: [] })).code === 'invalid_input', 'radarIngest requires an actor');
@@ -104,14 +106,18 @@ try {
   // reproduce the exact same score (identical scorer), and the merge must dedupe it (identical
   // dedupe key) - not double the feed, not downgrade the signal.
   await runRadarScan({});
-  const scanned = (await listRadar({ source: 'reddit' })).items[0];
+  // The CACHE is read directly here, not listRadar: this workspace has no agent provider, so the
+  // engine copy is unjudged, and listRadar never surfaces an unjudged hit (Radar 2.0 step 1).
+  const { loadState: cacheState } = await import('../lib/state.mjs');
+  const cached = () => cacheState().radar.signals || [];
+  const scanned = cached().find((s) => s.source === 'reddit');
   ok(scanned && isSignal(scanned), 'runRadarScan populated an engine-scored reddit signal');
-  const feedLenBefore = (await listRadar({})).items.length;
+  const feedLenBefore = cached().length;
   const { intentScore, intentTags, suggestedAction, watched, repliedUrl, ...bareRaw } = scanned; // strip the scored fields
   void intentScore; void intentTags; void suggestedAction; void watched; void repliedUrl;
   const reingest = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [bareRaw] });
   ok(reingest.accepted === 1 && reingest.deduped === 1, 're-ingesting an already-scanned signal is accepted:1 + deduped:1 (identical dedupe key source+externalId)');
-  const feedAfter = await listRadar({});
+  const feedAfter = { items: cached() };
   ok(feedAfter.items.length === feedLenBefore, 're-ingest does NOT double the feed (deduped by source+externalId)');
   const reSig = feedAfter.items.find((s) => signalKey(s) === signalKey(scanned));
   // Relevance plan 2026-09-30: this workspace has no agent provider, so the ENGINE copy is
@@ -163,7 +169,7 @@ try {
   // a curated ingest must not silently vanish under the 30-day retention prune. It is retention-
   // exempt (like a watched signal), still capped by RADAR_SIGNAL_CAP, and recency still SCORES it low.
   // 60 days: older than the 30-day RETENTION prune (so it exercises the exemption) but WITHIN the
-  // default 90-day lookback window (so it is not dropped at ingest). The two windows are distinct.
+  // configured 90-day lookback window (so it is not dropped at ingest). The two windows are distinct.
   const oldTs = new Date(Date.now() - 60 * 86_400_000).toISOString(); // 60 days old
   const oldIngest = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [
     { source: 'reddit', url: 'https://reddit.com/r/askswitzerland/comments/oldbutreal', externalId: 't3_oldbutreal', text: 'Looking for a career coach recommendation in Zurich, is it worth it?', author: 'seeker', community: 'r/askswitzerland', ts: oldTs },
@@ -179,13 +185,13 @@ try {
 
   // ---- (k0b) lookback window: a KNOWN-old post beyond posting.radar.lookbackDays is dropped at
   // ingest (the "found 3h ago but posted 7 years ago" case), and so is an UNDATED post (fail closed,
-  // Wave 3 Q3) - itemized apart as droppedUndated, with a note the child reads. Default 90 days.
+  // Wave 3 Q3) - itemized apart as droppedUndated, with a note the child reads. 90 days configured.
   const wayOldTs = new Date(Date.now() - 200 * 86_400_000).toISOString(); // 200 days old, > 90 window
   const lookback = await radarIngest({ actor: 'agent:claude', queryId: 'q1', signals: [
     { source: 'reddit', url: 'https://reddit.com/r/askswitzerland/comments/ancient', externalId: 't3_ancient', text: 'Looking for a career coach recommendation, is it worth it?', author: 'seeker', community: 'r/askswitzerland', ts: wayOldTs },
     { source: 'quora', url: 'https://www.quora.com/What-is-the-best-coaching-software', externalId: 'quora-best-coaching', text: 'What is the best coaching software with scheduling?', author: 'asker' }, // NO ts - undated
   ] });
-  ok(lookback.staleDropped === 1 && lookback.droppedUndated === 1 && lookback.accepted === 0 && lookback.dropped === 2, 'a 200-day-old dated post is dropped (staleDropped) AND the undated quora post is dropped (droppedUndated) under the default 90-day lookback - the tally tells the two apart');
+  ok(lookback.staleDropped === 1 && lookback.droppedUndated === 1 && lookback.accepted === 0 && lookback.dropped === 2, 'a 200-day-old dated post is dropped (staleDropped) AND the undated quora post is dropped (droppedUndated) under the configured 90-day lookback - the tally tells the two apart');
   ok(/1 signal dropped for missing ts/.test(lookback.note || ''), 'the result text names the undated drop, so the child learns to send ts');
   const items2 = (await listRadar({})).items;
   ok(!items2.some((s) => s.externalId === 't3_ancient'), 'the 200-day-old dated post never enters the feed (beyond the lookback window)');

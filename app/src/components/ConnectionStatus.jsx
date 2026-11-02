@@ -6,18 +6,22 @@
 //     your computer on).
 // Anti-slop: a single brand accent, font-bold max, sentence case, lowercase
 // "pendpost". The colour dot is never the only signal - the popover states the
-// status in words and the button carries an aria-label. Colour is spent on attention
-// only: an all-clear state (everything delivered, publishing locally) carries no dot.
+// status in words, the button carries an aria-label and the dot is its accessible
+// description. The dot follows the delivery indicator rule (owner decision 2026-11-01,
+// q4 a, shared with the sidebar Delivery card through DeliveryGlyph): green = the cloud is
+// delivering, amber = needs a look, red = disrupted, amber = this computer is paused;
+// publishing from this computer with nothing wrong carries no dot.
 // External links reuse the app's <a target="_blank"> pattern (Published/PostDetail);
 // the in-app action routes to the Cloud page via onNavigate.
-import { useState } from 'react';
-import { Cloud as CloudIcon, Monitor, MonitorOff, ExternalLink, ArrowRight } from 'lucide-react';
-import { useCloud, useCloudClients, useCloudSubscription } from '../lib/cloud.js';
+import { useId, useState } from 'react';
+import { ExternalLink, ArrowRight } from 'lucide-react';
+import { useCloud, useCloudClients, useCloudSubscription, useDeliveryState, cloudTone } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
 import { TAP_TARGET } from './ui/recipes.js';
-import { CloudIssueRow, RecheckButton, cloudHealth, healthDot, CONNECTIVITY } from './CloudIssues.jsx';
+import { CloudIssueRow, ReasonAction, CONNECTIVITY } from './CloudIssues.jsx';
+import { deliveryDotClass, deliveryIcon } from './DeliveryGlyph.jsx';
 
 // How many issue rows the popover lists before folding the rest into "n more" (which
 // opens the Cloud page, where every project shows its own).
@@ -28,57 +32,69 @@ const MAX_ISSUES = 3;
 // system browser via the launcher's WKWebView navigation policy (launcher/PendpostApp.swift).
 const SERVICES_URL = 'https://pendpost.com/services?from=app';
 
-// The merged state -> the icon, the status-dot colour (null = no dot), and the status-line
-// key. Two orthogonal signals: the GLYPH encodes the delivery channel (a cloud = managed
-// 24/7 runtime; a monitor = your own computer), the DOT encodes attention. The cloud state
-// comes from cloudHealth (CloudIssues.jsx) - the SAME derivation the Cloud page pill reads,
-// so the header and the page can never disagree: red = a post is at risk right now; amber =
-// delivery degraded (cloud unreachable, sync stopped, subscription unreadable) while the
-// local backstop covers it; yellow (neutral grey dot, healthDot) = a wait that resolves
-// itself (approved posts awaiting the cloud's confirmation, or an on-flag drift pendpost is
-// re-asserting), so no warning; green = all
-// confirmed, which is an all-clear and so carries NO dot. `attention` covers the
-// multi-project case: the ACTIVE project publishes locally, but another always-on project
-// has a cloud problem - the dot still carries it, with the cloud glyph.
-function deriveStatus({ running, cloudOn, health, attention = false }) {
-  if (cloudOn || attention) {
-    const dot = healthDot(health.state);
-    if (health.state === 'red') return { Icon: CloudIcon, dot, key: 'connection.sync.broken' };
-    if (health.state === 'amber') return { Icon: CloudIcon, dot, key: 'connection.sync.degraded' };
+// How loud each dot tone is, so the one header dot shows the worst thing in view.
+const TONE_RANK = { disrupted: 3, attention: 2, paused: 1, ok: 0 };
+const DOT_LABEL = {
+  ok: 'delivery.dot.cloudOk',
+  attention: 'delivery.dot.cloudAttention',
+  disrupted: 'delivery.dot.cloudDisrupted',
+  paused: 'delivery.dot.localPaused',
+};
+
+// The delivery state (useDeliveryState) -> the icon, the dot tone (null = no dot) and the
+// status-line key. Two orthogonal signals: the GLYPH says where the projects in view publish
+// from (a cloud as soon as ANY of them runs on the managed 24/7 runtime, else a monitor = this
+// computer), the DOT says how that is going. The cloud health is the SAME derivation the Cloud
+// page pill reads (cloudHealth), so the header and the page can never disagree: red = a post
+// is at risk right now; amber = delivery degraded (cloud unreachable, sync stopped,
+// subscription unreadable) while the local backstop covers it; yellow = a wait that resolves
+// itself; green = all confirmed. Green and yellow both mean the cloud is delivering, so both
+// carry the green dot. A paused scheduler with projects in view that this computer publishes
+// adds an amber dot. `attention` covers the multi-project case: no project in view runs on
+// the cloud, but another always-on project has a cloud problem; the dot still carries it,
+// with the cloud glyph.
+function deriveStatus({ delivery, attention = false }) {
+  const { cloud, local } = delivery;
+  const localPaused = local.count > 0 && local.running === false;
+  if (cloud.count > 0 || attention) {
+    const health = { state: cloud.health, reason: cloud.reason };
+    const ct = cloudTone(health.state);
+    const tone = localPaused && TONE_RANK.paused > (TONE_RANK[ct] ?? -1) ? 'paused' : ct;
+    if (health.state === 'red') return { channel: 'cloud', tone, key: 'connection.sync.broken' };
+    if (health.state === 'amber') return { channel: 'cloud', tone, key: 'connection.sync.degraded' };
     // yellow is a self-resolving wait. Only a push awaiting its ack is "syncing n posts";
     // the other wait (an on-flag drift being re-asserted) is limited delivery, said plainly.
     if (health.state === 'yellow') {
       const pushing = !health.reason || health.reason === 'push_pending';
-      return { Icon: CloudIcon, dot, key: pushing ? 'connection.sync.pending' : 'connection.sync.degraded' };
+      return { channel: 'cloud', tone, key: pushing ? 'connection.sync.pending' : 'connection.sync.degraded' };
     }
-    return { Icon: CloudIcon, dot: null, key: 'connection.status.cloud' };
+    return { channel: 'cloud', tone, key: 'connection.status.cloud' };
   }
-  if (running === true) return { Icon: Monitor, dot: null, key: 'connection.status.local' };
-  if (running === false) return { Icon: MonitorOff, dot: 'bg-amber-500', key: 'connection.status.off' };
-  return { Icon: CloudIcon, dot: null, key: 'connection.status.unknown' };
+  if (local.running === true) return { channel: 'local', tone: null, key: 'connection.status.local' };
+  if (local.running === false) return { channel: 'local', tone: 'paused', key: 'connection.status.off' };
+  return { channel: 'cloud', tone: null, key: 'connection.status.unknown' };
 }
 
-export default function ConnectionStatus({ running, onNavigate, onShowAtRisk, onIssueAction }) {
+export default function ConnectionStatus({ allClients = false, onNavigate, onShowAtRisk, onIssueAction }) {
   const t = useT();
-  const { data: cloud, refetch } = useCloud();
-  // OPERATIONAL requires a workspace AND the api key - identical to Cloud.jsx's `connected`
-  // gate. A configured-but-keyless connection (workspaceId set, PENDPOST_CLOUD_API_KEY
-  // missing) cannot publish, so it must NOT read as cloud-on here; the page routes it to
-  // the "finish setup" view and the local scheduler is the real firer.
-  const cloudConnected = Boolean(cloud?.workspaceId && cloud?.apiKey?.present);
-  // The glyph follows the SELECTED client, not the install: the cloud only fires a brand
-  // that is itself always-on, so a connected install whose active client is NOT always-on
-  // still publishes that client locally and must read as local here. Undefined while the
-  // list loads -> falls back to the local-scheduler signal, no false "cloud".
+  const dotId = useId();
+  const { data: cloud } = useCloud();
+  // Where the projects in view publish from, in All-projects mode across every project
+  // (lib/cloud.js useDeliveryState, the same answer the sidebar Delivery card reads). A
+  // keyless or paused connection never reads as cloud; while the lists load it falls back to
+  // the local-scheduler signal, no false "cloud".
+  const delivery = useDeliveryState({ allClients });
+  const cloudConnected = delivery.connected;
   const { data: clientsData } = useCloudClients(cloudConnected);
-  const activeAlwaysOn = ((clientsData?.clients) || []).find((c) => c.active)?.alwaysOn === true;
-  const cloudOn = cloudConnected && Boolean(cloud?.enabled) && activeAlwaysOn;
-  const { data: sub, isError: subFailed, refetch: refetchSub } = useCloudSubscription(cloudConnected);
+  const cloudOn = delivery.cloud.count > 0;
+  const { data: sub, refetch: refetchSub } = useCloudSubscription(cloudConnected);
 
   const sync = cloudConnected ? (cloud?.sync || null) : null;
-  const health = cloudOn ? cloudHealth(sync, subFailed) : cloudHealth(sync, false);
+  const health = { state: delivery.cloud.health, reason: delivery.cloud.reason };
   const attention = !cloudOn && (health.state === 'red' || health.state === 'amber');
-  const { Icon, dot, key } = deriveStatus({ running, cloudOn, health, attention });
+  const { channel, tone, key } = deriveStatus({ delivery, attention });
+  const Icon = deliveryIcon(channel, tone);
+  const dot = deliveryDotClass(tone);
   // r5: a failed read of the plan info is not a limited cloud; the title says what failed.
   const statusKey = key === 'connection.sync.degraded' && health.reason === 'subscription_failed' ? 'connection.sync.subscriptionFailed' : key;
   const status = t(statusKey, statusKey === 'connection.sync.pending' ? { n: sync?.pendingCount ?? 0 } : undefined);
@@ -112,7 +128,9 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk, on
   // The planner filter only remains for a red state no row explains: an unreadable plan
   // (manifest_error, zero counts by construction) or an older engine without issues[].
   const showPlanner = isBroken && issues.length === 0 && Boolean(onShowAtRisk);
-  const recheck = () => { refetch?.(); refetchSub?.(); };
+  // A failed plan read is fixed once the read succeeds again (the recheck probes delivery;
+  // the subscription is its own read).
+  const subscriptionGone = async () => { const r = await refetchSub?.(); return r ? !r.isError : true; };
 
   // Controlled so the in-app "manage cloud" button can navigate AND close the popover.
   // (Wrapping that button in Radix <PopoverClose> swallowed its onClick, so the nav
@@ -126,14 +144,21 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk, on
           <button
             type="button"
             aria-label={t('connection.aria')}
+            aria-describedby={dot ? dotId : undefined}
             className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
           >
             <Icon size={14} aria-hidden="true" />
             {dot ? (
-              <span
-                className={`absolute right-1 top-1 h-2 w-2 rounded-full ring-2 ring-white dark:ring-zinc-900 ${dot}`}
-                aria-hidden="true"
-              />
+              <>
+                {/* A button's children are presentational, so the dot is named through the
+                    button's accessible description (aria-describedby) instead. */}
+                <span
+                  data-tone={tone}
+                  className={`absolute right-1 top-1 h-2 w-2 rounded-full ring-2 ring-white dark:ring-zinc-900 ${dot}`}
+                  aria-hidden="true"
+                />
+                <span id={dotId} className="sr-only">{t(DOT_LABEL[tone])}</span>
+              </>
             ) : null}
           </button>
         </PopoverTrigger>
@@ -149,7 +174,11 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk, on
           {reason ? (
             <div className="space-y-1.5">
               <p className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-300">{reason}</p>
-              {!isBroken ? <RecheckButton onRecheck={recheck} /> : null}
+              <ReasonAction
+                reason={health.reason}
+                gone={health.reason === 'subscription_failed' ? subscriptionGone : undefined}
+                onRaiseCap={() => { onNavigate?.('cloud'); setOpen(false); }}
+              />
             </div>
           ) : null}
           {/* Money truth stays visible: a used-up trial stops publishing. Everything else
@@ -166,7 +195,6 @@ export default function ConnectionStatus({ running, onNavigate, onShowAtRisk, on
                 issue={issue}
                 showProject={multiProject}
                 onAction={onIssueAction ? (it, action) => { setOpen(false); onIssueAction(it, action); } : undefined}
-                onRecheck={recheck}
               />
             ))}
             {moreIssues > 0 ? (

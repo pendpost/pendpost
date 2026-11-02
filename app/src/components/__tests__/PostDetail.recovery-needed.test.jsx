@@ -146,8 +146,11 @@ describe('a failure only the operator can recover: no retry, the real way out', 
     const banner = failureBanner();
     expect(within(banner).getByText(/until then, this post does not go out/i)).toBeInTheDocument();
     expect(screen.getAllByText('Waiting on you').length).toBeGreaterThan(0);
-    await user.click(within(banner).getByRole('button', { name: /^reconnect$/i }));
-    expect(onNavigate).toHaveBeenCalledWith('setup', 'linkedin');
+    const fix = within(banner).getByRole('button', { name: /^reconnect linkedin$/i });
+    expect(fix).toHaveTextContent(/^Reconnect$/);
+    await user.click(fix);
+    // An OAuth lane: Setup opens on that lane with its reconnect already started.
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'linkedin', { action: 'reconnect' });
     // The recovery replaces the terminal fallback, it does not sit beside it.
     expect(within(banner).queryByRole('button', { name: /mark as posted/i })).not.toBeInTheDocument();
   });
@@ -165,8 +168,11 @@ describe('a failure only the operator can recover: no retry, the real way out', 
     expect(within(banner).getByText(/linkedin needs a permission the connection does not have/i)).toBeInTheDocument();
     expect(within(banner).queryByText(/HTTP 403|ACCESS_DENIED/)).not.toBeInTheDocument();
     expect(screen.getAllByText('Waiting on you').length).toBeGreaterThan(0);
-    await user.click(within(banner).getByRole('button', { name: /^reconnect$/i }));
-    expect(onNavigate).toHaveBeenCalledWith('setup', 'linkedin');
+    const fix = within(banner).getByRole('button', { name: /^reconnect linkedin$/i });
+    expect(fix).toHaveTextContent(/^Reconnect$/);
+    await user.click(fix);
+    // An OAuth lane: Setup opens on that lane with its reconnect already started.
+    expect(onNavigate).toHaveBeenCalledWith('setup', 'linkedin', { action: 'reconnect' });
     expect(within(banner).queryByRole('button', { name: /mark as posted/i })).not.toBeInTheDocument();
   });
 
@@ -176,7 +182,8 @@ describe('a failure only the operator can recover: no retry, the real way out', 
     expect(banner).toBeTruthy();
     expect(within(banner).queryByText(/Verbinde LinkedIn neu/)).not.toBeInTheDocument();
     expect(within(banner).getByText('Bis dahin geht dieser Beitrag nicht raus.')).toBeInTheDocument();
-    const btn = within(banner).getByRole('button', { name: 'Neu verbinden' });
+    const btn = within(banner).getByRole('button', { name: 'LinkedIn neu verbinden' });
+    expect(btn).toHaveTextContent(/^Neu verbinden$/);
     // The shared TAP_TARGET ::after box (ui/recipes.js): 44px hit area, painted size unchanged.
     expect(btn.className).toMatch(/after:h-11/);
     expect(btn.className).toMatch(/after:min-w-11/);
@@ -189,7 +196,7 @@ describe('a failure only the operator can recover: no retry, the real way out', 
   it('reconnect with the lane offline: no competing "paste it yourself" route', () => {
     healthData = { setup: { platforms: [{ platform: 'linkedin', status: 'incomplete' }] } };
     renderDetail(localScopePost);
-    expect(within(failureBanner()).getByRole('button', { name: /^reconnect$/i })).toBeInTheDocument();
+    expect(within(failureBanner()).getByRole('button', { name: /^reconnect linkedin$/i })).toBeInTheDocument();
     expect(screen.queryByText(/paste the text on linkedin yourself/i)).not.toBeInTheDocument();
     expect(screen.queryByText('Where this goes')).not.toBeInTheDocument();
   });

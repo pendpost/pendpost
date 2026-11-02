@@ -198,12 +198,12 @@ export function UploadStatus({ uploads, onDismiss }) {
     <ul role="status" aria-live="polite" className="space-y-1">
       {uploads.map((u) => (
         <li key={u.name} className={`flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[11px] ${INNER_SURFACE}`}>
-          {u.state === 'uploading' ? <Loader2 size={12} className="animate-spin text-zinc-500" aria-hidden="true" /> : u.state === 'done' ? <CheckCircle2 size={12} className="text-emerald-500" aria-hidden="true" /> : <AlertTriangle size={12} className="text-red-500" aria-hidden="true" />}
+          {u.state === 'uploading' ? <Loader2 size={12} className="animate-spin text-zinc-600" aria-hidden="true" /> : u.state === 'done' ? <CheckCircle2 size={12} className="text-emerald-500" aria-hidden="true" /> : <AlertTriangle size={12} className="text-red-500" aria-hidden="true" />}
           <span className="flex-1 truncate font-bold">{u.name}</span>
-          <span className={u.state === 'error' ? 'text-red-600 dark:text-red-300' : 'text-zinc-500 dark:text-zinc-400'}>{u.state === 'uploading' ? t('assets.upload.statusUploading') : u.state === 'done' ? t('assets.upload.statusDone') : u.error}</span>
+          <span className={u.state === 'error' ? 'text-red-600 dark:text-red-300' : 'text-zinc-600 dark:text-zinc-400'}>{u.state === 'uploading' ? t('assets.upload.statusUploading') : u.state === 'done' ? t('assets.upload.statusDone') : u.error}</span>
           {u.state === 'error' && onDismiss ? (
             <Tip label={t('assets.upload.dismissTip')}>
-              <button type="button" onClick={() => onDismiss(u.name)} aria-label={t('assets.upload.dismissAria', { name: u.name })} className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
+              <button type="button" onClick={() => onDismiss(u.name)} aria-label={t('assets.upload.dismissAria', { name: u.name })} className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60">
                 <X size={11} aria-hidden="true" />
               </button>
             </Tip>
@@ -469,7 +469,7 @@ export function InteractiveFields({
             return (
               <li key={`${sticker.kind}-${i}`} className="space-y-1.5 rounded-lg bg-white/50 p-2 ring-1 ring-zinc-900/5 dark:bg-zinc-900/30 dark:ring-white/10">
                 <div className="flex items-center gap-1.5">
-                  <Icon size={13} aria-hidden="true" className="text-zinc-500 dark:text-zinc-400" />
+                  <Icon size={13} aria-hidden="true" className="text-zinc-600 dark:text-zinc-400" />
                   <span className="flex-1 text-xs font-bold">{t(`composer.sticker.${sticker.kind}.label`)}</span>
                   <IconBadge
                     tone={meta.api === 'supported' ? 'ok' : 'neutral'}
@@ -477,7 +477,7 @@ export function InteractiveFields({
                     label={meta.api === 'supported' ? t('composer.sticker.api.supportedHint') : t('composer.sticker.api.previewHint')}
                   />
                   <Tip label={t('composer.interactive.removeSticker')}>
-                    <button type="button" onClick={() => removeSticker(i)} aria-label={t('composer.interactive.removeStickerKind', { kind: t(`composer.sticker.${sticker.kind}.label`) })} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                    <button type="button" onClick={() => removeSticker(i)} aria-label={t('composer.interactive.removeStickerKind', { kind: t(`composer.sticker.${sticker.kind}.label`) })} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                       <Trash2 size={12} aria-hidden="true" />
                     </button>
                   </Tip>
@@ -488,7 +488,7 @@ export function InteractiveFields({
           })}
         </ul>
       ) : (
-        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.interactive.noStickers')}</p>
+        <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('composer.interactive.noStickers')}</p>
       )}
 
       <div className="space-y-1.5 border-t border-zinc-900/5 pt-2.5 dark:border-white/10">
@@ -502,7 +502,7 @@ export function InteractiveFields({
           {t('composer.hashtags.useGlobal')}
         </label>
         {hashtagsMode === 'global' ? (
-          <p className="rounded-lg bg-white/40 px-2.5 py-1.5 text-[11px] text-zinc-500 dark:bg-zinc-900/30 dark:text-zinc-400">
+          <p className="rounded-lg bg-white/40 px-2.5 py-1.5 text-[11px] text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-400">
             {globalHashtags?.length ? globalHashtags.join(' ') : t('composer.hashtags.noGlobal')}
           </p>
         ) : (
@@ -561,7 +561,7 @@ export function TelegramCtaFields({ cta, onChange }) {
               <input aria-label={t('composer.tgcta.buttonLabel')} placeholder={t('composer.tgcta.buttonLabel')} value={b.label} onChange={(e) => patchButton(i, { label: e.target.value })} className={`${FIELD} w-full`} />
               <input aria-label={t('composer.tgcta.buttonUrl')} placeholder="https://example.com" value={b.url} onChange={(e) => patchButton(i, { url: e.target.value })} className={`${FIELD} w-full`} />
               <Tip label={t('composer.tgcta.removeButton')}>
-                <button type="button" onClick={() => removeButton(i)} aria-label={t('composer.tgcta.removeButton')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <button type="button" onClick={() => removeButton(i)} aria-label={t('composer.tgcta.removeButton')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                   <Trash2 size={12} aria-hidden="true" />
                 </button>
               </Tip>
@@ -569,7 +569,7 @@ export function TelegramCtaFields({ cta, onChange }) {
           ))}
         </ul>
       ) : (
-        <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.tgcta.noButtons')}</p>
+        <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('composer.tgcta.noButtons')}</p>
       )}
       <div className="flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-2 text-xs font-bold">
@@ -718,7 +718,7 @@ export function DiscordEmbedFields({ embed, onChange, threadName, threadId, onTh
           <input id="composer-dcembed-color" value={embed.color} onChange={(e) => set({ color: e.target.value })} placeholder="#5865F2" className={`${FIELD} w-full`} />
         </div>
       </div>
-      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.dcembed.buttonsGated')}</p>
+      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('composer.dcembed.buttonsGated')}</p>
 
       {onThreadNameChange && onThreadIdChange ? (
         <div className="space-y-1.5 border-t border-zinc-200/70 pt-3 dark:border-zinc-700/60">
@@ -732,7 +732,7 @@ export function DiscordEmbedFields({ embed, onChange, threadName, threadId, onTh
               <input id="composer-dc-thread-id" value={threadId} onChange={(e) => onThreadIdChange(e.target.value)} placeholder="123456789012345678" className={`${FIELD} w-full`} />
             </div>
           </div>
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.hint.dcThreadExclusive')}</p>
+          <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('composer.hint.dcThreadExclusive')}</p>
         </div>
       ) : null}
 
@@ -966,7 +966,7 @@ export function PollFields({ poll, onChange, max }) {
           </button>
         ) : null}
       </div>
-      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.poll.question')}</p>
+      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('composer.poll.question')}</p>
       <ul className="space-y-1.5">
         {poll.options.map((o, i) => (
           <li key={i} className="flex items-center gap-1.5">
@@ -979,7 +979,7 @@ export function PollFields({ poll, onChange, max }) {
             />
             {poll.options.length > 2 ? (
               <Tip label={t('composer.poll.removeOption')}>
-                <button type="button" onClick={() => removeOption(i)} aria-label={t('composer.poll.removeOption')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <button type="button" onClick={() => removeOption(i)} aria-label={t('composer.poll.removeOption')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                   <Trash2 size={12} aria-hidden="true" />
                 </button>
               </Tip>
@@ -987,7 +987,7 @@ export function PollFields({ poll, onChange, max }) {
           </li>
         ))}
       </ul>
-      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.poll.hint', { max })}</p>
+      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('composer.poll.hint', { max })}</p>
       <div className="flex flex-wrap items-center gap-4">
         <div className="flex items-center gap-1.5">
           <label className={EYEBROW} htmlFor="composer-poll-duration">{t('composer.poll.duration')}</label>
@@ -1123,7 +1123,7 @@ export function CarouselPicker({ assets, assetsDir, items, onChange, max, slideU
       <ul className="space-y-1.5">
         {rows.map((val, i) => (
           <li key={i} className="flex items-center gap-1.5">
-            <span className="w-4 shrink-0 text-center text-[11px] font-bold text-zinc-500" aria-hidden="true">{i + 1}</span>
+            <span className="w-4 shrink-0 text-center text-[11px] font-bold text-zinc-600" aria-hidden="true">{i + 1}</span>
             <div className="min-w-0 flex-1 space-y-1">
               <VideoPicker assets={assets} assetsDir={assetsDir} value={val} onChange={(v) => setSlot(i, v)} placeholderKey="composer.media.choose" optionDisabledReason={slotOptionReason(i)} />
               {showSlideUrl && val && isImageRef(val) ? (
@@ -1137,18 +1137,18 @@ export function CarouselPicker({ assets, assetsDir, items, onChange, max, slideU
               ) : null}
             </div>
             <Tip label={t('composer.carousel.moveUp')}>
-              <button type="button" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t('composer.carousel.moveUp')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+              <button type="button" onClick={() => move(i, -1)} disabled={i === 0} aria-label={t('composer.carousel.moveUp')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                 <ChevronDown size={12} className="rotate-180" aria-hidden="true" />
               </button>
             </Tip>
             <Tip label={t('composer.carousel.moveDown')}>
-              <button type="button" onClick={() => move(i, 1)} disabled={i === rows.length - 1} aria-label={t('composer.carousel.moveDown')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+              <button type="button" onClick={() => move(i, 1)} disabled={i === rows.length - 1} aria-label={t('composer.carousel.moveDown')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:cursor-not-allowed disabled:opacity-30 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                 <ChevronDown size={12} aria-hidden="true" />
               </button>
             </Tip>
             {rows.length > 2 ? (
               <Tip label={t('composer.carousel.remove')}>
-                <button type="button" onClick={() => removeSlot(i)} aria-label={t('composer.carousel.remove')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-500 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
+                <button type="button" onClick={() => removeSlot(i)} aria-label={t('composer.carousel.remove')} className="grid h-6 w-6 shrink-0 place-items-center rounded-full text-zinc-600 dark:text-zinc-400 transition hover:bg-zinc-300/60 hover:text-zinc-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
                   <Trash2 size={12} aria-hidden="true" />
                 </button>
               </Tip>
@@ -1156,7 +1156,7 @@ export function CarouselPicker({ assets, assetsDir, items, onChange, max, slideU
           </li>
         ))}
       </ul>
-      <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('composer.carousel.hint', { max })}{showSlideUrl ? ` ${t('composer.carousel.slideUrlHint')}` : ''}</p>
+      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('composer.carousel.hint', { max })}{showSlideUrl ? ` ${t('composer.carousel.slideUrlHint')}` : ''}</p>
     </section>
   );
 }
@@ -2312,9 +2312,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                   <ol className="space-y-1.5">
                     {threadParts.map((part, i) => (
                       <li key={i} className={`rounded-lg p-2 text-xs leading-relaxed ${FIELD_SURFACE}`}>
-                        <span className="mr-1 font-bold tabular-nums text-zinc-500 dark:text-zinc-400">{i + 2}.</span>
+                        <span className="mr-1 font-bold tabular-nums text-zinc-600 dark:text-zinc-400">{i + 2}.</span>
                         {part}
-                        <span className="ml-1 whitespace-nowrap text-[10px] tabular-nums text-zinc-500 dark:text-zinc-400">({part.length}/{CAPTION_CAPS.x})</span>
+                        <span className="ml-1 whitespace-nowrap text-[10px] tabular-nums text-zinc-600 dark:text-zinc-400">({part.length}/{CAPTION_CAPS.x})</span>
                       </li>
                     ))}
                   </ol>

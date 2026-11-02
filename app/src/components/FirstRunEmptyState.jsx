@@ -64,7 +64,7 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
 
       <form onSubmit={submit} className={`space-y-2 rounded-2xl p-4 ${INNER_SURFACE}`}>
         <label htmlFor="first-campaign-id" className={`block ${EYEBROW}`}>{t('firstRun.campaignLabel')}</label>
-        <p id="first-campaign-help" className="text-[11px] leading-relaxed text-zinc-500 dark:text-zinc-400">{t('firstRun.idHelper')}</p>
+        <p id="first-campaign-help" className="text-[11px] leading-relaxed text-zinc-600 dark:text-zinc-400">{t('firstRun.idHelper')}</p>
         <div className="flex gap-2">
           <input
             id="first-campaign-id"
@@ -108,7 +108,7 @@ export default function FirstRunEmptyState({ onNavigate = () => {} }) {
         >
           <Link2 size={14} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
           <span className="flex-1">{t('firstRun.connectPlatform')}</span>
-          <ChevronRight size={14} className="shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
+          <ChevronRight size={14} className="shrink-0 text-zinc-600 transition group-hover:translate-x-0.5" aria-hidden="true" />
         </button>
       </div>
 

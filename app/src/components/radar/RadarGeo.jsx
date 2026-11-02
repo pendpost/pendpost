@@ -192,7 +192,7 @@ function GeoSection({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, 
                 <button
                   type="button"
                   onClick={() => onNavigate?.('setup', 'agent')}
-                  className="inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-zinc-500 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-white/5"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-semibold text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:ring-white/10 dark:hover:bg-white/5"
                 >
                   <PlugZap size={11} aria-hidden="true" />
                   {t('radar.scan.connectFirst')}
@@ -207,8 +207,8 @@ function GeoSection({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, 
                     <span className="text-2xl font-bold leading-none">{Math.round((rate.rate || 0) * 100)}%</span>
                     {log.length >= 3 ? <FootprintTrend log={log} t={t} /> : null}
                   </div>
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.geo.footprint.rate', { rate: Math.round((rate.rate || 0) * 100), checks: rate.checks })}</p>
-                  {rivals.length ? <p className="text-xs text-zinc-500 dark:text-zinc-400">{t('radar.geo.footprint.rivals', { rivals: rivals.join(', ') })}</p> : null}
+                  <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.geo.footprint.rate', { rate: Math.round((rate.rate || 0) * 100), checks: rate.checks })}</p>
+                  {rivals.length ? <p className="text-xs text-zinc-600 dark:text-zinc-400">{t('radar.geo.footprint.rivals', { rivals: rivals.join(', ') })}</p> : null}
                 </>
               ) : null}
               {questions.length ? (
@@ -350,7 +350,7 @@ function WarmthGauge({ warmth, t }) {
       <div className="h-1.5 w-24 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-700" role="presentation">
         <div className="h-full rounded-full bg-brand dark:bg-brand-light" style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs tabular-nums text-zinc-500 dark:text-zinc-400">
+      <span className="text-xs tabular-nums text-zinc-600 dark:text-zinc-400">
         {t('radar.karma.gauge.age', { d: s.ageDays == null ? dash : s.ageDays })}
       </span>
       {s.warm ? (

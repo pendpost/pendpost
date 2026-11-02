@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, HelpCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff, Menu, Rows2, Rows3 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Languages, Moon, Sun, ServerOff, TriangleAlert, XCircle, CalendarDays, LayoutGrid, List, FlaskConical, Eye, EyeOff, Menu, Rows2, Rows3 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useSetupByClient } from './lib/setupByClient.js';
 import { usePlans, usePlansAll, useSignalsAll, useActivityAll, useInsightsAll, useCommentInboxAll, useAccounts, useActiveClient, useSetActiveClient, usePendpostHealth, useConfig, useInsights, recheckHealth, setCampaignInternal } from './lib/api.js';
 import { useT, useLocale, useSetLocale, useAdoptLocale, hasStoredLocale } from './lib/i18n.js';
 import { applyAccent, clientAccent, DEFAULT_ACCENT } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
-import { useCloud, useCloudClients, useInvalidateCloud } from './lib/cloud.js';
-import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, attentionSummary, isLate, STATUS_FILTERS, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable, getPlannerDensity, setPlannerDensity } from './lib/format.js';
-import { AuroraBackground, NoiseOverlay, FilterChip, PLATFORM_META, StatusLegend, EYEBROW } from './components/ui.jsx';
+import { useDeliveryState, useInvalidateCloud } from './lib/cloud.js';
+import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, statusCounts, attentionSummary, isLate, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable, getPlannerDensity, setPlannerDensity, NEEDS_YOU_MARK } from './lib/format.js';
+import { mergeInboxAll } from './lib/replies.js';
+import { AuroraBackground, NoiseOverlay, FilterChip } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
 import { useConfirm } from './components/ui/confirm.jsx';
 import { makeClientSwitchGuard } from './lib/clientSwitchGuard.js';
-import { Popover, PopoverTrigger, PopoverContent } from './components/ui/Popover.jsx';
 import { MultiSelectDropdown } from './components/ui/MultiSelectDropdown.jsx';
+import FilterBar from './components/FilterBar.jsx';
 import Sidebar from './components/Sidebar.jsx';
 import SidebarResizer from './components/SidebarResizer.jsx';
 import UpdateToast from './components/UpdateToast.jsx';
@@ -35,7 +37,9 @@ import Clients from './components/Clients.jsx';
 import Cloud from './components/Cloud.jsx';
 import Radar from './components/Radar.jsx';
 import FirstRunEmptyState from './components/FirstRunEmptyState.jsx';
-import ReadinessChecklist from './components/ReadinessChecklist.jsx';
+import NeedsYouTray from './components/NeedsYouTray.jsx';
+import { groupIssues, postIssue } from './lib/postIssue.js';
+import { systemRows } from './lib/needsYou.js';
 import PlannerRunNow from './components/PlannerRunNow.jsx';
 import ActivityCheckNow from './components/ActivityCheckNow.jsx';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
@@ -134,6 +138,11 @@ export default function App() {
   // One readiness read shared (react-query dedupes by key) with the embedded
   // checklist; drives the quiet planner readiness panel below (US-ONB-05).
   const { data: pendpostHealth } = usePendpostHealth();
+  // Every listed project's OWN setup (lib/setupByClient.js), fetched whenever posts of more
+  // than one project can be on screen (the same gate as the plans fan-out above): a post is
+  // judged Blocked by its own project's connections, never the active project's. Pills, rows
+  // and the post detail read these entries from the cache.
+  const { setupFor } = useSetupByClient(allClients || allClientsList.length > 1 ? allClientsList.map((c) => c.id) : [], { activeSetup: pendpostHealth?.setup });
   // Server locale adoption: with NO stored preference, the FIRST health payload's
   // posting.locale (setup.config key 'locale', set:true) drives the session locale,
   // session-only (never persisted), so the header toggle and future server changes
@@ -161,14 +170,12 @@ export default function App() {
   // knows which rows to flag; React Query dedupes with the Insights page's own read.
   const reschedule = useReschedule();
   const invalidateCloud = useInvalidateCloud();
-  // Delivery signalling: is the ACTIVE client published round-the-clock by the
-  // managed cloud? Same derivation the sidebar uses (dedupes on the react-query
-  // key). Used to suppress the DeliveryExplainer upsell for a user who is already
-  // always-on - you should never be told to set up what you already have.
-  const { data: cloudState } = useCloud();
-  const cloudConnected = Boolean(cloudState?.workspaceId && cloudState?.apiKey?.present);
-  const { data: cloudClientsData } = useCloudClients(cloudConnected);
-  const activeOnCloud = cloudConnected && Boolean(cloudState?.enabled) && ((cloudClientsData?.clients) || []).find((c) => c.active)?.alwaysOn === true;
+  // Delivery signalling: does a project in view already publish round-the-clock through the
+  // managed cloud? The same delivery state the sidebar card and the header read (contract B,
+  // lib/cloud.js useDeliveryState). Used to suppress the DeliveryExplainer upsell for a user
+  // who is already always-on - you should never be told to set up what you already have.
+  const delivery = useDeliveryState({ allClients });
+  const deliveryOnCloud = delivery.cloud.count > 0;
   const [page, setPage] = useState(() => {
     const h = window.location.hash.replace('#', '');
     return PAGES.includes(h) ? h : 'planner';
@@ -419,25 +426,17 @@ export default function App() {
   );
   // Skeletons until the FIRST project's radar read resolves, then stream the rest.
   const radarAllLoading = radarAll && signalsAllQueries.length > 0 && signalsAllQueries.every((q) => q.isLoading);
-  // Radar "On your posts" all-projects inbox (issue 6 for the own-post comment inbox):
-  // gated on the SAME radarAll as the signal feed. Each per-client inbox read carries a
-  // `posts` array (the post groups with unanswered comments); the merge flattens them,
-  // stamping each group with its project so CommentInbox can badge it and thread the
-  // clientId through its reply/moderate/react/resolve writes. Single-client mode never
-  // stamps, so the badge self-hides and the writes bind the active client.
+  // Radar "Replies to you" all-projects inbox: gated on the SAME radarAll as the signal feed.
+  // Each per-client read carries posts[] groups and elsewhere[] items; lib/replies.js
+  // mergeInboxAll stamps both with their project (so CommentInbox badges each row and threads
+  // the clientId through its writes) and sums the unanswered counts for the segment label.
   const commentInboxAllQueries = useCommentInboxAll(allClientsList, radarAll);
   const radarInboxAll = useMemo(() => {
     if (!radarAll) return null;
-    const merged = [];
-    commentInboxAllQueries.forEach((q, i) => {
+    return mergeInboxAll(commentInboxAllQueries.map((q, i) => {
       const client = allClientsList[i];
-      if (!client || !Array.isArray(q.data?.posts)) return;
-      const accent = clientAccent(client) || DEFAULT_ACCENT;
-      for (const g of q.data.posts) {
-        merged.push({ ...g, clientId: client.id, clientName: client.displayName, accent });
-      }
-    });
-    return merged;
+      return { client: client ? { ...client, accent: clientAccent(client) || DEFAULT_ACCENT } : null, data: q.data };
+    }));
   }, [radarAll, commentInboxAllQueries, allClientsList]);
   // One quiet inline notice per client whose inbox read failed - never blocks the rest.
   const radarInboxAllFailed = useMemo(
@@ -560,10 +559,25 @@ export default function App() {
     [accounts, posting, scopedPosts, platformFilter],
   );
 
+  // The setup a post is judged against for Blocked (lib/postIssue.js): the post's OWN
+  // project's setup (lib/setupByClient.js, fanned out above), so the filter, the "Needs you"
+  // tray, the header badge and the next-post chip judge another project's post by that
+  // project's connections, never the active one's (and never "no setup", which hid real
+  // blocks in other projects).
+  const issueSetup = setupFor;
   const posts = useMemo(
-    () => scopedPosts.filter((p) => matchesFilters(p, platformFilter, effectiveTypeFilter, statusFilter)),
-    [scopedPosts, platformFilter, effectiveTypeFilter, statusFilter],
+    () => scopedPosts.filter((p) => matchesFilters(p, platformFilter, effectiveTypeFilter, statusFilter, issueSetup)),
+    [scopedPosts, platformFilter, effectiveTypeFilter, statusFilter, issueSetup],
   );
+
+  // The status tabs' live counts (FilterBar row 1): what each tab would show under the current
+  // platform + type filters, over the posts the page lists (Approvals' "All posts" spans every
+  // visible campaign, the planner its campaign scope).
+  const statusTabCounts = useMemo(() => {
+    if (!(page === 'planner' || page === 'freigaben')) return {};
+    const pool = page === 'freigaben' ? visibleCampaigns.flatMap((c) => c.posts || []) : scopedPosts;
+    return statusCounts(pool, platformFilter, effectiveTypeFilter, issueSetup);
+  }, [page, visibleCampaigns, scopedPosts, platformFilter, effectiveTypeFilter, issueSetup]);
 
   const allPosts = useMemo(() => campaigns.flatMap((c) => c.posts || []), [campaigns]);
   // The live pipeline = posts of active campaigns only. Sidebar counts / next-up
@@ -597,14 +611,43 @@ export default function App() {
   // fan-out loads (or with one project) crossPosts is empty and the chip falls back to
   // the viewed project's posts, so it never flickers to zero.
   const crossPosts = useMemo(() => mergedCampaigns.filter((c) => !c.internal).flatMap((c) => c.posts || []), [mergedCampaigns]);
-  const attention = useMemo(() => attentionSummary(crossPosts.length ? crossPosts : activePosts), [crossPosts, activePosts]);
-  const attentionTip = attention ? t(attention.kind === 'needs-you' ? 'header.needsYou.tip' : 'header.overdue.tip', { count: attention.count }) : '';
+  // Studio fix flow (package C): ONE count everywhere. The "Needs you" tray and the header
+  // badge read the same groups (lib/postIssue.js groupIssues) and system rows
+  // (lib/needsYou.js systemRows), computed once here: blocked + waiting-on-you posts across
+  // every project, plus the active project's system rows.
+  const trayPosts = crossPosts.length ? crossPosts : activePosts;
+  const trayGroups = useMemo(() => groupIssues(trayPosts, issueSetup), [trayPosts, issueSetup]);
+  // The planner's tray follows the platform + type filter (planner bulk round 2), so its counts
+  // match the rows under it; the header badge keeps the one unfiltered count.
+  const trayPostsInView = useMemo(
+    () => trayPosts.filter((p) => matchesFilters(p, platformFilter, effectiveTypeFilter, [])),
+    [trayPosts, platformFilter, effectiveTypeFilter],
+  );
+  const trayGroupsInView = useMemo(() => groupIssues(trayPostsInView, issueSetup), [trayPostsInView, issueSetup]);
+  // A cloud that needs a look is a system row too (lib/needsYou.js cloudRow), so it counts in
+  // the one number. Keyed on its values: the delivery state is a fresh object every render.
+  const cloudKey = `${delivery.cloud.count}|${delivery.cloud.health}|${delivery.cloud.reason}|${delivery.cloud.names.join(',')}`;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const trayCloud = useMemo(() => delivery.cloud, [cloudKey]);
+  const traySystem = useMemo(
+    () => systemRows(pendpostHealth, { posts: trayPosts, groups: trayGroups, setupFor: issueSetup, activeClientId, cloud: trayCloud }),
+    [pendpostHealth, trayPosts, trayGroups, issueSetup, activeClientId, trayCloud],
+  );
+  const attention = useMemo(
+    () => attentionSummary(trayPosts, { setup: issueSetup, system: traySystem.length }),
+    [trayPosts, issueSetup, traySystem],
+  );
+  const attentionTip = attention ? t(attention.kind === 'needs-you' ? 'tray.badge.tip' : 'header.overdue.tip', { count: attention.count }) : '';
   const nextPost = useMemo(() => {
     const now = Date.now();
     return activePosts
       .filter((p) => p.scheduledAt && Date.parse(p.scheduledAt) > now && p.derivedState !== 'posted' && p.derivedState !== 'parked')
       .sort((a, b) => Date.parse(a.scheduledAt) - Date.parse(b.scheduledAt))[0] || null;
   }, [activePosts]);
+  // The sidebar's next-post chip must never advertise a post that will not go out: when that
+  // post is Blocked or waits on the owner (the same judge as the tray and the row), the chip
+  // carries the needs-you alert.
+  const nextPostIssue = useMemo(() => (nextPost ? postIssue(nextPost, issueSetup(nextPost)) : null), [nextPost, issueSetup]);
 
   const selectedPost = useMemo(() => {
     if (!selectedKey) return null;
@@ -643,9 +686,13 @@ export default function App() {
   // Navigate to a page, optionally focusing a specific Setup lane (from an Activity
   // error's "Fix in Setup" or a PlatformBlockers "Set up X"). The platform is
   // resolved to its setup id (facebook/instagram -> meta) for the card to match.
-  const navigateTo = (p, platform) => {
+  // `opts.action` ('reconnect', from a post's fix button) rides along so Setup starts that
+  // lane's reconnect on arrival: setupFocus becomes { lane, action }, a fresh object per call.
+  const navigateTo = (p, platform, opts = null) => {
     closePost();
-    setSetupFocus(p === 'setup' && platform ? setupIdOf(platform) : null);
+    setSetupFocus(p === 'setup' && platform
+      ? (opts?.action ? { lane: setupIdOf(platform), action: opts.action } : setupIdOf(platform))
+      : null);
     // A second arg on a Settings navigation is a section token to scroll to (e.g. the
     // Radar page's settings link passes 'radar'), mirroring the Setup deep-link above.
     setSettingsFocus(p === 'settings' && platform ? platform : null);
@@ -756,6 +803,17 @@ export default function App() {
     setCampaignFilter('all');
     setPage('planner');
   };
+  // The header badge while something needs the owner: the planner List, filtered to exactly
+  // the posts it counts ('needs-you'), with the "Needs you" tray scrolled into view. A cause
+  // in another project opens the all-projects scope, like the overdue jump.
+  const showNeedsYou = () => {
+    if (!allClients && trayGroups.some((g) => g.clientId && g.clientId !== activeClientId)) setAllClients(true);
+    setStatusFilter(['needs-you']);
+    setView('list');
+    setCampaignFilter('all');
+    setPage('planner');
+    setTimeout(() => document.getElementById('planner-tray')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
+  };
   // The one fix a cloud issue row offers (header popover + Cloud page): 'reconnect' opens
   // Setup focused on that lane, 'open' opens the post. An issue can belong to a project the
   // owner is not viewing (the roll-up spans every always-on project), so re-scope first via
@@ -776,6 +834,37 @@ export default function App() {
       setSelectedKey({ campaign: issue.campaign, id: issue.postId });
       setTriageKeys(null);
     }
+  };
+
+  // A fix or a tray line can belong to a project the owner is not viewing (the tray and the
+  // badge span every project). Acting on it re-scopes first, through the same guarded switch
+  // and toast as a cloud issue, so Setup or the post opens for THAT project, never silently
+  // for the active one.
+  const switchToProject = async (clientId, clientName) => {
+    if (!clientId || clientId === activeClientId || allClients) return true;
+    if (!(await guardClientSwitch())) return false;
+    try {
+      await setActiveClient(clientId);
+      showToast({ text: t('clientSwitcher.switched', { name: clientName || clientId }) });
+    } catch { /* best-effort; act in whatever project ends up active */ }
+    return true;
+  };
+  const navigateForProject = async (p, platform, opts, clientId) => {
+    if (clientId && clientId !== activeClientId) {
+      if (allClients) {
+        try { await setActiveClient(clientId); } catch { /* best-effort */ }
+      } else if (!(await switchToProject(clientId))) return;
+    }
+    navigateTo(p, platform, opts);
+  };
+  const openFromTray = async (post, list) => {
+    if (!allClients && post?.clientId && post.clientId !== activeClientId) {
+      if (!(await switchToProject(post.clientId, post.clientName))) return;
+      setSelectedKey({ campaign: post.campaign, id: post.id });
+      setTriageKeys(list ? list.map((x) => ({ campaign: x.campaign, id: x.id })) : null);
+      return;
+    }
+    openPost(post, list);
   };
 
   // Drag-drop reschedule: same wall-clock time, new day. moveToDayTarget refuses
@@ -858,7 +947,7 @@ export default function App() {
             posting={posting}
             pendingCount={pendingCount}
             nextPost={nextPost}
-            attention={attention}
+            nextPostIssue={nextPostIssue}
             setupReady={pendpostHealth?.setup?.ready}
             setupIncomplete={setupAttentionCount(pendpostHealth?.setup)}
             activePage={page}
@@ -867,7 +956,6 @@ export default function App() {
             onNew={(seed) => { closeSidebar(); openComposer(seed); }}
             onNewThread={(seed) => { closeSidebar(); openThreadComposer(seed); }}
             onOpenPost={(post, list) => { closeSidebar(); openPost(post, list); }}
-            onShowOverdue={() => { closeSidebar(); showOverdue(); }}
             onCreateProject={() => { closeSidebar(); setClientsCreateIntent(true); navigateTo('clients'); }}
             onBeforeSwitchClient={guardClientSwitch}
             allClients={allClients}
@@ -949,7 +1037,7 @@ export default function App() {
                       campaigns={visibleCampaigns}
                       clientName={activeClient?.displayName || activeClient?.id || ''}
                       onCheckReadiness={() =>
-                        document.getElementById('planner-readiness')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+                        document.getElementById('planner-tray')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
                       }
                     />
                     <div className="flex h-8 shrink-0 items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={t('app.view.label')}>
@@ -1062,24 +1150,26 @@ export default function App() {
                 {/* The persistent icon cluster. Each 32px button carries a 44px TAP_TARGET box; gap-3
                     (12px) is the spacing at which two such boxes meet without overlapping. */}
                 <div className="flex shrink-0 items-center gap-3">
-                  {/* Overdue beacon: present ONLY while something is past due - a red
-                      count in the persistent icon row (the sidebar chip is out of
-                      view on small screens / collapsed sidebars). Click = the same
-                      overdue jump the sidebar chip performs. */}
+                  {/* Needs-you / overdue beacon: present ONLY while something needs the owner,
+                      a count in the persistent icon row (the sidebar is out of view on small
+                      screens / collapsed sidebars). It wears the ONE needs-you mark (format.js
+                      NEEDS_YOU_MARK: the halted rose stop + TriangleAlert), the same as the
+                      planner tray's count, in light and dark alike. */}
                   {attention ? (
                     <Tip label={attentionTip}>
                       <button
                         type="button"
-                        onClick={showOverdue}
+                        onClick={attention.kind === 'needs-you' ? showNeedsYou : showOverdue}
                         aria-label={attentionTip}
-                        className={`${TAP_TARGET} flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-red-500/10 px-2.5 text-red-600 ring-1 ring-red-500/40 transition hover:bg-red-500/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-red-400`}
+                        data-needs-you-mark=""
+                        className={`${TAP_TARGET} ${NEEDS_YOU_MARK} h-8 justify-center rounded-xl px-2.5 transition hover:bg-rose-400/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
                       >
                         <TriangleAlert size={14} aria-hidden="true" />
                         <span className="text-xs font-bold tabular-nums">{attention.count}</span>
                       </button>
                     </Tip>
                   ) : null}
-                  <ConnectionStatus running={accounts?.scheduler?.running} onNavigate={setPage} onShowAtRisk={showOverdue} onIssueAction={onCloudIssue} />
+                  <ConnectionStatus allClients={allClients} onNavigate={setPage} onShowAtRisk={showOverdue} onIssueAction={onCloudIssue} />
                   {/* Hidden on a phone: at 375px the icon row overran the header and clipped the
                       theme button. The language stays one tap away in Settings. */}
                   <Tip label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}>
@@ -1107,63 +1197,30 @@ export default function App() {
             </header>
             ) : null}
 
-            {/* Clickable platform/type/status filters (3g), shared across tabs. */}
+            {/* The shared filter bar (FilterBar.jsx): status tabs with live counts where a status
+                filter applies, then platform icons, Type, reset and the "?" legend. */}
             {showFilterBar ? (
-              <div className="glass-panel flex flex-wrap items-center gap-1.5 rounded-2xl px-4 py-2" role="group" aria-labelledby="filter-bar-label">
-                <span id="filter-bar-label" className={`mr-1 ${EYEBROW}`}>{t('app.filter.label')}</span>
-                {chipPlatforms.map((p) => {
-                  const meta = PLATFORM_META[p];
-                  if (!meta) return null;
-                  return (
-                    <FilterChip
-                      key={p}
-                      active={platformFilter.includes(p)}
-                      onClick={() => toggleFilter(setPlatformFilter, p)}
-                      icon={meta.Icon}
-                      color={meta.color}
-                      label={meta.label}
-                    />
-                  );
-                })}
-                {/* US-FR-06: platform stays inline chips (few, visual); the
-                    longer type + status lists collapse into multi-select
-                    dropdowns so the filter bar stays compact. */}
-                {showTypeChips ? (
+              <FilterBar
+                platforms={chipPlatforms}
+                platformFilter={platformFilter}
+                onTogglePlatform={(p) => toggleFilter(setPlatformFilter, p)}
+                types={presentTypes}
+                typeFilter={typeFilter}
+                onToggleType={(k) => toggleFilter(setTypeFilter, k)}
+                showTypes={showTypeChips}
+                showStatus={showStatusChips}
+                status={statusFilter[0] || null}
+                onStatus={(key) => setStatusFilter(key ? [key] : [])}
+                counts={statusTabCounts}
+                hasActive={Boolean(platformFilter.length || typeFilter.length || statusFilter.length || failuresOnly || actionGroups.length)}
+                onReset={clearFilters}
+                extra={isActivity ? (
                   <>
-                    <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
-                    <MultiSelectDropdown
-                      label={t('app.filter.type')}
-                      options={presentTypes.map((ty) => ({ key: ty, label: t(`type.${ty}`) }))}
-                      selected={typeFilter}
-                      onToggle={(k) => toggleFilter(setTypeFilter, k)}
-                    />
-                  </>
-                ) : null}
-                {showStatusChips ? (
-                  <>
-                    <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
-                    <MultiSelectDropdown
-                      label={t('app.filter.status')}
-                      options={STATUS_FILTERS.map((s) => ({ key: s.key, label: t(`status.${s.key}`) }))}
-                      selected={statusFilter}
-                      onToggle={(k) => toggleFilter(setStatusFilter, k)}
-                    />
-                  </>
-                ) : null}
-                {/* Activity-page-only filters (C7): the failures-only outcome chip
-                    (entry.ok) as a single boolean toggle, then the curated action
-                    groups (entry.action) collapsed into ONE multi-select dropdown -
-                    the SAME idiom Type/Status use above. Eight always-on chips were
-                    the filter bar's tallest slab of config stacked over the feed AND
-                    a second visual answer to a problem the dropdown already solves;
-                    one control, one design language. */}
-                {isActivity ? (
-                  <>
-                    <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
-                    {/* US-ACT-20: the icon stays NEUTRAL while the filter is off -
-                        a red alert glyph on an unapplied control reads as applied
-                        (and as a failure signal) over an all-success list. Red is
-                        spent on actual failure rows, not on this toggle. */}
+                    <span className="h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
+                    {/* Activity-page-only filters (C7): the failures-only outcome chip (entry.ok)
+                        and the curated action groups (entry.action) in ONE multi-select dropdown,
+                        the same idiom Type uses. US-ACT-20: the icon stays NEUTRAL while the
+                        filter is off; red is spent on actual failure rows. */}
                     <FilterChip
                       active={failuresOnly}
                       onClick={() => setFailuresOnly((v) => !v)}
@@ -1171,7 +1228,6 @@ export default function App() {
                       color="text-zinc-500 dark:text-zinc-400"
                       label={t('activity.filter.failures')}
                     />
-                    <span className="mx-1 h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
                     <MultiSelectDropdown
                       label={t('app.filter.action')}
                       options={ACTION_GROUPS.map((g) => ({ key: g.key, label: t(g.label) }))}
@@ -1180,27 +1236,7 @@ export default function App() {
                     />
                   </>
                 ) : null}
-                {platformFilter.length || typeFilter.length || statusFilter.length || failuresOnly || actionGroups.length ? (
-                  <button type="button" onClick={clearFilters} aria-label={t('app.filter.reset')} className="ml-1 rounded-full px-2 py-1 text-[11px] font-bold text-zinc-500 transition hover:text-zinc-700 focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-200">
-                    {t('app.filter.resetShort')}
-                  </button>
-                ) : null}
-                {/* US-FR-05: the status-colour legend, surfaced from a quiet "?"
-                    popover (never an always-on bar) so the green/amber/red tones
-                    are self-explanatory. */}
-                <div className="ml-auto">
-                  <Popover>
-                    <PopoverTrigger asChild>
-                      <button type="button" aria-label={t('statusLegend.title')} className="rounded-full p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200">
-                        <HelpCircle size={14} aria-hidden="true" />
-                      </button>
-                    </PopoverTrigger>
-                    <PopoverContent align="end" className="w-56 p-3">
-                      <StatusLegend />
-                    </PopoverContent>
-                  </Popover>
-                </div>
-              </div>
+              />
             ) : null}
 
             {!allClients && plansData?.manifestError ? (
@@ -1237,18 +1273,30 @@ export default function App() {
               </div>
             ) : null}
 
-            {/* Quiet planner readiness panel (US-ONB-05): only when campaigns
-                exist and pendpost is NOT ready - the happy path stays clean. The
-                zero-campaign first-run panel below carries its own checklist. */}
-            {page === 'planner' && campaigns.length > 0 && pendpostHealth && !pendpostHealth.ready ? (
-              <div id="planner-readiness" className="glass-panel rounded-2xl px-4 py-3">
-                <ReadinessChecklist onNavigate={setPage} onOpenPost={openPost} collapsible />
-              </div>
+            {/* The "Needs you" tray (studio fix flow, package C; it replaced the Readiness
+                panel here): one line per thing the owner must do, each with its fix, and
+                nothing when there is nothing to do. The zero-campaign first-run panel below
+                keeps its own readiness checklist. */}
+            {page === 'planner' && campaigns.length > 0 ? (
+              <NeedsYouTray
+                groups={trayGroupsInView}
+                system={traySystem}
+                posts={trayPostsInView}
+                setupReady={pendpostHealth?.setup?.ready}
+                allClients={allClients}
+                activeClientId={activeClientId}
+                onNavigate={navigateForProject}
+                onOpenPost={openFromTray}
+                onEdit={editComposer}
+                onReview={() => navigateTo('freigaben')}
+              />
             ) : null}
 
-            {/* One-time native-vs-live explainer (B-app): shown once per machine,
-                then remembered. Teaches the model the chip only hints at. */}
-            {page === 'planner' ? <DeliveryExplainer onNavigate={setPage} suppressed={activeOnCloud} /> : null}
+            {/* One-time native-vs-live explainer (B-app): shown once per machine, then
+                remembered. It lives on the 24/7 cloud page, the page it explains: in the
+                planner it sat between the Needs-you tray and the posts and pushed every post
+                below the first screen on a phone. */}
+            {page === 'cloud' ? <DeliveryExplainer suppressed={deliveryOnCloud} /> : null}
 
             {/* The content canvas GROWS with its content; <main> above is the one vertical
                 scroller, so the header and filter bar scroll away with the page (owner rule:
@@ -1283,7 +1331,7 @@ export default function App() {
               ) : page === 'published' ? (
                 <Published campaigns={visibleCampaigns} onOpen={openPost} platformFilter={platformFilter} isLoading={isLoading} evergreen={insightsData?.evergreen || []} onRecycle={recyclePost} />
               ) : page === 'freigaben' ? (
-                <Freigaben campaigns={visibleCampaigns} onOpen={openPost} onEdit={editComposer} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={navigateTo} onModeChange={setFreigabenMode} />
+                <Freigaben campaigns={visibleCampaigns} onOpen={openPost} onEdit={editComposer} platformFilter={platformFilter} typeFilter={effectiveTypeFilter} statusFilter={statusFilter} isLoading={isLoading} clientName={activeClient?.displayName} onNavigate={navigateForProject} onModeChange={setFreigabenMode} allProjects={allClients} />
               ) : page === 'insights' ? (
                 <Insights active={page === 'insights'} platformFilter={platformFilter} campaignFilter={campaignFilter} allClients={insightsAll} allItems={insightsAllItems} allFailed={insightsAllFailed} allLoading={insightsAllLoading} onOpenPost={openPost} onNavigate={navigateTo} />
               ) : page === 'assets' ? (
@@ -1348,7 +1396,7 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                <ListView posts={posts} onSelect={openPost} onEdit={editComposer} loading={isLoading} showAllDays={statusFilter.length > 0} />
+                <ListView posts={posts} onSelect={openPost} onEdit={editComposer} onNavigate={navigateForProject} loading={isLoading} showAllDays={statusFilter.length > 0} setupFor={issueSetup} threadPool={scopedPosts} />
               )}
             </div>
           </main>

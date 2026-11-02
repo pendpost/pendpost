@@ -43,6 +43,9 @@ web/dist/
 .meta-block.json
 meta-lane.json
 covers/
+# Post trash (lib/writes.mjs deletePost): deleted posts kept 30 days beside their plan
+# (data/plans/<campaign>/post-plan.trash.json). Runtime state, never committed.
+*.trash.json
 # Client review link (spec 48): the per-client reviewer store holds token HASHES
 # + tails. Path-anywhere so it is ignored inside EVERY client subtree, including
 # the tracked data/clients/default/ (the negation above would otherwise expose it).

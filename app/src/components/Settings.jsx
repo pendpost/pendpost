@@ -10,6 +10,7 @@ import { Tip } from './ui/Tooltip.jsx';
 import { Select } from './ui/Select.jsx';
 import RadarSearches, { RadarGeo, RadarBrand } from './RadarSearches.jsx';
 import AutonomyLedger from './AutonomyLedger.jsx';
+import { Switch } from './ui/Switch.jsx';
 import InfoTip from './ui/InfoTip.jsx';
 import { humanizeAction } from '../lib/failureCopy.js';
 
@@ -121,13 +122,43 @@ export default function Settings({ focus = null, onNavigate }) {
   const [dialogSkips, setDialogSkips] = useState(() => dialogSkipCount());
   // Publishing auto-approve, the R6a gate knobs, and Radar auto-reply all moved into the
   // AutonomyLedger card (ux-audit R7): one surface for "what may pendpost do without me".
+  // Studio fix flow (2026-11-01, q3 b): may the agent fix CONTENT issues on its own?
+  // posting.radar.agent.autoFix, owner-only on the server, default off. Optimistic like the
+  // language select; `autoFixBusy` holds the switch while the write is in flight.
+  const [autoFix, setAutoFix] = useState(false);
+  const [autoFixBusy, setAutoFixBusy] = useState(false);
 
   useEffect(() => {
     if (!data) return;
     setLanguage(data.posting.locale || 'en');
     setTimezone(data.posting.defaultTimezone || '');
     setMediaBase(data.posting.publicMediaBaseUrl || '');
+    setAutoFix(data.posting.radar?.agent?.autoFix === true);
   }, [data?.rev]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Saved on flip (a nested partial write: the server merges it into the agent subtree, so the
+  // provider and the other agent keys stay as they are). Revert on a refusal.
+  const onAutoFix = async (next) => {
+    if (!data || autoFixBusy) return;
+    const prior = autoFix;
+    setAutoFix(next);
+    setAutoFixBusy(true);
+    setError(null);
+    setStaleWrite(false);
+    try {
+      await saveConfig(data.rev, { posting: { radar: { agent: { autoFix: next } } } });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+      queryClient.invalidateQueries({ queryKey: ['agentFix'] });
+    } catch (err) {
+      setAutoFix(prior);
+      if (err.code === 'stale_write') {
+        setStaleWrite(true);
+        queryClient.invalidateQueries({ queryKey: ['config'] });
+      } else setError(saveAlert(err, t));
+    } finally {
+      setAutoFixBusy(false);
+    }
+  };
 
   // Optimistic language switch: flip the select immediately, then persist. On a write
   // rejection revert it so the select never shows a value the server refused.
@@ -218,6 +249,15 @@ export default function Settings({ focus = null, onNavigate }) {
           <section className="space-y-4" aria-labelledby="settings-grp-autonomy">
             <GroupHeading id="settings-grp-autonomy" title={t('settings.group.autonomy.title')} tip={t('settings.group.autonomy.tip')} />
             <AutonomyLedger focus={focus === 'engage' ? 'engage' : null} onNavigate={onNavigate} />
+            {/* The agent fixes content issues on its own (q3 b): one switch, one line. Every fix
+                still comes back to the owner for approval, which is why it sits with autonomy. */}
+            <div className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
+              <div className="min-w-0">
+                <p id="set-agent-autofix" className="text-sm font-bold">{t('agentFix.setting.label')}</p>
+                <p id="set-agent-autofix-hint" className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('agentFix.setting.hint')}</p>
+              </div>
+              <Switch checked={autoFix} onChange={onAutoFix} busy={autoFixBusy} disabled={autoFixBusy} ariaLabel={t('agentFix.setting.label')} />
+            </div>
           </section>
 
           {/* ── GROUP: Preferences (the regular, non-Radar settings) ── */}

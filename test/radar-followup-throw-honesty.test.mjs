@@ -32,7 +32,7 @@ try {
   } } } });
 
   await radarIngest({ queryId: 'q1', actor: 'agent:claude', signals: [
-    { source: 'hackernews', externalId: 'hn1', url: 'https://news.ycombinator.com/item?id=1', author: 'buyer_jane', text: 'every scheduler is overpriced', score: 70, ts: '2026-08-01T10:00:00.000Z' },
+    { source: 'hackernews', externalId: 'hn1', url: 'https://news.ycombinator.com/item?id=1', author: 'buyer_jane', text: 'every scheduler is overpriced', score: 70, ts: new Date(Date.now() - 2 * 86_400_000).toISOString() }, // inside the default 7-day lookback
   ] });
   await markCopyPosted({ source: 'hackernews', externalId: 'hn1', actor: 'owner', postedUrl: 'https://news.ycombinator.com/item?id=1' });
   const entry = () => (loadState().radar.copyPosted || []).find((e) => e.externalId === 'hn1');

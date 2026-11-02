@@ -55,12 +55,16 @@ function runEngine(script, args, extraEnv = {}) {
 }
 
 // A normalized Comment carries the canonical fields + a kind discriminator.
+const { COMMENT_KINDS } = await import('../lib/comments.mjs');
 function isComment(c) {
   return c && typeof c === 'object'
     && typeof c.commentId === 'string' && c.commentId
     && typeof c.author === 'string'
     && typeof c.text === 'string'
-    && (c.kind === 'comment' || c.kind === 'review');
+    // The kind vocabulary widened with the reply inbox (planner-bulk contract 2026-11-01): a
+    // mock thread now carries a `reply` (parentId set) beside its comments.
+    && COMMENT_KINDS.includes(c.kind)
+    && (c.kind !== 'reply' || (typeof c.parentId === 'string' && c.parentId));
 }
 
 try {

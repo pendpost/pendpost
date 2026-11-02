@@ -161,7 +161,7 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
               <CheckCircle2 size={15} className={`mt-0.5 shrink-0 ${STATUS_INK.ok}`} aria-hidden="true" />
               <div className="min-w-0">
                 <p className="text-xs font-bold">{t('readiness.ready')}</p>
-                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('readiness.readySub')}</p>
+                <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('readiness.readySub')}</p>
               </div>
             </div>
           ) : (
@@ -173,12 +173,12 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
                     onClick={() => onNavigate('setup')}
                     className={`group flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-1 hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
                   >
-                    <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                    <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-600 dark:text-zinc-400" aria-hidden="true" />
                     <span className="min-w-0 flex-1">
                       <span className="block text-xs">{aggregate.text}</span>
-                      {aggregate.lanes ? <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{aggregate.lanes}</span> : null}
+                      {aggregate.lanes ? <span className="block text-[11px] text-zinc-600 dark:text-zinc-400">{aggregate.lanes}</span> : null}
                     </span>
-                    <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
+                    <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-600 transition group-hover:translate-x-0.5" aria-hidden="true" />
                   </button>
                 </li>
               ) : null}
@@ -192,18 +192,18 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
                       onClick={() => onOpenPost(item.post)}
                       className={`group flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-1 hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
                     >
-                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-600 dark:text-zinc-400" aria-hidden="true" />
                       <span className="min-w-0 flex-1">
                         <span className="block text-xs">{item.text}</span>
-                        <span className="block text-[11px] text-zinc-500 dark:text-zinc-400">{item.post.campaign}</span>
+                        <span className="block text-[11px] text-zinc-600 dark:text-zinc-400">{item.post.campaign}</span>
                       </span>
-                      <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
+                      <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-600 transition group-hover:translate-x-0.5" aria-hidden="true" />
                     </button>
                   ) : item.lane ? (
                     // Halted lane: the recovery action lives IN the error row (resume
                     // re-arms publishing and releases the holds the halt parked).
                     <div className={`flex items-start gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-600 dark:text-zinc-400" aria-hidden="true" />
                       <span className="min-w-0 flex-1 text-xs">{item.text}</span>
                       <button
                         type="button"
@@ -223,13 +223,13 @@ export default function ReadinessChecklist({ hideWhenReady = false, collapsible 
                       onClick={() => onNavigate('setup')}
                       className={`group flex w-full items-start gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-1 hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
                     >
-                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-600 dark:text-zinc-400" aria-hidden="true" />
                       <span className="min-w-0 flex-1 text-xs">{item.text}</span>
-                      <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
+                      <ChevronRight size={14} className="mt-0.5 shrink-0 text-zinc-600 transition group-hover:translate-x-0.5" aria-hidden="true" />
                     </button>
                   ) : (
                     <div className={`flex items-start gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                      <AlertCircle size={15} className="mt-0.5 shrink-0 text-zinc-600 dark:text-zinc-400" aria-hidden="true" />
                       <span className="min-w-0 text-xs">{item.text}</span>
                     </div>
                   )}

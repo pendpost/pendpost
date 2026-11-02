@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { CheckCircle2, AlertTriangle, Loader2, X } from 'lucide-react';
 import { useT } from '../lib/i18n.js';
 import { TAP_TARGET } from './ui/recipes.js';
@@ -16,6 +16,8 @@ import InfoTip from './ui/InfoTip.jsx';
 // able to fire a toast that outlives its own unmount, with no provider
 // plumbing through every surface. showToast is a no-op until <AppToast /> is
 // mounted (App shell) - callers never need to care.
+// `duration` (ms) overrides how long a quiet toast stays: the planner's bulk delete keeps its
+// Undo up for 10 s (planner bulk, package P).
 // `action` ({ label, onClick }) is the ONE undo-shaped affordance a transient notice may
 // carry - the resumable Pause (spec 50 row 12) needs its Resume where the pause happened,
 // not only back in the ledger. Optional, so every existing caller stays a plain notice.
@@ -27,11 +29,11 @@ import InfoTip from './ui/InfoTip.jsx';
 // description is never read out as part of the alert. A toast carrying a raw line does
 // not leave on its own: it stays until closed, so the "?" stays reachable.
 let emit = null;
-export function showToast({ kind = 'success', text, raw = null, action = null }) {
+export function showToast({ kind = 'success', text, raw = null, action = null, duration = null }) {
   const shaped = text && typeof text === 'object' && 'text' in text;
   const sentence = shaped ? text.text : text;
   const detail = (shaped ? text.raw : raw) || null;
-  if (emit) emit({ kind, text: sentence, raw: detail, action, key: Date.now() });
+  if (emit) emit({ kind, text: sentence, raw: detail, action, duration, key: Date.now() });
 }
 
 export default function AppToast() {
@@ -48,14 +50,24 @@ export default function AppToast() {
   // dead air. It carries a spinner and never auto-dismisses.
   useEffect(() => {
     if (!toast || toast.kind === 'progress' || toast.raw) return undefined;
-    const id = setTimeout(() => setToast(null), toast.kind === 'error' ? 8000 : 4000);
+    const id = setTimeout(() => setToast(null), toast.duration || (toast.kind === 'error' ? 8000 : 4000));
     return () => clearTimeout(id);
+  }, [toast]);
+  // While a toast shows, its height rides --pp-toast-h on <html>, so a list can keep its last
+  // row's ⋯ clear of it (planner bulk round 2). A floating phone bar lifts the toast above it
+  // through --pp-toast-lift.
+  const boxRef = useRef(null);
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    if (!toast || !boxRef.current) { root.style.removeProperty('--pp-toast-h'); return undefined; }
+    root.style.setProperty('--pp-toast-h', `${boxRef.current.offsetHeight + 24}px`);
+    return () => root.style.removeProperty('--pp-toast-h');
   }, [toast]);
   if (!toast) return null;
   const isError = toast.kind === 'error';
   const isProgress = toast.kind === 'progress';
   return (
-    <div className="glass-panel fixed bottom-4 right-4 z-50 flex max-w-sm items-center gap-2.5 rounded-2xl px-3.5 py-2.5 shadow-lg">
+    <div ref={boxRef} data-app-toast="" style={{ bottom: 'calc(1rem + var(--pp-toast-lift, 0px))' }} className="glass-panel fixed right-4 z-50 flex max-w-sm items-center gap-2.5 rounded-2xl px-3.5 py-2.5 shadow-lg">
       <div
         role={isError ? 'alert' : 'status'}
         aria-live={isError ? 'assertive' : 'polite'}

@@ -55,6 +55,14 @@ describe('ClientSwitcher', () => {
     expect(screen.getByText('active project')).toBeInTheDocument();
   });
 
+  it('the subtitle sits on the zinc-100 trigger in zinc-600 (zinc-500 measures 4.40:1, below AA)', () => {
+    renderSwitcher();
+    const sub = screen.getByText('active project');
+    expect(sub.className).toMatch(/(^|\s)text-zinc-600(\s|$)/);
+    expect(sub.className).not.toMatch(/(^|\s)text-zinc-500(\s|$)/);
+    expect(sub.className).toMatch(/dark:text-zinc-400/);
+  });
+
   it('lists the active clients in the popover and hides archived behind a toggle', async () => {
     const user = userEvent.setup();
     renderSwitcher();

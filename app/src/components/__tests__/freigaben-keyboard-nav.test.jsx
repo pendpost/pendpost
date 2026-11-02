@@ -151,15 +151,16 @@ describe('Freigaben keyboard-first review flow', () => {
 });
 
 describe('Freigaben compact density', () => {
-  it('compact drops the caption body and the "scheduled for" prefix but keeps a/r', async () => {
+  it('compact clamps the caption to two lines under the title, with no "scheduled for" prefix, and keeps a/r', async () => {
     const user = userEvent.setup();
     renderFreigaben([A]);
-    // Comfortable (default) shows the caption body and the "Scheduled for:" prefix.
+    // Comfortable (default) shows the caption body; the meta line carries the bare date.
     expect(screen.getByText(/full caption body/i)).toBeInTheDocument();
-    expect(screen.getByText(/scheduled for/i)).toBeInTheDocument();
-    // Switch to compact: both are gone (the stamp is bare DD.MM.YY · HH:MM).
+    expect(screen.queryByText(/scheduled for/i)).not.toBeInTheDocument();
+    // Compact (the list): the caption minus the title line, clamped to two lines.
     await user.click(screen.getByRole('button', { name: t('approvals.density.compact') }));
-    expect(screen.queryByText(/full caption body/i)).not.toBeInTheDocument();
+    const caption = screen.getByText(/full caption body/i);
+    expect(caption.closest('[data-row-caption]').className).toMatch(/line-clamp-2/);
     expect(screen.queryByText(/scheduled for/i)).not.toBeInTheDocument();
     // Keyboard approve still works on the compact row.
     cardFor('Alpha promo').focus();

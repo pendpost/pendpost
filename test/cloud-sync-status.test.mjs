@@ -29,6 +29,7 @@ const { createCampaign, createPost, approvePost } = await import('../lib/writes.
 const { activeClientId } = await import('../lib/multi-client.mjs');
 const { setBrandAlwaysOn } = await import('../lib/cloud-config.mjs');
 const { loadState, saveState } = await import('../lib/state.mjs');
+const { loadPlanStore, clearPlanStoreCache } = await import('../lib/plans.mjs');
 const cloud = await import('../lib/cloud-client.mjs');
 
 const CAMP = 'status-2026-07';
@@ -116,12 +117,40 @@ try {
     const i = r2.issues[0];
     ok(r2.issues.length === 1 && i.kind === 'post' && i.postId === 'p1' && i.lane === 'meta' && i.message === 'token expired' && i.terminal === false && i.code === null,
       `a fire failure surfaces as ONE kind:'post' issue carrying the real message (${JSON.stringify(r2.issues)})`);
+    // The row carries the SAME failure inputs the post's own banner reads (lib/plans.mjs
+    // lastFailureFor: recovery + halted), so the Studio judges both with one failedDisplayKey
+    // and a cloud row can never call "retrying" what the banner calls "waiting on you".
+    {
+      const st = loadState();
+      const rowAndBanner = (failure) => {
+        st.cloudFailures[`${CAMP}:p1`] = { lane: 'meta', jobId: 'j1', at: new Date().toISOString(), retries: 1, ...failure };
+        saveState();
+        clearPlanStoreCache();
+        const row = cloud.cloudSyncStatus().issues[0];
+        const banner = loadPlanStore().campaigns.find((c) => c.id === CAMP).posts.find((p) => p.id === 'p1').lastFailure;
+        return { row: { recovery: row.recovery, halted: row.halted, terminal: row.terminal, kind: row.kind }, banner: { recovery: banner.recovery, halted: banner.halted } };
+      };
+      const transient = rowAndBanner({ message: 'meta: POST /feed: HTTP 500 - internal error' });
+      ok(transient.row.kind === 'post' && transient.row.terminal === false && transient.row.recovery === null && transient.row.halted === false
+        && transient.banner.recovery === null && transient.banner.halted === false,
+        `a transient 500 the cloud still retries: no recovery, not halted, on the row and the banner alike (${JSON.stringify(transient)})`);
+      const manual = rowAndBanner({ message: 'x: POST /2/tweets: HTTP 403 - You can only reply to or quote posts where you are mentioned' });
+      ok(manual.row.terminal === false && manual.row.recovery === 'manual' && manual.banner.recovery === 'manual',
+        `a refusal no retry can land (X reply rule) carries the banner's recovery although the cloud has not stamped it terminal (${JSON.stringify(manual)})`);
+      st.meta = { ...(st.meta || {}), recordedAt: new Date().toISOString(), blockedUntil: new Date(Date.now() + 3600_000).toISOString(), reason: 'action block' };
+      const halted = rowAndBanner({ message: 'meta: POST /feed: HTTP 500 - internal error' });
+      ok(halted.row.halted === true && halted.banner.halted === true, `a circuit-broken lane reads halted on the row as on the banner (${JSON.stringify(halted)})`);
+      delete st.meta;
+      st.cloudFailures[`${CAMP}:p1`] = { lane: 'meta', jobId: 'j1', message: 'token expired', at: new Date().toISOString() };
+      saveState();
+      clearPlanStoreCache();
+    }
     const s = loadState();
     s.cloudFailures[`${CAMP}:p1`] = { ...s.cloudFailures[`${CAMP}:p1`], refusedCode: 'account_unresolved', message: 'Nothing was published: reconnect.', terminal: true };
     saveState();
     const rc = cloud.cloudSyncStatus();
     const c = rc.issues[0];
-    ok(c && c.kind === 'credential' && c.code === 'account_unresolved' && c.terminal === true, `a credential refusal surfaces as kind:'credential' with its code + terminal flag (${JSON.stringify(c)})`);
+    ok(c && c.kind === 'credential' && c.code === 'account_unresolved' && c.terminal === true && c.recovery === 'reconnect', `a credential refusal surfaces as kind:'credential' with its code + terminal flag (${JSON.stringify(c)})`);
     s.cloudFailures[`${CAMP}:p1`] = { lane: 'meta', jobId: 'j1', message: 'token expired', at: new Date().toISOString() };
     saveState();
   }
@@ -182,7 +211,7 @@ try {
   freshContact();
 
   // --- amber: cloud reachable but its publisher worker is wedged (silent-drop class) ----
-  { const s = loadState(); s.cloudContact = { okAt: new Date().toISOString(), workerStale: true }; saveState(); }
+  { const s = loadState(); s.cloudContact = { okAt: new Date().toISOString(), workerStale: true, workerCheckedAt: new Date().toISOString() }; saveState(); }
   const r6 = cloud.cloudSyncStatus();
   ok(r6.state === 'amber' && r6.reason === 'worker_stale', 'reachable but worker wedged -> amber (worker_stale)');
   ok(r6.issues.some((x) => x.kind === 'worker_stale'), 'a wedged worker surfaces as a kind:worker_stale issue');

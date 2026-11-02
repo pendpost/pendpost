@@ -188,7 +188,9 @@ describe('cross-client card chip + clientId-threaded writes (issue 6)', () => {
   it('threads post.clientId into rejectPost when the card carries one', async () => {
     const user = userEvent.setup();
     renderFreigaben([crossClientPost]);
-    await user.click(screen.getByRole('button', { name: /^reject$/i }));
+    // Reject leads the row menu (one action on the row itself).
+    await user.click(screen.getByRole('button', { name: /^more actions$/i }));
+    await user.click(screen.getByRole('menuitem', { name: /^reject$/i }));
     const dialog = await screen.findByRole('dialog');
     await user.type(within(dialog).getByRole('textbox'), 'needs work');
     await user.click(within(dialog).getByRole('button', { name: /confirm/i }));

@@ -90,7 +90,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - **Portal:** https://developers.facebook.com/apps
 - **App to create:** a Business app
 - **Products to add:** Instagram Graph API, Facebook Login for Business
-- **Scopes to request:** `instagram_basic instagram_content_publish pages_show_list pages_read_engagement pages_manage_posts business_management`
+- **Scopes to request:** `instagram_basic instagram_content_publish instagram_manage_comments pages_show_list pages_read_engagement pages_manage_posts business_management`
 
 **Steps**
 
@@ -108,6 +108,7 @@ same data arrives live (with per-lane status) via `pendpost_health`'s
 - _The API reports no Instagram account is available for the Page._ The Facebook Page is not linked to an Instagram professional account. **Fix:** Link the Page to an Instagram Business or Creator account in Page settings, then re-check the lane.
 - _Facebook photo or multi-photo posts fail with a permissions error while reels and Instagram publish._ The token lacks pages_manage_posts, which /{page-id}/photos and /{page-id}/feed require. **Fix:** Re-generate the System User token with pages_manage_posts granted (the Page assigned with full control), then re-run the setup CLI.
 - _Calls 404 or post to the wrong place._ The configured Page ID belongs to a different Page than the one the token controls. **Fix:** Confirm the Page ID (META_PAGE_ID) matches the Page the System User was granted, and the IG User ID belongs to that Page.
+- _Instagram comments show the author as "unknown", or replies to Instagram comments fail._ The token lacks instagram_manage_comments. Since August 2024 Meta only returns who wrote an Instagram comment, and only accepts replies, with that permission. **Fix:** Re-generate the System User token with instagram_manage_comments granted, then re-run the setup CLI.
 
 ## LinkedIn
 

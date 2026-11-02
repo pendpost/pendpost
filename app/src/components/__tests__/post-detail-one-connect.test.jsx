@@ -69,38 +69,38 @@ const connectControls = () => [...screen.queryAllByRole('button'), ...screen.que
 beforeEach(() => { validate = undefined; });
 
 describe('a blocked post has ONE "{platform} verbinden" control (D8)', () => {
-  it('no setup link on the card: the row words are the one control, no wrench', async () => {
+  // Studio fix flow: the IssueCard at the top of the dialog carries the blocked lane's one
+  // connect. The delivery row then says only "Blockiert" and the Before-publishing card drops
+  // its setup link for that lane, so the dialog never offers the same job twice. Telegram is a
+  // key lane: its connect opens the connect form right here, no trip to Setup.
+  it('no setup link on the card: the IssueCard fix is the one control, no wrench', async () => {
     const user = userEvent.setup();
     const onNavigate = vi.fn();
     wrap(<PostDetail post={tgPost} onClose={() => {}} onEdit={() => {}} onNavigate={onNavigate} />);
     const controls = connectControls();
     expect(controls).toHaveLength(1);
-    expect(controls[0]).toHaveTextContent('Blockiert: Telegram verbinden');
-    // The words appear once on the page, not as text plus a control.
-    expect(screen.getAllByText(/Telegram verbinden/)).toHaveLength(1);
-    // The wrench (its label was "Telegram verbinden, damit pendpost automatisch posten kann") is gone.
+    expect(controls[0]).toHaveAccessibleName('Telegram verbinden');
+    expect(controls[0]).toHaveTextContent(/^Verbinden$/);
+    expect(screen.queryByText('Blockiert: Telegram verbinden')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /damit pendpost automatisch posten kann/ })).not.toBeInTheDocument();
     await user.click(controls[0]);
-    expect(onNavigate).toHaveBeenCalledWith('setup', 'telegram');
+    // In place: the connect form opens as a dialog, Setup is not visited.
+    expect(onNavigate).not.toHaveBeenCalled();
+    expect(screen.getByRole('dialog', { name: 'Telegram verbinden' })).toBeInTheDocument();
   });
 
-  it('the card offers its setup link: the row says only "Blockiert", the link is the one control', async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
+  it('the card would offer its setup link: the IssueCard keeps the one control, the card drops it', () => {
     validate = { ok: true, platforms: { telegram: { ready: false, needsSetup: true, problems: ['telegram: not connected'], warnings: [] } } };
-    wrap(<PostDetail post={tgPost} onClose={() => {}} onEdit={() => {}} onNavigate={onNavigate} />);
+    wrap(<PostDetail post={tgPost} onClose={() => {}} onEdit={() => {}} onNavigate={vi.fn()} />);
     const controls = connectControls();
     expect(controls).toHaveLength(1);
-    expect(controls[0]).toHaveTextContent(/^Telegram verbinden$/);
-    expect(screen.getAllByText(/Telegram verbinden/)).toHaveLength(1);
+    expect(controls[0]).toHaveAccessibleName('Telegram verbinden');
     expect(screen.queryByText('Blockiert: Telegram verbinden')).not.toBeInTheDocument();
-    await user.click(controls[0]);
-    expect(onNavigate).toHaveBeenCalledWith('setup', 'telegram');
   });
 
-  it('with nowhere to navigate, the row keeps its plain sentence and offers no control', () => {
+  it('with nowhere to navigate, the key lane still connects in place', () => {
     wrap(<PostDetail post={tgPost} onClose={() => {}} onEdit={() => {}} />);
-    expect(connectControls()).toHaveLength(0);
-    expect(screen.getByText('Blockiert: Telegram verbinden')).toBeInTheDocument();
+    expect(connectControls()).toHaveLength(1);
+    expect(screen.getByText('Telegram nicht verbunden')).toBeInTheDocument();
   });
 });

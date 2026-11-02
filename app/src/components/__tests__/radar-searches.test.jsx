@@ -947,3 +947,41 @@ describe('Radar settings save failures speak a plain sentence', () => {
     expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
   });
 });
+
+// Radar 2.0 step 3: one on/off row per optional source, hidden while its credential is missing,
+// with one cost line; feed/github write sources[id].scan, X writes the owner-only x.search.
+describe('RadarSearches optional sources', () => {
+  const opts = (xReady = true) => ([
+    { id: 'x', needs: ['X_ACCESS_TOKEN'], costNote: 'paid_per_read', ready: xReady, on: false, monthlyReadCap: 3000 },
+    { id: 'feed', needs: 'none', costNote: 'free', ready: true, on: false },
+    { id: 'github', needs: 'none', costNote: 'free_rate_limited', ready: true, on: false },
+  ]);
+  it('shows a switch per ready source with its cost line, and hides one whose credential is missing', () => {
+    configData = radarOn([]);
+    feedData = { items: [], capabilities: {}, sources: {}, optionalSources: opts(false) };
+    renderSearches();
+    expect(screen.getByRole('switch', { name: /feeds \(rss, atom, json\)/i })).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: /github issues/i })).toBeInTheDocument();
+    expect(screen.queryByRole('switch', { name: /search x directly/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Free. Slower without a GitHub token.')).toBeInTheDocument();
+  });
+  it('the X switch shows the paid line with the cap and writes x.search', async () => {
+    configData = radarOn([]);
+    feedData = { items: [], capabilities: {}, sources: {}, optionalSources: opts(true) };
+    const user = userEvent.setup();
+    renderSearches();
+    expect(screen.getByText(/at most 3000 posts a month/)).toBeInTheDocument();
+    await user.click(screen.getByRole('switch', { name: /search x directly/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled());
+    expect(saveConfigMock.mock.calls.at(-1)[1].posting.radar.x).toEqual({ search: true });
+  });
+  it('the GitHub switch writes sources.github.scan', async () => {
+    configData = radarOn([]);
+    feedData = { items: [], capabilities: {}, sources: {}, optionalSources: opts(false) };
+    const user = userEvent.setup();
+    renderSearches();
+    await user.click(screen.getByRole('switch', { name: /github issues/i }));
+    await waitFor(() => expect(saveConfigMock).toHaveBeenCalled());
+    expect(saveConfigMock.mock.calls.at(-1)[1].posting.radar.sources).toEqual({ github: { scan: true } });
+  });
+});

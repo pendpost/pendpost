@@ -61,7 +61,12 @@ const ALLOWED = {
   'components/RadarSearches.jsx': '"Gespeichert" right after the owner saves a search (transient)',
   'components/radar/NeedsYou.jsx': 'the resolved line that replaces a row right after the owner acts (transient)',
   'components/radar/RadarFeed.jsx': '"Autor hat geantwortet": a follow-up that asks the owner to look (attention)',
+  'components/CloudIssues.jsx': 'the pulsing dot on the handover glyph: this Mac is publishing in the cloud\'s place (activity, not an all-clear)',
   'components/ui.jsx': 'the decorative background blob behind the shell (not a status)',
+  // Owner decision 2026-11-01 (q4 a): green status dot on the delivery indicator only. The
+  // sidebar Delivery card and the header ConnectionStatus button both paint their dot through
+  // this one component, so it is the single exception; nothing else gets green back.
+  'components/DeliveryGlyph.jsx': 'owner decision 2026-11-01, green dot on the delivery indicator only (q4 a)',
   'lib/format.js': 'the post LIFECYCLE palette (in motion, published) shared by the planner views',
 };
 

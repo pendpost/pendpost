@@ -26,15 +26,20 @@ try {
   ok(updateDecision({ git: true, ahead: 0 }).reason === 'up-to-date', 'up-to-date reason surfaced');
 
   const happy = updateDecision({ git: true, clean: true, ahead: 2, diverged: false });
-  ok(happy.offer === true && happy.canPull === true, 'ahead + clean + not diverged -> offer AND pullable');
+  ok(happy.offer === true && happy.canApply === true && happy.pull === true, 'ahead + clean + not diverged -> offer AND pullable');
 
   const dirty = updateDecision({ git: true, clean: false, ahead: 2, diverged: false });
-  ok(dirty.offer === true && dirty.canPull === false && dirty.reason === 'dirty-tree',
+  ok(dirty.offer === true && dirty.canApply === false && dirty.reason === 'dirty-tree',
     'dirty tree -> offer but NOT pullable (commit/stash first)');
 
   const diverged = updateDecision({ git: true, clean: true, ahead: 2, diverged: true });
-  ok(diverged.offer === true && diverged.canPull === false && diverged.reason === 'diverged',
+  ok(diverged.offer === true && diverged.canApply === false && diverged.reason === 'diverged',
     'diverged -> offer but NOT pullable (no fast-forward)');
+
+  const local = updateDecision({ git: true, clean: true, ahead: 0, localNewer: true });
+  ok(local.offer === true && local.canApply === true && local.pull === false,
+    'HEAD moved since boot, nothing upstream -> offer a rebuild + restart, no pull');
+  ok(updateDecision({ git: false, localNewer: true }).offer === false, 'localNewer never offers off a git checkout');
 
   // --- readUpdateStatus (safe defaults + parse) ----------------------------
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-upd-'));

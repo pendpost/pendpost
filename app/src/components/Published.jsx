@@ -57,7 +57,7 @@ function AccountStrip({ publicUrls, platforms, t }) {
             >
               <Icon size={13} className={meta.color} aria-hidden="true" />
               {t('published.openAccount', { platform: meta.label })}
-              <ExternalLink size={11} className="text-zinc-500" aria-hidden="true" />
+              <ExternalLink size={11} className="text-zinc-600" aria-hidden="true" />
             </a>
           );
         })}
@@ -92,7 +92,7 @@ function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
         <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className="h-12 w-12 shrink-0 rounded-lg" />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-bold">{postDisplayTitle(post)}</p>
-          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-500 dark:text-zinc-400">
+          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400">
             {(post.derivedState === 'fired-assumed' || post.derivedState === 'verify-failed') ? (
               <StatusPill state={post.derivedState} short />
             ) : null}
@@ -270,7 +270,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
             onClick={() => setEvergreenOn((v) => !v)}
             aria-pressed={evergreenOn}
             className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
-              evergreenOn ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : `${INNER_SURFACE} text-zinc-500 hover:ring-1 hover:ring-brand/40 dark:text-zinc-400`
+              evergreenOn ? 'bg-brand text-white dark:bg-brand-light dark:text-zinc-900' : `${INNER_SURFACE} text-zinc-600 hover:ring-1 hover:ring-brand/40 dark:text-zinc-400`
             }`}
           >
             <Recycle size={13} aria-hidden="true" />

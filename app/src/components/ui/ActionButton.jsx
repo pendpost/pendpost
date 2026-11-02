@@ -47,7 +47,7 @@ export function useActionState() {
 }
 
 // The idle look per variant; success/error chips are shared across all variants.
-const IDLE_VARIANTS = {
+export const IDLE_VARIANTS = {
   subtle: 'bg-zinc-200/60 text-zinc-700 hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60',
   success: 'bg-emerald-500/15 text-emerald-700 hover:bg-emerald-500/25 dark:text-emerald-300',
   // FILLED emerald primary: the "go / approve" action reads as a solid green button, the
@@ -109,6 +109,7 @@ const ActionButton = forwardRef(function ActionButton({
       type="button"
       onClick={() => run(onAction)}
       disabled={disabled || loading}
+      aria-busy={loading || undefined}
       aria-label={ariaLabel}
       className={cn(
         'flex items-center gap-1.5 rounded-xl font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50',
@@ -122,7 +123,7 @@ const ActionButton = forwardRef(function ActionButton({
       )}
     >
       {loading ? (
-        <Loader2 size={13} className="animate-spin" aria-hidden="true" />
+        <Loader2 size={13} className="motion-safe:animate-spin" aria-hidden="true" />
       ) : Icon ? (
         <Icon size={13} aria-hidden="true" />
       ) : null}

@@ -16,6 +16,7 @@
 // WORDS. They read the same codes and patterns.
 import { PLATFORM_META } from '../components/ui.jsx';
 import { problemCodeText, recoveryFor, lintRuleName } from './blockerText.js';
+import { isNotConnectedFailure } from './postIssue.js';
 
 // A lane's human name. `meta` is the one cloud lane that is not a single platform.
 export function laneLabel(lane) {
@@ -75,6 +76,11 @@ export function failureKey({ message, code, haltCode } = {}) {
   // the code: the engine records this 403 as needs_scope, whose "reconnect fixes it"
   // sentence would send the owner to a reconnect that changes nothing.
   if (/only reply to or quote posts where you are mentioned|reply to this conversation is not allowed/i.test(s)) return 'failure.xReply';
+  // A lane that was never connected (not_connected, or a Bluesky reply parked under the old
+  // needs_scope code with its "not set" message): "not connected", never "a permission is
+  // missing, reconnecting fixes it" (there was nothing to reconnect). postIssue reads the
+  // same predicate, so the sentence and its Connect button always agree.
+  if (isNotConnectedFailure({ code, message: s })) return 'issue.notConnected';
   if (code && CODE_KEYS[code]) return CODE_KEYS[code];
   if (haltCode && CODE_KEYS[haltCode]) return CODE_KEYS[haltCode];
   if (!s) return null;

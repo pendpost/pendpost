@@ -73,17 +73,17 @@ function TweetRow({
         </p>
         <div className="flex items-center gap-1">
           <Tip label={t('threadComposer.moveUp')}>
-            <button type="button" onClick={onMoveUp} disabled={disabled || !canMoveUp} aria-label={t('threadComposer.moveUp')} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-30 dark:text-zinc-400 dark:hover:bg-zinc-700/60">
+            <button type="button" onClick={onMoveUp} disabled={disabled || !canMoveUp} aria-label={t('threadComposer.moveUp')} className="rounded-lg p-1.5 text-zinc-600 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-30 dark:text-zinc-400 dark:hover:bg-zinc-700/60">
               <ChevronUp size={15} aria-hidden="true" />
             </button>
           </Tip>
           <Tip label={t('threadComposer.moveDown')}>
-            <button type="button" onClick={onMoveDown} disabled={disabled || !canMoveDown} aria-label={t('threadComposer.moveDown')} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-30 dark:text-zinc-400 dark:hover:bg-zinc-700/60">
+            <button type="button" onClick={onMoveDown} disabled={disabled || !canMoveDown} aria-label={t('threadComposer.moveDown')} className="rounded-lg p-1.5 text-zinc-600 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-30 dark:text-zinc-400 dark:hover:bg-zinc-700/60">
               <ChevronDown size={15} aria-hidden="true" />
             </button>
           </Tip>
           <Tip label={t('threadComposer.removeTweet')}>
-            <button type="button" onClick={onRemove} disabled={disabled || isOpener} aria-label={t('threadComposer.removeTweet')} className="rounded-lg p-1.5 text-zinc-500 transition hover:bg-red-500/10 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-30 dark:text-zinc-400">
+            <button type="button" onClick={onRemove} disabled={disabled || isOpener} aria-label={t('threadComposer.removeTweet')} className="rounded-lg p-1.5 text-zinc-600 transition hover:bg-red-500/10 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-30 dark:text-zinc-400">
               <Trash2 size={15} aria-hidden="true" />
             </button>
           </Tip>
@@ -117,7 +117,7 @@ function TweetRow({
             disabled={disabled}
             className={`${FIELD} w-24 tabular-nums`}
           />
-          {time ? <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{fmtFull(time)}</span> : null}
+          {time ? <span className="text-[11px] text-zinc-600 dark:text-zinc-400">{fmtFull(time)}</span> : null}
         </div>
       ) : null}
     </div>

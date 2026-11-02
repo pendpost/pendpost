@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Square, Plus, Settings, ChevronRight, ChevronDown, Clock, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, Monitor, CornerUpLeft, Radar, Loader2 } from 'lucide-react';
+import { CalendarDays, Activity, BarChart3, CheckCircle2, Play, Pause, Plus, Settings, ChevronRight, ChevronDown, Clock, FolderOpen, Users, Send, Wrench, LifeBuoy, Cloud, CornerUpLeft, Radar, Loader2, TriangleAlert } from 'lucide-react';
 import { setSchedulerRunning, useSignals } from '../lib/api.js';
-import { useCloud, useCloudClients } from '../lib/cloud.js';
-import { fmtTime, fmtDayShort, fmtFull } from '../lib/format.js';
+import { useDeliveryState, cloudTone, localTone } from '../lib/cloud.js';
+import { fmtTime, fmtDayShort, fmtFull, STAIR } from '../lib/format.js';
+import { STATUS_INK, TAP_TARGET } from './ui/recipes.js';
 import { useT } from '../lib/i18n.js';
 import { INNER_SURFACE, PLATFORM_META, DISABLED_PRIMARY } from './ui.jsx';
 import ClientSwitcher from './ClientSwitcher.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import FeedbackDialog from './FeedbackDialog.jsx';
+import DeliveryGlyph from './DeliveryGlyph.jsx';
 
 // `dot` - the quiet unread marker (like a chat app's): a small brand dot beside the badge,
 // with its meaning in an sr-only label (never colour-only for screen readers).
@@ -70,6 +72,8 @@ export function SchedulerToggle({ running, setupReady }) {
     : blockedNotReady
       ? t('readiness.scheduler.waiting')
       : t('sidebar.scheduler.startHelp');
+  // The glyph says what a click does: Pause while it runs, Play while it is stopped (the old
+  // Square read as a checkbox). The same words are its accessible name and its real tooltip.
   return (
     <Tip label={label}>
       <button
@@ -77,15 +81,15 @@ export function SchedulerToggle({ running, setupReady }) {
         onClick={toggle}
         disabled={busy || blockedNotReady}
         aria-label={blockedNotReady ? t('readiness.scheduler.waiting') : running ? t('sidebar.scheduler.stop') : t('sidebar.scheduler.start')}
-        className="rounded-lg p-1.5 transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50"
+        className={`${TAP_TARGET} rounded-lg p-1.5 transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50`}
       >
-        {running ? <Square size={13} aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
+        {running ? <Pause size={13} aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
       </button>
     </Tip>
   );
 }
 
-export default function Sidebar({ accounts, posting, pendingCount, nextPost, attention, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onShowOverdue, onCreateProject, onBeforeSwitchClient, allClients = false, onAllClientsChange }) {
+export default function Sidebar({ accounts, posting, pendingCount, nextPost, nextPostIssue = null, setupReady, setupIncomplete, activePage, open, onNavigate, onNew, onNewThread, onOpenPost, onCreateProject, onBeforeSwitchClient, allClients = false, onAllClientsChange }) {
   const t = useT();
   const [showFeedback, setShowFeedback] = useState(false);
   // The Radar nav row reflects the live scan (owner ask 2026-07-20): while a research job
@@ -108,22 +112,45 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, att
   })() : 0;
 
   const schedulerRunning = Boolean(accounts?.scheduler?.running);
-  // Surface the last sweep so an EMPTY sweep (nothing was due) is still visible
-  // proof the scheduler ran - otherwise an idle "Aktiv" looks indistinguishable
-  // from a wedged loop. fmtTime keeps it readable in the narrow sidebar column.
-  const schedulerLastRun = accounts?.scheduler?.lastRun;
 
-  // Delivery (item 11): the row reflects how the ACTIVE client publishes, not the raw
-  // local tick. When the active brand is cloud-managed, the local 60s loop is NOT firing
-  // it (the cloud is), so "Aktiv (60s-Zyklus)" would misread as local publishing - we show
-  // "Cloud · rund um die Uhr" instead. The local loop still runs for reconciliation + other
-  // brands, so for a local active client we keep the scheduler label + start/stop control.
-  const { data: cloud } = useCloud();
-  const cloudConnected = Boolean(cloud?.workspaceId && cloud?.apiKey?.present);
-  const { data: cloudClientsData } = useCloudClients(cloudConnected);
-  const activeOnCloud = cloudConnected && Boolean(cloud?.enabled) && ((cloudClientsData?.clients) || []).find((c) => c.active)?.alwaysOn === true;
-  const deliveryLocalState = schedulerRunning ? t('sidebar.delivery.localActive') : t('sidebar.delivery.localPaused');
-  const deliveryLastRun = schedulerLastRun ? t('settings.lastRun', { value: fmtTime(schedulerLastRun) }) : null;
+  // Delivery (contract B, owner 2026-11-01): the card says where the projects IN VIEW publish
+  // from with icons, not words: a cloud + count for the always-on ones, a monitor + count for
+  // the ones this computer publishes, side by side when mixed. All-projects mode counts every
+  // project; otherwise it is the selected one (no count then, one project needs none). The
+  // dot on each icon carries the health (lib/deliveryState.js tones, DeliveryGlyph colours).
+  const delivery = useDeliveryState({ allClients });
+  const deliveryTone = { cloud: cloudTone(delivery.cloud.health), local: localTone(delivery.local.running) };
+  const showCloud = delivery.cloud.count > 0;
+  const showLocal = delivery.local.count > 0 || !showCloud;
+  const showCounts = delivery.scope === 'all';
+  const cloudNeedsLook = showCloud && (delivery.cloud.health === 'amber' || delivery.cloud.health === 'red');
+  const cloudReason = (() => {
+    if (!cloudNeedsLook) return null;
+    const key = `delivery.reason.${delivery.cloud.reason}`;
+    const s = delivery.cloud.reason ? t(key) : key;
+    return s !== key ? s : t(delivery.cloud.health === 'red' ? 'delivery.reason.red' : 'delivery.reason.amber');
+  })();
+  const localPaused = showLocal && delivery.local.running === false;
+  // The cloud's reason when it needs a look gets its own line with the alert glyph in the
+  // attention ink (amber, or red when disrupted: the dot's own tones), so the state is never
+  // the dot's colour alone. Under it, this computer's line stays: "Paused" when it is not
+  // publishing, else when the scheduler last checked for due posts (an EMPTY sweep is still
+  // proof it ran).
+  const reasonInk = delivery.cloud.health === 'red' ? STATUS_INK.err : STATUS_INK.warn;
+  const localSub = (localPaused ? t('delivery.paused') : null)
+    || (delivery.local.lastRun ? t('delivery.lastChecked', { time: fmtTime(delivery.local.lastRun) }) : null);
+  const cloudDotLabel = { ok: 'delivery.dot.cloudOk', attention: 'delivery.dot.cloudAttention', disrupted: 'delivery.dot.cloudDisrupted' }[deliveryTone.cloud];
+  const namesOr = (arr, n) => (arr.length ? arr.join(', ') : String(n));
+  // The tooltip names the projects per channel (a real tooltip, never a title attribute).
+  const deliveryTip = (
+    <span className="block space-y-0.5">
+      {showCloud ? <span className="block">{t('delivery.tip.cloud', { names: namesOr(delivery.cloud.names, delivery.cloud.count) })}</span> : null}
+      {cloudReason ? <span className="block">{cloudReason}</span> : null}
+      {delivery.local.count > 0 ? (
+        <span className="block">{t(localPaused ? 'delivery.tip.localPaused' : 'delivery.tip.local', { names: namesOr(delivery.local.names, delivery.local.count) })}</span>
+      ) : null}
+    </span>
+  );
 
   return (
     // Below lg this is an off-canvas drawer: fixed, hidden (translated + invisible
@@ -257,87 +284,96 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, att
           // first line, else the type) - the same computation the aria-label uses.
           const nextMeta = PLATFORM_META[nextPost.platforms?.[0]];
           const preview = nextPost.title || nextPost.caption?.split('\n')[0] || t(`type.${nextPost.type}`);
+          const aria = t('sidebar.nextPostAria', {
+            when: fmtFull(nextPost.scheduledAt),
+            type: t(`type.${nextPost.type}`),
+            title: preview,
+          });
           return (
             <button
               type="button"
               onClick={() => onOpenPost(nextPost)}
-              aria-label={t('sidebar.nextPostAria', {
-                when: fmtFull(nextPost.scheduledAt),
-                type: t(`type.${nextPost.type}`),
-                title: preview,
-              })}
+              aria-label={nextPostIssue ? `${aria}. ${t('sidebar.nextPostNeedsYou')}` : aria}
+              data-needs-you={nextPostIssue ? '' : undefined}
               className={`group flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left transition hover:ring-brand/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${INNER_SURFACE}`}
             >
               {nextMeta ? (
                 <nextMeta.Icon size={14} className={`shrink-0 ${nextMeta.color}`} aria-hidden="true" />
               ) : (
-                <Clock size={15} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
+                <Clock size={15} className="shrink-0 text-zinc-600 dark:text-zinc-400" aria-hidden="true" />
               )}
               <p className="min-w-0 flex-1 truncate text-xs">
                 <span className="font-bold">{fmtDayShort(new Date(nextPost.scheduledAt))} {fmtTime(nextPost.scheduledAt)}</span>
-                <span className="text-zinc-500 dark:text-zinc-400"> · {preview}</span>
+                <span className="text-zinc-600 dark:text-zinc-400"> · {preview}</span>
               </p>
-              <ChevronRight size={14} className="shrink-0 text-zinc-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
+              {/* The next post is Blocked or waits on the owner: the needs-you alert, so the
+                  chip never advertises a post that will not go out (named in the aria-label). */}
+              {nextPostIssue ? (
+                <TriangleAlert size={13} data-next-alert="" className={`shrink-0 ${STAIR.halted.ink}`} aria-hidden="true" />
+              ) : null}
+              <ChevronRight size={14} className="shrink-0 text-zinc-600 transition group-hover:translate-x-0.5" aria-hidden="true" />
             </button>
           );
         })() : null}
-        {attention ? (() => {
-          // One slot, the card's word (lib/format.js attentionSummary): "Wartet auf dich: n"
-          // for refusals only the operator can fix, "Überfällig: n" otherwise.
-          const needsYou = attention.kind === 'needs-you';
-          const label = t(needsYou ? 'sidebar.needsYou' : 'sidebar.overdue', { count: attention.count });
-          const hint = t(needsYou ? 'status.tip.publish-needs-you' : 'sidebar.overdueHint');
-          return (
-          <Tip label={hint}>
-            <button
-              type="button"
-              onClick={onShowOverdue}
-              aria-label={`${label}: ${hint}`}
-              className="group flex w-full items-center gap-2 rounded-xl bg-red-500/10 px-3 py-2 text-left ring-1 ring-red-500/40 transition hover:bg-red-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
-            >
-              {/* Live "needs attention" ping so overdue posts are impossible to miss
-                  after the Mac was asleep/offline - the scheduler auto-catches up, but
-                  this makes the catch-up visible and one click from publishing. The
-                  "review and publish" hint lives in the tooltip + aria-label. */}
-              <span className="relative flex h-2 w-2 shrink-0" aria-hidden="true">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500/70" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
-              </span>
-              <p className="min-w-0 flex-1 truncate text-xs font-bold text-red-700 dark:text-red-300">{label}</p>
-              <ChevronRight size={14} className="shrink-0 text-red-500 transition group-hover:translate-x-0.5" aria-hidden="true" />
-            </button>
-          </Tip>
-          );
-        })() : null}
+        {/* The "Waiting on you" pill that sat here is gone (studio fix flow, owner pick q5 a):
+            the header badge carries the one count and opens the planner's "Needs you" tray. */}
       </div>
 
       <div className="mt-auto space-y-2">
-        {/* Delivery (item 11): the sidebar row exists only for LOCAL delivery,
-            where it carries the scheduler start/stop control. A cloud-managed
-            client's round-the-clock status is already asserted by the header
-            ConnectionStatus glyph, so the sidebar no longer restates it here. */}
-        {activeOnCloud ? null : (
-          <div className={`flex items-center gap-2 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-            {/* Always grey: delivery running normally is an all-clear, which gets no colour (canon
-                Tier 2). The sub-line says running or paused in words. */}
-            <Monitor size={15} className="shrink-0 text-zinc-500 dark:text-zinc-400" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-bold leading-tight">{t('sidebar.delivery.title')}</p>
-              {/* Two unbroken fragments that wrap at the dot, so a narrow rail never cuts the
-                  last-run time mid-word ("Lokal · aktiv · Letzter La..."). */}
-              <p className="flex flex-wrap gap-x-1 text-[11px] text-zinc-500 dark:text-zinc-400">
-                <span className="whitespace-nowrap">{deliveryLocalState}</span>
-                {deliveryLastRun ? (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <span className="whitespace-nowrap">{deliveryLastRun}</span>
-                  </>
-                ) : null}
-              </p>
-            </div>
-            {accounts ? <SchedulerToggle running={schedulerRunning} setupReady={setupReady} /> : null}
-          </div>
-        )}
+        {/* Delivery card: always shown (it used to hide itself whenever the active project ran
+            on the cloud). Row 1: the title and the glyphs that carry the state; then the
+            sub-lines at full width, which wrap rather than truncate, so no state ends in "..."
+            in the narrow rail (a long reason takes a second line, its alert glyph on the first).
+            The whole card (outside the scheduler button) opens the 24/7 Cloud service page,
+            which lists every project with its mode, so the mode is readable without a hover;
+            the tooltip names the projects per mode too. The Pause / Play button at right
+            is the scheduler stop/start, which keeps working for the projects this computer
+            publishes. */}
+        <div role="group" aria-label={t('sidebar.delivery.title')} className={`flex items-center gap-1 rounded-xl pr-1.5 ${INNER_SURFACE}`}>
+          <Tip label={deliveryTip}>
+            <button
+              type="button"
+              data-delivery-card=""
+              onClick={() => onNavigate('cloud')}
+              className="min-w-0 flex-1 rounded-xl px-3 py-2 text-left transition hover:bg-zinc-200/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:bg-zinc-700/40"
+            >
+              <span className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate text-xs font-bold leading-tight">{t('sidebar.delivery.title')}</span>
+                <span data-delivery-glyphs="" className="flex shrink-0 items-center gap-2.5 py-0.5">
+                  {showCloud ? (
+                    <DeliveryGlyph
+                      channel="cloud"
+                      tone={deliveryTone.cloud}
+                      count={delivery.cloud.count}
+                      showCount={showCounts}
+                      label={t('delivery.cloudCount', { n: delivery.cloud.count })}
+                      dotLabel={cloudDotLabel ? t(cloudDotLabel) : undefined}
+                    />
+                  ) : null}
+                  {showLocal ? (
+                    <DeliveryGlyph
+                      channel="local"
+                      tone={deliveryTone.local}
+                      count={delivery.local.count}
+                      showCount={showCounts}
+                      label={t('delivery.localCount', { n: Math.max(delivery.local.count, 1) })}
+                      dotLabel={deliveryTone.local ? t('delivery.dot.localPaused') : undefined}
+                    />
+                  ) : null}
+                </span>
+              </span>
+              {cloudReason ? (
+                <span data-delivery-reason="" className={`mt-0.5 flex min-w-0 items-start gap-1 text-[11px] font-medium leading-snug ${reasonInk}`}>
+                  <TriangleAlert size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0 break-words">{cloudReason}</span>
+                </span>
+              ) : null}
+              {localSub ? <span data-delivery-sub="" className="block break-words text-[11px] leading-snug text-zinc-600 dark:text-zinc-400">{localSub}</span> : null}
+              <span className="sr-only">{t('delivery.openCloud')}</span>
+            </button>
+          </Tip>
+          {accounts ? <SchedulerToggle running={schedulerRunning} setupReady={setupReady} /> : null}
+        </div>
         <NavItem icon={LifeBuoy} label={t('feedback.nav')} onClick={() => setShowFeedback(true)} />
       </div>
 
