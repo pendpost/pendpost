@@ -402,6 +402,16 @@ describe('Replies to you: the one merged list', () => {
     await waitFor(() => expect(replyToInboundEvent).toHaveBeenCalledWith({ eventId: 'e1', text: 'Thanks!', confirm: true, clientId: undefined }));
   });
 
+  it('an X account with long posts (xLimit 25000) may send a 281-char reply', async () => {
+    inbox({ elsewhere: [elsewhere({ key: 'x:e1', kind: 'event', lane: 'x', commentId: 'e1', ref: { type: 'event', id: 'e1' } })] });
+    const user = userEvent.setup();
+    renderInbox({ xLimit: 25000 });
+    await user.click(screen.getByRole('button', { name: 'Reply' }));
+    const box = screen.getByRole('textbox', { name: 'Reply to sam.bsky.social, public on X' });
+    fireEvent.change(box, { target: { value: 'a'.repeat(281) } });
+    expect(screen.getByRole('button', { name: 'Send' })).not.toBeDisabled();
+  });
+
   it('an answer to our Radar reply offers Open in Radar', async () => {
     const onOpenRadar = vi.fn();
     inbox({ elsewhere: [elsewhere({ key: 'reddit:rr1', kind: 'radar-reply', lane: 'reddit', ref: { type: 'radar', id: 'reddit abc', title: 'Best scheduler?' } })] });

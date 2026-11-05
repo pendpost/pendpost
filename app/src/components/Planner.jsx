@@ -1,32 +1,33 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Bot, CalendarClock, CalendarDays, CheckCircle2, ChevronUp, ChevronDown, Plus, CornerUpLeft, PauseCircle, PlayCircle, RefreshCw, Trash2, TriangleAlert } from 'lucide-react';
-import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, TIME_CHIP_META, timeChipTone, gridDisplayAspect, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, deriveThread, collectThread, postStatusWord, approvalWord, ROW_STATUS_META, failedDisplayKey, liveFailure, blockedLanes as blockedLanesOf, STAIR, timeColumn, PLATFORMS, unconnectedLanes, setupIdOf } from '../lib/format.js';
+import { Bot, CalendarClock, CalendarDays, CheckCircle2, ChevronUp, ChevronDown, Plus, CornerUpLeft, ExternalLink, PauseCircle, PlayCircle, RefreshCw, Trash2, TriangleAlert } from 'lucide-react';
+import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, TIME_CHIP_META, timeChipTone, gridDisplayAspect, hasVisual, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, postPublishedTitle, postCaptionRun, deriveThread, collectThread, postStatusWord, approvalWord, ROW_STATUS_META, failedDisplayKey, liveFailure, blockedLanes as blockedLanesOf, resolveLivePermalink, STAIR, timeColumn, PLATFORMS, unconnectedLanes, rowTypeLabel } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { usePostActions } from '../lib/usePostActions.js';
 import { useT } from '../lib/i18n.js';
 import { humanizeFailure, laneLabel } from '../lib/failureCopy.js';
-import { PlatformIcons, PostStatusPill, CoverThumb, Skeleton, useCachedSetup, PLATFORM_META } from './ui.jsx';
+import { PlatformIcons, PostStatusPill, CoverThumb, LaneTile, Skeleton, useCachedSetup, PLATFORM_META } from './ui.jsx';
 import { HdBadge } from './ui/HdBadge.jsx';
 import { RowMenu } from './ui/RowMenu.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
-import { PROJECT_CHIP, TAP_TARGET_Y } from './ui/recipes.js';
+import { PROJECT_CHIP, SELECTED_TINT, TAP_TARGET_Y } from './ui/recipes.js';
 import IssueFixButton, { fixLabel, agentAvailable } from './IssueFixButton.jsx';
 import { postIssue } from '../lib/postIssue.js';
 import { Popover, PopoverAnchor, PopoverContent } from './ui/Popover.jsx';
-import InfoTip from './ui/InfoTip.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 import { showToast } from './AppToast.jsx';
 import { ListBar, BarAction, SelectBox } from './BulkBar.jsx';
+import { ShortcutList } from './ui/ShortcutList.jsx';
 import { useIsPhone } from '../lib/useIsPhone.js';
+import { useStuck } from '../lib/useStuck.js';
 import { useSelection, selectionKey, SKIP } from '../lib/useSelection.js';
 import { useSetupByClient } from '../lib/setupByClient.js';
 import { bulkPlan, moveTarget, nameList, shortName, deleteToastText, doneToastText, willNotLine, notDoneLine, retimedOnApprove, restoreAll, restoreToast, runAgentFixQueued, localDateValue } from '../lib/bulkPlan.js';
 import { approvePost, deletePost, restorePost, reschedulePost, unschedulePost, updatePost, agentFixPost, getAgentFixes } from '../lib/api.js';
 import { fixFor } from '../lib/agentFix.js';
-import { showApproveNotice } from '../lib/approveNotice.js';
+import { approveNoticeText } from '../lib/approveNotice.js';
 
 // Single source for the "no time set" placeholder, defined once so the three List
 // readouts (published readout, picker placeholder, picker trigger fallback) and
@@ -75,9 +76,13 @@ export function TimeChip({ post, lane, variant = 'overlay', tip = true }) {
   const className = variant === 'inline'
     ? `inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 ${meta.cls}`
     : `absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 backdrop-blur ${meta.cls}`;
+  // Inline (the dense chip): the calm approved tone drops its check, because the chip's own
+  // status glyph already says it; a second check beside it read as "approved" even on a
+  // published post. Amber and red keep their icon (a Meta lane halt is only said here).
+  const showIcon = !(variant === 'inline' && tone === 'approved');
   const chip = (
     <span role="img" aria-label={accessibleName} className={className}>
-      <Icon size={11} aria-hidden="true" />
+      {showIcon ? <Icon size={11} aria-hidden="true" /> : null}
       {time}
     </span>
   );
@@ -128,11 +133,20 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
   const blockedLanes = postStatusWord(post, setup) === 'blocked' ? blockedLanesOf(post, setup) : [];
   // Why a live failure did not go out, as the one plain sentence (never the raw line).
   const failureLine = failureReason(post, t);
+  // The words follow the title rule (format.js): a bold title only where a lane publishes one,
+  // and the caption as ONE run (line breaks joined), never just its first line. A text post has
+  // no picture, so its card is all text (no fake image of its own words) and the time rides
+  // inline beside the status pill.
+  const visual = hasVisual(post);
+  const shownTitle = postPublishedTitle(post);
+  const captionRun = postCaptionRun(post);
   return (
     // Wrapper (relative, NO overflow-hidden) so the ⋯ menu can escape the card's rounded
     // clip; the card button keeps overflow-hidden for the cover. The ⋯ is a SIBLING of the
     // open-detail button, never nested (interactive-nesting contract).
-    <div className="group relative">
+    // container-type: the status pill measures this card (PostStatusPill fit) and folds to its
+    // glyph in a narrow week column.
+    <div className="group relative [container-type:inline-size]">
     <button
       type="button"
       onClick={() => onSelect(post)}
@@ -146,21 +160,36 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
       className={`relative w-full overflow-hidden rounded-xl text-left bg-white/80 dark:bg-zinc-900/70 ring-1 ring-zinc-900/[0.06] dark:ring-white/10 shadow-[0_8px_32px_rgba(0,0,0,0.05)] transition hover:-translate-y-1 motion-reduce:hover:translate-y-0 hover:shadow-xl hover:bg-white/90 dark:hover:bg-zinc-800/80 focus-visible:ring-2 focus-visible:ring-brand ${dim ? 'opacity-60 hover:opacity-100' : ''}`}
     >
       {showBar ? <span aria-hidden="true" className={`pointer-events-none absolute left-0 top-0 bottom-0 z-10 w-1 ${meta.bar}`} /> : null}
-      <div className="relative">
-        <CoverThumb media={post.media} image={post.image} textPreview={post.caption} overlayInset className={`${gridDisplayAspect(post)} w-full`} />
-        <TimeChip post={post} lane={lane} variant="overlay" />
-      </div>
+      {visual ? (
+        <div className="relative">
+          <CoverThumb media={post.media} image={post.image} className={`${gridDisplayAspect(post)} w-full`} />
+          <TimeChip post={post} lane={lane} variant="overlay" />
+        </div>
+      ) : null}
       <div className="space-y-1.5 p-2">
         <div className={showStrip ? `-mx-2 -mt-2 mb-1.5 px-2 pb-1.5 pt-2 ${meta.strip}` : ''}>
-          <PostStatusPill post={post} />
+          {visual ? (
+            <PostStatusPill post={post} fit />
+          ) : (
+            // The text card: the time (inline chip) on the top line after the ⋯ in the card's
+            // top-left corner (h-5 holds that line clear of the ⋯ when there is no time), then
+            // the status pill on its own line at the card's full width, the way a media card
+            // shows it under its cover. Beside the time a 7-column week cut it off.
+            <div data-text-card="" className="space-y-1.5">
+              <div data-text-card-time="" className="flex h-5 min-w-0 items-center pl-7">
+                <TimeChip post={post} lane={lane} variant="inline" />
+              </div>
+              <PostStatusPill post={post} fit />
+            </div>
+          )}
         </div>
         {/* Type + platforms collapse into one quiet meta line (was a separate type
             overlay badge + a standalone platform row competing at the same weight). */}
         <div className="flex min-w-0 flex-wrap items-center gap-1.5 text-[10px] font-bold tracking-tight text-zinc-500 dark:text-zinc-400">
-          <span className="truncate">{t(`type.${post.type}`)}</span>
+          <span className="truncate">{rowTypeLabel(t, post.type)}</span>
           <span aria-hidden="true" className="h-1 w-1 shrink-0 rounded-full bg-current opacity-50" />
           <PlatformIcons platforms={post.platforms} size={12} />
-          <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} static />
+          <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} static warnOnly />
           {/* Issue 6: the same client chip, so a Week card is legible even without
               opening it. */}
           {post.clientName ? (
@@ -188,9 +217,16 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
             {failureLine}
           </p>
         ) : (
-          <p className="line-clamp-2 text-[11px] leading-snug text-zinc-600 dark:text-zinc-300">
-            {post.caption.split('\n')[0]}
-          </p>
+          <>
+            {shownTitle ? (
+              <p data-row-title="" className="truncate text-[11px] font-bold leading-snug">{shownTitle}</p>
+            ) : null}
+            {captionRun ? (
+              <p data-row-caption="" className={`${visual ? 'line-clamp-2' : 'line-clamp-6'} text-[11px] leading-snug ${shownTitle ? 'text-zinc-600 dark:text-zinc-300' : ''}`}>
+                {captionRun}
+              </p>
+            ) : null}
+          </>
         )}
       </div>
     </button>
@@ -202,7 +238,10 @@ export function PostCard({ post, onSelect, onEdit, draggable, onDragStart, lane 
           items={items}
           align="left"
           label={t('postDetail.more')}
-          triggerClassName="inline-flex items-center rounded-lg bg-black/45 p-1 text-white backdrop-blur transition hover:bg-black/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          // Over a cover: a light glyph on a dark scrim. On a text card: a quiet glyph.
+          triggerClassName={visual
+            ? 'inline-flex items-center rounded-lg bg-black/45 p-1 text-white backdrop-blur transition hover:bg-black/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70'
+            : 'inline-flex items-center rounded-lg p-1 text-zinc-600 transition hover:bg-zinc-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300'}
         />
       </div>
     </div>
@@ -256,7 +295,38 @@ export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, sho
   const setup = useCachedSetup(undefined, post);
   const word = postStatusWord(post, setup);
   const status = ROW_STATUS_META[word] || STATUS_PILL_META.scheduled;
-  const StatusGlyph = status.Icon;
+  // A published post wears the SOLID glyph (filled disk = done, the approved ring = waiting)
+  // and its chip settles back, so the eye lands on what is still ahead and on any failure.
+  const glyph = status.solid || status;
+  const settled = Boolean(status.solid);
+  const StatusGlyph = glyph.Icon;
+  // A published chip's tip also carries the way to the live post (owner pick 2026-11-04):
+  // one "Live ansehen" link, or one link per lane named by platform when several went out.
+  // Only provable links (resolveLivePermalink), never a guessed one; the post detail keeps
+  // the same links for keyboard and touch, so the hover shortcut hides nothing.
+  const liveLinks = settled
+    ? (post.platforms || []).map((p) => ({ p, href: resolveLivePermalink(post, p) })).filter((l) => l.href)
+    : [];
+  const statusLabel = t(`status.${word}`);
+  const tipLabel = liveLinks.length ? (
+    <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+      <span>{statusLabel}</span>
+      {liveLinks.map(({ p, href }) => (
+        <a
+          key={p}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          data-live-link={p}
+          className="inline-flex items-center gap-0.5 font-bold text-brand-light hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand"
+        >
+          {liveLinks.length > 1 ? (PLATFORM_META[p]?.label || p) : t('planner.chip.viewLive')}
+          <ExternalLink size={10} aria-hidden="true" />
+        </a>
+      ))}
+    </span>
+  ) : statusLabel;
   const title = postDisplayTitle(post, t('planner.list.untitled'));
   // ONE clean accessible name (day? + post + status + type + time), matching the Week/List
   // cards; the inner glyph/chip/type/platforms stay aria-hidden so a SR hears the
@@ -267,7 +337,7 @@ export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, sho
   // its bubble, and a click here must open the post. Touch loses nothing: a tap opens the
   // post, which shows the same word.
   return (
-    <Tip label={t(`status.${word}`)}>
+    <Tip label={tipLabel}>
     <button
       type="button"
       onClick={() => onSelect(post)}
@@ -278,11 +348,11 @@ export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, sho
       // the house 44px on a coarse one (touch). Tailwind 3.4 has no pointer-coarse variant,
       // hence the arbitrary media variant. The Month cell has only a min-height and shows at
       // most three chips plus "+n more", so taller chips grow the row, never clip it.
-      className="flex min-h-6 w-full items-center gap-1 rounded-md bg-white/70 px-1.5 py-0.5 text-left text-[10px] ring-1 ring-zinc-900/10 transition hover:bg-white dark:bg-zinc-800/70 dark:ring-white/10 dark:hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-brand [@media(pointer:coarse)]:min-h-11"
+      className={`flex min-h-6 w-full items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-[10px] ring-1 ring-zinc-900/10 transition hover:bg-white dark:ring-white/10 dark:hover:bg-zinc-700 focus-visible:ring-2 focus-visible:ring-brand [@media(pointer:coarse)]:min-h-11 ${settled ? 'bg-transparent' : 'bg-white/70 dark:bg-zinc-800/70'}`}
     >
       {/* The status word's glyph in the pill's tone (never colour alone: the shape is the
           pill's icon, and the button's name speaks the word). */}
-      <span aria-hidden="true" data-status-glyph={word} className={`inline-flex shrink-0 rounded-full p-0.5 ring-1 ${status.cls}`}>
+      <span aria-hidden="true" data-status-glyph={word} className={`inline-flex shrink-0 rounded-full p-0.5 ring-1 ${glyph.cls}`}>
         <StatusGlyph size={10} />
       </span>
       {/* FR1: color-coded time chip (visual only inside the labeled button) */}
@@ -294,7 +364,7 @@ export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, sho
           narrow Month cell it only ever showed as a truncated sliver ("T."). The button's
           name keeps the type for a screen reader. */}
       {showTitle ? (
-        <span aria-hidden="true" className="min-w-0 flex-1 truncate font-bold text-zinc-700 dark:text-zinc-200">{title}</span>
+        <span aria-hidden="true" className={`min-w-0 flex-1 truncate font-bold ${settled ? 'text-zinc-500 dark:text-zinc-400' : 'text-zinc-700 dark:text-zinc-200'}`}>{title}</span>
       ) : null}
       <span aria-hidden="true" className="contents">
         <PlatformIcons platforms={post.platforms} size={10} />
@@ -366,6 +436,9 @@ export function WeekView({ posts, weekStart, onSelect, onEdit, onMoveToDay, load
       {days.map((day) => {
         const key = localDayKey(day);
         const isToday = key === todayKey;
+        // Days before today step back (owner pick 2026-11-04): a grey, lighter label, so the
+        // week reads from today forward. localDayKey is YYYY-MM-DD, so strings compare.
+        const isPast = key < todayKey;
         const dayPosts = byDay.get(key) || [];
         return (
           <section
@@ -380,10 +453,10 @@ export function WeekView({ posts, weekStart, onSelect, onEdit, onMoveToDay, load
               }`}
             >
               <div className="flex items-baseline gap-1.5">
-                <span className={`text-xs font-bold ${isToday ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
+                <span data-past-day={isPast ? '' : undefined} className={`text-xs ${isPast ? 'font-medium' : 'font-bold'} ${isToday ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'}`}>
                   {fmtDayShort(day)}
                 </span>
-                <span className={`font-display text-sm font-bold ${isToday ? 'text-brand dark:text-brand-light' : ''}`}>
+                <span className={`font-display text-sm ${isPast ? 'font-medium text-zinc-500 dark:text-zinc-400' : 'font-bold'} ${isToday ? 'text-brand dark:text-brand-light' : ''}`}>
                   {fmtDayNum(day)}
                 </span>
               </div>
@@ -532,24 +605,6 @@ export function MonthView({ posts, monthAnchor, onSelect, onMoveToDay, loading, 
   );
 }
 
-// The words a List row shows under its title: the caption minus the line the title already
-// says (postDisplayTitle falls back to the first caption line), joined into one run that the
-// row clamps to two lines. Empty when the caption IS the title, so a one-line text post adds
-// nothing under its title instead of repeating it.
-function rowCaption(post, title) {
-  const lines = String(post?.caption || '').split('\n').map((l) => l.trim()).filter(Boolean);
-  if (lines.length && lines[0] === title) lines.shift();
-  const rest = lines.join(' ');
-  return rest === title ? '' : rest;
-}
-
-// A post with something to look at: a render, a cover, an album slide or a hero image. A
-// text post has none, so its row spends that width on its words instead of a fake tile.
-function hasVisual(post) {
-  const m = post?.media;
-  return Boolean(post?.image || m?.cover || m?.url || m?.path || m?.exists || (Array.isArray(m?.items) && m.items.some((it) => it?.url)));
-}
-
 // The selection checkbox's visibility (planner bulk, package P, the owner's pick): it appears on
 // hover or keyboard focus of its row (or day heading), and on every row once anything is
 // selected. Its slot is ALWAYS reserved, so a title never jumps sideways when it shows. A touch
@@ -574,19 +629,20 @@ function PickBox({ checked, indeterminate = false, onPick, label, shown }) {
 // says so in ONE status line under its title: the halted (rose) alert glyph, the plain reason
 // in the same ink, and the post's one fix button on that same line. One status signal per row,
 // never pill + reason + button competing.
-// One title edge: the platform glyph leads the title (as the "Needs you" tray does) and the
-// thumbnail sits at the row's trailing edge, so a text row and a media row start their titles
-// at the same x and nothing reads ragged.
-// Planner bulk (package P): the row spans the panel (no max-width), its title and caption stop
-// near 90 characters so a line stays readable, and the selection checkbox leads the row.
+// Media first (2026-11-05, mockup A): after the time column the post's real thumbnail (40px,
+// its real aspect) or a quiet 40px lane tile for a text post, so every row's words start at the
+// same x. The words: a meta line (glyph + type + badges), a bold title only where a lane
+// publishes one (format.js postPublishedTitle), then the caption as one paragraph.
+// Planner bulk (package P): the row spans the panel (no max-width), its words fill the row up
+// to the pill and the ⋯ at the trailing edge, and the selection checkbox leads the row.
 // Sibling affordances per row (no nested buttons): the checkbox selects, the time opens an
 // inline reschedule picker (non-published posts only), the body opens the detail, the fix runs
 // the fix, the ⋯ opens the menu (which no longer repeats the fix: the button is right there).
 // Round 3 (the judge on the phone): a row that needs the owner keeps its APPROVAL pill beside the
-// red line (format.js approvalWord), and below md (`phone`) the row is [checkbox] [title, then
-// time + status in words, then caption] [thumbnail] [⋯]: the checkbox always shows (touch has no
+// red line (format.js approvalWord), and below md (`phone`) the row is [checkbox] [media] [meta,
+// title, then time + status in words, then caption] [⋯]: the checkbox always shows (touch has no
 // hover), the status is never hidden, and the time leaves its own column so the caption keeps
-// the width next to a thumbnail. The time changes from the detail there.
+// the width next to the thumbnail. The time changes from the detail there.
 function ListRow({ post, posts = [], onSelect, onEdit, onNavigate, selected = false, picking = false, onPick, rowRef, rowKey, onFocusRow, phone = false }) {
   const t = useT();
   const reschedule = useReschedule();
@@ -627,8 +683,12 @@ function ListRow({ post, posts = [], onSelect, onEdit, onNavigate, selected = fa
   // (the red line already says what blocks it).
   const pillWord = hasFix ? approvalWord(post) : word;
   const timeText = post.scheduledAt ? fmtTime(post.scheduledAt) : EMPTY_TIME;
+  // The NAME of the post (the checkbox label) stays postDisplayTitle; the VISIBLE words follow
+  // the title rule: a bold title only when a lane publishes one, and the caption as one
+  // paragraph that never loses its first line without a title (format.js).
   const title = postDisplayTitle(post, t('planner.list.untitled'));
-  const caption = rowCaption(post, title);
+  const shownTitle = postPublishedTitle(post);
+  const caption = postCaptionRun(post) || (shownTitle ? '' : t('planner.list.untitled'));
   // The time column fits the clock in use ("01:25 PM" never wraps to two lines).
   const tc = timeColumn();
   const visual = hasVisual(post);
@@ -641,7 +701,7 @@ function ListRow({ post, posts = [], onSelect, onEdit, onNavigate, selected = fa
       // never a Tab stop of its own, so Tab still walks the row's real controls.
       tabIndex={-1}
       onFocus={(e) => { if (e.target === e.currentTarget) onFocusRow?.(rowKey); }}
-      className={`group flex flex-wrap items-start gap-x-3 gap-y-1.5 rounded-xl px-2 py-2.5 ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ring-transparent ${selected ? 'bg-brand/[0.08] dark:bg-brand-light/[0.08]' : 'hover:bg-zinc-500/[0.08] dark:hover:bg-white/[0.06]'} ${isReply ? 'ml-5 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700' : ''}`}
+      className={`group flex flex-wrap items-start gap-x-3 gap-y-1.5 rounded-xl px-2 py-2.5 ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ring-transparent ${selected ? SELECTED_TINT : 'hover:bg-zinc-500/[0.08] dark:hover:bg-white/[0.06]'} ${isReply ? 'ml-5 border-l-2 border-zinc-200 pl-3 dark:border-zinc-700' : ''}`}
     >
       <PickBox checked={selected} onPick={(opts) => onPick?.(post, opts)} label={t('listBulk.selectRow', { title })} shown={phone || picking || selected} />
       {phone ? null : published ? (
@@ -666,69 +726,75 @@ function ListRow({ post, posts = [], onSelect, onEdit, onNavigate, selected = fa
         />
       )}
       {/* Preview + information share the open-detail button: clicking anywhere here opens
-          the full post. */}
+          the full post. Media first (mockup A, 2026-11-05): after the time, the post's real
+          picture at its real aspect, 40px wide, or a quiet 40px lane tile for a post with
+          nothing to look at, so every row's words start at the same x. The words fill the row
+          up to the pill and the ⋯ at its trailing edge. */}
       <button
         type="button"
         onClick={() => onSelect(post)}
         className="flex min-w-0 flex-1 items-start gap-3 rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
       >
-        {/* The reading measure (~90 characters) sits on the title and the caption themselves, so
-            each holds it at its own type size. */}
+        <span data-row-media="" className="block w-10 shrink-0">
+          {visual ? (
+            <CoverThumb media={post.media} image={post.image} className={`block w-full ${gridDisplayAspect(post)} rounded-md`} />
+          ) : (
+            <LaneTile platform={post.radarReplyTo?.source || post.platforms?.[0]} size={16} className="w-full" />
+          )}
+        </span>
         <div className="min-w-0 flex-1 space-y-0.5">
-          {/* On a phone the badges after the title (thread, HD, project) wrap under it when
-              the title needs the room, so a 12-hour time column never squeezes the title down
-              to a few letters; from md up the line stays one row, as before. */}
-          <div className="flex min-w-0 flex-wrap items-start gap-x-1.5 gap-y-1 md:flex-nowrap">
-            <div className="flex min-w-0 items-start gap-1.5">
-              {/* What the post IS leads the title: reply glyph, then the platforms. */}
-              <span data-row-lead="" className="flex shrink-0 items-center gap-1 py-[3px]">
-                {post.xReplyTo ? (
-                  <span className="text-zinc-600 dark:text-zinc-400">
-                    <CornerUpLeft size={13} aria-hidden="true" />
-                    <span className="sr-only">{t('planner.list.replyChain', { id: post.xReplyTo })}</span>
-                  </span>
-                ) : null}
-                <PlatformIcons platforms={post.platforms || []} />
-              </span>
-              {/* One line on a wide screen; on a phone the title may take two, so it is read, not cut. */}
-              <p className="min-w-0 max-w-[90ch] break-words text-sm font-bold line-clamp-2 md:line-clamp-1">{title}</p>
-            </div>
+          {/* The meta line: what the post IS (reply glyph, platforms, type), then the badges
+              (thread, HD, project). On a phone the badges wrap under it when it needs the room;
+              from md up the line stays one row. */}
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 md:flex-nowrap">
+            <span data-row-lead="" className="flex shrink-0 items-center gap-1 py-[3px]">
+              {post.xReplyTo ? (
+                <span className="text-zinc-600 dark:text-zinc-400">
+                  <CornerUpLeft size={13} aria-hidden="true" />
+                  <span className="sr-only">{t('planner.list.replyChain', { id: post.xReplyTo })}</span>
+                </span>
+              ) : null}
+              <PlatformIcons platforms={post.platforms || []} />
+            </span>
+            <span className="min-w-0 truncate text-xs text-zinc-600 dark:text-zinc-400">{rowTypeLabel(t, post.type)}</span>
             {/* Thread membership, shown ONCE on the opener only: a reply row carries the reply
                 glyph + indent instead, so a 6-post thread reads as one "Thread · 6 posts". */}
             {threadReplies.length && !post.xReplyTo ? (
-              <span className="mt-0.5 shrink-0 rounded-full bg-zinc-500/10 px-1.5 py-0.5 text-[10px] font-bold text-zinc-600 dark:text-zinc-300">
+              <span className="shrink-0 rounded-full bg-zinc-500/10 px-1.5 py-0.5 text-[10px] font-bold text-zinc-600 dark:text-zinc-300">
                 {t('planner.list.threadCount', { count: collectThread(post, posts).length })}
               </span>
             ) : null}
-            <span className="mt-0.5 shrink-0 empty:hidden">
-              <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} static />
+            <span className="shrink-0 empty:hidden">
+              <HdBadge hdReady={post.media?.hdReady} bitrate={post.media?.bitrate} static warnOnly />
             </span>
             {/* Issue 6: the same client chip Freigaben's cards carry, shown only
                 when all-clients mode stamped one. */}
             {post.clientName ? (
-              <span className={`${PROJECT_CHIP} mt-0.5 max-w-[8rem] shrink-0`}>
+              <span className={`${PROJECT_CHIP} max-w-[8rem] shrink-0`}>
                 <ClientAvatar client={{ displayName: post.clientName, accent: post.accent, logo: null }} size={14} />
                 <span className="truncate">{post.clientName}</span>
               </span>
             ) : null}
           </div>
-          {/* The phone's status line, directly under the title: the time, then the status in
-              words with its glyph (the pill), so nobody ticks a published post blind. */}
+          {/* A title only where a lane publishes one (YouTube, Reddit, Pinterest, blogs). One line
+              on a wide screen; on a phone it may take two, so it is read, not cut. */}
+          {shownTitle ? (
+            <p data-row-title="" className="min-w-0 break-words text-sm font-bold line-clamp-2 md:line-clamp-1">{shownTitle}</p>
+          ) : null}
+          {/* The phone's status line, under the words that name the post: the time, then the
+              status in words with its glyph (the pill), so nobody ticks a published post blind. */}
           {phone ? (
             <span data-row-meta="" className="flex flex-wrap items-center gap-x-2 gap-y-0.5 pt-0.5">
               <span className="font-display text-xs font-bold tabular-nums text-zinc-700 dark:text-zinc-300">{timeText}</span>
               <PostStatusPill post={post} word={pillWord} />
             </span>
           ) : null}
+          {/* The caption as one paragraph, two lines: full text strength when it carries the post,
+              quiet under a title (the title carries it there). */}
           {caption ? (
-            <p data-row-caption="" className="max-w-[90ch] line-clamp-2 text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">{caption}</p>
+            <p data-row-caption="" className={`line-clamp-2 text-[13px] leading-relaxed ${shownTitle || !postCaptionRun(post) ? 'text-zinc-600 dark:text-zinc-400' : ''}`}>{caption}</p>
           ) : null}
         </div>
-        {/* A correct-ASPECT mini cover (a 9:16 Short reads as a mini Short), only for a post
-            with real media, at the trailing edge so every title starts at the same x. */}
-        {visual ? (
-          <CoverThumb media={post.media} image={post.image} className={`ml-auto h-12 md:h-14 ${gridDisplayAspect(post)} shrink-0 rounded-lg`} />
-        ) : null}
       </button>
       {/* The pill, a sibling of the open-detail button: the status word, or beside a red reason
           line the approval word. On a phone it rides the status line under the title instead. */}
@@ -739,8 +805,8 @@ function ListRow({ post, posts = [], onSelect, onEdit, onNavigate, selected = fa
       )}
       <RowMenu items={items} label={t('postDetail.more')} />
       {/* The ONE status line, a sibling of the open-detail button (no nested controls): its own
-          full-width line under the title (tc.indent = the checkbox + time columns and their
-          gaps, so it starts on the title edge), glyph + reason in the staircase ink, and the
+          full-width line under the words (tc.indent = the checkbox + time columns and their
+          gaps, so it starts on the media edge), glyph + reason in the staircase ink, and the
           post's fix on the same line, pushed to the row's trailing edge under the ⋯ (on a phone
           too, where the reason may take two lines but is never cut to a few letters). The full
           sentence also rides a real tooltip. */}
@@ -748,7 +814,7 @@ function ListRow({ post, posts = [], onSelect, onEdit, onNavigate, selected = fa
         <div data-row-status="" data-tone={retrying ? 'pending' : 'halted'} className={`order-last flex min-w-0 basis-full items-center gap-2 ${tc.indent}`}>
           <StatusIcon size={13} className={`shrink-0 ${stop.ink}`} aria-hidden="true" />
           <Tip label={reason}>
-            <p className={`min-w-0 max-w-[90ch] flex-1 break-words text-xs font-medium line-clamp-2 md:line-clamp-1 ${stop.ink}`}>{reason}</p>
+            <p className={`min-w-0 flex-1 break-words text-xs font-medium line-clamp-2 md:line-clamp-1 ${stop.ink}`}>{reason}</p>
           </Tip>
           {hasFix ? (
             <div className="-my-1 ml-auto shrink-0">
@@ -767,10 +833,6 @@ function ListRow({ post, posts = [], onSelect, onEdit, onNavigate, selected = fa
 // Undo for 10 s).
 const UNDO_MS = 10_000;
 
-// The bar's second line: one line from md up (the full sentence rides its tooltip); on a phone it
-// may take two, since a finger has no tooltip to read the rest on.
-const LINE_TEXT = 'min-w-0 truncate max-md:line-clamp-2 max-md:whitespace-normal';
-
 // The composer edits the planner's own platforms; a Radar reply lane it has no target for
 // (Bluesky) would open an empty editor, so such a post opens its detail instead.
 function canCompose(post) {
@@ -778,33 +840,22 @@ function canCompose(post) {
   return lanes.length > 0 && lanes.every((p) => PLATFORMS.includes(p));
 }
 
-// The List's bulk bar (planner bulk, package P; round 2 after the fresh-eyes judge). The shared
-// selection (lib/useSelection.js) with the List's layout (BulkBar.jsx ListBar): a reserved slot
-// so nothing jumps, a FIXED action set (an action that applies to none of the selection is
-// disabled with its reason, never hidden), verbs that stay verbs, and ONE line under the actions:
-// before the press what it will leave out ("3 werden nicht freigegeben: LinkedIn nicht
-// verbunden", with Verbinden), after a run what it left out and why ("1 nicht gelöscht:
-// Bluesky-Ankündigung ist veröffentlicht"). The rows that went through leave the selection; the
-// count rides one toast per run, the same pattern for every action ("4 Beiträge gelöscht"),
-// with Rückgängig for a delete and a move. In All projects every call carries the post's own
-// clientId (lib/bulkPlan.js decides what each action may touch).
-function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
+// The List's bulk header (planner bulk, package P; one slim line since 2026-11-05). The shared
+// selection (lib/useSelection.js) with the List's layout (BulkBar.jsx ListBar): a FIXED action
+// set as glyphs (an action that applies to none of the selection is disabled with its reason,
+// never hidden). Before the press, what it will leave out rides the action's tooltip ("3 werden
+// nicht freigegeben: LinkedIn nicht verbunden"); after a run ONE toast says what it did and what
+// it left out and why ("4 Beiträge gelöscht. 1 nicht gelöscht: Bluesky-Ankündigung ist
+// veröffentlicht"), with Rückgängig for a delete and a move. The rows that went through leave the
+// selection. In All projects every call carries the post's own clientId (lib/bulkPlan.js decides
+// what each action may touch).
+function ListBulkBar({ sel, setupFor, barRef }) {
   const t = useT();
   const confirm = useConfirm();
   const queryClient = useQueryClient();
-  const { effectiveSelection, count, selectable, allSelected, toggleAll, clear, runBulk, bulkProgress } = sel;
+  const { effectiveSelection, count, allSelected, toggleAll, clear, runBulk, bulkProgress } = sel;
   const [active, setActive] = useState(null); // the running action, for its progress
-  const [hint, setHint] = useState(null); // the hovered / focused action, for its pre-press note
   const [moveOpen, setMoveOpen] = useState(false);
-  const [result, setResult] = useState(null); // { sig, text, raw, alert }: the last run's line
-  // A press on a disabled action: its reason goes into the line (touch has no tooltip).
-  const [pressed, setPressed] = useState(null); // { id, sig }
-  const sig = useMemo(() => effectiveSelection.map(selectionKey).join('|'), [effectiveSelection]);
-  const onHint = useCallback((id) => {
-    setHint(id);
-    if (id) setPressed((p) => (p && p.id !== id ? null : p));
-  }, []);
-  const onDisabledPress = useCallback((id) => { setResult(null); setPressed({ id, sig }); }, [sig]);
   const nameOf = useCallback((p) => shortName(postDisplayTitle(p, t('planner.list.untitled'))), [t]);
   // The agent fixes content problems only, and only while the post's project has it connected
   // (IssueFixButton's own rule: fix type 'edit' + agentAvailable).
@@ -832,7 +883,7 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
   const parkMode = plan.parkable.length || !plan.resumable.length ? 'park' : 'resume';
 
   // What a press would leave out, said only for an action that applies (an action that applies to
-  // none of the selection is disabled and says why in its tooltip, and in the line when pressed).
+  // none of the selection is disabled and says why instead).
   const notes = {
     delete: plan.deletable.length ? willNotLine(label.delete, plan.keptPublished.map((post) => ({ post, reason: 'published' })), t) : null,
     approve: plan.approvable.length ? willNotLine(label.approve, approveSkips, t) : null,
@@ -848,35 +899,42 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
     park: plan.parkable.length || plan.resumable.length ? null : t('listBulk.disabled.park'),
     agent: plan.agentFixable.length ? null : agentConnected ? t('listBulk.disabled.agent') : t('listBulk.disabled.noAgent'),
   };
+  // A press on a disabled action says why where a finger can read it (touch has no tooltip).
+  const onDisabledPress = (id) => {
+    if (reasons[id]) showToast({ kind: 'error', text: reasons[id] });
+  };
 
-  // One run: progress on its own button, then the line names what it left out (the rows that
-  // went through have left the selection, so the line speaks about the rows still ticked).
-  const run = async (key, action, list, { skips = [], verb, onDone } = {}) => {
+  // One run: progress on its own glyph, then ONE toast: what went through (`head(done)`, with
+  // the run's Undo where it has one) and what it left out and why. The rows that went through
+  // have left the selection, so the rows still ticked are the ones the toast names.
+  const run = async (key, action, list, { skips = [], verb, head = null } = {}) => {
     setActive(key);
-    setResult(null);
-    setPressed(null);
-    const startSel = effectiveSelection;
     let settled = { done: [], skipped: [], fails: [] };
     try {
       await runBulk(action, verb, list, { onSettled: (r) => { settled = r; } });
-    } catch { /* the failures are in `settled`; the line below names them */ }
+    } catch { /* the failures are in `settled`; the toast below names them */ }
     setActive(null);
     const doneKeys = new Set(settled.done.map(selectionKey));
-    const remainingSig = startSel.filter((p) => !doneKeys.has(selectionKey(p))).map(selectionKey).join('|');
     const items = [
       ...skips.filter((it) => !doneKeys.has(selectionKey(it.post))),
       ...settled.fails.map((f) => ({ post: f.post, reason: 'failed', text: f.text })),
     ];
-    const text = notDoneLine(verb, items, nameOf, t);
+    const left = notDoneLine(verb, items, nameOf, t);
+    const done = settled.done.length && head ? head(settled.done) : null;
     const raw = settled.fails.filter((f) => f.raw).map((f) => `${nameOf(f.post)}: ${f.raw}`).join('\n') || null;
-    if (text) setResult({ sig: remainingSig, text, raw, alert: settled.fails.length > 0 });
-    if (settled.done.length) onDone?.(settled.done);
+    if (done || left) {
+      showToast({
+        kind: settled.fails.length || !done ? 'error' : 'success',
+        text: [done?.text, left].filter(Boolean).join('. '),
+        raw,
+        action: done?.action || null,
+        duration: done?.action ? UNDO_MS : null,
+      });
+    }
     return settled;
   };
 
-  // An undo takes the run back, so the line about that run goes too (judge round 2, item 5).
   const undoDelete = async (posts) => {
-    setResult(null);
     const outcome = await restoreAll(posts, (p) => restorePost(p.campaign, p.id, p.clientId));
     queryClient.invalidateQueries({ queryKey: ['plans'] });
     showToast(restoreToast(outcome, nameOf, t));
@@ -893,14 +951,12 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
     }, plan.deletable, {
       verb: label.delete,
       skips: plan.keptPublished.map((post) => ({ post, reason: 'published' })),
-      onDone: (done) => {
+      head: (done) => {
         const undoable = done.filter((p) => !permanent.includes(p));
-        showToast({
-          kind: 'success',
-          duration: UNDO_MS,
+        return {
           text: deleteToastText({ deleted: done, permanent }, nameOf, t),
           action: undoable.length ? { label: t('listBulk.toast.undo'), onClick: () => { undoDelete(undoable); } } : null,
-        });
+        };
       },
     });
   };
@@ -908,24 +964,26 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
   const runApprove = async () => {
     // Approvals' rule: a post whose lane is not connected is left out (approving publishes nothing
     // there). A Radar reply past its draft time goes out 5 minutes after the approval (the
-    // engine's contract): the toast says so, a time never moves silently.
+    // engine's contract): the toast says so, a time never moves silently. The engine's own notes
+    // (an image not online yet, brand-rule hints) ride the same toast.
     const now = Date.now();
     const retimed = plan.approvable.filter((p) => retimedOnApprove(p, now));
     const results = [];
     await run('approve', async (p) => { results.push(await approvePost(p.campaign, p.id, undefined, p.clientId)); }, plan.approvable, {
       verb: label.approve,
       skips: approveSkips,
-      onDone: (done) => {
+      head: (done) => {
         const moved = retimed.filter((p) => done.includes(p));
-        const head = doneToastText(done.length, label.approve, t);
-        showToast({ kind: 'success', text: moved.length ? `${head}. ${t('approve.notice.retimed', { names: nameList(moved, nameOf, t) })}` : head });
+        const notice = approveNoticeText(results, t);
+        const base = notice || doneToastText(done.length, label.approve, t);
+        if (!moved.length) return { text: base };
+        const line = t('approve.notice.retimed', { names: nameList(moved, nameOf, t) });
+        return { text: notice ? `${base} ${line}` : `${base}. ${line}` };
       },
     });
-    showApproveNotice(results, t);
   };
 
   const undoMove = async (moves) => {
-    setResult(null);
     let ok = 0;
     const fails = [];
     for (const { post, from } of moves) {
@@ -980,14 +1038,12 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
     }, plan.movable, {
       verb: label.move,
       skips,
-      onDone: (done) => {
+      head: (done) => {
         const back = moves.filter((m) => done.includes(m.post));
-        showToast({
-          kind: 'success',
-          duration: UNDO_MS,
+        return {
           text: doneToastText(done.length, label.move, t),
           action: back.length ? { label: t('listBulk.toast.undo'), onClick: () => { undoMove(back); } } : null,
-        });
+        };
       },
     });
   };
@@ -1004,7 +1060,7 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
         await unschedulePost(p.campaign, p.id, true, p.clientId);
       }
       return undefined;
-    }, plan.parkable, { verb: label.park, skips, onDone: (done) => showToast({ kind: 'success', text: doneToastText(done.length, label.park, t) }) });
+    }, plan.parkable, { verb: label.park, skips, head: (done) => ({ text: doneToastText(done.length, label.park, t) }) });
   };
 
   // Resume re-arms the post: unschedule set executionMode 'parked', and the scheduler skips any
@@ -1012,7 +1068,7 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
   const runResume = async () => {
     await run('resume', (p) => updatePost(p.campaign, p.id, p.rev, { executionMode: 'fully-scheduled' }, p.clientId), plan.resumable, {
       verb: label.resume,
-      onDone: (done) => showToast({ kind: 'success', text: doneToastText(done.length, label.resume, t) }),
+      head: (done) => ({ text: doneToastText(done.length, label.resume, t) }),
     });
   };
 
@@ -1028,86 +1084,61 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
         list: (x) => getAgentFixes(x.clientId),
         jobFor: (data, x) => fixFor(data, x.campaign, x.id, x.clientId),
       });
-      // A job that failed is a failed post in the line (its row says why).
+      // A job that failed is a failed post in the toast (its row says why).
       if (job?.state === 'failed') throw new Error(job.summary || 'agent fix failed');
     }, plan.agentFixable, {
       verb: label.agent,
       skips: plan.agentSkipped.map((post) => ({ post, reason: 'notFixable' })),
-      onDone: (done) => showToast({ kind: 'success', text: doneToastText(done.length, label.agent, t) }),
+      head: (done) => ({ text: doneToastText(done.length, label.agent, t) }),
     });
     queryClient.invalidateQueries({ queryKey: ['agentFix'] });
   };
 
-  // ---- line 2 --------------------------------------------------------------------------------
+  // ---- the glyphs ----------------------------------------------------------------------------
   const busy = active !== null;
   const progressOf = (key, verbKey) => (active === key && bulkProgress ? t('listBulk.progress', { verb: t(verbKey), ...bulkProgress }) : null);
-  const firstOffline = plan.offline[0] || null;
-  const connectFix = firstOffline && plan.offlineLanes.length === 1 ? (
-    <span className="-my-1 shrink-0">
-      <IssueFixButton
-        issue={{ kind: 'blocked', lane: plan.offlineLanes[0], lanes: plan.offlineLanes, clientId: firstOffline.clientId ?? null, fix: { type: 'connect', lane: setupIdOf(plan.offlineLanes[0]), agent: false } }}
-        post={firstOffline}
-        onNavigate={firstOffline.clientId ? (p, platform, opts) => onNavigate?.(p, platform, opts, firstOffline.clientId) : onNavigate}
-        size="sm"
-        variant="ghost"
-      />
-    </span>
-  ) : null;
-  let line = null;
-  const shown = result && result.sig === sig && !busy ? result : null;
-  // A press on a disabled action says why, in words, where a finger can read it.
-  const pressedReason = pressed && pressed.sig === sig && !busy ? reasons[pressed.id] : null;
-  if (pressedReason) {
-    line = (
-      <Tip label={pressedReason}>
-        <span role="status" data-bulk-reason={pressed.id} className={LINE_TEXT}>{pressedReason}</span>
-      </Tip>
-    );
-  } else if (shown) {
-    line = (
-      <>
-        <Tip label={shown.text}>
-          <span role={shown.alert ? 'alert' : 'status'} data-bulk-result="" className={`${LINE_TEXT} font-semibold ${shown.alert ? 'text-red-700 dark:text-red-300' : ''}`}>{shown.text}</span>
-        </Tip>
-        {shown.raw ? <InfoTip label={shown.raw} /> : null}
-      </>
-    );
-  } else if (!busy) {
-    // The note of the action under the pointer or focus, or the move being set up; otherwise
-    // Freigeben's when it carries a fix (Verbinden), then Löschen's, then Freigeben's. Never
-    // another action's note while a move is open.
-    const key = moveOpen ? 'move' : hint && hint in notes ? hint : null;
-    const noteKey = key || (notes.approve && plan.offline.length ? 'approve' : notes.delete ? 'delete' : notes.approve ? 'approve' : null);
-    const note = noteKey ? notes[noteKey] : null;
-    if (note) {
-      line = (
-        <>
-          <Tip label={note}><span data-bulk-note={noteKey} className={LINE_TEXT}>{note}</span></Tip>
-          {noteKey === 'approve' ? connectFix : null}
-        </>
-      );
-    }
-  }
+  // Each glyph's name carries how many posts it will act on ("3 freigeben"); a disabled one is
+  // named by its verb alone and says why.
+  const nameFor = (n, countKey, verbKey) => (n ? t(countKey, { n }) : t(verbKey));
+  const names = {
+    approve: nameFor(plan.approvable.length, 'approvals.bulk.approveN', 'approvals.action.approve'),
+    move: nameFor(plan.movable.length, 'listBulk.action.moveN', 'listBulk.action.move'),
+    park: nameFor(plan.parkable.length, 'listBulk.action.parkN', 'listBulk.action.park'),
+    resume: nameFor(plan.resumable.length, 'listBulk.action.resumeN', 'listBulk.action.resume'),
+    agent: nameFor(plan.agentFixable.length, 'listBulk.action.agentN', 'issue.fix.agent'),
+    delete: nameFor(plan.deletable.length, 'listBulk.action.deleteN', 'listBulk.action.delete'),
+  };
+  const common = (id) => ({
+    id,
+    disabled: Boolean(reasons[id]) || (busy && active !== id),
+    reason: reasons[id] || null,
+    note: notes[id] || null,
+    busy: active === id,
+    onDisabledPress,
+  });
 
   const actions = (
     <>
-      <BarAction id="delete" icon={Trash2} tone="danger" label={t('listBulk.action.delete')} disabled={Boolean(reasons.delete) || (busy && active !== 'delete')} reason={reasons.delete} busy={active === 'delete'} busyLabel={progressOf('delete', 'listBulk.action.delete')} onHint={onHint} onDisabledPress={onDisabledPress} onClick={runDelete} />
-      <BarAction id="approve" icon={CheckCircle2} tone="success" label={t('approvals.action.approve')} disabled={Boolean(reasons.approve) || (busy && active !== 'approve')} reason={reasons.approve} busy={active === 'approve'} busyLabel={progressOf('approve', 'approvals.action.approve')} onHint={onHint} onDisabledPress={onDisabledPress} onClick={runApprove} />
+      <BarAction {...common('approve')} icon={CheckCircle2} tone="success" label={names.approve} busyLabel={progressOf('approve', 'approvals.action.approve')} onClick={runApprove} />
       <MoveControl
         count={plan.movable.length}
         open={moveOpen}
         onOpenChange={setMoveOpen}
         onMove={(spec) => { runMove(spec); }}
         trigger={(
-          <BarAction id="move" icon={CalendarClock} label={t('listBulk.action.move')} disabled={Boolean(reasons.move) || (busy && active !== 'move')} reason={reasons.move} busy={active === 'move'} busyLabel={progressOf('move', 'listBulk.action.move')} onHint={onHint} onDisabledPress={onDisabledPress} onClick={() => setMoveOpen(true)} />
+          <BarAction {...common('move')} icon={CalendarClock} label={names.move} busyLabel={progressOf('move', 'listBulk.action.move')} onClick={() => setMoveOpen(true)} />
         )}
       />
       {parkMode === 'park' ? (
-        <BarAction id="park" icon={PauseCircle} label={t('listBulk.action.park')} disabled={Boolean(reasons.park) || (busy && active !== 'park')} reason={reasons.park} busy={active === 'park'} busyLabel={progressOf('park', 'listBulk.action.park')} onHint={onHint} onDisabledPress={onDisabledPress} onClick={runPark} />
+        <BarAction {...common('park')} icon={PauseCircle} label={names.park} busyLabel={progressOf('park', 'listBulk.action.park')} onClick={runPark} />
       ) : (
-        <BarAction id="resume" icon={PlayCircle} label={t('listBulk.action.resume')} disabled={busy && active !== 'resume'} busy={active === 'resume'} busyLabel={progressOf('resume', 'listBulk.action.resume')} onHint={onHint} onDisabledPress={onDisabledPress} onClick={runResume} />
+        <BarAction {...common('resume')} icon={PlayCircle} label={names.resume} busyLabel={progressOf('resume', 'listBulk.action.resume')} onClick={runResume} />
       )}
-      <BarAction id="agent" icon={Bot} label={t('issue.fix.agent')} disabled={Boolean(reasons.agent) || (busy && active !== 'agent')} reason={reasons.agent} busy={active === 'agent'} busyLabel={progressOf('agent', 'issue.fix.agent')} onHint={onHint} onDisabledPress={onDisabledPress} onClick={runAgent} />
+      <BarAction {...common('agent')} icon={Bot} label={names.agent} busyLabel={progressOf('agent', 'issue.fix.agent')} onClick={runAgent} />
+      {/* The one destructive glyph comes last, a step apart from the rest. */}
+      <span className="ml-2 inline-flex">
+        <BarAction {...common('delete')} icon={Trash2} tone="danger" label={names.delete} busyLabel={progressOf('delete', 'listBulk.action.delete')} onClick={runDelete} />
+      </span>
     </>
   );
 
@@ -1115,20 +1146,17 @@ function ListBulkBar({ sel, setupFor, barRef, onNavigate }) {
     <ListBar
       barRef={barRef}
       count={count}
-      total={selectable.length}
       allSelected={allSelected}
       someSelected={count > 0 && !allSelected}
       onToggleAll={toggleAll}
       onClear={clear}
       actions={actions}
-      line={line}
-      hint={t('listBulk.keysHint')}
     />
   );
 }
 
 // "Verschieben": by N days, or onto one date keeping each post's own time. A small form in a
-// popover anchored on the bar's Move action; the run reports through the bar like every other.
+// popover anchored on the header's Move glyph; the run reports in the toast like every other.
 function MoveControl({ count, open, onOpenChange, onMove, trigger }) {
   const t = useT();
   const [mode, setMode] = useState('days');
@@ -1145,7 +1173,7 @@ function MoveControl({ count, open, onOpenChange, onMove, trigger }) {
       <PopoverAnchor asChild>
         <span className="inline-flex">{trigger}</span>
       </PopoverAnchor>
-      <PopoverContent align="end" className="w-64 p-3" aria-label={t('listBulk.action.move')}>
+      <PopoverContent align="start" className="w-64 p-3" aria-label={t('listBulk.action.move')}>
         <form onSubmit={submit} className="space-y-3">
           <fieldset className="space-y-2">
             <legend className="sr-only">{t('listBulk.action.move')}</legend>
@@ -1183,6 +1211,43 @@ function MoveControl({ count, open, onOpenChange, onMove, trigger }) {
         </form>
       </PopoverContent>
     </Popover>
+  );
+}
+
+// The List's keyboard shortcuts, for the filter bar's "?" popover (App.jsx passes them while the
+// Planer shows the List): the keys ListView takes below, no hint line on the page itself.
+export function ListKeyboardShortcuts() {
+  const t = useT();
+  return (
+    <ShortcutList
+      rows={[
+        { keys: ['j', 'k'], label: t('approvals.keys.navigate') },
+        { keys: ['x'], label: t('listBulk.keys.select') },
+        { keys: ['Enter'], label: t('listBulk.keys.open') },
+        { keys: ['e'], label: t('listBulk.keys.edit') },
+        { keys: ['Esc'], label: t('approvals.selectAll.clear') },
+      ]}
+    />
+  );
+}
+
+// A day heading of the List: sticky under the bulk line (`top`, its height in px while it sticks).
+// It wears the panel's opaque surface only while actually pinned (lib/useStuck.js), the same as
+// the stuck bulk line, so the stuck pair reads as one strip; in the flow it stays transparent,
+// since any opaque fill reads as a band on the translucent glass panel.
+function DayHeading({ top, children }) {
+  const ref = useRef(null);
+  const stuck = useStuck(ref, { top, bounded: true });
+  return (
+    <div
+      ref={ref}
+      data-day-heading=""
+      data-stuck={stuck ? '' : undefined}
+      className="group sticky z-10 mb-1.5 flex items-center gap-3 rounded-xl px-2 py-1 data-[stuck]:bg-[#fdfefe] dark:data-[stuck]:bg-[#121215]"
+      style={{ top: 'var(--pp-bulk-h, 0px)' }}
+    >
+      {children}
+    </div>
   );
 }
 
@@ -1256,25 +1321,21 @@ export function ListView({ posts, onSelect, onEdit, onNavigate, loading, showAll
   // Below md the rows wear the phone layout (checkbox always shown, status under the title).
   const phone = useIsPhone();
 
-  // Where the bar sits decides three things, measured rather than guessed (the bar is sticky at
-  // the top from md up and floats at the bottom of a phone screen while something is selected):
-  //   --pp-bulk-h    the sticky day headings sit EXACTLY under a sticky bar (no seam, no gap);
-  //   --pp-bar-room  a floating phone bar never covers the last rows;
-  //   --pp-toast-lift (on <html>) the toast rises above a floating phone bar.
+  // --pp-bulk-h: the sticky day headings sit EXACTLY under the bulk line while it sticks (it does
+  // only while something is selected; idle it scrolls away and the headings stick at 0). Measured
+  // rather than guessed. `bulkH` is the same height in px, for the headings' stuck check.
   const rootRef = useRef(null);
   const barRef = useRef(null);
+  const [bulkH, setBulkH] = useState(0);
   useLayoutEffect(() => {
     const root = rootRef.current;
     const bar = barRef.current;
     if (!root) return undefined;
     const set = () => {
-      const pos = bar ? getComputedStyle(bar).position : '';
-      const h = bar ? bar.offsetHeight : 0;
-      root.style.setProperty('--pp-bulk-h', pos === 'sticky' ? `${h}px` : '0px');
-      const floating = pos === 'fixed';
-      root.style.setProperty('--pp-bar-room', floating ? `${h + 16}px` : '0px');
-      if (floating) document.documentElement.style.setProperty('--pp-toast-lift', `${h + 8}px`);
-      else document.documentElement.style.removeProperty('--pp-toast-lift');
+      const sticky = bar ? getComputedStyle(bar).position === 'sticky' : false;
+      const h = sticky ? bar.offsetHeight : 0;
+      root.style.setProperty('--pp-bulk-h', `${h}px`);
+      setBulkH(h);
     };
     set();
     window.addEventListener('resize', set);
@@ -1283,7 +1344,6 @@ export function ListView({ posts, onSelect, onEdit, onNavigate, loading, showAll
     return () => {
       window.removeEventListener('resize', set);
       if (ro) ro.disconnect();
-      document.documentElement.style.removeProperty('--pp-toast-lift');
     };
   }, [picking]);
 
@@ -1376,16 +1436,13 @@ export function ListView({ posts, onSelect, onEdit, onNavigate, loading, showAll
     </ul>
   );
 
-  // A day: its heading sticks to the top of the page (under the bulk bar while that shows) and
+  // A day: its heading sticks to the top of the page (under the bulk line while that sticks) and
   // carries the day's checkbox, which selects (or clears) every post of the day.
   const renderSection = (key, label, list) => {
     const n = list.filter((p) => sel.isSelected(p)).length;
     return (
       <section key={key}>
-        <div
-          className="group sticky z-10 mb-1.5 flex items-center gap-3 rounded-xl bg-white px-2 py-1 dark:bg-zinc-900"
-          style={{ top: 'var(--pp-bulk-h, 0px)' }}
-        >
+        <DayHeading top={bulkH}>
           <PickBox
             checked={n > 0 && n === list.length}
             indeterminate={n > 0 && n < list.length}
@@ -1394,7 +1451,7 @@ export function ListView({ posts, onSelect, onEdit, onNavigate, loading, showAll
             shown={phone || picking}
           />
           <h3 className="font-display text-sm font-bold text-zinc-600 dark:text-zinc-300">{label}</h3>
-        </div>
+        </DayHeading>
         {renderRows(list)}
       </section>
     );
@@ -1402,13 +1459,11 @@ export function ListView({ posts, onSelect, onEdit, onNavigate, loading, showAll
 
   // w-full: inside the shell's flex-column panel the box must stretch, or it would size to its
   // min-content (the longest nowrap title) and the list would scroll sideways at 375px. No
-  // max-width any more (planner bulk, the owner's pick): the rows span the panel like Approvals,
-  // and the reading measure is held by the title and caption themselves (~90ch).
+  // max-width any more (planner bulk, the owner's pick): the rows span the panel like Approvals.
   return (
-    <div ref={rootRef} className="w-full min-w-0" style={{ paddingBottom: 'calc(var(--pp-toast-h, 0px) + var(--pp-bar-room, 0px))' }}>
-      {/* The bar is a direct child of the list root so it sticks for the whole list; the days
-          keep their own spacing, so a phone (where the idle bar is hidden) starts with a day. */}
-      <ListBulkBar sel={sel} setupFor={setupFor} barRef={barRef} onNavigate={onNavigate} />
+    <div ref={rootRef} className="w-full min-w-0" style={{ paddingBottom: 'var(--pp-toast-h, 0px)' }}>
+      {/* The bulk line is a direct child of the list root so it sticks for the whole list. */}
+      <ListBulkBar sel={sel} setupFor={setupFor} barRef={barRef} />
       <div className="space-y-5">
       {canToggle ? (
         <button

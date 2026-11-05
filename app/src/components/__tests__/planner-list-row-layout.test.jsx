@@ -10,13 +10,14 @@ import { ConfirmProvider } from '../ui/confirm.jsx';
 // Studio fix flow, package C: the List row redesign (owner, 2026-11-01: "most of the content
 // is cut off for text-only posts ... when there are errors we need a clear way to resolve
 // it, preferably a button"). These pin the row contract:
-//   - a text post shows its title plus up to two caption lines (the caption minus the line
-//     used as the title) and NO fake thumbnail;
-//   - a media post keeps its real thumbnail;
+//   - media first (2026-11-05): a media post's real thumbnail, or a quiet lane tile for a text
+//     post (never a fake picture of its words), leads the words after the time column;
+//   - a bold title only where a lane publishes one; the caption is one paragraph, clamped to
+//     two lines, and keeps its first line when there is no title;
 //   - a post that needs the owner shows ONE status line under its title (rose alert glyph +
 //     the reason in the halted ink + its fix button on the same line) and no status pill;
 //   - a calm post keeps its status pill and gets no fix button;
-//   - the platform glyph leads the title and the thumbnail trails, so titles share one edge;
+//   - the platform glyph leads the meta line, and every row's words share one edge;
 //   - the ⋯ menu never repeats the row's fix, and a divider sets the delete apart
 //     (polish round after the fresh-eyes review, 2026-11-01).
 
@@ -60,41 +61,103 @@ function renderList(posts, props = {}) {
   );
   return { onNavigate };
 }
-const rowOf = (title) => screen.getByText(title).closest('li');
+// A row by the post's NAME (postDisplayTitle), which its selection checkbox carries: the visible
+// words follow the title rule, so a LinkedIn post's title is not on the row.
+const rowOf = (name) => screen.getByRole('checkbox', { name: `Select ${name}` }).closest('li');
 
 describe('List row: text posts show their words, not a fake thumbnail', () => {
-  it('title on one line, then up to two caption lines without the title line, no thumbnail', () => {
+  it('no title on a LinkedIn post: the whole caption is one paragraph on two lines, a lane tile leads', () => {
     renderList([textPost]);
     const li = rowOf('Three things we learned shipping the planner');
+    expect(li.querySelector('[data-row-title]')).toBeNull();
     const snippet = li.querySelector('[data-row-caption]');
     expect(snippet).not.toBeNull();
     expect(snippet.className).toContain('line-clamp-2');
-    expect(snippet).toHaveTextContent('First, approvals need to be one click. Second, nobody reads a status pill.');
-    expect(snippet.textContent).not.toContain('Three things');
+    expect(snippet).toHaveTextContent('Three things we learned shipping the planner First, approvals need to be one click. Second, nobody reads a status pill.');
+    expect(snippet.className).not.toContain('font-bold');
     expect(li.querySelector('[data-text-preview]')).toBeNull();
     expect(li.querySelector('img, video')).toBeNull();
+    const tile = li.querySelector('[data-row-media] [data-lane-tile]');
+    expect(tile).toHaveAttribute('data-lane-tile', 'linkedin');
+    expect(tile.className).toContain('w-full');
+    expect(li.querySelector('[data-row-media]').className).toContain('w-10');
   });
 
-  it('a caption that IS the title adds nothing under it', () => {
+  it('a one-line text post shows its line as the caption, with no title line', () => {
     renderList([shortText]);
-    expect(rowOf('Just one line.').querySelector('[data-row-caption]')).toBeNull();
+    const li = rowOf('Just one line.');
+    expect(li.querySelector('[data-row-title]')).toBeNull();
+    expect(li.querySelector('[data-row-caption]')).toHaveTextContent(/^Just one line\.$/);
   });
 
-  it('a media post keeps its real thumbnail', () => {
+  it('a media post keeps its real thumbnail, 40px wide at its own aspect, before the words', () => {
     renderList([mediaPost]);
     const li = rowOf('Reel of the week');
-    expect(li.querySelector('img')).toHaveAttribute('src', '/media/cover.jpg');
+    const media = li.querySelector('[data-row-media]');
+    expect(media.querySelector('img')).toHaveAttribute('src', '/media/cover.jpg');
+    expect(media.querySelector('img').className).toMatch(/aspect-\[/);
     expect(li.querySelector('[data-row-caption]')).toHaveTextContent('Watch the tour.');
+    expect(media.compareDocumentPosition(li.querySelector('[data-row-caption]')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('a YouTube post shows its title bold, the caption quiet under it without the repeated line', () => {
+    renderList([{ ...mediaPost, id: 'yt1', type: 'youtube-short', platforms: ['youtube'], title: 'Morning light', caption: 'Morning light\nA study with 140 people.' }]);
+    const li = rowOf('Morning light');
+    const title = li.querySelector('[data-row-title]');
+    expect(title).toHaveTextContent('Morning light');
+    expect(title.className).toContain('font-bold');
+    expect(title.className).not.toMatch(/max-w-/);
+    const caption = li.querySelector('[data-row-caption]');
+    expect(caption).toHaveTextContent(/^A study with 140 people\.$/);
+    expect(caption.className).toContain('text-zinc-600');
+  });
+
+  // A YouTube video publishes post.description, never the caption (yt-social.mjs buildMeta), so
+  // the row reads the description: every live YouTube post has an empty caption.
+  it('a YouTube post with an empty caption shows its description under the title, two lines', () => {
+    renderList([{ ...mediaPost, id: 'yt2', type: 'youtube-short', platforms: ['youtube'], title: 'Morning light', caption: '', description: 'A study with 140 people.\nSources in the pinned comment.' }]);
+    const li = rowOf('Morning light');
+    expect(li.querySelector('[data-row-title]')).toHaveTextContent('Morning light');
+    const caption = li.querySelector('[data-row-caption]');
+    expect(caption).toHaveTextContent(/^A study with 140 people\. Sources in the pinned comment\.$/);
+    expect(caption.className.split(/\s+/)).toContain('line-clamp-2');
+    expect(caption.className.split(/\s+/)).not.toContain('block');
   });
 
   // Planner bulk (package P, the owner's pick): the List spans the panel like Approvals (the
-  // max-w-6xl cap is gone) and the title + caption hold the reading measure near 90ch.
-  it('the list spans the panel; the words stop near 90ch', () => {
+  // max-w-6xl cap is gone), and the words carry no reading-measure cap of their own.
+  it('the list spans the panel; the words are not capped', () => {
     renderList([textPost]);
     const li = rowOf('Three things we learned shipping the planner');
     expect(li.closest('.max-w-6xl')).toBeNull();
     expect(li.closest('.w-full')).not.toBeNull();
-    expect(li.querySelector('[data-row-caption]').className).toContain('max-w-[90ch]');
+    expect(li.querySelector('[data-row-caption]').className).not.toMatch(/max-w-/);
+  });
+
+  // Exceptions only (owner, 2026-11-05): the glyph already says YouTube, and an HD video is the
+  // normal case, so the meta line says "Short" and shows no HD pill; a thin master keeps 720p.
+  it('the meta line says "Short", hides the HD pill and keeps the 720p warning', () => {
+    const yt = { ...mediaPost, id: 'yt3', type: 'youtube-short', platforms: ['youtube'], title: 'Morning light' };
+    renderList([
+      { ...yt, media: { ...yt.media, hdReady: true } },
+      { ...yt, id: 'yt4', title: 'Evening light', media: { ...yt.media, hdReady: false, bitrate: 3_000_000 } },
+    ]);
+    const hd = rowOf('Morning light');
+    expect(within(hd).getByText('Short')).toBeInTheDocument();
+    expect(hd).not.toHaveTextContent('YouTube Short');
+    expect(within(hd).queryByText('HD')).toBeNull();
+    expect(within(rowOf('Evening light')).getByText('720p')).toBeInTheDocument();
+  });
+
+  // One continuous row (owner, 2026-11-05): the open-detail button fills the row (flex-1, no
+  // cap), so the pill and the ⋯ right after it sit at the row's trailing edge.
+  it('the words fill the row; the pill and the menu sit at the trailing edge', () => {
+    renderList([shortText]);
+    const li = rowOf('Just one line.');
+    const open = li.querySelector('[data-row-caption]').closest('button');
+    expect(open.className.split(/\s+/)).toContain('flex-1');
+    expect(open.className).not.toMatch(/max-w-/);
+    expect(open.nextElementSibling).toBe(li.querySelector('[data-row-pill]'));
   });
 });
 
@@ -134,22 +197,26 @@ describe('List row: one status signal', () => {
     expect(line.className.match(/\bmd:\S+/g)).toEqual(['md:pl-[6.75rem]']);
     expect(btn.closest('.ml-auto')).not.toBeNull();
     expect(btn.closest('.ml-auto').className).toContain('shrink-0');
+    expect(btn.closest('.ml-auto').className).not.toMatch(/md:ml-0/);
+    expect(reason.className).not.toMatch(/max-w-/);
     // The line sits under the title, outside the open-detail button (no nested controls).
     expect(line.closest('button')).toBeNull();
   });
 
-  it('the platform glyph leads the title, and titles share one edge with or without a thumbnail', () => {
+  it('the platform glyph leads the meta line, and every row opens with its media column', () => {
     renderList([blockedPost, mediaPost]);
     const lead = rowOf('Telegram teaser').querySelector('[data-row-lead]');
     expect(lead).not.toBeNull();
     expect(lead.querySelector('[aria-label="Telegram"]')).not.toBeNull();
-    // The title follows the lead glyph directly.
-    expect(lead.nextElementSibling).toHaveTextContent('Telegram teaser');
-    // The media row's thumbnail comes AFTER its words, so it never pushes the title right.
-    const mediaLi = rowOf('Reel of the week');
-    const words = mediaLi.querySelector('[data-row-caption]');
-    const img = mediaLi.querySelector('img');
-    expect(words.compareDocumentPosition(img) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The type follows the lead glyph on the meta line.
+    expect(lead.nextElementSibling).toHaveTextContent('Text');
+    // Both rows open the button with the same 40px media column (a tile or the thumbnail), so
+    // the words start at one x with or without a picture.
+    for (const name of ['Telegram teaser', 'Reel of the week']) {
+      const btn = rowOf(name).querySelector('[data-row-media]').parentElement;
+      expect(btn.tagName).toBe('BUTTON');
+      expect(btn.firstElementChild.hasAttribute('data-row-media')).toBe(true);
+    }
   });
 
   it('a calm post keeps its status pill and offers no fix', () => {

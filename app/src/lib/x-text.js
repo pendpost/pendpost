@@ -3,6 +3,17 @@
 // app/src/lib/__tests__/x-text-twin.test.js; change both together.
 export const X_TWEET_LIMIT = 280;
 export const X_TCO_LENGTH = 23;
+// Long posts: an account with an X subscription that includes them may post up to
+// 25,000 weighted chars. X API v2 reports it as /2/users/me subscription_type.
+// X's help center lists longer posts for Basic as well as Premium and Premium+
+// (help.x.com/en/managing-your-account/about-x-bluecheck). Anything else, including
+// None, an unknown value or an account that was never probed, stays at 280: fail closed.
+export const X_LONG_POST_LIMIT = 25000;
+const LONG_POST_TIERS = new Set(['Basic', 'Premium', 'PremiumPlus']);
+
+export function xPostLimit(subscriptionType) {
+  return LONG_POST_TIERS.has(subscriptionType) ? X_LONG_POST_LIMIT : X_TWEET_LIMIT;
+}
 
 const LIGHT_RANGES = [[0x0000, 0x10ff], [0x2000, 0x200d], [0x2010, 0x201f], [0x2032, 0x2037]];
 const BARE_TLDS = 'com|org|net|io|dev|ai|app|co|me|ch|de|uk|fr|eu|us|info|xyz|so|sh|gg|tv|ly|to';
@@ -28,6 +39,6 @@ export function xWeightedLength(text) {
   return len;
 }
 
-export function xFits(text) {
-  return xWeightedLength(text) <= X_TWEET_LIMIT;
+export function xFits(text, limit = X_TWEET_LIMIT) {
+  return xWeightedLength(text) <= limit;
 }

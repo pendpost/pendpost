@@ -151,6 +151,8 @@ optional `clientId` for schema parity, and never reads or writes a credential VA
 (the registry holds only non-secret profile data). (`client_list` stays a plain
 read twin; reads are safe.)
 
+`POST /api/whats-new/seen` is dashboard-only too: it remembers which release notes the owner already saw (`data/.whats-new.json`), a Studio display preference with no effect on posts, so an agent has nothing to do with it. The read is `GET /api/whats-new` (docs/specs/whats-new.md).
+
 `POST /api/dashboard-update` remains operator/dashboard-only: it fast-forward-pulls
 the operator's git checkout when upstream is ahead (`scripts/dashboard-build.mjs
 apply --pull` runs `git pull --ff-only` with `cwd: REPO_ROOT`), rebuilds the
@@ -311,6 +313,7 @@ one, not added.
   "routes": [
     "/api/engagers/dismiss-link",
     "/api/dashboard-update",
+    "/api/whats-new/seen",
     "/api/connect",
     "/api/agent/connect",
     "/api/agent/adopt",
@@ -339,6 +342,7 @@ one, not added.
     "/api/engagers/dismiss-link"
   ],
   "agentOnly": {
+    "/api/media/cleanup": "Free disk space after posting (docs/specs/media-cleanup.md). The operator face is ONE switch in Settings (posting.mediaCleanup.enabled via the config route, GUI-reachable): with it on, the scheduler runs this same verb once a day. An on-demand run with its kept-file reasons is a report an agent reads and acts on; a Studio panel listing every kept video and why would be a second surface for a decision the switch already makes, and the net-simplify bar rejects that.",
     "/api/cloud/events": "The raw cloud inbound-event read (X activity: mentions, replies, quotes). Since the replies build of 2026-11-01 the operator sees these events in ONE place, Radar > Antworten an dich: the comment sweep merges the cached events into GET /api/comments/inbox as elsewhere[] items of kind event, and that list is the GUI face (it also replies through POST /api/inbound/reply). The Activity page Inbox that read this route directly was removed as a duplicate surface (net-simplify). Agents keep list_inbound_events for its since/type/postId filters, which a human browsing the unified list does not need.",
     "/api/radar/draft-comparison": "The spawned child's own tool: the operator presses Draft it (which is /api/radar/comparison-draft, GUI-reachable), their agent writes the page, and calls this to file it. Its required argument is the page body, so a human calling it directly would already have written the page and would want the composer instead. It exists as its own tool, rather than plan_create_post, so that auto-approve cannot match a post seeded by untrusted threads.",
     "/api/radar/scan": "Spec 41 made Studio scanning AGENT-ONLY: Scan now spawns the operator's own agent (POST /api/radar/agent-scan), and a scan that cannot use an agent does not run rather than falling back to a keyword match pretending to be research. radar_scan / runLaneRadar stay SHIPPED for agents and headless callers that still want the credentialed keyword scan - deleting that machinery is its own net-simplify diff, not a rider on this feature. Until then it is genuinely agent-only, and a dead GUI helper kept alive to satisfy this check would fake the gate green.",

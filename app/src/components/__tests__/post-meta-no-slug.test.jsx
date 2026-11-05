@@ -59,8 +59,10 @@ describe('Planner List row: never the raw post slug', () => {
     expect(container.textContent).not.toContain('li-scope');
     expect(container.textContent).not.toContain('tg-review');
     expect(screen.queryByText('Launch · Text')).toBeNull();
-    // The headline still names the post: its title, else its first caption line.
-    expect(screen.getByText('Launch week recap')).toBeInTheDocument();
+    // The post's NAME is its title, else its first caption line (the selection checkbox); a
+    // LinkedIn post publishes no title, so the visible words are its caption (the title rule).
+    expect(screen.getByRole('checkbox', { name: 'Launch week recap auswählen' })).toBeInTheDocument();
+    expect(screen.queryByText('Launch week recap')).toBeNull();
     expect(screen.getByText('The approval gate now covers LinkedIn.')).toBeInTheDocument();
     expect(screen.getAllByText('Planner tour for the Telegram channel, next steps inside.').length).toBeGreaterThan(0);
   });
@@ -78,13 +80,19 @@ describe('Freigaben card meta: campaign label, never the raw post slug', () => {
     expect(container.textContent).not.toContain('Kampagne:');
   });
 
-  it('the date carries the campaign in a real tooltip', async () => {
+  // 2026-11-05 (0698593d, readable row dates): the row shows a short spoken date, so the
+  // tooltip now carries the full stamp AND the campaign, "<full stamp> · Campaign: Launch".
+  it('the date carries the full stamp and the campaign in a real tooltip', async () => {
     const user = userEvent.setup();
     const campaigns = [{ id: 'launch', active: true, posts: [tgReview] }];
     const { container } = render(wrap(<Freigaben campaigns={campaigns} onOpen={() => {}} />, 'en'));
     expect(container.textContent).not.toContain('Campaign: Launch');
     await user.hover(container.querySelector('[data-row-meta] .tabular-nums'));
-    expect((await screen.findAllByText('Campaign: Launch')).length).toBeGreaterThan(0);
+    const tips = await screen.findAllByText(/ · Campaign: Launch$/);
+    expect(tips.length).toBeGreaterThan(0);
+    // The stamp before the campaign carries the year the short row date leaves out
+    // (fmtFull writes it with two digits: "Thu, 07/02/99 · 12:00 PM").
+    expect(tips[0].textContent).toMatch(/\/99 · /);
     expect(container.textContent).not.toContain('tg-review');
   });
 });

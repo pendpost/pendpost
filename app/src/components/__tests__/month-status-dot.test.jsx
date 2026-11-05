@@ -78,4 +78,21 @@ describe('Month chip carries the status word as a glyph, never a colour-only dot
     // The accessible name still carries the type.
     expect(chip(/Calm post/).getAttribute('aria-label')).toMatch(/Text/);
   });
+
+  // Hollow = approved and waiting, filled = published. The two used to share one CheckCircle
+  // half a shade of green apart; the shape must differ, and a published chip settles back.
+  it('a published post wears the SOLID glyph, a different shape from approved', () => {
+    const pubPost = { ...liPost, id: 'pub1', title: 'Out post', caption: 'Out post', derivedState: 'posted', status: 'posted' };
+    renderMonth([liPost, pubPost]);
+    expect(chip(/Out post/).getAttribute('aria-label')).toMatch(/Published/);
+    const pub = glyphOf(/Out post/);
+    const appr = glyphOf(/Calm post/);
+    expect(pub.getAttribute('data-status-glyph')).toBe('posted');
+    expect(pub.className).toContain('bg-emerald-600');
+    expect(appr.className).not.toContain('bg-emerald-600');
+    expect(pub.querySelector('svg').getAttribute('class')).not.toBe(appr.querySelector('svg').getAttribute('class'));
+    // The published chip settles (transparent body), the approved one stays crisp.
+    expect(chip(/Out post/).className).toContain('bg-transparent');
+    expect(chip(/Calm post/).className).not.toContain('bg-transparent');
+  });
 });

@@ -35,8 +35,9 @@ function Count({ n }) {
 }
 
 // The status-colour legend behind a quiet "?" (US-FR-05: never an always-on bar). It closes the
-// first row, so a phone never shows it alone on a line of its own.
-function Legend() {
+// first row, so a phone never shows it alone on a line of its own. `extra`: a page's own help
+// (Approvals: its keyboard shortcuts), under a divider in the same popover.
+function Legend({ extra = null }) {
   const t = useT();
   return (
     <Popover>
@@ -47,6 +48,7 @@ function Legend() {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-56 p-3">
         <StatusLegend />
+        {extra ? <div className="mt-3 border-t border-zinc-900/10 pt-3 dark:border-white/10">{extra}</div> : null}
       </PopoverContent>
     </Popover>
   );
@@ -202,7 +204,7 @@ function PhoneTabs({ value, counts, onPick }) {
   );
 }
 
-function StatusRow({ value, counts = {}, onChange }) {
+function StatusRow({ value, counts = {}, onChange, helpExtra = null }) {
   const phone = useIsPhone();
   // "All" is no status; a pressed tab goes back to no status too.
   const pick = (key) => onChange(key === 'all' || value === key ? null : key);
@@ -211,7 +213,7 @@ function StatusRow({ value, counts = {}, onChange }) {
       {phone
         ? <PhoneTabs value={value} counts={counts} onPick={pick} />
         : <FitTabs value={value} counts={counts} onPick={pick} />}
-      <Legend />
+      <Legend extra={helpExtra} />
     </div>
   );
 }
@@ -246,12 +248,12 @@ export default function FilterBar({
   platforms = [], platformFilter = [], onTogglePlatform,
   types = [], typeFilter = [], onToggleType, showTypes = false,
   showStatus = false, status = null, onStatus, counts = {},
-  extra = null, hasActive = false, onReset,
+  extra = null, hasActive = false, onReset, helpExtra = null,
 }) {
   const t = useT();
   return (
     <div className="glass-panel space-y-2 rounded-2xl px-4 py-2" role="group" aria-label={t('app.filter.label')} data-filter-bar="">
-      {showStatus ? <StatusRow value={status} counts={counts} onChange={onStatus} /> : null}
+      {showStatus ? <StatusRow value={status} counts={counts} onChange={onStatus} helpExtra={helpExtra} /> : null}
       <div data-filter-row="facets" className="flex flex-wrap items-center gap-2">
         {platforms.map((p) => (
           <PlatformToggle key={p} platform={p} active={platformFilter.includes(p)} onToggle={() => onTogglePlatform(p)} />
@@ -275,7 +277,7 @@ export default function FilterBar({
           </button>
         ) : null}
         {/* Where there is no status row, the legend closes this one. */}
-        {showStatus ? null : <div className="ml-auto"><Legend /></div>}
+        {showStatus ? null : <div className="ml-auto"><Legend extra={helpExtra} /></div>}
       </div>
     </div>
   );

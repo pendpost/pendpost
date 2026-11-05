@@ -54,8 +54,7 @@ export default function AppToast() {
     return () => clearTimeout(id);
   }, [toast]);
   // While a toast shows, its height rides --pp-toast-h on <html>, so a list can keep its last
-  // row's ⋯ clear of it (planner bulk round 2). A floating phone bar lifts the toast above it
-  // through --pp-toast-lift.
+  // row's ⋯ clear of it (planner bulk round 2).
   const boxRef = useRef(null);
   useLayoutEffect(() => {
     const root = document.documentElement;
@@ -67,7 +66,7 @@ export default function AppToast() {
   const isError = toast.kind === 'error';
   const isProgress = toast.kind === 'progress';
   return (
-    <div ref={boxRef} data-app-toast="" style={{ bottom: 'calc(1rem + var(--pp-toast-lift, 0px))' }} className="glass-panel fixed right-4 z-50 flex max-w-sm items-center gap-2.5 rounded-2xl px-3.5 py-2.5 shadow-lg">
+    <div ref={boxRef} data-app-toast="" className="glass-panel fixed bottom-4 right-4 z-50 flex max-w-sm items-center gap-2.5 rounded-2xl px-3.5 py-2.5 shadow-lg">
       <div
         role={isError ? 'alert' : 'status'}
         aria-live={isError ? 'assertive' : 'polite'}

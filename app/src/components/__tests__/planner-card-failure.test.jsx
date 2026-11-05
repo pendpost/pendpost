@@ -78,7 +78,7 @@ const rowOf = (title) => screen.getByText(title).closest('li');
 describe('Planner List row failure reason', () => {
   it('a retrying row shows the plain sentence in neutral ink, never the raw line', () => {
     renderList([{ ...post, title: 'Sourdough' }]);
-    const why = within(rowOf('Sourdough')).getByText(SENTENCE);
+    const why = within(rowOf('Fresh sourdough every Saturday.')).getByText(SENTENCE);
     expect(RED.test(why.getAttribute('class') || '')).toBe(false);
     expect(screen.queryByText(RAW)).not.toBeInTheDocument();
     expect(document.querySelector(`[title="${RAW}"]`)).toBeNull();
@@ -86,13 +86,13 @@ describe('Planner List row failure reason', () => {
 
   it('a terminal failure reads red: the owner must act', () => {
     renderList([{ ...post, title: 'Sourdough', lastFailure: { ...post.lastFailure, terminal: true } }]);
-    const why = within(rowOf('Sourdough')).getByText(SENTENCE);
+    const why = within(rowOf('Fresh sourdough every Saturday.')).getByText(SENTENCE);
     expect(RED.test(why.getAttribute('class') || '')).toBe(true);
   });
 
   it('a healthy row with a stale lastFailure keeps its campaign line', () => {
     renderList([{ ...post, title: 'Sourdough', derivedState: 'waiting-due', scheduledAt: '2099-01-01T10:00:00Z' }]);
-    expect(within(rowOf('Sourdough')).queryByText(SENTENCE)).toBeNull();
+    expect(within(rowOf('Fresh sourdough every Saturday.')).queryByText(SENTENCE)).toBeNull();
   });
 });
 
@@ -111,12 +111,12 @@ describe('Week card and List row agree on a code-only failure', () => {
   it('the Week card shows the sentence, not the caption', () => {
     renderCard(codeOnly);
     expect(screen.getByText(SCOPE)).toBeInTheDocument();
-    // The reason takes the caption slot; the caption survives only in the text cover tile.
-    expect(screen.getAllByText('Fresh sourdough every Saturday.')).toHaveLength(1);
+    // The reason takes the caption slot; a text card draws no fake cover of its words.
+    expect(screen.queryByText('Fresh sourdough every Saturday.')).toBeNull();
   });
 
   it('the List row shows the same sentence', () => {
     renderList([codeOnly]);
-    expect(within(rowOf('Sourdough')).getByText(SCOPE)).toBeInTheDocument();
+    expect(within(rowOf('Fresh sourdough every Saturday.')).getByText(SCOPE)).toBeInTheDocument();
   });
 });

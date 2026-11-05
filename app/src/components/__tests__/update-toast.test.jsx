@@ -1,8 +1,9 @@
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import UpdateToast, { formatVersion } from '../UpdateToast.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
+import { TooltipProvider } from '../ui/Tooltip.jsx';
 
 // UpdateToast polls GET /api/dashboard-update (useUpdateStatus) and behaves like a
 // desktop updater: it names the running and the new version, shows the real step
@@ -14,6 +15,16 @@ const pollCalls = [];
 vi.mock('../../lib/api.js', () => ({
   useUpdateStatus: (fast) => { pollCalls.push(fast); return status; },
 }));
+// GET /api/whats-new (useWhatsNew) is mocked the same way; the helpers stay real.
+let news = null;
+const seenCalls = [];
+vi.mock('../../lib/whatsNew.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  useWhatsNew: () => ({ data: news }),
+  useMarkWhatsNewSeen: () => (v) => { seenCalls.push(v); },
+}));
+const NOTE = (version, en, de) => ({ version, date: '2026-11-02', url: `https://example.test/v${version}`, highlights: { en, 'de-CH': de } });
+const newsFor = (version, unseen) => ({ ok: true, version, seen: '2.9.0', unseen, recent: unseen, releasesUrl: 'https://example.test/releases' });
 
 // Node's experimental localStorage has no methods under vitest: install a real one.
 function installStorage() {
@@ -50,7 +61,9 @@ const upToDate = (over = {}) => answer({ available: false, canApply: false, targ
 
 const ui = (props = {}, locale = 'en') => (
   <I18nProvider locale={locale}>
-    <UpdateToast {...props} />
+    <TooltipProvider>
+      <UpdateToast {...props} />
+    </TooltipProvider>
   </I18nProvider>
 );
 const renderToast = (props, locale) => render(ui(props, locale));
@@ -61,6 +74,8 @@ beforeEach(() => {
   storage = installStorage();
   status = upToDate();
   pollCalls.length = 0;
+  news = null;
+  seenCalls.length = 0;
 });
 afterEach(() => { vi.useRealTimers(); });
 
@@ -486,5 +501,79 @@ describe('UpdateToast: other states', () => {
     rerender(ui({ onReload }, 'de-CH'));
     await userEvent.click(screen.getByRole('button', { name: /neu laden/i }));
     expect(onReload).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('UpdateToast: what is new', () => {
+  const N210 = NOTE('2.10.0', ['Bulk actions in the List.', 'A tray groups problems.'], ['Mehrere Beiträge auf einmal.', 'Eine Leiste fasst Probleme zusammen.']);
+  const N290 = NOTE('2.9.0', ['Clear refusals.'], ['Klare Absagen.']);
+
+  it('shows nothing when there are no unseen notes', () => {
+    news = newsFor('2.10.0', []);
+    const { container } = renderToast();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('says "Updated to" with What\'s new, which opens the unseen notes newest first', async () => {
+    news = newsFor('2.10.0', [N210, N290]);
+    renderToast();
+    expect(screen.getByRole('status')).toHaveTextContent('Updated to 2.10.0');
+    await userEvent.click(screen.getByRole('button', { name: "What's new" }));
+    const dialog = screen.getByRole('dialog', { name: "What's new" });
+    const headings = within(dialog).getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
+    expect(headings).toEqual(['2.10.0', '2.9.0']);
+    expect(dialog).toHaveTextContent('Bulk actions in the List.');
+    expect(within(dialog).getByRole('link', { name: 'Full notes for 2.10.0' })).toHaveAttribute('href', 'https://example.test/v2.10.0');
+    // The toast steps aside while its dialog is open.
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(seenCalls).toEqual([]);
+  });
+
+  it('closing the notes remembers the version and the toast does not come back', async () => {
+    news = newsFor('2.10.0', [N210]);
+    renderToast();
+    await userEvent.click(screen.getByRole('button', { name: "What's new" }));
+    // The glyph top-right (the backdrop is a Close button too).
+    await userEvent.click(within(screen.getByRole('dialog')).getAllByRole('button', { name: 'Close' }).at(-1));
+    expect(seenCalls).toEqual(['2.10.0']);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('dismissing the toast remembers the version without opening anything', async () => {
+    news = newsFor('2.10.0', [N210]);
+    renderToast();
+    await userEvent.click(screen.getByRole('button', { name: /dismiss/i }));
+    expect(seenCalls).toEqual(['2.10.0']);
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('an update offer or a failure wins over the notes', () => {
+    news = newsFor('2.10.0', [N210]);
+    status = answer({ running: { version: '2.10.0', commit: RUN.commit }, target: NEWER, id: NEWER.commit });
+    renderToast();
+    expect(screen.getByRole('status')).toHaveTextContent('A new version is available');
+    expect(screen.queryByRole('button', { name: "What's new" })).toBeNull();
+  });
+
+  it('takes the place of the short "Updated to" note and stays until acted on', () => {
+    vi.useFakeTimers();
+    storage.setItem('pendpost.update.done', JSON.stringify({ ...NEW, at: Date.now() }));
+    news = newsFor('2.10.0', [N210]);
+    renderToast();
+    expect(screen.getByRole('button', { name: "What's new" })).toBeInTheDocument();
+    act(() => { vi.advanceTimersByTime(10_000); });
+    expect(screen.getByRole('status')).toHaveTextContent('Updated to 2.10.0');
+    expect(screen.getByRole('button', { name: "What's new" })).toBeInTheDocument();
+  });
+
+  it('reads in de-CH, highlights included', async () => {
+    news = newsFor('2.10.0', [N210]);
+    renderToast({}, 'de-CH');
+    expect(screen.getByRole('status')).toHaveTextContent('Aktualisiert auf 2.10.0');
+    await userEvent.click(screen.getByRole('button', { name: 'Neuerungen' }));
+    const dialog = screen.getByRole('dialog', { name: 'Neuerungen' });
+    expect(dialog).toHaveTextContent('Mehrere Beiträge auf einmal.');
+    expect(dialog).toHaveTextContent('2. November 2026');
   });
 });

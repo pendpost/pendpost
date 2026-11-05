@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -94,14 +94,13 @@ describe('Freigaben action errors speak a plain sentence', () => {
     expect(alert).not.toHaveTextContent(/HTTP/);
   });
 
-  it('a failed bulk approve names the failed post but keeps the server line off the bar', async () => {
+  it('a failed bulk approve names the failed post but keeps the server line off the alert', async () => {
     approvePost.mockRejectedValue(new Error('HTTP 500 internal'));
     const user = userEvent.setup();
     renderFreigaben();
     await user.click(screen.getByRole('checkbox', { name: /select post/i }));
-    const bar = (await screen.findByText(/1 selected/i)).parentElement;
-    await user.click(within(bar).getByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(within(bar).getByRole('alert')).toHaveTextContent(/0 approved, 1 failed: p1/));
-    expect(within(bar).getByRole('alert')).not.toHaveTextContent(/HTTP 500/);
+    await user.click(await screen.findByRole('button', { name: 'Approve 1' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/0 approved, 1 failed: p1/));
+    expect(screen.getByRole('alert')).not.toHaveTextContent(/HTTP 500/);
   });
 });

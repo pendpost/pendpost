@@ -26,14 +26,18 @@ fs.writeFileSync(path.join(WS, 'data', 'plans', 'active-plans.json'), JSON.strin
 // A minimal but real MP4 header so the asset scan/media.exists reads true.
 fs.writeFileSync(path.join(WS, 'data', 'media', 'clip.mp4'), Buffer.from([0, 0, 0, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d]));
 
-const { createCampaign, createPost, approvePost } = await import('../lib/writes.mjs');
+const { createCampaign, createPost, updatePost, approvePost } = await import('../lib/writes.mjs');
 const { setCover, clearCover } = await import('../lib/covers.mjs');
 const { eligibleDuePosts } = await import('../lib/scheduler.mjs');
 const { buildPublishJob, PublishJobError } = await import('../lib/publish-job.mjs');
-const { loadPlanStore } = await import('../lib/plans.mjs');
+const { loadPlanStore, loadManifest } = await import('../lib/plans.mjs');
 
 const CAMP = 'acme';
 const getPost = (id) => (loadPlanStore().campaigns.find((c) => c.id === CAMP)?.posts || []).find((p) => p.id === id);
+const rawPost = (id) => {
+  const rel = loadManifest().plans.find((p) => p.id === CAMP).path;
+  return JSON.parse(fs.readFileSync(path.resolve(WS, rel), 'utf8')).posts.find((p) => p.id === id);
+};
 const eligibleIds = () => [...eligibleDuePosts(loadPlanStore().campaigns, {})].map((e) => e.post.id);
 const throwsWith = (fn, code) => {
   try { fn(); } catch (e) { return e instanceof PublishJobError && e.code === code; }
@@ -97,6 +101,57 @@ try {
   await approvePost({ campaign: CAMP, postId: 'p3', actor: 'owner' });
   const noop = await clearCover({ campaign: CAMP, postId: 'p3' });
   ok(noop.ok && !getPost('p3').editedSinceApproval, 'clearing a cover that was never set does NOT flag (nothing changed)');
+
+  // ---- a cover-raised flag is STICKY: no later edit can clear it --------------
+  // The cover never moves postContentHash, so the hash comparison in updatePost cannot
+  // tell a cover-raised flag from a stale one. Before the fix a scheduling-only edit
+  // found "content hash == approved hash" and deleted the flag, and the UNREVIEWED cover
+  // published. Only a re-approval may release a flag raised for a non-hashed reason.
+  await createPost({
+    campaign: CAMP,
+    post: { id: 'p4', type: 'reel', platforms: ['instagram'], scheduledAt: '2020-01-01T00:00:00Z', path: 'data/media/clip.mp4', caption: 'p4 approved copy' },
+    actor: 'agent:claude',
+  });
+  await approvePost({ campaign: CAMP, postId: 'p4', actor: 'owner' });
+  await setCover({ campaign: CAMP, postId: 'p4', coverUrl: 'https://example.com/p4-card.jpg' });
+  ok(getPost('p4').editedSinceApproval === true, 'p4: set_cover on the approved post raises the flag');
+  ok(rawPost('p4').stickyEditReason === 'cover', 'p4: the flag records WHY it was raised (stickyEditReason: cover)');
+
+  let r = await updatePost({ campaign: CAMP, postId: 'p4', ifRev: getPost('p4').rev, fields: { scheduledAt: '2020-02-02T00:00:00Z' }, actor: 'owner' });
+  ok(r.ok, 'p4: a reschedule-only edit succeeds');
+  ok(getPost('p4').editedSinceApproval === true, 'p4: a reschedule-only edit does NOT clear a cover-raised flag');
+  ok(!eligibleIds().includes('p4'), 'p4: the unreviewed cover stays fenced at eligibleDuePosts after the reschedule');
+  ok(throwsWith(() => buildPublishJob(getPost('p4'), 'meta', { clientId: 'default', campaign: CAMP }), 'edited_since_approval'),
+    'p4: buildPublishJob still refuses after the reschedule');
+
+  r = await updatePost({ campaign: CAMP, postId: 'p4', ifRev: getPost('p4').rev, fields: { executionMode: 'fully-scheduled' }, actor: 'owner' });
+  ok(r.ok && getPost('p4').editedSinceApproval === true, 'p4: an executionMode-only edit does NOT clear it either');
+
+  // A hashed edit and its exact restore normally clear the flag; here the cover is still
+  // unreviewed, so the restore must leave it raised.
+  r = await updatePost({ campaign: CAMP, postId: 'p4', ifRev: getPost('p4').rev, fields: { caption: 'p4 temporary' }, actor: 'owner' });
+  ok(r.ok && getPost('p4').editedSinceApproval === true, 'p4: a caption edit on top keeps it flagged');
+  r = await updatePost({ campaign: CAMP, postId: 'p4', ifRev: getPost('p4').rev, fields: { caption: 'p4 approved copy' }, actor: 'owner' });
+  ok(r.ok && getPost('p4').editedSinceApproval === true, 'p4: restoring the approved caption does NOT clear a cover-raised flag');
+  ok(!eligibleIds().includes('p4'), 'p4: still fenced after the caption round trip');
+
+  // Decision: set_cover then clear_cover is NOT treated as a restore. The cover has no
+  // approved fingerprint to compare against, so any cover change on an approved post
+  // holds it for the owner until re-approval (fail closed).
+  await clearCover({ campaign: CAMP, postId: 'p4' });
+  ok(!getPost('p4').cover && getPost('p4').editedSinceApproval === true,
+    'p4: clearing the cover again (back to what was approved) still needs re-approval');
+  ok(!eligibleIds().includes('p4'), 'p4: fenced after set_cover + clear_cover');
+
+  // Re-approval releases everything, and the hash gate works normally afterwards.
+  await approvePost({ campaign: CAMP, postId: 'p4', actor: 'owner' });
+  ok(!getPost('p4').editedSinceApproval && rawPost('p4').stickyEditReason === undefined,
+    'p4: re-approval clears the flag AND its sticky reason');
+  ok(eligibleIds().includes('p4'), 'p4: the re-approved post is eligible again');
+  r = await updatePost({ campaign: CAMP, postId: 'p4', ifRev: getPost('p4').rev, fields: { caption: 'p4 later edit' }, actor: 'owner' });
+  ok(r.ok && getPost('p4').editedSinceApproval === true, 'p4: after re-approval a caption edit raises the flag (hash path)');
+  r = await updatePost({ campaign: CAMP, postId: 'p4', ifRev: getPost('p4').rev, fields: { caption: 'p4 approved copy' }, actor: 'owner' });
+  ok(r.ok && !getPost('p4').editedSinceApproval, 'p4: and restoring the approved caption clears a hash-raised flag again');
 
   // ---- a cover set on an UNapproved draft is never flagged --------------------
   await createPost({

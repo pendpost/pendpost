@@ -13,6 +13,7 @@ import { useConfirm } from './ui/confirm.jsx';
 import InfoTip from './ui/InfoTip.jsx';
 import { humanizeAction } from '../lib/failureCopy.js';
 
+// X's default post limit; the account's own (accounts.x.postLimit) comes in as a prop.
 const X_LIMIT = 280;
 const DEFAULT_GAP_MIN = 2; // "2 scheduler ticks of headroom" so the fail-closed reply chain can thread.
 
@@ -53,7 +54,7 @@ export function tweetTimes(openerAt, tweets) {
 // hooks cannot run in a loop in the parent) and reports the error severity up so the
 // parent can warn before a linted tweet stalls the whole chain at publish.
 function TweetRow({
-  index, tweet, isOpener, time, assets, assetsDir, disabled,
+  index, tweet, isOpener, time, assets, assetsDir, disabled, xMax = X_LIMIT,
   canMoveUp, canMoveDown, onText, onMedia, onGap, onMoveUp, onMoveDown, onRemove, onLint,
 }) {
   const t = useT();
@@ -63,7 +64,7 @@ function TweetRow({
   // can warn before a linted tweet stalls the whole chain at publish.
   useEffect(() => { onLint(tweet.key, hasError); }, [onLint, tweet.key, hasError]);
   const len = tweet.text.length;
-  const over = len > X_LIMIT;
+  const over = len > xMax;
   return (
     <div className={`space-y-2 rounded-2xl p-3 ${INNER_SURFACE}`}>
       <div className="flex items-center justify-between gap-2">
@@ -101,7 +102,7 @@ function TweetRow({
       />
       <div className="flex items-center justify-between gap-3">
         <VideoPicker assets={assets} assetsDir={assetsDir} value={tweet.mediaPath} onChange={onMedia} />
-        <CharCounter id={`thread-count-${tweet.key}`} len={len} max={X_LIMIT} over={over} />
+        <CharCounter id={`thread-count-${tweet.key}`} len={len} max={xMax} over={over} />
       </div>
       <div aria-live="polite"><LintPanel lint={lint} /></div>
 
@@ -127,8 +128,10 @@ function TweetRow({
 // Compose a whole X thread (opener + ordered replies) as one artifact, then save it
 // as N draft posts chained by xReplyTo. Single-column, X-only; a thread is NOT a new
 // entity - just existing posts linked by the existing xReplyTo field.
-export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved, onDirtyChange }) {
+export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved, onDirtyChange, accounts = null }) {
   const t = useT();
+  // The account's X post limit (25,000 with long posts, else 280); loading or never probed = 280.
+  const xMax = accounts?.x?.postLimit ?? X_LIMIT;
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const { activeClient } = useActiveClient();
@@ -201,7 +204,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved,
     for (let i = 0; i < tweets.length; i += 1) {
       const tw = tweets[i];
       if (!tw.text.trim() && !tw.mediaPath) return t('threadComposer.errorEmptyTweet', { n: i + 1 });
-      if (tw.text.length > X_LIMIT) return t('threadComposer.over280Error', { n: i + 1 });
+      if (tw.text.length > xMax) return t('threadComposer.over280Error', { n: i + 1, max: xMax });
       if (i > 0) {
         const gap = Math.round(Number(tw.gapMin));
         if (!Number.isFinite(gap) || gap < 1) return t('threadComposer.gapWarning', { n: i + 1 });
@@ -318,6 +321,7 @@ export default function ThreadComposer({ campaigns = [], seed, onClose, onSaved,
             <div key={tw.key}>
               {i > 0 ? <div className="mx-auto h-4 w-px bg-zinc-300 dark:bg-zinc-600" aria-hidden="true" /> : null}
               <TweetRow
+                xMax={xMax}
                 index={i}
                 tweet={tw}
                 isOpener={i === 0}

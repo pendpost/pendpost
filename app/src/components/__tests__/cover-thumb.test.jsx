@@ -47,19 +47,14 @@ describe('CoverThumb preview fidelity (US-ASSET-13)', () => {
   });
 });
 
-// Tier-3 (phase 3): the text-preview tile sits on a card whose dark surface is zinc-800
+// Tier-3 (phase 3): the no-media tile sits on a card whose dark surface is zinc-800
 // (INNER_SURFACE). A zinc-800 fill there vanished in dark mode, so the tile takes the next
 // step up (zinc-700), mirroring light's zinc-100 card with its zinc-200 tile.
 describe('CoverThumb dark fill', () => {
   const tok = (el) => (el.getAttribute('class') || '').split(/\s+/);
-  it('the text-preview tile keeps a visible fill on a dark card', () => {
-    const { container } = render(<CoverThumb media={null} image={null} textPreview="Planner tour" className="h-24 w-16" />);
-    const tile = container.querySelector('[data-text-preview]');
-    expect(tok(tile)).toContain('dark:bg-zinc-700/60');
-    expect(tok(tile).some((t) => t.startsWith('dark:bg-zinc-800'))).toBe(false);
-  });
-  it('the no-text tile keeps the same visible dark fill', () => {
+  it('the no-media tile keeps a visible fill on a dark card', () => {
     const { container } = render(<CoverThumb media={null} image={null} className="h-24 w-16" />);
     expect(tok(container.firstChild)).toContain('dark:bg-zinc-700/60');
+    expect(tok(container.firstChild).some((t) => t.startsWith('dark:bg-zinc-800'))).toBe(false);
   });
 });

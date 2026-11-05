@@ -72,25 +72,33 @@ describe('bulk-approve skip honesty (S3 bulk-skip feedback)', () => {
     renderFreigaben([offlinePost, connectedPost]);
     await user.click(screen.getByRole('checkbox', { name: /select all/i }));
 
-    // The quiet note is there BEFORE anything is pressed - one offline post in scope.
-    const bar = await screen.findByRole('region', { name: /2 selected/i });
-    expect(within(bar).getByText('1 post needs manual posting')).toBeInTheDocument();
+    // The note rides the approve's tooltip BEFORE anything is pressed - one offline post in scope.
+    const approve = await screen.findByRole('button', { name: 'Approve 2' });
+    await user.hover(approve);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent('1 post needs manual posting');
+    // Not a visible line of its own.
+    expect(screen.queryAllByText('1 post needs manual posting').every((el) => el.closest('[data-radix-popper-content-wrapper]'))).toBe(true);
+    await user.unhover(approve);
 
-    await user.click(within(bar).getByRole('button', { name: /^approve$/i }));
+    await user.click(approve);
     // Only the connected post was approved; the offline one was skipped, stays
-    // selected, and the standing note keeps stating the skip - never silent.
+    // selected, and the tooltip keeps stating the skip - never silent.
     await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(1));
     expect(approvePost).toHaveBeenCalledWith('c1', 'con1');
-    const barAfter = screen.getByRole('region', { name: /1 selected/i });
-    expect(within(barAfter).getByText('1 post needs manual posting')).toBeInTheDocument();
+    const after = await screen.findByRole('button', { name: 'Approve 1' });
+    await user.unhover(after);
+    await user.hover(after);
+    await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('1 post needs manual posting'));
   });
 
-  it('renders no note when every selected post is publishable', async () => {
+  it('adds no note when every selected post is publishable', async () => {
     const user = userEvent.setup();
     renderFreigaben([connectedPost]);
     await user.click(screen.getByRole('checkbox', { name: /select all/i }));
-    const bar = await screen.findByRole('region', { name: /1 selected/i });
-    expect(within(bar).queryByText(/manual posting/i)).toBeNull();
+    await user.hover(await screen.findByRole('button', { name: 'Approve 1' }));
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('Approve 1');
+    expect(tip).not.toHaveTextContent(/manual posting/i);
   });
 });
 

@@ -115,6 +115,102 @@ try {
   r = await updatePost({ campaign: CAMP, postId: 'p2', ifRev: draft.rev, fields: { caption: 'edited draft' }, actor: 'owner' });
   ok(r.ok && !getPost('p2').editedSinceApproval, 'editing a draft never sets editedSinceApproval (nothing to invalidate)');
 
+  // ---- LEGACY approved post (approved before approvedContentHash existed) -----
+  // Such a post has approval:'approved' but no stamped hash on disk. The gate must
+  // still catch a content edit, by comparing the content BEFORE vs AFTER the edit,
+  // and must still let a scheduling-only edit through untouched.
+  const planFile = path.join(WS, 'data', 'plans', CAMP, 'post-plan.json');
+  const readRaw = (id) => JSON.parse(fs.readFileSync(planFile, 'utf8')).posts.find((x) => x.id === id);
+  const makeLegacy = (id, extra = {}) => {
+    const plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
+    const post = plan.posts.find((x) => x.id === id);
+    delete post.approvedContentHash;
+    delete post.legacyBaselineHash;
+    delete post.editedSinceApproval;
+    Object.assign(post, extra);
+    fs.writeFileSync(planFile, JSON.stringify(plan, null, 2));
+  };
+  const { mintAuthorizations } = await import('../lib/receipts.mjs');
+  const mint = (id) => mintAuthorizations({ campaign: CAMP, post: { id }, lane: 'meta', planAbs: planFile, platforms: ['instagram'], clientId: 'default', now: Date.now() });
+
+  await createPost({
+    campaign: CAMP,
+    post: { id: 'legacy', type: 'reel', platforms: ['instagram'], scheduledAt: '2020-01-01T00:00:00Z', path: 'data/media/clip.mp4', caption: 'legacy approved copy' },
+    actor: 'agent:claude',
+  });
+  await approvePost({ campaign: CAMP, postId: 'legacy', actor: 'owner' });
+  makeLegacy('legacy');
+  ok(getPost('legacy').approval === 'approved' && !readRaw('legacy').approvedContentHash,
+    'legacy fixture: approved with no approvedContentHash on disk');
+  ok(eligibleIds().includes('legacy'), 'an untouched legacy approved post stays eligible (no behaviour change)');
+
+  // Scheduling-only edit: not re-raised, and the raw post is left without a hash so the
+  // receipt path keeps reporting no_fingerprint exactly as before.
+  p = getPost('legacy');
+  r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { scheduledAt: '2020-03-03T00:00:00Z' }, actor: 'owner' });
+  ok(r.ok && !getPost('legacy').editedSinceApproval, 'legacy approved + scheduledAt-only edit is NOT re-raised');
+  ok(!readRaw('legacy').approvedContentHash, 'a scheduling-only edit stamps no hash on a legacy post');
+  ok(eligibleIds().includes('legacy'), 'the rescheduled legacy post stays eligible');
+  ok((await mint('legacy')).unattested === 'no_fingerprint', 'receipts: an untouched legacy post still fires unattested (no_fingerprint)');
+  p = getPost('legacy');
+  r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { executionMode: 'parked' }, actor: 'owner' });
+  ok(r.ok && !getPost('legacy').editedSinceApproval, 'legacy approved + executionMode-only edit is NOT re-raised');
+  p = getPost('legacy');
+  await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { executionMode: 'fully-scheduled' }, actor: 'owner' });
+
+  // Caption edit: re-raised, and the PRE-edit content is stamped as the approved baseline.
+  const legacyBaseline = postContentHash(readRaw('legacy'));
+  p = getPost('legacy');
+  r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { caption: 'legacy UNREVIEWED edit' }, actor: 'owner' });
+  ok(r.ok, 'a caption edit to a legacy approved post succeeds');
+  ok(getPost('legacy').approval === 'approved', 'legacy: approval STAYS approved');
+  ok(getPost('legacy').editedSinceApproval === true, 'legacy approved + caption edit RE-RAISES editedSinceApproval');
+  ok(readRaw('legacy').legacyBaselineHash === legacyBaseline, 'the pre-edit content hash is recorded as legacyBaselineHash');
+  ok(!readRaw('legacy').approvedContentHash, 'no approvedContentHash is minted from an edit (only the approve path stamps one)');
+  ok(!eligibleIds().includes('legacy'), 'eligibleDuePosts EXCLUDES the edited legacy post');
+  ok(throwsWith(() => buildPublishJob(getPost('legacy'), 'meta', { clientId: 'default', campaign: CAMP }), 'edited_since_approval'),
+    'buildPublishJob (cloud push) refuses the edited legacy post');
+  ok((await mint('legacy')).unattested === 'no_fingerprint', 'receipts: the legacy baseline is never treated as an approval fingerprint');
+
+  // Once stamped, the legacy post converges on the hashed path: a further scheduling
+  // edit keeps the flag, restoring the baseline content clears it.
+  p = getPost('legacy');
+  r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { scheduledAt: '2020-04-04T00:00:00Z' }, actor: 'owner' });
+  ok(r.ok && getPost('legacy').editedSinceApproval === true, 'a later scheduling edit does not clear the legacy flag');
+  p = getPost('legacy');
+  r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { caption: 'legacy approved copy' }, actor: 'owner' });
+  ok(r.ok && !getPost('legacy').editedSinceApproval, 'restoring the legacy approved content clears the flag');
+  ok(eligibleIds().includes('legacy'), 'the restored legacy post is eligible again');
+  ok((await mint('legacy')).unattested === 'no_fingerprint', 'receipts: an edit + restore does not launder the legacy post into an attested one');
+
+  // Re-approval re-stamps the hash of the current content.
+  await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: getPost('legacy').rev, fields: { caption: 'legacy edit two' }, actor: 'owner' });
+  await approvePost({ campaign: CAMP, postId: 'legacy', actor: 'owner' });
+  ok(!getPost('legacy').editedSinceApproval && readRaw('legacy').approvedContentHash === postContentHash(readRaw('legacy')),
+    're-approving the edited legacy post stamps the hash of the current content');
+  ok(!('legacyBaselineHash' in readRaw('legacy')), 're-approval drops the legacy baseline');
+
+  // Other content fields on a legacy post: platforms and alsoStory re-raise too.
+  for (const [label, fields] of [['platforms', { platforms: ['instagram', 'facebook'] }], ['alsoStory', { alsoStory: true }]]) {
+    makeLegacy('legacy');
+    p = getPost('legacy');
+    r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields, actor: 'owner' });
+    ok(r.ok && getPost('legacy').editedSinceApproval === true, `legacy approved + ${label} edit RE-RAISES editedSinceApproval`);
+    await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: getPost('legacy').rev, fields: { [label]: label === 'platforms' ? ['instagram'] : null }, actor: 'owner' });
+    ok(!getPost('legacy').editedSinceApproval, `undoing the legacy ${label} edit clears the flag`);
+  }
+
+  // A legacy post ALREADY flagged (no hash) has no known baseline: stays flagged
+  // fail-closed on every later edit, and no hash is invented for it.
+  makeLegacy('legacy', { editedSinceApproval: true });
+  p = getPost('legacy');
+  r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { scheduledAt: '2020-05-05T00:00:00Z' }, actor: 'owner' });
+  ok(r.ok && getPost('legacy').editedSinceApproval === true, 'an already-flagged legacy post stays flagged on a scheduling edit');
+  p = getPost('legacy');
+  r = await updatePost({ campaign: CAMP, postId: 'legacy', ifRev: p.rev, fields: { caption: 'yet another edit' }, actor: 'owner' });
+  ok(r.ok && getPost('legacy').editedSinceApproval === true && !readRaw('legacy').approvedContentHash && !readRaw('legacy').legacyBaselineHash,
+    'an already-flagged legacy post stays flagged on a content edit and gets no invented baseline');
+
   console.log(`\n${pass} checks passed`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });

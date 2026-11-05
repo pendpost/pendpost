@@ -279,7 +279,11 @@ export function useCachedSetup(setup, post = null) {
 
 // `word`: a status key the caller already decided (the List row's approval pill beside its red
 // reason line, format.js approvalWord); otherwise postStatusWord decides.
-export function PostStatusPill({ post, setup, word = null }) {
+// `fit` (the Week card only): in a narrow card (its container under 7.5rem, ~75px cards in a
+// 7-column week) the pill shows only its glyph as a small circle; the word stays its accessible
+// name and rides a tooltip, so a long single word ("Veröffentlicht") never splits. The card sets
+// container-type:inline-size.
+export function PostStatusPill({ post, setup, word = null, fit = false }) {
   const t = useT();
   const lanes = useCachedSetup(setup, post);
   const key = word || postStatusWord(post, lanes);
@@ -291,25 +295,28 @@ export function PostStatusPill({ post, setup, word = null }) {
   // row, detail banner), the paste lane (detail delivery row "Du postest selbst") and the
   // per-platform power-off truth (detail). It never carries the raw failure line either.
   const label = t(`status.${key}`);
-  return (
+  const pill = (
     // max-w-full + a wrapping word: in a narrow container (a Week card at 375px) the pill
     // never runs past the card edge and never cuts its word ("Du postest selbs"); it wraps
-    // to a second line instead. Where it has room it stays one line (shrink-0).
-    <span className={`inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold leading-tight ring-1 ${meta.cls}`}>
+    // to a second line instead. Where it has room it stays one line (shrink-0). A `fit` pill
+    // (Week card) never wraps: a two-line pill reads as broken, so its word stays on one line,
+    // ends in an ellipsis in a mid-width card (the Tip says it whole) and folds to the glyph
+    // alone in a narrow one.
+    <span className={`inline-flex min-w-0 max-w-full shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold leading-tight ring-1 ${fit ? '[@container(max-width:7.5rem)]:p-1' : ''} ${meta.cls}`}>
       {Icon ? <Icon size={11} className="shrink-0" aria-hidden="true" /> : null}
-      <span className="min-w-0">{label}</span>
+      <span data-pill-label="" className={`min-w-0 ${fit ? 'truncate [@container(max-width:7.5rem)]:sr-only' : ''}`}>{label}</span>
     </span>
   );
+  return fit ? <Tip label={label}>{pill}</Tip> : pill;
 }
 
 // A neutral placeholder background sits behind every media element so a thumb
 // reads as a calm loading tile (never a stark empty box) until the pixels paint;
-// the opaque object-cover media covers it once loaded. A media-less text post
-// with a non-empty `textPreview` renders its own words as a mini caption card
-// (see the previewText branch below); a genuine EMPTY post (no media, no text) or
-// a media LOAD ERROR resolves to an honest document-glyph tile - so a row NEVER
+// the opaque object-cover media covers it once loaded. A post with no media (or
+// a media LOAD ERROR) resolves to an honest document-glyph tile - so a thumb NEVER
 // shows the ambiguous bare grey square that read as broken/loading (US media fix).
-export function CoverThumb({ media, image, textPreview = '', className = '', overlayInset = false }) {
+// A text post's row shows a LaneTile instead of calling this at all.
+export function CoverThumb({ media, image, className = '' }) {
   const [errored, setErrored] = useState(false);
   // One step above the card surface in both themes (INNER_SURFACE is zinc-100 / zinc-800), so
   // the tile never vanishes into a dark card.
@@ -375,37 +382,26 @@ export function CoverThumb({ media, image, textPreview = '', className = '', ove
       />
     );
   }
-  // Genuine text post (no media): show the post's OWN words as a mini caption card,
-  // so a media-less text post previews as itself instead of an anonymous document
-  // glyph. `textPreview` is line-clamped, tiny and muted; overflow-hidden + the
-  // caller's fixed box height guarantee it never spills, at any thumb size (the
-  // ~h-12 List thumb, the full-width Week cover, the h-24 Freigaben cover).
-  //
-  // A media LOAD ERROR is deliberately EXCLUDED (errored): there IS media, it just
-  // failed to paint - filling that box with caption text would claim the post is
-  // text-only, which is a lie. So a failed load keeps the honest FileText tile, and
-  // only a genuinely media-less post (errored === false) reaches the text card.
-  // Decorative either way (aria-hidden) - the row's real title/caption carries the
-  // text to a screen reader, so this never double-reads.
-  const previewText = !errored && typeof textPreview === 'string' ? textPreview.trim() : '';
-  if (previewText) {
-    // `overlayInset`: the caller lays controls over the tile's top edge (the planner
-    // card's ⋯ and time chip). The text then starts BELOW that row and clamps to the
-    // lines that fit under it, so a chip never sits on top of the words.
-    return (
-      <div className={`overflow-hidden ${PLACEHOLDER} ${className}`} aria-hidden="true" data-text-preview="">
-        <p className={`${overlayInset ? 'line-clamp-2 px-1.5 pt-8' : 'line-clamp-4 h-full p-1.5'} w-full overflow-hidden text-[9px] font-medium leading-snug tracking-tight text-zinc-600 dark:text-zinc-300`}>
-          {previewText}
-        </p>
-      </div>
-    );
-  }
-  // No media AND no text (or a media load failure): an intentional tile, not a
-  // broken/empty square. Decorative - the row's title/caption carries the text.
+  // No media (or a media load failure): an intentional tile, not a broken/empty
+  // square. Decorative - the row's title/caption carries the text.
   return (
     <div className={`grid place-items-center ${PLACEHOLDER} text-zinc-500 dark:text-zinc-400 ${className}`} aria-hidden="true">
       <FileText size={18} aria-hidden="true" />
     </div>
+  );
+}
+
+// The media column's stand-in for a post with nothing to look at (a text post, a Radar
+// reply): a quiet square in the thumbnail's own placeholder fill with the lane's glyph,
+// muted. It keeps the media column, so every caption in a list starts on the same x.
+// Decorative: the row's meta line names the lane to a screen reader.
+export function LaneTile({ platform, size = 22, className = '' }) {
+  const meta = PLATFORM_META[platform];
+  const Icon = meta?.Icon || FileText;
+  return (
+    <span className={`grid aspect-square place-items-center rounded-lg bg-zinc-200/70 text-zinc-500 dark:bg-zinc-700/60 dark:text-zinc-400 ${className}`} aria-hidden="true" data-lane-tile={platform || ''}>
+      <Icon size={size} aria-hidden="true" />
+    </span>
   );
 }
 
@@ -662,20 +658,18 @@ export function PostPreview({ post, videoRef, onEdit }) {
 // are props because the two surfaces name their nouns differently; everything else about
 // the behaviour (indeterminate middle state, hidden when there is nothing to select) is
 // identical and now lives in one place.
-export function SelectAllControl({ total, selectedCount, onToggle, allKey, clearKey }) {
+// countKey: while a selection exists the label names the count in its place ("3 selected"), a
+// polite live region, and the caller's onToggle clears.
+export function SelectAllControl({ total, selectedCount, onToggle, allKey, clearKey, countKey }) {
   const t = useT();
   const allSelected = total > 0 && selectedCount === total;
   const someSelected = selectedCount > 0 && selectedCount < total;
   if (total === 0) return null;
+  const label = countKey && selectedCount ? t(countKey, { n: selectedCount }) : allSelected ? t(clearKey) : t(allKey);
   return (
     <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
-      <Checkbox
-        checked={allSelected}
-        indeterminate={someSelected}
-        onChange={onToggle}
-        aria-label={allSelected ? t(clearKey) : t(allKey)}
-      />
-      {allSelected ? t(clearKey) : t(allKey)}
+      <Checkbox checked={allSelected} indeterminate={someSelected} onChange={onToggle} aria-label={label} />
+      {countKey && selectedCount ? <span role="status" aria-live="polite">{label}</span> : label}
     </label>
   );
 }

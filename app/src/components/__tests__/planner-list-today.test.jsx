@@ -11,11 +11,8 @@ import { ConfirmProvider } from '../ui/confirm.jsx';
 // past-dated rows), where the past must stay visible so the jump is not empty.
 // (The STATUS filter itself already ships upstream and is out of scope here.)
 
-// A media-less post previews its OWN caption inside the (decorative, aria-hidden)
-// thumb, so a fixture whose caption REPEATS the title would render that string
-// twice per row and every getByText(title) below would hit two nodes. Real posts
-// carry a caption distinct from the title, so the fixture does too: the title
-// stays the single unique handle on a row.
+// An Instagram reel publishes no title, so its row shows its caption as its words (the
+// title rule, format.js postPublishedTitle): the caption is the unique handle on a row.
 const mk = (id, title, scheduledAt) => ({
   id, title, campaign: 'acme', caption: `caption for ${title.toLowerCase()}`, type: 'reel',
   platforms: ['instagram'], derivedState: 'posted', approval: 'approved',
@@ -38,8 +35,8 @@ const renderList = (posts) =>
 describe('Planner ListView today-onwards (Mandate G)', () => {
   it('shows upcoming by default and hides past behind a "Show earlier" reveal', () => {
     renderList([PAST, FUTURE]);
-    expect(screen.getByText('FUTURE-ITEM')).toBeInTheDocument();
-    expect(screen.queryByText('PAST-ITEM')).not.toBeInTheDocument();
+    expect(screen.getByText('caption for future-item')).toBeInTheDocument();
+    expect(screen.queryByText('caption for past-item')).not.toBeInTheDocument();
     const reveal = screen.getByRole('button', { name: /show earlier/i });
     expect(reveal).toBeInTheDocument();
   });
@@ -47,12 +44,12 @@ describe('Planner ListView today-onwards (Mandate G)', () => {
   it('reveals past items when "Show earlier" is clicked', () => {
     renderList([PAST, FUTURE]);
     fireEvent.click(screen.getByRole('button', { name: /show earlier/i }));
-    expect(screen.getByText('PAST-ITEM')).toBeInTheDocument();
+    expect(screen.getByText('caption for past-item')).toBeInTheDocument();
   });
 
   it('keeps past items visible when there is nothing upcoming (overdue jump is never empty)', () => {
     renderList([PAST]);
-    expect(screen.getByText('PAST-ITEM')).toBeInTheDocument();
+    expect(screen.getByText('caption for past-item')).toBeInTheDocument();
   });
 
   it('shows ALL days when a status filter is active (showAllDays) - no hidden matches, no toggle', () => {
@@ -65,8 +62,8 @@ describe('Planner ListView today-onwards (Mandate G)', () => {
         </ConfirmProvider>
       </QueryClientProvider>,
     );
-    expect(screen.getByText('PAST-ITEM')).toBeInTheDocument();
-    expect(screen.getByText('FUTURE-ITEM')).toBeInTheDocument();
+    expect(screen.getByText('caption for past-item')).toBeInTheDocument();
+    expect(screen.getByText('caption for future-item')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /show earlier/i })).not.toBeInTheDocument();
   });
 });

@@ -546,7 +546,8 @@ describe('Freigaben posted cards link the live post in all-mode', () => {
     renderFreigaben([postedNoProof]);
     const user = (await import('@testing-library/user-event')).default;
     await user.click(screen.getByRole('button', { name: 'All posts' }));
-    expect(screen.getByText('Posted without evidence')).toBeInTheDocument();
+    // The title is internal on an Instagram-only post (the title rule): the caption names it.
+    expect(screen.getByText(/Spring promo headline line/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /view on/i })).not.toBeInTheDocument();
   });
 });

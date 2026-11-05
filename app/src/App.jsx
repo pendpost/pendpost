@@ -21,7 +21,7 @@ import UpdateToast from './components/UpdateToast.jsx';
 import HumanizerReceipt from './components/HumanizerReceipt.jsx';
 import AppToast, { showToast } from './components/AppToast.jsx';
 import DevReadonlyBadge from './components/DevReadonlyBadge.jsx';
-import { WeekView, MonthView, ListView } from './components/Planner.jsx';
+import { WeekView, MonthView, ListView, ListKeyboardShortcuts } from './components/Planner.jsx';
 import PostDetail from './components/PostDetail.jsx';
 import CommandPalette from './components/CommandPalette.jsx';
 import Assets from './components/Assets.jsx';
@@ -30,7 +30,7 @@ import Published from './components/Published.jsx';
 import Composer from './components/Composer.jsx';
 import ThreadComposer from './components/ThreadComposer.jsx';
 import Insights from './components/Insights.jsx';
-import Freigaben from './components/Freigaben.jsx';
+import Freigaben, { KeyboardShortcuts } from './components/Freigaben.jsx';
 import Settings from './components/Settings.jsx';
 import Setup, { setupAttentionCount } from './components/Setup.jsx';
 import Clients from './components/Clients.jsx';
@@ -1214,6 +1214,9 @@ export default function App() {
                 counts={statusTabCounts}
                 hasActive={Boolean(platformFilter.length || typeFilter.length || statusFilter.length || failuresOnly || actionGroups.length)}
                 onReset={clearFilters}
+                // Approvals' and the Planer List's keyboard shortcuts ride the "?" popover under
+                // the status legend.
+                helpExtra={page === 'freigaben' ? <KeyboardShortcuts /> : page === 'planner' && view === 'list' ? <ListKeyboardShortcuts /> : null}
                 extra={isActivity ? (
                   <>
                     <span className="h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
@@ -1355,6 +1358,7 @@ export default function App() {
               ) : page === 'composer' && composer?.mode === 'thread' ? (
                 <ThreadComposer
                   seed={composer.seed}
+                  accounts={accounts}
                   campaigns={campaigns}
                   onClose={closeComposer}
                   onDirtyChange={setComposerDirty}

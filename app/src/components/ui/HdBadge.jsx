@@ -17,10 +17,15 @@ import { useT } from '../../lib/i18n.js';
 // badge sits INSIDE the card's open-detail <button>, so it must not render its own
 // Radix Tooltip trigger <button> (a nested button is invalid HTML). Sibling call
 // sites (Freigaben, Assets) leave it false and keep the focusable tooltip.
-export function HdBadge({ hdReady, bitrate, static: isStatic = false }) {
+//
+// `warnOnly` shows only the exception: a post ROW's meta line (Freigaben, Planer list + week
+// card) says nothing when the video is HD, the normal case, and keeps the amber 720p warning.
+// The Assets library leaves it false and keeps the green HD pill.
+export function HdBadge({ hdReady, bitrate, static: isStatic = false, warnOnly = false }) {
   const t = useT();
   if (hdReady == null) return null;
   if (hdReady) {
+    if (warnOnly) return null;
     return <IconBadge icon={Gauge} tone="ok" text="HD" label={t('assets.spec.hdReady')} static={isStatic} />;
   }
   // bitrate is bits/s (ffprobe format.bit_rate); show it as Mbps to one decimal.

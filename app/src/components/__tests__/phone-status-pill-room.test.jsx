@@ -48,12 +48,17 @@ const wrap = (ui) => (
 const pillOf = (word) => screen.getAllByText(word)[0].closest('span.rounded-full');
 
 describe('status pill fits its container', () => {
-  it('the Week card pill is capped at the card width and wraps its word, never cut', () => {
+  it('the Week card pill is capped at the card width and stays one line, never a two-line pill', () => {
+    // A two-line pill reads as broken (owner review 2026-11-05): the word stays on one line,
+    // ends in an ellipsis when the card is mid-width (its Tip and its text still carry the
+    // whole word) and folds to the glyph alone in a narrow card.
     render(wrap(<PostCard post={pending} onSelect={() => {}} lane={{}} />));
     const pill = pillOf('Wartet auf Freigabe');
     expect(pill.className).toContain('max-w-full');
     const label = screen.getAllByText('Wartet auf Freigabe')[0];
-    expect(label.className).not.toContain('truncate');
+    expect(label.className).toContain('truncate');
+    expect(label.className).toContain('[@container(max-width:7.5rem)]:sr-only');
+    expect(label.textContent).toBe('Wartet auf Freigabe');
   });
 });
 
@@ -93,14 +98,16 @@ describe('List row from md up: the pill keeps its slot beside the title', () => 
 });
 
 describe('Freigaben card on phone: nothing squeezes the headline', () => {
-  // The headline is its own full-width line in a column; status chips ride the meta line
-  // under it, so at 375px no pill can squeeze the headline to four characters.
-  it('the headline is its own line above the meta line', () => {
-    const campaigns = [{ id: 'launch', active: true, posts: [pending] }];
+  // A published title (a YouTube post here) is its own full-width line in a column; status chips
+  // ride the meta line above it, so at 375px no pill can squeeze the title to four characters.
+  it('the title is its own line, in one column with the meta line', () => {
+    const campaigns = [{ id: 'launch', active: true, posts: [{ ...pending, platforms: ['youtube'], type: 'youtube-short' }] }];
     render(wrap(<Freigaben campaigns={campaigns} onOpen={() => {}} />));
     const headline = screen.getAllByText('Launch week recap with a long title').find((el) => el.className.includes('font-bold'));
-    expect(headline.className).toMatch(/\bblock\b/);
-    expect(headline.className).toMatch(/\btruncate\b/);
+    // Two lines on a phone so the title is read, not cut to a few words; one line from sm up.
+    expect(headline.className).toMatch(/\bline-clamp-2\b/);
+    expect(headline.className).toMatch(/\bsm:line-clamp-1\b/);
+    expect(headline.className).toMatch(/\bbreak-words\b/);
     const column = headline.parentElement;
     expect(column.className).toContain('flex-col');
     expect(column.querySelector('[data-row-meta]')).not.toBeNull();

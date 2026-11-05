@@ -85,8 +85,8 @@ describe('Published views (US-PUB-11)', () => {
   it('filters by a date-range preset', async () => {
     const user = userEvent.setup();
     renderPublished([
-      post({ id: 'p1', title: 'Recent one', postedAt: iso(1) }),
-      post({ id: 'p2', title: 'Old one', postedAt: iso(40) }),
+      post({ id: 'p1', caption: 'Recent one', postedAt: iso(1) }),
+      post({ id: 'p2', caption: 'Old one', postedAt: iso(40) }),
     ]);
     expect(screen.getByText('Recent one')).toBeInTheDocument();
     expect(screen.getByText('Old one')).toBeInTheDocument();
@@ -97,8 +97,8 @@ describe('Published views (US-PUB-11)', () => {
 
   it('shows each relative range preset its in-window count, while the all-time baseline stays uncounted', () => {
     renderPublished([
-      post({ id: 'p1', title: 'Recent one', postedAt: iso(1) }),
-      post({ id: 'p2', title: 'Old one', postedAt: iso(40) }),
+      post({ id: 'p1', caption: 'Recent one', postedAt: iso(1) }),
+      post({ id: 'p2', caption: 'Old one', postedAt: iso(40) }),
     ]);
     // 7 days holds only the recent post; 30 days holds only the recent one too;
     // the all-time baseline carries no count.
@@ -109,7 +109,7 @@ describe('Published views (US-PUB-11)', () => {
 
   it('shows a range-specific empty state (not "nothing published yet") when a range hides existing posts, and recovers via show-all', async () => {
     const user = userEvent.setup();
-    renderPublished([post({ id: 'p1', title: 'Old one', postedAt: iso(40) })]);
+    renderPublished([post({ id: 'p1', caption: 'Old one', postedAt: iso(40) })]);
     expect(screen.getByText('Old one')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /7 days/i }));
     // The post exists, just outside the window: range copy, not the first-run lie.

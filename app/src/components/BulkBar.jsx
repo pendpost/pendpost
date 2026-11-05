@@ -1,64 +1,26 @@
-// BulkBar - the one bulk action bar (planner bulk, 2026-11-01, package P), lifted out of
-// Approvals so the planner List wears the SAME bar: the selected count (a polite live region,
-// so toggling a checkbox announces the new count), quiet one-line notes that state a skip
-// BEFORE the press (never a dialog, never silent), the run's failure summary (ActionError, the
-// raw engine lines behind its "?"), "Clear selection", then the page's own actions.
+// The planner List's bulk header and its parts (planner bulk, 2026-11-01, package P; slimmed to
+// one line on 2026-11-05 after the Approvals toolbar, PR #182). Approvals carries its bulk
+// actions in its own toolbar (Freigaben.jsx).
 //
-// It sits at the TOP of the list and is sticky, so the actions stay reachable while a long list
-// scrolls beneath it (US-APPR-07). <main> is the one scroller (app shell scroll model), so
-// `sticky top-0` pins it to the top of the page.
-//
-// `extra`: an optional control beside the count.
-// `barRef`: the List measures the bar so its sticky day headings sit just below it.
-//
-// ListBar (round 2, the fresh-eyes judge): the List's variant of the same bar. Its slot is
-// RESERVED (it renders before anything is selected, with the select-all control and a key hint),
-// so picking the first post never pushes the rows down under the cursor; it has a fixed action
-// set and ONE line under the actions for what a press will leave out or what a run left out. On
-// a phone it floats at the bottom of the screen while something is selected, so it neither
-// moves the rows nor costs the first screen.
+// ListBar: ONE slim line at the top of the list, the header of the rows' checkbox column. Idle
+// it is the select-all checkbox and "Alle auswählen", no box, and it scrolls away with the list.
+// While something is selected the label turns into the count (a polite live region; just the
+// number on a phone) and the actions follow it as glyphs; the line then sticks to the top of
+// <main> (the one scroller, app shell scroll model), so the actions stay in reach while a long
+// list scrolls beneath it. It wears the panel's opaque surface only while actually pinned
+// (lib/useStuck.js): unpinned, an opaque fill reads as a band on the translucent glass panel. The checkbox clears any selection,
+// partial or full; there is no separate clear. What a press will leave out rides each action's
+// tooltip; what a run did rides the app toast (with Undo where a run can be taken back).
+// `barRef`: the List measures the line so its sticky day headings sit just below it.
 import { useRef } from 'react';
-import { createPortal } from 'react-dom';
+import { Loader2 } from 'lucide-react';
 import { useIsPhone } from '../lib/useIsPhone.js';
-import { X, Loader2 } from 'lucide-react';
-import { INNER_SURFACE } from './ui.jsx';
-import ActionError from './ui/ActionError.jsx';
+import { useStuck } from '../lib/useStuck.js';
 import { IDLE_VARIANTS } from './ui/ActionButton.jsx';
 import { Checkbox } from './ui/Checkbox.jsx';
 import { Tip } from './ui/Tooltip.jsx';
-import { TAP_TARGET, TAP_TARGET_Y } from './ui/recipes.js';
+import { TAP_TARGET } from './ui/recipes.js';
 import { useT } from '../lib/i18n.js';
-
-export default function BulkBar({ count, notes = [], error = null, onClear, extra = null, barRef = null, children }) {
-  const t = useT();
-  if (!count) return null;
-  const label = t('approvals.bulk.selected', { n: count });
-  return (
-    <div
-      ref={barRef}
-      role="region"
-      aria-label={label}
-      data-bulk-bar=""
-      className={`sticky top-0 z-20 flex flex-wrap items-center gap-2 rounded-xl p-2.5 backdrop-blur-xl ${INNER_SURFACE}`}
-    >
-      <span role="status" aria-live="polite" className="text-xs font-bold">{label}</span>
-      {extra}
-      {notes.filter(Boolean).map((note) => (
-        <span key={note} className="text-[11px] text-zinc-600 dark:text-zinc-400">{note}</span>
-      ))}
-      <span className="flex-1" />
-      <ActionError error={error} className="basis-full" />
-      <button
-        type="button"
-        onClick={onClear}
-        className="rounded-xl px-2.5 py-1.5 text-xs font-bold text-zinc-600 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:bg-zinc-700/60"
-      >
-        {t('approvals.selectAll.clear')}
-      </button>
-      {children}
-    </div>
-  );
-}
 
 // A checkbox whose hit area is 44px: the label around it carries the click (a label click
 // toggles its input) and an invisible ::after box (TAP_TARGET) grows the label to the finger.
@@ -81,30 +43,30 @@ export function SelectBox({ checked, indeterminate = false, onPick, label, class
   );
 }
 
-// One action in the List's bar: an icon with its word (the word shows from 1400px; below it the
-// word rides the tooltip and the accessible name). A verb stays a verb: no "Deleted" after the
-// press, the line under the actions says what happened. An action that applies to none of the
-// selection is DISABLED with its reason (tooltip + aria-describedby), never hidden; it stays
-// focusable (aria-disabled) so the reason is reachable by keyboard and pointer alike.
-// A press on a disabled action calls onDisabledPress(id): the bar writes the reason into its line,
-// because a touch screen has no tooltip (round 3).
-export function BarAction({ id, icon: Icon, label, onClick, disabled = false, reason = null, busy = false, busyLabel = null, tone = 'subtle', onHint, onDisabledPress, buttonProps = {} }) {
-  // The house action tones (ui/ActionButton.jsx), so Approve wears the same green as Approvals.
-  const tones = IDLE_VARIANTS;
-  const reasonId = `bulk-reason-${id}`;
-  // No tooltip on a phone: a tap floated it over the bar's count line, and the line under the
-  // actions already says a disabled action's reason there.
+// One action in the List's header: a glyph only, at every width (Approvals' icon button: a 28px
+// square, a 15px glyph, a 44px hit area). `label` is its accessible name and tooltip ("3
+// freigeben"); `note` (what a press will leave out) rides the tooltip's second line and the
+// description. An action that applies to none of the selection is DISABLED with its reason
+// (tooltip + aria-describedby), never hidden; it stays focusable (aria-disabled) so the reason is
+// reachable by keyboard and pointer alike. A press on a disabled action calls
+// onDisabledPress(id), so a touch screen (no tooltip) still hears why.
+export function BarAction({ id, icon: Icon, label, onClick, disabled = false, reason = null, note = null, busy = false, busyLabel = null, tone = 'subtle', onDisabledPress, buttonProps = {} }) {
+  const descId = `bulk-desc-${id}`;
+  const name = busy && busyLabel ? busyLabel : label;
+  const desc = disabled ? reason : busy ? null : note;
+  // No tooltip on a phone: a tap would float it over the rows; a disabled press says its reason
+  // in the toast there instead.
   const phone = useIsPhone();
   return (
     <>
-      <Tip label={phone ? null : disabled && reason ? reason : label}>
+      <Tip label={phone ? null : desc ? <>{name}<br />{desc}</> : name}>
         <button
           type="button"
           {...buttonProps}
           data-bulk-action={id}
-          aria-label={busy && busyLabel ? busyLabel : label}
+          aria-label={name}
           aria-disabled={disabled || undefined}
-          aria-describedby={disabled && reason ? reasonId : undefined}
+          aria-describedby={desc ? descId : undefined}
           aria-busy={busy || undefined}
           onClick={(e) => {
             if (disabled || busy) {
@@ -115,130 +77,55 @@ export function BarAction({ id, icon: Icon, label, onClick, disabled = false, re
             onClick?.(e);
             buttonProps.onClick?.(e);
           }}
-          onMouseEnter={() => onHint?.(id)}
-          onMouseLeave={() => onHint?.(null)}
-          onFocus={() => onHint?.(id)}
-          onBlur={() => onHint?.(null)}
-          // On a phone the box itself is 44px (the finger's size, with the bar's gaps between).
-          className={`${TAP_TARGET} inline-flex h-9 min-w-9 shrink-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-xs font-bold transition max-md:h-11 max-md:w-11 max-md:px-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${disabled ? 'cursor-not-allowed text-zinc-500 ring-1 ring-inset ring-zinc-900/10 dark:text-zinc-400 dark:ring-white/10' : tones[tone] || tones.subtle}`}
+          className={`${TAP_TARGET} inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-xl transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${IDLE_VARIANTS[tone] || IDLE_VARIANTS.subtle} ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
         >
-          {busy ? <Loader2 size={14} className="motion-safe:animate-spin" aria-hidden="true" /> : <Icon size={14} aria-hidden="true" />}
-          <span className="hidden min-[1400px]:inline">{busy && busyLabel ? busyLabel : label}</span>
+          {busy ? <Loader2 size={15} className="motion-safe:animate-spin" aria-hidden="true" /> : <Icon size={15} aria-hidden="true" />}
         </button>
       </Tip>
-      {disabled && reason ? <span id={reasonId} className="sr-only">{reason}</span> : null}
+      {desc ? <span id={descId} className="sr-only">{desc}</span> : null}
     </>
   );
 }
 
-export function ListBar({ count, total, allSelected, someSelected, onToggleAll, onClear, actions = null, line = null, hint = null, barRef = null }) {
+export function ListBar({ count, allSelected, someSelected, onToggleAll, onClear, actions = null, barRef = null }) {
   const t = useT();
-  const phone = useIsPhone();
   const selecting = count > 0;
   const label = t('approvals.bulk.selected', { n: count });
-  const allLabel = allSelected ? t('approvals.selectAll.clear') : t('listBulk.selectAllInView', { n: total });
-  // Line 2 (both layouts): a fixed height, so a note appearing never moves the rows: what a press
-  // will leave out, what a run left out, a disabled action's reason, or the key hint while nothing
-  // is selected. On a phone it may take two lines (no tooltip for the rest there).
-  const lineRow = (
-    <div data-bulk-line="" className="flex h-7 min-w-0 items-center gap-2 px-1.5 text-[11px] text-zinc-600 dark:text-zinc-300 max-md:h-auto max-md:min-h-7 max-md:py-0.5">
-      {selecting ? line : hint ? <span className="truncate [@media(hover:none)]:invisible">{hint}</span> : null}
-    </div>
-  );
-  // A phone (round 3, judge item 2): three lines. The count with "Alle N auswählen" and the clear;
-  // then the actions as 44px boxes spread over the width (8px gaps at the very least); then the
-  // line. It floats at the bottom of the screen, so its height never moves the rows.
-  if (phone && selecting) {
-    const phoneBar = (
-      <div
-        ref={barRef}
-        data-bulk-slot=""
-        data-bulk-bar=""
-        role="region"
-        aria-label={label}
-        className="fixed inset-x-2 bottom-2 z-30 rounded-xl bg-white px-2 py-1.5 shadow-2xl ring-1 ring-zinc-900/[0.08] dark:bg-zinc-900 dark:ring-white/10"
-      >
-        <div className="flex h-11 min-w-0 items-center gap-2">
-          <span className="flex shrink-0 items-center pl-1.5">
-            <SelectBox checked={allSelected} indeterminate={someSelected} onPick={onToggleAll} label={allLabel} />
-          </span>
-          <span role="status" aria-live="polite" className="ml-1 min-w-0 truncate text-xs font-bold">{label}</span>
-          {allSelected ? null : (
-            <button type="button" onClick={onToggleAll} data-select-all-in-view="" className={`${TAP_TARGET_Y} shrink-0 rounded-md px-1 text-xs font-bold text-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light`}>
-              {t('listBulk.selectAllShort', { n: total })}
-            </button>
-          )}
-          <span className="flex-1" />
-          <button
-            type="button"
-            onClick={onClear}
-            aria-label={t('approvals.selectAll.clear')}
-            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-zinc-600 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:bg-zinc-700/60"
-          >
-            <X size={16} aria-hidden="true" />
-          </button>
-        </div>
-        <div data-bulk-actions="" className="flex h-11 items-center justify-between gap-2 px-1">{actions}</div>
-        {lineRow}
-      </div>
-    );
-    // The glass panels around the list are backdrop-filtered, which makes them the containing
-    // block of a fixed child, so the bar is portalled to <body> to float over the viewport.
-    return typeof document !== 'undefined' ? createPortal(phoneBar, document.body) : phoneBar;
-  }
-  const bar = (
+  const ownRef = useRef(null);
+  const ref = barRef || ownRef;
+  const stuck = useStuck(ref, { enabled: selecting });
+  return (
     <div
-      ref={barRef}
-      data-bulk-slot=""
-      data-bulk-bar={selecting ? '' : undefined}
-      role={selecting ? 'region' : undefined}
+      ref={ref}
+      data-bulk-bar=""
+      data-stuck={stuck ? '' : undefined}
+      role={selecting ? 'group' : undefined}
       aria-label={selecting ? label : undefined}
-      // Opaque, so rows scrolling under it and under the day headings beneath never show through.
-      // Idle on a phone it is hidden: the first screen goes to the posts (the phone bar above).
-      className={`z-30 rounded-xl bg-white px-2 py-1.5 ring-1 ring-zinc-900/[0.08] dark:bg-zinc-900 dark:ring-white/10 md:sticky md:top-0 md:mb-5 ${selecting ? '' : 'max-md:hidden'}`}
+      // -mx-4 reaches over the panel's padding (px-6 = that padding plus the rows' own px-2), so
+      // the checkbox sits in the rows' checkbox column and a stuck line reads as the panel's own
+      // top while pinned: the glass panel composited over the page, opaque, Approvals' surface.
+      className={`-mx-4 mb-1 flex h-9 min-w-0 items-center gap-3 px-6 ${selecting ? 'sticky top-0 z-30 rounded-2xl data-[stuck]:bg-[#fdfefe] dark:data-[stuck]:bg-[#121215]' : ''}`}
     >
-      {/* Line 1: never wraps (the actions are icons below 1400px). */}
-      <div className="flex h-11 min-w-0 flex-nowrap items-center gap-2">
-        <span className="flex shrink-0 items-center gap-2.5 pl-1.5 max-md:pl-1">
-          <SelectBox checked={allSelected} indeterminate={someSelected} onPick={onToggleAll} label={allLabel} />
-          {selecting ? null : (
-            <button type="button" onClick={onToggleAll} className={`${TAP_TARGET_Y} hidden rounded-md text-xs font-bold text-zinc-700 hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-200 md:inline`}>
-              {allLabel}
-            </button>
-          )}
+      <label className="flex min-w-0 cursor-pointer items-center gap-3 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+        <span className={`${TAP_TARGET} flex h-7 w-4 shrink-0 items-center justify-center`}>
+          <Checkbox
+            checked={allSelected}
+            indeterminate={someSelected}
+            onChange={selecting ? onClear : onToggleAll}
+            aria-label={selecting ? t('approvals.selectAll.clear') : t('approvals.selectAll.all')}
+          />
         </span>
         {selecting ? (
-          <span role="status" aria-live="polite" className="min-w-0 truncate text-xs font-bold">{label}</span>
-        ) : null}
-        {selecting && !allSelected ? (
-          <button
-            type="button"
-            onClick={onToggleAll}
-            data-select-all-in-view=""
-            className={`${TAP_TARGET_Y} hidden shrink-0 rounded-md px-1 text-xs font-bold text-brand transition hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light xl:inline`}
-          >
-            {t('listBulk.selectAllInView', { n: total })}
-          </button>
-        ) : null}
-        <span className="flex-1" />
-        {selecting ? (
-          <>
-            <span data-bulk-actions="" className="flex shrink-0 items-center gap-2">{actions}</span>
-            <Tip label={t('approvals.selectAll.clear')}>
-              <button
-                type="button"
-                onClick={onClear}
-                aria-label={t('approvals.selectAll.clear')}
-                className={`${TAP_TARGET} inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-xl text-zinc-600 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:bg-zinc-700/60`}
-              >
-                <X size={15} aria-hidden="true" />
-              </button>
-            </Tip>
-          </>
-        ) : null}
-      </div>
-      {lineRow}
+          <span role="status" aria-live="polite" className="whitespace-nowrap">
+            {/* A phone shows the number alone so the line keeps one row at 375px. */}
+            <span aria-hidden="true" className="md:hidden">{count}</span>
+            <span className="max-md:sr-only">{label}</span>
+          </span>
+        ) : (
+          <span className="whitespace-nowrap">{t('approvals.selectAll.all')}</span>
+        )}
+      </label>
+      {selecting ? <span data-bulk-actions="" className="flex shrink-0 items-center gap-2">{actions}</span> : null}
     </div>
   );
-  return bar;
 }

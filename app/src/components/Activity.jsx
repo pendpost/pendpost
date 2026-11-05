@@ -197,6 +197,11 @@ const ACTION_LABEL = {
   // correction on THIS post - the errorMessage carries the "press Try again"
   // guidance, so NO ACTION_NOTE (the raw message renders).
   'mock-id-cleared': 'activity.action.mockIdCleared',
+  // Media cleanup + self-heal (docs/specs/media-cleanup.md): local videos every post was done
+  // with were deleted, or a missing file an upcoming post needs came back from the cloud. Both
+  // messages are dynamic (the files and sizes), so NO ACTION_NOTE - the raw message renders.
+  'media-cleanup': 'activity.action.mediaCleanup',
+  'media-restore': 'activity.action.mediaRestore',
 };
 
 // Maps an action id to the i18n key for its NOTE body (data, not UI text), so a

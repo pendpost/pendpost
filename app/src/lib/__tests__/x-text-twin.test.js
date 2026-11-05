@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 // The Composer counts tweets with an app twin of the engine counter; this proves the two
 // never drift, so what the Composer shows as fitting is what approval and publish accept.
-import { xWeightedLength as engine, X_TWEET_LIMIT as engineLimit } from '../../../../lib/x-text.mjs';
-import { xWeightedLength as twin, X_TWEET_LIMIT as twinLimit } from '../x-text.js';
+import { xWeightedLength as engine, X_TWEET_LIMIT as engineLimit, X_LONG_POST_LIMIT as engineLong, xPostLimit as enginePostLimit, xFits as engineFits } from '../../../../lib/x-text.mjs';
+import { xWeightedLength as twin, X_TWEET_LIMIT as twinLimit, X_LONG_POST_LIMIT as twinLong, xPostLimit as twinPostLimit, xFits as twinFits } from '../x-text.js';
 
 const CASES = [
   'hello',
@@ -21,5 +21,11 @@ describe('x-text app twin ≡ engine counter', () => {
   });
   it('shares the cap', () => {
     expect(twinLimit).toBe(engineLimit);
+    expect(twinLong).toBe(engineLong);
+  });
+  it.each(['None', 'Basic', 'Premium', 'PremiumPlus', null, undefined, '', 'Unknown'])('shares the per-account limit for %s', (tier) => {
+    expect(twinPostLimit(tier)).toBe(enginePostLimit(tier));
+    const limit = twinPostLimit(tier);
+    expect(twinFits('a'.repeat(286), limit)).toBe(engineFits('a'.repeat(286), limit));
   });
 });

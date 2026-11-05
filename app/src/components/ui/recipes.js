@@ -48,6 +48,12 @@ export const CHIP = 'inline-flex items-center gap-1 rounded-full bg-zinc-500/10 
 // the owner's "very clear badges with their project names". Non-interactive; the
 // avatar carries the accent, the name carries the meaning (never colour-only). The
 // caller supplies the ClientAvatar + name inside.
+// SELECTED TINT - a selected row (the Planer list, Approvals): the client accent at 8%, laid over
+// whatever surface the row already has. Built with color-mix because `brand` is a CSS variable
+// (the per-client accent) and Tailwind cannot put an opacity modifier on it: `bg-brand/[0.08]`
+// generated no CSS at all.
+export const SELECTED_TINT = '[--tint:color-mix(in_srgb,var(--accent,#0f766e)_8%,transparent)] dark:[--tint:color-mix(in_srgb,var(--accent-light,#5eead4)_8%,transparent)] bg-[image:linear-gradient(var(--tint),var(--tint))]';
+
 export const PROJECT_CHIP = 'inline-flex shrink-0 items-center gap-1 rounded-full bg-zinc-500/10 px-1.5 py-0.5 text-[11px] font-semibold text-zinc-700 ring-1 ring-zinc-500/20 dark:text-zinc-200';
 
 // d. BUTTONS - one size ladder (default h-8 text-xs; md h-9 text-sm for page primaries).

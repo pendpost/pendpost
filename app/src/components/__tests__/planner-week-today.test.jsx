@@ -40,4 +40,21 @@ describe('WeekView today underline marker', () => {
     const { container } = renderWeek(startOfWeek(new Date('2020-01-01T00:00:00')));
     expect(underlines(container)).toHaveLength(0);
   });
+
+  // Owner pick 2026-11-04: days before today step back (grey, lighter label), so the week
+  // reads from today forward. Today itself and later days keep the bold label.
+  it('greys only the day labels before today', () => {
+    const { container } = renderWeek(startOfWeek(new Date()));
+    // 2026-06-16 is a Tuesday: only Monday is past.
+    expect(container.querySelectorAll('[data-past-day]')).toHaveLength(1);
+  });
+
+  it('greys every label of a past week and none of a future week', () => {
+    const past = renderWeek(startOfWeek(new Date('2020-01-01T00:00:00')));
+    expect(past.container.querySelectorAll('[data-past-day]')).toHaveLength(7);
+    past.unmount();
+    const future = renderWeek(startOfWeek(new Date('2030-01-01T00:00:00')));
+    expect(future.container.querySelectorAll('[data-past-day]')).toHaveLength(0);
+  });
 });
+

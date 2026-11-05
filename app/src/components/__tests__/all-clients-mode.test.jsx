@@ -26,7 +26,9 @@ const basePost = (over) => ({
   // titled from post.title, which would duplicate the headline text below and
   // make the "find by text" assertions ambiguous.
   campaign: 'launch', approval: 'pending', derivedState: 'draft', scheduledAt: '2026-09-01T10:00:00Z',
-  type: 'image', platforms: ['mastodon'], media: { file: null, exists: false }, ...over,
+  // A Mastodon post publishes no title (the title rule), so its row shows the caption: the
+  // fixture's caption carries the same words the tests find the post by.
+  type: 'image', platforms: ['mastodon'], media: { file: null, exists: false }, caption: over?.title, ...over,
 });
 
 // A mutable holder so each test can point usePlansAll at its own fixture without

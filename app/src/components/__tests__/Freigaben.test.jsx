@@ -314,8 +314,8 @@ describe('Freigaben settles rejected posts out of the queue', () => {
 
   it('hides a rejected post from the default "To review" queue', () => {
     renderFreigaben([pendingPost, rejectedPost]);
-    expect(screen.getByText('Spring promo')).toBeInTheDocument();
-    expect(screen.queryByText('Declined draft')).not.toBeInTheDocument();
+    expect(screen.getByText(/Spring promo headline/)).toBeInTheDocument();
+    expect(screen.queryByText(/This one was declined/)).not.toBeInTheDocument();
   });
 
   it('counts only undecided work in the To-review tab', () => {
@@ -328,7 +328,7 @@ describe('Freigaben settles rejected posts out of the queue', () => {
     const user = userEvent.setup();
     renderFreigaben([pendingPost, rejectedPost]);
     await user.click(screen.getByText(t('approvals.view.all')));
-    const card = cardFor('Declined draft');
+    const card = cardFor('This one was declined');
     expect(within(card).getByText(t('approval.rejected'))).toBeInTheDocument();
     expect(within(card).queryByText(t('approvals.action.reject'))).not.toBeInTheDocument();
     expect(within(card).queryByText(t('approvals.action.approve'))).not.toBeInTheDocument();
@@ -375,21 +375,20 @@ describe('Freigaben bulk approve', () => {
     const boxes = screen.getAllByRole('checkbox', { name: /select post/i });
     for (const b of boxes) await user.click(b); // eslint-disable-line no-await-in-loop
 
-    const bar = screen.getByRole('region', { name: /selected/i });
-    await user.click(within(bar).getByRole('button', { name: t('approvals.action.approve') }));
+    await user.click(screen.getByRole('button', { name: t('approvals.bulk.approveN', { n: 2 }) }));
 
     // Both posts were attempted and the run settled (the old bug never got here).
     await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(2));
     // The summary names the failed post; WHY (the server's own English line) rides the
-    // "?" beside it, never the bar itself.
+    // "?" beside it, never the alert itself.
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toMatch(/1 failed: p3$/);
     expect(alert.textContent).not.toMatch(/Mastodon still processing/);
-    expect(within(bar).getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('p3: Mastodon still processing the media');
+    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('p3: Mastodon still processing the media');
     // The button recovered out of the loading state (no spinner label lingers).
     await waitFor(() => expect(screen.queryByText(/Approving/)).not.toBeInTheDocument());
     // The failed post stays selected for a retry; the succeeded one is dropped.
-    expect(screen.getByRole('region', { name: /1 selected/i })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: t('approvals.bulk.selected', { n: 1 }) })).toBeInTheDocument();
   });
 
   it('shows live N/total progress while the batch runs', async () => {
@@ -405,11 +404,10 @@ describe('Freigaben bulk approve', () => {
     renderFreigaben([pendingPost, p3]);
     const boxes = screen.getAllByRole('checkbox', { name: /select post/i });
     for (const b of boxes) await user.click(b); // eslint-disable-line no-await-in-loop
-    const bar = screen.getByRole('region', { name: /selected/i });
-    await user.click(within(bar).getByRole('button', { name: t('approvals.action.approve') }));
+    await user.click(screen.getByRole('button', { name: t('approvals.bulk.approveN', { n: 2 }) }));
 
-    // First item is in flight: the bulk button shows a running count, not a frozen spinner.
-    expect(await within(bar).findByText(/Approving \d\/2/)).toBeInTheDocument();
+    // First item is in flight: the bulk button names a running count, not a frozen spinner.
+    expect(await screen.findByRole('button', { name: /Approving \d\/2/ })).toBeInTheDocument();
     releaseFirst();
     await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(2));
   });

@@ -1215,6 +1215,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           <CommentInbox
             onNavigate={onNavigate}
             onOpenRadar={openSignal}
+            xLimit={accounts?.x?.postLimit}
             // An answer to one of our Radar replies is answered in place: the reply post is filed
             // like the card's own drafter files it (the first campaign) under that signal's thread.
             radar={enabled ? { campaign: campaigns?.[0]?.id || null, signalOf: (key) => signals.find((s) => `${s.source} ${s.externalId}` === key) || null } : null}

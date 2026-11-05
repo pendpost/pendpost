@@ -30,8 +30,8 @@ const dirty = {
 };
 const row = sanitizeHealthRow(dirty, '2026-06-13T00:00:00.000Z');
 
-check('whitelist keeps exactly ok/detail/tokenExpiresAt/skipped/checkedAt', () => {
-  assert.deepEqual(Object.keys(row).sort(), ['checkedAt', 'detail', 'ok', 'skipped', 'tokenExpiresAt']);
+check('whitelist keeps exactly ok/detail/tokenExpiresAt/skipped/subscriptionType/checkedAt', () => {
+  assert.deepEqual(Object.keys(row).sort(), ['checkedAt', 'detail', 'ok', 'skipped', 'subscriptionType', 'tokenExpiresAt']);
 });
 check('no token-like key survives the whitelist', () => {
   for (const k of ['token', 'accessToken', 'client_secret', 'refresh_token']) {
@@ -51,6 +51,12 @@ check('non-string detail and non-number expiry coerce to null; skipped kept', ()
   assert.equal(r.tokenExpiresAt, null);
   assert.equal(r.ok, null);
   assert.equal(r.skipped, 'action-block');
+});
+check('subscriptionType (X tier) is kept as a short string, anything else becomes null', () => {
+  assert.equal(sanitizeHealthRow({ ok: true, subscriptionType: 'Premium' }, 'now').subscriptionType, 'Premium');
+  assert.equal(sanitizeHealthRow({ ok: true, subscriptionType: { leak: 1 } }, 'now').subscriptionType, null);
+  assert.equal(sanitizeHealthRow({ ok: true }, 'now').subscriptionType, null);
+  assert.equal(sanitizeHealthRow({ ok: true, subscriptionType: 'x'.repeat(500) }, 'now').subscriptionType.length, 40);
 });
 
 if (failures) {
