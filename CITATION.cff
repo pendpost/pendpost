@@ -6,7 +6,7 @@ type: software
 authors:
   - name: "Nomadik GmbH"
 version: 2.11.0
-date-released: '2026-10-14'
+date-released: '2026-11-05'
 license: MIT
 repository-code: "https://github.com/pendpost/pendpost"
 url: "https://pendpost.com"

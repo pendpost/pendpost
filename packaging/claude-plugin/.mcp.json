@@ -1,0 +1,13 @@
+{
+  "pendpost": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "pendpost@2.11.0",
+      "--stdio"
+    ],
+    "env": {
+      "PENDPOST_ROOT": "${CLAUDE_PLUGIN_DATA}"
+    }
+  }
+}

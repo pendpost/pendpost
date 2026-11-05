@@ -1,0 +1,12 @@
+{
+  "name": "pendpost",
+  "displayName": "pendpost",
+  "version": "2.11.0",
+  "description": "Local-first social media planner: your agent drafts and schedules posts for Instagram, Facebook, LinkedIn, YouTube, X, Mastodon, Nostr and more, and nothing publishes until you approve it.",
+  "author": { "name": "Nomadik GmbH", "email": "hello@pendpost.com" },
+  "homepage": "https://pendpost.com",
+  "repository": "https://github.com/pendpost/pendpost",
+  "license": "MIT",
+  "keywords": ["social-media", "scheduler", "approval", "mcp", "local-first"],
+  "logo": "packaging/logo/pendpost-400.png"
+}
