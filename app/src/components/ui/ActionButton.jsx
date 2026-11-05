@@ -69,6 +69,8 @@ export const IDLE_VARIANTS = {
 const SIZES = {
   sm: 'px-2.5 py-1.5 text-xs',
   md: 'px-3.5 py-2 text-sm',
+  // Glyph only (empty labels plus an ariaLabel): a 28px square, the toolbar's control height.
+  icon: 'h-7 w-7 justify-center',
 };
 
 // forwardRef so the button composes with a Radix Slot trigger (e.g. <Tip>), which
@@ -101,6 +103,7 @@ const ActionButton = forwardRef(function ActionButton({
 
   const label = labels[status] ?? labels.idle;
   const loading = status === 'loading';
+  const glyph = size === 'icon' ? 15 : 13;
 
   return (
     <button
@@ -123,13 +126,29 @@ const ActionButton = forwardRef(function ActionButton({
       )}
     >
       {loading ? (
-        <Loader2 size={13} className="motion-safe:animate-spin" aria-hidden="true" />
+        <Loader2 size={glyph} className="motion-safe:animate-spin" aria-hidden="true" />
       ) : Icon ? (
-        <Icon size={13} aria-hidden="true" />
+        <Icon size={glyph} aria-hidden="true" />
       ) : null}
       {label}
     </button>
   );
 });
+
+// ONE solid approve per list (used by the Freigaben list; it lives here, beside the approve
+// button's own tones, because the approve green belongs to this file). Every row's approve (data-row-approve) is tonal; the list turns
+// one of them solid: the hovered row's, else (no row hovered) the keyboard row's (data-focused).
+// While a selection exists the list drops these and the toolbar's bulk approve is the one
+// solid action. Pure CSS (:hover, :has), no hover state in JS.
+export const ONE_SOLID_APPROVE = [
+  '[&_li:hover_[data-row-approve]:enabled]:bg-emerald-700',
+  '[&_li:hover_[data-row-approve]:enabled]:text-white',
+  'dark:[&_li:hover_[data-row-approve]:enabled]:bg-emerald-400',
+  'dark:[&_li:hover_[data-row-approve]:enabled]:text-emerald-950',
+  '[&:not(:has(li:hover))_li[data-focused]_[data-row-approve]:enabled]:bg-emerald-700',
+  '[&:not(:has(li:hover))_li[data-focused]_[data-row-approve]:enabled]:text-white',
+  'dark:[&:not(:has(li:hover))_li[data-focused]_[data-row-approve]:enabled]:bg-emerald-400',
+  'dark:[&:not(:has(li:hover))_li[data-focused]_[data-row-approve]:enabled]:text-emerald-950',
+].join(' ');
 
 export default ActionButton;

@@ -224,12 +224,14 @@ try {
   // 164 routes / 136 tools = +agent_fix_post with its REST twin POST /api/plans/<c>/posts/<id>/agent-fix
   // (studio fix flow 2026-11-01) and the UI-facing GET /api/agent-fix (no MCP twin): routes +2, tools +1.
   // 165 routes / 136 tools = +GET /api/dashboard-update (the update toast status read, no MCP twin), routes +1.
+  // 167 routes / 138 tools = +media_cleanup with its REST twin POST /api/media/cleanup: +1 each.
+  // 169 routes / 138 tools = +GET /api/whats-new and POST /api/whats-new/seen (UI-only): +2 routes, no tool.
   // 166 routes / 137 tools = +restore_post with its REST twin POST /api/plans/<c>/posts/<id>/restore
   // (post trash, planner bulk 2026-11-01): +1 each.
-  ok(/166 routes, 137 tools.*1 documented UI-only/.test(parityOut),
+  ok(/169 routes, 138 tools.*1 documented UI-only/.test(parityOut),
     `parity unaffected by a registered lane: ${parityOut.trim()}`);
 
-  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 166/137 unaffected (${pass} assertions).`);
+  console.log(`[driver] OK - registry recognizes + probes a new lane; absent/malformed falls back to built-ins; parity 169/138 unaffected (${pass} assertions).`);
 } finally {
   // Restore the pre-existing registry / clean up the dir we created.
   if (hadRegistry) fs.writeFileSync(REGISTRY, savedRegistry);

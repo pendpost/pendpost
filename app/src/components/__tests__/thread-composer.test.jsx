@@ -173,6 +173,16 @@ describe('ThreadComposer validation', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(createPost).not.toHaveBeenCalled();
   });
+
+  it('an account with long posts (accounts.x.postLimit 25000) may save a 281-char tweet', async () => {
+    const user = userEvent.setup();
+    renderThread({ accounts: { x: { postLimit: 25000 } } });
+    const boxes = screen.getAllByRole('textbox');
+    await user.click(boxes[0]);
+    await user.paste('x'.repeat(281));
+    await user.click(screen.getByRole('button', { name: /create thread/i }));
+    await waitFor(() => expect(createPost).toHaveBeenCalled());
+  });
 });
 
 describe('ThreadComposer pure helpers', () => {

@@ -7,7 +7,7 @@ import { useT, useLocale } from '../lib/i18n.js';
 import { splitTweetThread } from '../lib/thread.js';
 import { xWeightedLength } from '../lib/x-text.js';
 import { mastodonStatusLength } from '../lib/mastodon-text.js';
-import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, platformsForField, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia } from '../lib/format.js';
+import { PLATFORMS, TYPES, prettyCampaign, suggestPostId, visiblePlatforms, fieldRelevance, collapsedOverrideKey, formatsForPlatform, typeOptionLabel, platformsForField, POLL_DURATIONS, POLL_DEFAULT_DURATION, pollDurationKey, postNeedsMedia, storyLanes, storyPosted } from '../lib/format.js';
 import { PLATFORM_META, INNER_SURFACE, FIELD_SURFACE, FIELD, FIELD_MULTILINE, PostPreview, PlatformBlockers, CoverThumb, EYEBROW, DISABLED_PRIMARY, showsLinkedinCard, Skeleton } from './ui.jsx';
 import ClientBand from './ClientBand.jsx';
 import { DateTimePicker } from './ui/DateTimePicker.jsx';
@@ -16,6 +16,7 @@ import { Tip } from './ui/Tooltip.jsx';
 import { IconBadge } from './ui/IconBadge.jsx';
 import { useConfirm } from './ui/confirm.jsx';
 import InfoTip from './ui/InfoTip.jsx';
+import { ToggleRow } from './ui/Switch.jsx';
 import { humanizeAction } from '../lib/failureCopy.js';
 
 // Content-driven textarea height (mirrors PostDetail's ContentField, punch-list
@@ -1386,6 +1387,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [stickers, setStickers] = useState(isEdit ? post.interactiveStory?.stickers || [] : []);
   const [hashtagsMode, setHashtagsMode] = useState(isEdit && Array.isArray(post.hashtags) ? 'custom' : 'global');
   const [hashtags, setHashtags] = useState(isEdit && Array.isArray(post.hashtags) ? post.hashtags.join(' ') : '');
+  // "Also as story": the same photo or video also goes out as an Instagram/Facebook
+  // story. Saved as post.alsoStory (true, or cleared) with the other fields.
+  const [alsoStory, setAlsoStory] = useState(isEdit ? post.alsoStory === true : false);
   const [busy, setBusy] = useState(false);
   // { text, raw }: the plain sentence is the alert, a server line rides the "?" (raw).
   const [error, setError] = useState(null);
@@ -1468,6 +1472,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     stickers: isEdit ? post.interactiveStory?.stickers || [] : [],
     hashtagsMode: isEdit && Array.isArray(post.hashtags) ? 'custom' : 'global',
     hashtags: isEdit && Array.isArray(post.hashtags) ? post.hashtags.join(' ') : '',
+    alsoStory: isEdit ? post.alsoStory === true : false,
   }));
 
   // The single platform whose caps the live lint should use (most-permissive of
@@ -1502,11 +1507,18 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     return lanes.length ? `${t(key)} (${lanes.join(', ')})` : t(key);
   };
   // The media field is named after what it holds: an image format or an image file reads
-  // "Image", a story (image or video) "Media", the video formats "Video". A .png under a
-  // "Video" label next to Format "Image (4:5)" contradicted itself.
-  const mediaIsImage = type === 'image' || /\.(png|jpe?g|gif|webp)$/i.test(mediaPath || '');
-  const mediaIsVideo = !mediaIsImage && type !== 'story';
-  const mediaFieldKey = mediaIsImage ? 'composer.field.mediaImage' : (mediaIsVideo ? 'composer.field.video' : 'composer.field.media');
+  // "Image", the video formats "Video". A story publishes a video, so it always reads
+  // "Video", even while an image file is still attached. A .png under a "Video" label
+  // next to Format "Image (4:5)" contradicted itself.
+  const mediaIsImage = type === 'image' || (type !== 'story' && /\.(png|jpe?g|gif|webp)$/i.test(mediaPath || ''));
+  const mediaIsVideo = !mediaIsImage;
+  const mediaFieldKey = mediaIsImage ? 'composer.field.mediaImage' : 'composer.field.video';
+  // "Also as story": offered only for a single-media format on a story lane. The lanes
+  // come from the live selection; once every story is live the switch has nothing left
+  // to change and stays shown but disabled.
+  const alsoStoryLanes = storyLanes({ type, platforms });
+  const alsoStoryLocked = isEdit && storyPosted(post);
+  const alsoStoryOn = alsoStory && alsoStoryLanes.length > 0;
   // Are all offered platforms selected? Drives the select-all/clear control's label.
   const allPlatformsSelected = pickerPlatforms.length > 0 && pickerPlatforms.every((p) => platforms.includes(p));
   // The SHARED field-relevance model (lib/format.js), consumed identically by the
@@ -1581,11 +1593,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // Note-override counters (findings r2-1/r2-3): the effective text is the
   // per-platform override else the shared caption; CharCounter +
   // useOverLimitAnnounce carry the shared accessibility contract (icon +
-  // sr-only severity, transition-only announce). X caps at 280, Mastodon at 500.
-  // Counted the way X does (URLs 23, emoji 2), the same counter as approval + publish.
+  // sr-only severity, transition-only announce). Mastodon caps at 500. X caps at the
+  // account's post limit (accounts.x.postLimit: 25,000 when its X subscription includes
+  // long posts, else 280; still loading or never probed = 280), the same limit approval
+  // and publish read. Counted the way X does (URLs 23, emoji 2).
+  const xMax = accounts?.x?.postLimit ?? CAPTION_CAPS.x;
   const xLen = xWeightedLength(xCaption || caption);
-  const xOver = xLen > CAPTION_CAPS.x;
-  const xOverAnnounce = useOverLimitAnnounce(xOver, xLen, CAPTION_CAPS.x);
+  const xOver = xLen > xMax;
+  const xOverAnnounce = useOverLimitAnnounce(xOver, xLen, xMax);
   // Counted the way Mastodon does (lib/mastodon-text.js, the engine's twin): a link is 23, a
   // remote mention @user, emoji one each, and the content warning adds to the same cap.
   const mastodonLen = mastodonStatusLength(mastodonCaption || caption, spoilerText);
@@ -1607,9 +1622,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
       link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug,
       body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent,
       ttInteraction, spoilerText, xReplySettings, poll,
-      stickers, hashtagsMode, hashtags,
+      stickers, hashtagsMode, hashtags, alsoStory,
     }) !== initialSnapshot,
-    [campaign, id, idEdited, type, typeTouched, initialType, platforms, platformsTouched, initialPlatforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, altText, initialSnapshot],
+    [campaign, id, idEdited, type, typeTouched, initialType, platforms, platformsTouched, initialPlatforms, scheduledIso, caption, firstComment, title, link, image, imageUrl, mediaPath, mediaItems, slideUrls, description, liDescription, xCaption, xReplyTo, tags, blogSlug, body, excerpt, metaTitle, metaDescription, wpCategories, featureImageAlt, publishAsDraft, liAuthor, canonicalUrl, ghostEmail, newsletter, emailSegment, emailOnly, mastodonCaption, nostrCaption, tgCaption, dcCaption, ttCaption, redditText, pinTitle, pinDescription, redditUrl, redditFlairId, redditFlairText, redditSubreddit, isPromo, pinBoardSection, gbp, tgCta, dcEmbed, dcThreadName, dcThreadId, dcEvent, ttInteraction, spoilerText, xReplySettings, poll, stickers, hashtagsMode, hashtags, alsoStory, altText, initialSnapshot],
   );
 
   // Report dirtiness upward so App's client-switch guard (lib/clientSwitchGuard.js)
@@ -1991,6 +2006,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           interactiveStory: interactiveStoryPayload,
           hashtags: hashtagsPayload,
           altText: altText || null,
+          alsoStory: alsoStoryOn ? true : null,
         });
       } else {
         saveRes = await createPost(campaign, {
@@ -2053,6 +2069,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           interactiveStory: interactiveStoryPayload || undefined,
           hashtags: hashtagsPayload || undefined,
           altText: altText || undefined,
+          alsoStory: alsoStoryOn ? true : undefined,
         });
       }
       // Materialize pending thread parts as sibling posts chained via xReplyTo.
@@ -2252,6 +2269,17 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             <div className="space-y-1.5">
               <label className={EYEBROW}>{t(mediaFieldKey)}</label>
               <VideoPicker assets={assets} assetsDir={assetsDir} value={mediaPath} onChange={setMediaPath} placeholderKey={mediaIsVideo ? 'composer.video.choose' : 'composer.media.choose'} />
+              {alsoStoryLanes.length ? (
+                <div className="space-y-0.5 pt-1">
+                  <ToggleRow label={t('composer.alsoStory.label')} checked={alsoStoryOn} onChange={setAlsoStory} disabled={alsoStoryLocked} />
+                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                    {alsoStoryLocked
+                      ? t('composer.alsoStory.posted')
+                      : t(alsoStoryLanes.length > 1 ? 'composer.alsoStory.hintBoth' : `composer.alsoStory.hint.${alsoStoryLanes[0]}`)}
+                    {!alsoStoryLocked && mediaIsVideo ? ` ${t('composer.alsoStory.videoCut')}` : ''}
+                  </p>
+                </div>
+              ) : null}
             </div>
           ) : null}
 
@@ -2276,24 +2304,24 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                 value={xCaption}
                 onChange={(e) => setXCaption(e.target.value)}
                 rows={growRows(xCaption, 3, 12)}
-                placeholder={t('composer.field.xCaptionPlaceholder')}
+                placeholder={t('composer.field.xCaptionPlaceholder', { max: xMax })}
                 aria-describedby="composer-x-counter"
                 className={`${FIELD_MULTILINE} w-full resize-y leading-relaxed`}
               />
-              <CharCounter id="composer-x-counter" len={xLen} max={CAPTION_CAPS.x} over={xOver} />
+              <CharCounter id="composer-x-counter" len={xLen} max={xMax} over={xOver} />
               {/* r2-3: announce ONLY the over/under transition, not every keystroke. */}
               <p role="status" aria-live="polite" className="sr-only">{xOverAnnounce}</p>
-              {/* X hard cap: over 280 the post cannot publish (non-Premium API
-                  refusal). Offer the one honest way to ship the WHOLE text: a
+              {/* X hard cap: over the account's limit the post cannot publish (X refuses
+                  it). Offer the one honest way to ship the WHOLE text: a
                   visible split into thread replies, each its own approvable post. */}
               {xOver && !threadParts.length ? (
                 <div className={`space-y-2 rounded-xl p-3 ${INNER_SURFACE}`}>
-                  <p className="text-xs text-zinc-600 dark:text-zinc-300">{t('composer.thread.hint')}</p>
+                  <p className="text-xs text-zinc-600 dark:text-zinc-300">{t('composer.thread.hint', { max: xMax })}</p>
                   <button
                     type="button"
                     onClick={() => {
                       const effective = xCaption || caption;
-                      const parts = splitTweetThread(effective, CAPTION_CAPS.x);
+                      const parts = splitTweetThread(effective, xMax);
                       if (parts.length < 2) return;
                       threadOriginalRef.current = { xCaption, hadOverride: Boolean(xCaption) };
                       setXCaption(parts[0]);
@@ -2314,7 +2342,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                       <li key={i} className={`rounded-lg p-2 text-xs leading-relaxed ${FIELD_SURFACE}`}>
                         <span className="mr-1 font-bold tabular-nums text-zinc-600 dark:text-zinc-400">{i + 2}.</span>
                         {part}
-                        <span className="ml-1 whitespace-nowrap text-[10px] tabular-nums text-zinc-600 dark:text-zinc-400">({part.length}/{CAPTION_CAPS.x})</span>
+                        <span className="ml-1 whitespace-nowrap text-[10px] tabular-nums text-zinc-600 dark:text-zinc-400">({part.length}/{xMax})</span>
                       </li>
                     ))}
                   </ol>

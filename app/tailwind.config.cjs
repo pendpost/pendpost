@@ -9,7 +9,15 @@ module.exports = {
         // on documentElement from the active client's theme on every client
         // change and dark-mode toggle, with the shipped defaults as the fallback
         // so existing `brand` / `brand-light` class usages keep working unchanged.
-        brand: { DEFAULT: 'var(--accent, #0f766e)', light: 'var(--accent-light, #5eead4)' },
+        // Mixed through color-mix with Tailwind's <alpha-value>, so the opacity forms
+        // (`bg-brand/10`, `hover:ring-brand/40`, `dark:bg-brand-light/10`) generate CSS. A bare
+        // var() carries no alpha channel, and Tailwind used to drop every one of those classes
+        // silently (no rule at all). Without a modifier <alpha-value> is the utility's own
+        // opacity variable (1 by default), so plain `bg-brand` is unchanged.
+        brand: {
+          DEFAULT: 'color-mix(in srgb, var(--accent, #0f766e) calc(<alpha-value> * 100%), transparent)',
+          light: 'color-mix(in srgb, var(--accent-light, #5eead4) calc(<alpha-value> * 100%), transparent)',
+        },
       },
       width: {
         // Draggable sidebar rail: App.jsx sets --sidebar-w on documentElement from

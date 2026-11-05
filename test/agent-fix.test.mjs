@@ -337,6 +337,7 @@ try {
     const p = plan.posts.find((x) => x.id === 'p5');
     p.caption = `${p.caption} Edited.`;
     delete p.editedSinceApproval;
+    delete p.stickyEditReason;
     return p;
   }));
   const s3 = await asClient(() => fix.autoFixSweep({ runner: noopChild, wait: true, force: true }));
@@ -357,6 +358,20 @@ try {
   const diffJob = await asClient(() => fix.startAgentFix({ campaign: 'c1', postId: 'p7', runner: sneakyChild, wait: true }));
   ok(diffJob.state === 'done', `a change outside the content hash still counts as a change (got ${JSON.stringify(diffJob.job)})`);
   ok(raw('p7').editedSinceApproval === true && raw('p7').approval === 'approved', 'and the post is returned for approval, even after a mid-job re-approval');
+
+  // ---- 11. the agent-fix hold is sticky: an owner scheduling edit cannot release it ----
+  // p8 came back held after a job that only moved its time, so its content hash still equals
+  // the approved one. updatePost used to read that as "approved content restored" and delete
+  // the flag on any later edit, so a reschedule in the Studio silently released a post the
+  // agent had touched. Only a re-approval may release it.
+  ok(raw('p8').stickyEditReason === 'agent-fix', `the hold records its reason (got ${JSON.stringify(raw('p8').stickyEditReason)})`);
+  const { postRev } = await import('../lib/plans.mjs');
+  const moved = await asClient(() => w.updatePost({ campaign: 'c1', postId: 'p8', ifRev: postRev(raw('p8')), fields: { scheduledAt: new Date(Date.now() + 7_200_000).toISOString() }, actor: 'owner' }));
+  ok(moved.ok, `the owner's reschedule-only edit lands (got ${JSON.stringify(moved).slice(0, 200)})`);
+  ok(raw('p8').editedSinceApproval === true, 'and the post stays held for the owner after it');
+  const reapproved = await asClient(() => w.approvePost({ campaign: 'c1', postId: 'p8', actor: 'owner', force: true }));
+  ok(reapproved.ok && raw('p8').editedSinceApproval === undefined && raw('p8').stickyEditReason === undefined,
+    're-approval releases the hold and its reason');
 } catch (err) {
   failures += 1;
   console.error(err);

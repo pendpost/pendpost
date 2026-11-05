@@ -27,6 +27,7 @@ import { serveMedia } from './lib/media.mjs';
 import { serveStatic } from './lib/static.mjs';
 import { absorbMetaBlockSentinel } from './lib/accounts.mjs';
 import { initMultiClient } from './lib/multi-client.mjs';
+import { seedSeen } from './lib/whats-new.mjs';
 import { bootScheduler } from './lib/scheduler.mjs';
 import { bootCoverBackfill, bootScheduleBackfill } from './lib/writes.mjs';
 import { bootApprovalNotifier } from './lib/notify.mjs';
@@ -190,6 +191,9 @@ server.listen(PORT, HOST, () => {
   // Idempotent, zero-loss boot migration of any legacy single workspace into
   // data/clients/default/ - MUST run before the scheduler/sentinel touch state,
   // so they read the migrated per-client files (activeRoot()), not the originals.
+  // What's new (lib/whats-new.mjs): with no seen record yet, decide fresh install vs
+  // existing one BEFORE initMultiClient creates data/clients.json. Best-effort.
+  try { seedSeen(); } catch (err) { logLine('warn', `could not seed the what's new marker: ${err.message}`); }
   initMultiClient();
   // Spec 56: the owner's CLI/curl path to the per-process Studio token (~/.pendpost/studio-token,
   // 0600, overwritten on every boot, outside the served workspace). Best-effort: without the file the Studio still works, only hand-run owner

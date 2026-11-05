@@ -3,7 +3,7 @@ import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import Freigaben from '../Freigaben.jsx';
+import Freigaben, { KeyboardShortcuts } from '../Freigaben.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider, makeT } from '../../lib/i18n.js';
@@ -151,16 +151,18 @@ describe('Freigaben keyboard-first review flow', () => {
 });
 
 describe('Freigaben compact density', () => {
-  it('compact clamps the caption to two lines under the title, with no "scheduled for" prefix, and keeps a/r', async () => {
+  it('compact shows an untitled Reel caption as one paragraph clamped to three lines, with no "scheduled for" prefix, and keeps a/r', async () => {
     const user = userEvent.setup();
     renderFreigaben([A]);
     // Comfortable (default) shows the caption body; the meta line carries the bare date.
     expect(screen.getByText(/full caption body/i)).toBeInTheDocument();
     expect(screen.queryByText(/scheduled for/i)).not.toBeInTheDocument();
-    // Compact (the list): the caption minus the title line, clamped to two lines.
+    // Compact (the list): a Reel publishes no title, so the whole caption, first line included,
+    // is one paragraph clamped to three lines.
     await user.click(screen.getByRole('button', { name: t('approvals.density.compact') }));
     const caption = screen.getByText(/full caption body/i);
-    expect(caption.closest('[data-row-caption]').className).toMatch(/line-clamp-2/);
+    expect(caption.closest('[data-row-caption]').className).toMatch(/line-clamp-3/);
+    expect(caption.closest('[data-row-caption]').textContent).toMatch(/^Alpha promo headline The full caption body/);
     expect(screen.queryByText(/scheduled for/i)).not.toBeInTheDocument();
     // Keyboard approve still works on the compact row.
     cardFor('Alpha promo').focus();
@@ -169,14 +171,19 @@ describe('Freigaben compact density', () => {
     expect(approvePost).toHaveBeenCalledWith('spring', 'p1');
   });
 
-  it('exposes one keyboard-help info button (not a per-card eyebrow) explaining the shortcuts', async () => {
-    const user = userEvent.setup();
+  // The shortcuts ride the filter bar's "?" popover (App.jsx passes KeyboardShortcuts as its
+  // helpExtra on this page), so the toolbar spends no control on them.
+  it('the toolbar has no keyboard-help button of its own', () => {
     renderFreigaben([A, B]);
-    const help = screen.getByRole('button', { name: t('approvals.keys.title') });
-    await user.click(help);
-    // The popover explains each key with its action.
-    expect(await screen.findByText(t('approvals.keys.approve'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: t('approvals.keys.title') })).toBeNull();
+  });
+
+  it('KeyboardShortcuts explains each key with its action', () => {
+    render(<I18nProvider locale="en"><KeyboardShortcuts /></I18nProvider>);
+    expect(screen.getByText(t('approvals.keys.title'))).toBeInTheDocument();
+    expect(screen.getByText(t('approvals.keys.approve'))).toBeInTheDocument();
     expect(screen.getByText(t('approvals.keys.reject'))).toBeInTheDocument();
     expect(screen.getByText(t('approvals.keys.navigate'))).toBeInTheDocument();
+    expect([...document.querySelectorAll('kbd')].map((k) => k.textContent)).toEqual(['a', 'r', '↑', '↓']);
   });
 });

@@ -1,99 +1,115 @@
-// bulk-bar.test.jsx - the ONE bulk action bar (BulkBar.jsx), shared by Approvals and the
-// planner List (planner bulk, package P). It renders only while something is selected, names
-// the count in a polite live region, states a skip as a quiet note BEFORE the press, shows the
-// run's failure summary with the raw engine line behind the "?", and clears on demand.
-import { render, screen, within } from '@testing-library/react';
+// bulk-bar.test.jsx - the planner List's bulk header (BulkBar.jsx ListBar) and its glyphs: ONE
+// slim line at the top of the list, the header of the rows' checkbox column (2026-11-05, after
+// the Approvals toolbar).
+import { render, screen, within, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import BulkBar, { ListBar, BarAction } from '../BulkBar.jsx';
+import { ListBar, BarAction } from '../BulkBar.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { axeClean } from '../../test-utils/axe.js';
 
-function renderBar(props) {
-  return render(
-    <I18nProvider locale="en">
-      <TooltipProvider>
-        <BulkBar onClear={() => {}} {...props}>
-          <button type="button">Approve</button>
-        </BulkBar>
-      </TooltipProvider>
-    </I18nProvider>,
-  );
-}
+const Glyph = () => null;
+const acts = (
+  <>
+    <BarAction id="approve" icon={Glyph} label="Approve 2" onClick={() => {}} />
+    <BarAction id="delete" icon={Glyph} label="Delete 2" onClick={() => {}} />
+  </>
+);
 
-describe('BulkBar', () => {
-  it('renders nothing while nothing is selected', () => {
-    const { container } = renderBar({ count: 0 });
-    expect(container).toBeEmptyDOMElement();
-  });
-
-  it('names the count in a region and a polite live status, with the page actions after Clear', async () => {
-    const onClear = vi.fn();
-    const { container } = renderBar({ count: 3, onClear });
-    const bar = screen.getByRole('region', { name: '3 selected' });
-    expect(within(bar).getByRole('status')).toHaveTextContent('3 selected');
-    const buttons = within(bar).getAllByRole('button').map((b) => b.textContent);
-    expect(buttons).toEqual(['Clear selection', 'Approve']);
-    await userEvent.setup().click(within(bar).getByRole('button', { name: 'Clear selection' }));
-    expect(onClear).toHaveBeenCalledTimes(1);
-    await axeClean(container);
-  });
-
-  it('states skips as quiet notes and drops empty ones', () => {
-    renderBar({ count: 2, notes: [null, '1 post needs manual posting', ''] });
-    const bar = screen.getByRole('region', { name: '2 selected' });
-    expect(within(bar).getByText('1 post needs manual posting')).toBeInTheDocument();
-    expect(within(bar).queryByRole('alert')).not.toBeInTheDocument();
-  });
-
-  it('shows a run summary as an alert, the raw engine line behind its "?" only', () => {
-    renderBar({ count: 1, error: { text: '2 deleted, 1 failed: Launch post', raw: 'Launch post: HTTP 500' } });
-    const alert = screen.getByRole('alert');
-    expect(alert).toHaveTextContent('2 deleted, 1 failed: Launch post');
-    expect(alert.textContent).not.toMatch(/HTTP 500/);
-    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('Launch post: HTTP 500');
-  });
-
-  it('renders an extra control beside the count (the List select-all)', () => {
-    render(
-      <I18nProvider locale="en">
-        <BulkBar count={1} onClear={() => {}} extra={<button type="button">Select all 9 in this view</button>} />
-      </I18nProvider>,
-    );
-    const bar = screen.getByRole('region', { name: '1 selected' });
-    expect(within(bar).getAllByRole('button')[0]).toHaveTextContent('Select all 9 in this view');
-  });
-});
-
-describe('ListBar (the List variant, planner bulk round 2)', () => {
+describe('ListBar (the slim List header)', () => {
   const renderList = (props) => render(
     <I18nProvider locale="en">
       <TooltipProvider>
-        <ListBar total={9} allSelected={false} someSelected={false} onToggleAll={() => {}} onClear={() => {}} hint="Keys: j and k" {...props} />
+        <ListBar allSelected={false} someSelected={false} onToggleAll={() => {}} onClear={() => {}} actions={acts} {...props} />
       </TooltipProvider>
     </I18nProvider>,
   );
 
-  it('keeps its slot before anything is selected: the select-all control and the key hint, no region', () => {
+  it('idle: the select-all checkbox and "Select all" on a plain line, no box, no ring, no glyphs, not sticky', () => {
     const { container } = renderList({ count: 0 });
-    expect(container.querySelector('[data-bulk-slot]')).not.toBeNull();
-    expect(screen.queryByRole('region')).not.toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: 'Select all 9 in this view' })).toBeInTheDocument();
-    expect(screen.getByText('Keys: j and k')).toBeInTheDocument();
+    const line = container.querySelector('[data-bulk-bar]');
+    expect(line.className).not.toMatch(/(^|\s)ring-/);
+    expect(line.className).not.toMatch(/(^|\s)(dark:)?bg-/);
+    expect(line.className).not.toContain('sticky');
+    expect(screen.getByRole('checkbox', { name: 'Select all' })).toBeInTheDocument();
+    expect(screen.getByText('Select all')).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/Keys/);
   });
 
-  it('becomes the region with its line once something is selected', async () => {
-    const { container } = renderList({ count: 2, someSelected: true, line: <span>2 will not be deleted: published</span> });
-    const bar = screen.getByRole('region', { name: '2 selected' });
-    expect(within(bar).getByText('2 will not be deleted: published')).toBeInTheDocument();
-    expect(within(bar).getByRole('button', { name: 'Clear selection' })).toBeInTheDocument();
+  it('selecting: the count replaces the label as a polite live region, the glyphs follow it, the line sticks on an opaque surface', async () => {
+    const { container } = renderList({ count: 2, someSelected: true });
+    const line = screen.getByRole('group', { name: '2 selected' });
+    const status = within(line).getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status.textContent).toContain('2 selected');
+    expect(within(line).queryByText('Select all')).not.toBeInTheDocument();
+    expect(line.className).toContain('sticky');
+    expect(line.className).toContain('top-0');
+    // The opaque fill waits for the line to be pinned (lib/useStuck.js); in the flow it is clear.
+    expect(line.className).toContain('data-[stuck]:bg-[#fdfefe]');
+    expect(line.className).toContain('dark:data-[stuck]:bg-[#121215]');
+    expect(line.className.split(/\s+/).some((c) => /^(dark:)?bg-/.test(c))).toBe(false);
+    expect(line).not.toHaveAttribute('data-stuck');
+    const glyphs = within(line.querySelector('[data-bulk-actions]')).getAllByRole('button');
+    expect(glyphs.map((b) => b.getAttribute('aria-label'))).toEqual(['Approve 2', 'Delete 2']);
+    // No separate clear anywhere: unticking clears.
+    expect(within(line).queryByRole('button', { name: /clear/i })).not.toBeInTheDocument();
     await axeClean(container);
   });
 
-  // Round 3 (judge item 2, and "Alle N" from item 1): on a phone the bar is three lines: the
-  // count with "Select all N" and the clear, then the actions as 44px targets spread over the
-  // width (never a 36px row with 6px gaps), then the line.
+  it('pinned while selecting, it wears its fill (data-stuck); idle it never does', () => {
+    // jsdom has no layout: give the pinned element a rect at the sticky line (window root, top 0)
+    // and leave everything else without one, then scroll once.
+    const original = Element.prototype.getBoundingClientRect;
+    const originalRaf = window.requestAnimationFrame;
+    window.requestAnimationFrame = (cb) => { cb(0); return 1; };
+    const box = (top, height) => ({ top, bottom: top + height, height, width: height ? 300 : 0, left: 0, right: height ? 300 : 0, x: 0, y: top });
+    Element.prototype.getBoundingClientRect = function rect() {
+      return this.dataset?.bulkBar !== undefined ? box(0, 36) : box(0, 0);
+    };
+    try {
+      const { container, rerender } = renderList({ count: 0 });
+      act(() => { window.dispatchEvent(new Event('scroll')); });
+      expect(container.querySelector('[data-bulk-bar]')).not.toHaveAttribute('data-stuck');
+      rerender(
+        <I18nProvider locale="en">
+          <TooltipProvider>
+            <ListBar count={2} allSelected={false} someSelected onToggleAll={() => {}} onClear={() => {}} actions={acts} />
+          </TooltipProvider>
+        </I18nProvider>,
+      );
+      act(() => { window.dispatchEvent(new Event('scroll')); });
+      expect(container.querySelector('[data-bulk-bar]')).toHaveAttribute('data-stuck', '');
+    } finally {
+      Element.prototype.getBoundingClientRect = original;
+      window.requestAnimationFrame = originalRaf;
+    }
+  });
+
+  it('a click on the checkbox while anything is selected clears, partial or full', async () => {
+    const user = userEvent.setup();
+    const onClear = vi.fn();
+    const onToggleAll = vi.fn();
+    renderList({ count: 2, someSelected: true, onClear, onToggleAll });
+    await user.click(screen.getByRole('checkbox', { name: 'Clear selection' }));
+    expect(onClear).toHaveBeenCalledTimes(1);
+    expect(onToggleAll).not.toHaveBeenCalled();
+  });
+
+  it('its checkbox sits in the rows\' checkbox column: the line keeps the rows\' 8px inset past the panel padding', () => {
+    const { container } = renderList({ count: 0 });
+    const line = container.querySelector('[data-bulk-bar]');
+    expect(line.className).toContain('-mx-4');
+    expect(line.className).toContain('px-6');
+    const slot = screen.getByRole('checkbox').closest('span.w-4');
+    expect(slot).not.toBeNull();
+  });
+
+  // On a phone the SAME line (no floating bottom bar): just the number shows, the full count is
+  // the accessible name, so checkbox + number + five 28px glyphs fit 375px on one line.
   describe('on a phone', () => {
     let original;
     beforeEach(() => {
@@ -101,63 +117,76 @@ describe('ListBar (the List variant, planner bulk round 2)', () => {
       window.matchMedia = (q) => ({ matches: q.includes('max-width: 767px'), media: q, addEventListener() {}, removeEventListener() {} });
     });
     afterEach(() => { window.matchMedia = original; });
-    const acts = (
-      <>
-        <BarAction id="delete" icon={() => null} label="Delete" onClick={() => {}} />
-        <BarAction id="approve" icon={() => null} label="Approve" onClick={() => {}} />
-      </>
-    );
 
-    it('offers "Select all N" and the clear on the count line, the actions on their own 44px line', () => {
-      const onToggleAll = vi.fn();
-      renderList({ count: 2, someSelected: true, onToggleAll, actions: acts, line: <span>note</span> });
-      const bar = screen.getByRole('region', { name: '2 selected' });
-      expect(within(bar).getByRole('button', { name: 'Select all 9' })).toBeInTheDocument();
-      const clear = within(bar).getByRole('button', { name: 'Clear selection' });
-      expect(clear.className).toMatch(/(^|\s)h-11(\s|$)/);
-      expect(clear.className).toMatch(/(^|\s)w-11(\s|$)/);
-      const row = bar.querySelector('[data-bulk-actions]');
-      expect(row.className).toContain('justify-between');
-      for (const b of within(row).getAllByRole('button')) {
-        expect(b.className).toMatch(/max-md:h-11/);
-        expect(b.className).toMatch(/max-md:w-11/);
-      }
-      expect(within(bar).getByText('note')).toBeInTheDocument();
-    });
-
-    it('a tap opens no tooltip over the bar (the line says the reason there)', async () => {
-      const user = userEvent.setup();
-      render(
-        <I18nProvider locale="en">
-          <TooltipProvider delayDuration={0}>
-            <BarAction id="delete" icon={() => null} label="Delete" disabled reason="Published posts stay" onClick={() => {}} />
-          </TooltipProvider>
-        </I18nProvider>,
-      );
-      const btn = screen.getByRole('button', { name: 'Delete' });
-      await user.tab(); // keyboard focus opens a Tip on a desktop
-      expect(btn).toHaveFocus();
-      expect(screen.queryByRole('tooltip')).toBeNull();
-      expect(btn).toHaveAccessibleDescription('Published posts stay');
+    it('renders inline in the list (no portal), the number alone visible, the full count for assistive tech', () => {
+      const { container } = renderList({ count: 3, someSelected: true });
+      const line = screen.getByRole('group', { name: '3 selected' });
+      expect(container.contains(line)).toBe(true);
+      expect(line.className).not.toMatch(/(^|\s)fixed(\s|$)/);
+      const status = within(line).getByRole('status');
+      const [num, full] = status.children;
+      expect(num).toHaveAttribute('aria-hidden', 'true');
+      expect(num.textContent).toBe('3');
+      expect(num.className).toContain('md:hidden');
+      expect(full.textContent).toBe('3 selected');
+      expect(full.className).toContain('max-md:sr-only');
+      expect(line.querySelector('[data-bulk-actions]').className).toContain('gap-2');
     });
   });
 });
 
 describe('BarAction', () => {
-  it('a disabled action stays focusable, names its reason, and does nothing on click', async () => {
+  const renderAction = (props) => render(
+    <I18nProvider locale="en">
+      <TooltipProvider delayDuration={0}>
+        <BarAction id="delete" icon={Glyph} label="Delete" onClick={() => {}} {...props} />
+      </TooltipProvider>
+    </I18nProvider>,
+  );
+
+  it('is a glyph only at every width: a 28px square with a 44px hit area, no word', () => {
+    renderAction({ label: 'Delete 3' });
+    const btn = screen.getByRole('button', { name: 'Delete 3' });
+    expect(btn.textContent).toBe('');
+    expect(btn.className).toMatch(/(^|\s)h-7(\s|$)/);
+    expect(btn.className).toMatch(/(^|\s)w-7(\s|$)/);
+    expect(btn.className).toContain('after:min-w-11');
+    expect(btn.className).toContain('after:h-11');
+  });
+
+  it('a disabled action stays focusable, names its reason (tooltip + description), and does nothing on click', async () => {
+    const user = userEvent.setup();
     const onClick = vi.fn();
-    render(
-      <I18nProvider locale="en">
-        <TooltipProvider>
-          <BarAction id="delete" icon={() => null} label="Delete" disabled reason="Published posts stay" onClick={onClick} />
-        </TooltipProvider>
-      </I18nProvider>,
-    );
+    const onDisabledPress = vi.fn();
+    renderAction({ disabled: true, reason: 'Published posts stay', onClick, onDisabledPress });
     const btn = screen.getByRole('button', { name: 'Delete' });
     expect(btn).toHaveAttribute('aria-disabled', 'true');
     expect(btn).not.toBeDisabled();
     expect(btn).toHaveAccessibleDescription('Published posts stay');
-    await userEvent.setup().click(btn);
+    await user.tab();
+    expect(btn).toHaveFocus();
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toContain('Delete');
+    expect(tip.textContent).toContain('Published posts stay');
+    await user.click(btn);
     expect(onClick).not.toHaveBeenCalled();
+    expect(onDisabledPress).toHaveBeenCalledWith('delete');
+  });
+
+  it('what a press will leave out rides the tooltip\'s second line and the description', async () => {
+    const user = userEvent.setup();
+    renderAction({ label: 'Delete 2', note: '1 will not be deleted: published' });
+    const btn = screen.getByRole('button', { name: 'Delete 2' });
+    expect(btn).toHaveAccessibleDescription('1 will not be deleted: published');
+    await user.tab();
+    const tip = await screen.findByRole('tooltip');
+    expect(tip.textContent).toContain('1 will not be deleted: published');
+  });
+
+  it('busy: a spinner in place of the glyph and the progress as its name', () => {
+    renderAction({ busy: true, busyLabel: 'Delete 1/2 ...' });
+    const btn = screen.getByRole('button', { name: 'Delete 1/2 ...' });
+    expect(btn).toHaveAttribute('aria-busy', 'true');
+    expect(btn.querySelector('svg.motion-safe\\:animate-spin')).not.toBeNull();
   });
 });

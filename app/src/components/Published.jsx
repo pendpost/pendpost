@@ -3,12 +3,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import { ShieldCheck, ExternalLink, Send, CalendarDays, List as ListIcon, ChevronLeft, ChevronRight, Recycle } from 'lucide-react';
 import { useAccounts, verifyPost } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { StatusPill, CoverThumb, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton, Segmented } from './ui.jsx';
+import { StatusPill, CoverThumb, LaneTile, PlatformIcons, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton, Segmented } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import LiveLaneLinks from './ui/LiveLaneLinks.jsx';
 import { MonthView } from './Planner.jsx';
-import { dayKey, fmtTime, fmtMonthYear, dateLocale, PLATFORMS, postDisplayTitle } from '../lib/format.js';
+import { dayKey, fmtTime, fmtMonthYear, dateLocale, PLATFORMS, postDisplayTitle, postPublishedTitle, postCaptionRun, gridDisplayAspect, hasVisual, rowTypeLabel } from '../lib/format.js';
 
 // Date-only day-group header: weekday/day/month/year, no time. Built directly
 // rather than regex-stripping the clock off fmtFull, because locales that join
@@ -82,24 +82,45 @@ function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
     // shows the honest "Still not live" state instead of a false green "Verified".
     if (!res?.liveCount) throw new Error(t('published.verify.notLive'));
   };
+  // The media-first row (the Freigaben row's rule, 2026-11-05): the post's real picture at its
+  // real aspect in a 56px column (a quiet lane tile for a text post, never a fake image of its
+  // own words), then the meta line, a bold title ONLY when a lane publishes one
+  // (postPublishedTitle) and the caption as ONE paragraph. A post with neither falls back to
+  // its name (postDisplayTitle), muted.
+  const title = postPublishedTitle(post);
+  const captionRun = postCaptionRun(post);
+  const captionText = captionRun || (title ? '' : postDisplayTitle(post));
+  const captionClass = `text-sm leading-relaxed ${
+    title || !captionRun ? 'line-clamp-2 text-zinc-600 dark:text-zinc-400' : 'line-clamp-3'
+  }`;
   return (
-    <div className={`flex items-center gap-3 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
+    <div className={`flex items-start gap-3 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
       <button
         type="button"
         onClick={() => onOpen(post)}
-        className="flex min-w-0 flex-1 items-center gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        className="flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
       >
-        <CoverThumb media={post.media} image={post.image} textPreview={post.caption} className="h-12 w-12 shrink-0 rounded-lg" />
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-bold">{postDisplayTitle(post)}</p>
-          <p className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-zinc-600 dark:text-zinc-400">
+        <span data-row-media="" aria-hidden="true" className="block w-14 shrink-0">
+          {hasVisual(post) ? (
+            <CoverThumb media={post.media} image={post.image} className={`block w-full ${gridDisplayAspect(post)} rounded-lg`} />
+          ) : (
+            <LaneTile platform={post.platforms?.[0]} className="w-full" />
+          )}
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-1">
+          <span data-row-meta="" className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+            <PlatformIcons platforms={post.platforms || []} />
+            <span>{rowTypeLabel(t, post.type)}</span>
+            {post.scheduledAt ? <span>· {fmtTime(post.scheduledAt)}</span> : null}
             {(post.derivedState === 'fired-assumed' || post.derivedState === 'verify-failed') ? (
               <StatusPill state={post.derivedState} short />
             ) : null}
-            <span>{t(`type.${post.type}`)}</span>
-            {post.scheduledAt ? <span>· {fmtTime(post.scheduledAt)}</span> : null}
-          </p>
-        </div>
+          </span>
+          {title ? (
+            <span data-row-title="" className="min-w-0 break-words text-[15px] font-bold leading-5 line-clamp-2 sm:line-clamp-1">{title}</span>
+          ) : null}
+          {captionText ? <span data-row-caption="" className={captionClass}>{captionText}</span> : null}
+        </span>
       </button>
       <div className="flex shrink-0 items-center gap-1.5">
         {/* Evergreen recycling (dim-3 M1): a proven old performer seeds a FRESH

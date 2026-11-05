@@ -100,7 +100,11 @@ function git(args, { cwd = REPO_ROOT, timeout = 30_000 } = {}) {
   } catch (err) { return { ok: false, out: '', err }; }
 }
 const isGitRepo = (cwd) => git(['rev-parse', '--is-inside-work-tree'], { cwd }).out === 'true';
-const cleanTree = (cwd) => { const r = git(['status', '--porcelain'], { cwd }); return r.ok && r.out === ''; };
+// Clean = no edited or staged TRACKED files. Untracked files (a data backup, a
+// stray render) never reach the build: committed code cannot import them, and
+// if upstream adds a file at the same path `git pull --ff-only` fails instead
+// of overwriting it. Counting them blocked every update over a backup tarball.
+const cleanTree = (cwd) => { const r = git(['status', '--porcelain', '--untracked-files=no'], { cwd }); return r.ok && r.out === ''; };
 
 // Atomic write (tmp + rename) so a concurrent reader (GET /api/health, every 15s)
 // never parses a half-written status and momentarily loses the prompt.

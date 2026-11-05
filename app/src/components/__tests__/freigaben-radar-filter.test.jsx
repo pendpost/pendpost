@@ -118,11 +118,11 @@ describe('Freigaben Radar-Antworten filter chip', () => {
     const chip = screen.getByRole('button', { name: 'Radar replies (2)' });
     await user.click(chip);
     expect(chip).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByText('Alpha promo')).not.toBeInTheDocument();
-    expect(screen.getByText('Radar answer one')).toBeInTheDocument();
-    expect(screen.getByText('Radar answer two')).toBeInTheDocument();
+    expect(screen.queryByText(/Alpha promo headline/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Radar answer one headline/)).toBeInTheDocument();
+    expect(screen.getByText(/Radar answer two headline/)).toBeInTheDocument();
     await user.click(chip);
-    expect(screen.getByText('Alpha promo')).toBeInTheDocument();
+    expect(screen.getByText(/Alpha promo headline/)).toBeInTheDocument();
   });
 
   it('keyboard a-approve still works on a focused radar card behind the filter', async () => {
@@ -130,7 +130,7 @@ describe('Freigaben Radar-Antworten filter chip', () => {
     renderFreigaben([planned, radarA]);
     await user.click(screen.getByRole('button', { name: 'Radar replies (1)' }));
     // Move focus onto the (now only) card, as ArrowDown/roving focus would.
-    const li = screen.getByText('Radar answer one').closest('li');
+    const li = screen.getByText(/Radar answer one headline/).closest('li');
     li.focus();
     expect(li).toHaveFocus();
     await user.keyboard('a');
@@ -145,14 +145,14 @@ describe('Freigaben Radar-Antworten filter chip', () => {
       </Providers>,
     );
     await user.click(screen.getByRole('button', { name: 'Radar replies (1)' }));
-    expect(screen.queryByText('Alpha promo')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Alpha promo headline/)).not.toBeInTheDocument();
     // The decision lands and the refetch drops the radar draft from the queue.
     hostSetPosts([planned]);
     // The chip hides (count is 0) and the filter releases the same frame: the
     // remaining decision work is visible again.
     await waitFor(() => {
       expect(screen.queryByRole('button', { name: /Radar replies/ })).not.toBeInTheDocument();
-      expect(screen.getByText('Alpha promo')).toBeInTheDocument();
+      expect(screen.getByText(/Alpha promo headline/)).toBeInTheDocument();
     });
   });
 });

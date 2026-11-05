@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -89,9 +89,8 @@ describe('Freigaben approve refused by the brand-lint gate (#40)', () => {
     const user = userEvent.setup();
     renderFreigaben([clean, dirty]);
     for (const box of screen.getAllByRole('checkbox', { name: /select post/i })) await user.click(box);
-    const bar = (await screen.findByText(/2 selected/i)).parentElement;
-    await user.click(within(bar).getByRole('button', { name: 'Approve' }));
-    await waitFor(() => expect(within(bar).getByRole('alert')).toHaveTextContent(
+    await user.click(await screen.findByRole('button', { name: 'Approve 2' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
       '1 approved, 1 failed: p2 (The caption breaks a brand rule on X (Banned phrase). Edit the caption for X or remove X from the post.)',
     ));
     expect(approvePost).toHaveBeenCalledTimes(2);

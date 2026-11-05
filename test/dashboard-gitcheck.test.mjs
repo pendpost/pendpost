@@ -63,10 +63,17 @@ try {
   st = readUpdateStatus(A);
   ok(st.ahead === 1 && st.diverged === true, 'local commit + upstream ahead -> diverged');
 
-  // an untracked file -> tree no longer clean
-  fs.writeFileSync(path.join(A, 'dirty.txt'), 'uncommitted');
-  gitCheck({ repo: A, statusDir: A, fetch: false });
-  ok(readUpdateStatus(A).clean === false, 'untracked file -> clean:false');
+  // an untracked file (a backup tarball) does NOT dirty the tree; an edit to a
+  // tracked file does. (The status above was written into A and committed by
+  // writeCommit's `git add .`, so settle it and keep this status outside A.)
+  g(['commit', '-qam', 'settle status'], A);
+  const sA = path.join(ROOT, 'statusA');
+  fs.writeFileSync(path.join(A, 'backup.tgz'), 'untracked');
+  gitCheck({ repo: A, statusDir: sA, fetch: false });
+  ok(readUpdateStatus(sA).clean === true, 'untracked file -> still clean');
+  fs.appendFileSync(path.join(A, 'g.txt'), 'edited');
+  gitCheck({ repo: A, statusDir: sA, fetch: false });
+  ok(readUpdateStatus(sA).clean === false, 'edited tracked file -> clean:false');
 
   // headSha reads .git directly and must agree with git itself.
   ok(headSha(A) === g(['rev-parse', 'HEAD'], A), 'headSha matches git rev-parse HEAD (loose ref)');
@@ -86,16 +93,21 @@ try {
   fs.writeFileSync(path.join(appDir, 'dist', 'index.html'), '<html></html>'); // no inputs -> not stale, no vite
   const statusDir = path.join(ROOT, 'status');
 
-  fs.writeFileSync(path.join(D, 'wip.txt'), 'uncommitted');
+  const tracked = g(['ls-files'], D).split('\n')[0];
+  const original = fs.readFileSync(path.join(D, tracked), 'utf8');
+  fs.appendFileSync(path.join(D, tracked), 'uncommitted');
   let r = await apply({ pull: true, repo: D, appDir, statusDir });
-  ok(r.ok === false && r.step === 'check' && r.reason === 'dirty-tree', 'apply refuses a dirty tree before pulling');
+  ok(r.ok === false && r.step === 'check' && r.reason === 'dirty-tree', 'apply refuses an edited tracked file before pulling');
   ok(!fs.existsSync(path.join(D, 'n.txt')), 'dirty refusal pulled nothing');
-  fs.rmSync(path.join(D, 'wip.txt'));
+  fs.writeFileSync(path.join(D, tracked), original);
+  // the real-world case: a stray untracked backup must not block the update
+  fs.writeFileSync(path.join(D, 'backup.tgz'), 'untracked');
 
   g(['fetch'], D);
   r = await apply({ pull: true, repo: D, appDir, statusDir });
   ok(r.ok === true && r.step === 'done', 'clean + fast-forwardable -> apply ok');
   ok(fs.existsSync(path.join(D, 'n.txt')), 'apply fast-forwarded the upstream commit');
+  ok(fs.existsSync(path.join(D, 'backup.tgz')), 'the untracked backup is left in place');
   ok(readUpdateStatus(statusDir).ahead === 0, 'apply refreshed the status: nothing left ahead');
 
   writeCommit(D, 'local.txt', 'mine', 'local only');

@@ -12,7 +12,7 @@
       "id": "caption-hard-cap",
       "severity": "error",
       "matcher": "captionHardCap",
-      "hint": "X refuses posts over 280 characters without X Premium, so this cannot publish. Shorten the caption or split it into a thread."
+      "hint": "X refuses posts over this account's limit (280 characters, unless its X subscription includes long posts), so this cannot publish. Shorten the caption or split it into a thread."
     },
     {
       "id": "caption-length",

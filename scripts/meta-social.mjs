@@ -49,10 +49,10 @@ import { handOffAfterCeremony } from '../lib/cli-cloud-handoff.mjs';
 import { runMockCommand } from '../lib/drivers/mock-driver.mjs';
 import { isCarouselPost, carouselItems, carouselItemKind, carouselBlocker, carouselBlockRow, carouselUnsupported } from '../lib/carousel.mjs';
 import { captionBlocker, captionBlockRow } from '../lib/caption.mjs';
-import { avSyncBlocker, avSyncBlockRow, probeMedia, findCoverSibling } from '../lib/assets.mjs';
+import { avSyncBlocker, avSyncBlockRow, probeMedia, findCoverSibling, cutVideo } from '../lib/assets.mjs';
 import { effectivePublicUrl, effectiveSlideUrl, classifyMediaProbe, probeMediaUrl, deadMediaUrlDiagnosis } from '../lib/public-media.mjs';
 import { recordAttempt } from '../lib/publish-hold.mjs';
-import { FACEBOOK_PHOTO_TYPES, fbPhotoFileProblem } from '../lib/capabilities.mjs';
+import { FACEBOOK_PHOTO_TYPES, fbPhotoFileProblem, storyLanesFor, STORY_MAX_SECONDS } from '../lib/capabilities.mjs';
 import { envPath, describeFetchFailure } from '../lib/util.mjs';
 import { resolveCredential } from '../lib/cli-prompt.mjs';
 
@@ -249,16 +249,11 @@ async function fbReelState(videoId, pageToken, pageId = readEnv('META_PAGE_ID'))
   return { state: 'refinish', videoId: String(videoId) };
 }
 
-async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, videoState, scheduledAt, markIntent = async () => {} }) {
-  // Phase 1: start - obtain a video_id + upload_url
-  const start = await graph('POST', `/${pageId}/video_reels`, {
-    upload_phase: 'start',
-    access_token: pageToken,
-  });
-  const videoId = start.video_id;
-  const uploadUrl = start.upload_url || `${RUPLOAD_VIDEO}/${videoId}`;
-
-  // Phase 2: upload the binary straight from local disk
+// The binary half of Meta's 3-phase Page video upload (reels via /video_reels, stories
+// via /video_stories): POST the local bytes to the upload_url the start phase returned,
+// with the Page token, offset 0 and the file size. Shared so the reel and the story
+// paths cannot drift. `label` names the step in the error ("FB reel rupload <id>").
+async function fbRuploadVideo(uploadUrl, pageToken, mediaPath, label) {
   const buf = fs.readFileSync(mediaPath);
   const upRes = await fetch(uploadUrl, {
     method: 'POST',
@@ -271,10 +266,24 @@ async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, vide
   });
   const upData = await upRes.json().catch(() => ({}));
   if (!upRes.ok || upData.error || upData.success === false) {
-    const err = new Error(`FB reel rupload ${videoId}: HTTP ${upRes.status} ${JSON.stringify(upData)}`);
+    const err = new Error(`${label}: HTTP ${upRes.status} ${JSON.stringify(upData)}`);
     err.retriable = metaRetriable(upData);
     throw err;
   }
+  return upData;
+}
+
+async function publishFacebookReel(pageId, pageToken, mediaPath, { caption, videoState, scheduledAt, markIntent = async () => {} }) {
+  // Phase 1: start - obtain a video_id + upload_url
+  const start = await graph('POST', `/${pageId}/video_reels`, {
+    upload_phase: 'start',
+    access_token: pageToken,
+  });
+  const videoId = start.video_id;
+  const uploadUrl = start.upload_url || `${RUPLOAD_VIDEO}/${videoId}`;
+
+  // Phase 2: upload the binary straight from local disk
+  await fbRuploadVideo(uploadUrl, pageToken, mediaPath, `FB reel rupload ${videoId}`);
 
   // Phase 3: finish - set the publish state
   await finishFacebookReel(pageId, pageToken, videoId, { caption, videoState, scheduledAt, markIntent });
@@ -398,6 +407,11 @@ async function uploadFbPhoto(pageId, pageToken, photoPath, params) {
 //   C3 a reel: its own video status decides (fbReelState): adopt a reel that is published or
 //      publishing, re-finish the SAME video while it is still a draft, publish afresh when it
 //      is gone or failed.
+//   C3s an "Also as story" Facebook Page story (kind 'story', photoId | videoId): the call
+//      that publishes is photo_stories or the video_stories finish. The check reads the
+//      Page's own stories (GET /{page-id}/stories) and adopts the one story whose media_id
+//      is the uploaded photo or video; a video story that is not listed yet falls back to
+//      its video's own status, exactly as a reel (C3). Same settle time and park as C2.
 const PAGE_CHECK_SKEW_MS = 2 * 60 * 1000; // clock skew between this machine and Meta
 export const PUBLISH_SETTLE_MS = 3 * 60 * 1000; // let Meta settle before reading the Page
 const PAGE_CHECK_MAX_PAGES = 40; // a Page this busy since the attempt is ambiguous, not a guess
@@ -521,6 +535,40 @@ async function findScheduledPagePost(pageId, pageToken, { caption, scheduledAt }
   return hit ? { id: String(hit.id), permalink: null } : null;
 }
 
+// C3s: the Page's own story made from this upload (media_id === the photo or video id we
+// uploaded), paging /stories (newest first) back to the attempt time. The media id is ours
+// alone, so it is the match; time only bounds the paging. Two stories on one media id is
+// ambiguous, never a guess.
+function storyCreatedMs(v) {
+  const s = String(v ?? '');
+  if (/^\d+$/.test(s)) return Number(s) * 1000;
+  return Date.parse(s.replace(/\+0000$/, 'Z'));
+}
+
+async function findPageStory(pageId, pageToken, { mediaId, sinceMs }) {
+  if (!mediaId) throw ambiguousCheck('the pending story has no media id');
+  const floor = sinceMs - PAGE_CHECK_SKEW_MS;
+  const hits = [];
+  let after = null;
+  for (let page = 0; ; page += 1) {
+    if (page >= PAGE_CHECK_MAX_PAGES) throw ambiguousCheck('too many stories since the attempt to check them all');
+    const params = { fields: 'post_id,status,creation_time,media_id,media_type,url', limit: 100, access_token: pageToken };
+    if (after) params.after = after;
+    const res = await graph('GET', `/${pageId}/stories`, params);
+    const data = Array.isArray(res.data) ? res.data : [];
+    let reachedFloor = false;
+    for (const story of data) {
+      if (story && String(story.media_id) === String(mediaId)) hits.push(story);
+      const created = storyCreatedMs(story && story.creation_time);
+      if (Number.isFinite(created) && created < floor) reachedFloor = true;
+    }
+    after = res.paging && res.paging.cursors ? res.paging.cursors.after : null;
+    if (reachedFloor || !data.length || !(res.paging && res.paging.next) || !after) break;
+  }
+  if (hits.length > 1) throw ambiguousCheck(`${hits.length} of the Page's stories carry this upload`);
+  return hits.length ? { id: String(hits[0].post_id || mediaId), permalink: hits[0].url || null } : null;
+}
+
 // Resolve a marker an earlier run left (C2/C3). Returns { wait: true } inside the settle
 // time, { adopt: { id, permalink } } for the one strict match, { refinish: { videoId } } for
 // a reel still sitting as a draft, or { publish: true } when the attempt provably did not
@@ -532,7 +580,14 @@ async function resolvePendingFb(pageId, pageToken, pending, now = Date.now()) {
   if (now < at + PUBLISH_SETTLE_MS) return { wait: true, at };
   let found;
   try {
-    if (pending.kind === 'reel') {
+    if (pending.kind === 'story') {
+      found = await findPageStory(pageId, pageToken, { mediaId: pending.videoId || pending.photoId, sinceMs: at });
+      if (!found && pending.videoId) {
+        const r = await fbReelState(pending.videoId, pageToken, pageId);
+        if (r.state === 'refinish') return { refinish: { videoId: r.videoId } };
+        found = r.state === 'adopt' ? { id: r.id, permalink: r.permalink } : null;
+      }
+    } else if (pending.kind === 'reel') {
       const r = await fbReelState(pending.videoId, pageToken, pageId);
       if (r.state === 'refinish') return { refinish: { videoId: r.videoId } };
       found = r.state === 'adopt' ? { id: r.id, permalink: r.permalink } : null;
@@ -667,7 +722,7 @@ function loadPlan(planPath) {
 
 // Engine-owned fields; everything else (caption, schedule, approval, cover)
 // belongs to the owner/pendpost and must survive concurrent edits.
-const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'fbPublishPending'];
+const ENGINE_OWNED_FIELDS = ['fbPostId', 'fbReelId', 'igMediaId', 'igStoryId', 'fbStoryId', 'liPostId', 'ytVideoId', 'status', 'postedAt', 'attempts', 'publishHold', 'publishRetry', 'fbPublishPending'];
 
 // mkdir lockfile next to the plan: retry 5x200ms, steal when stale (>15 min).
 async function withPlanLock(abs, fn) {
@@ -1176,6 +1231,113 @@ async function pollContainer(containerId, igToken, timeoutMs = 5 * 60 * 1000) {
   }
 }
 
+// ---------- "Also as story" (alsoStory:true): the story targets of a post ----------
+//
+// A post with alsoStory publishes its single photo or video AGAIN as a story on every
+// story-capable lane in its platforms (lib/capabilities.mjs storyLanesFor: Instagram and
+// the Facebook Page). The story is an extra target of the same post, not a second post:
+// it runs after the lane's main publish has its id (igMediaId / fbReelId / fbPostId), it
+// carries no caption, and it records its own id (igStoryId / fbStoryId) so a failed story
+// is retried on the next run without republishing the reel. The post turns posted only
+// once the main targets AND the story targets are done.
+//
+// Stories run 3-60s on both lanes, so a longer video is cut to its first
+// STORY_MAX_SECONDS into a temp file (removed again in every case) and that cut is
+// uploaded, never the full file or the cloud's post.videoUrl of it.
+//
+// Injectable seams for the in-process tests (probe = ffprobe, cut = ffmpeg).
+export const STORY_DEPS = { probe: probeMedia, cut: cutVideo };
+
+// Resolve the bytes a video story uploads: the render itself when it is short enough (or
+// its length is unknown, then Meta has the final word), else a cut to STORY_MAX_SECONDS in
+// os.tmpdir(). Returns { path, cut, tmp } where tmp is the file the caller must delete.
+async function storyVideoSource(mediaPath, postId) {
+  let duration = null;
+  try {
+    const probe = await STORY_DEPS.probe(mediaPath);
+    duration = Number.isFinite(probe?.durationSec) ? probe.durationSec : null;
+  } catch { /* unknown length: upload as is */ }
+  if (duration === null || duration <= STORY_MAX_SECONDS) return { path: mediaPath, cut: false, tmp: null };
+  const ext = path.extname(mediaPath) || '.mp4';
+  const tmp = path.join(os.tmpdir(), `pendpost-story-${String(postId).replace(/[^a-zA-Z0-9_-]/g, '_')}-${process.pid}-${Date.now()}${ext}`);
+  console.log(`[info] ${postId}: the video runs ${duration}s; the story uses its first ${STORY_MAX_SECONDS}s.`);
+  await STORY_DEPS.cut(mediaPath, tmp, STORY_MAX_SECONDS);
+  return { path: tmp, cut: true, tmp };
+}
+
+// Instagram story: the reel/feed container flow with media_type=STORIES. A photo story
+// fetches the same public image_url the feed IMAGE container uses (Graph has no local
+// image upload). A video story fetches a public url when there is one for the bytes it
+// publishes: post.videoUrl when nothing was cut, post.storyVideoUrl (a public copy of the
+// 59s cut, which the pendpost cloud uploads and injects) when it was. Otherwise it goes up
+// by the resumable rupload, which processes the video inside the request and can time out
+// on a long one (~35s). Returns the media id.
+const publicHttpsUrl = (v) => (typeof v === 'string' && /^https:\/\/\S+$/i.test(v.trim()) ? v.trim() : null);
+
+async function publishIgStory(post, { igUserId, pageToken, video }) {
+  const params = { media_type: 'STORIES', access_token: pageToken };
+  let uploadPath = null;
+  if (post.type === 'image') {
+    const publicUrl = effectivePublicUrl(post, loadClientConfig());
+    if (!publicUrl) {
+      throw Object.assign(new Error('an Instagram photo story needs a public image URL (set imageUrl, or set a public media host in Settings)'), { fbCode: 'unsupported' });
+    }
+    params.image_url = publicUrl;
+  } else {
+    const videoUrl = video.cut ? publicHttpsUrl(post.storyVideoUrl) : publicHttpsUrl(post.videoUrl);
+    if (videoUrl) params.video_url = videoUrl;
+    else { params.upload_type = 'resumable'; uploadPath = video.path; }
+  }
+  console.log(`[info] ${post.id}: creating IG STORIES container${params.image_url ? ' from the public image URL' : params.video_url ? ' (video_url)' : ' (resumable)'}...`);
+  const container = await graph('POST', `/${igUserId}/media`, params);
+  if (uploadPath) await igResumableUpload(container.id, uploadPath, pageToken);
+  await pollContainer(container.id, pageToken, params.video_url ? 10 * 60 * 1000 : undefined);
+  const media = await graph('POST', `/${igUserId}/media_publish`, { creation_id: container.id, access_token: pageToken });
+  return media.id;
+}
+
+// Facebook Page story. Video: POST /{page-id}/video_stories upload_phase=start -> video_id
+// + upload_url, the bytes to the upload_url (the shared rupload helper the reel uses), then
+// upload_phase=finish -> { success, post_id }. Photo: the local bytes as an UNPUBLISHED
+// /{page-id}/photos upload -> photo id, then POST /{page-id}/photo_stories photo_id ->
+// { success, post_id }. Returns the story's post id (the upload id when Meta sends none).
+// Only photo_stories and the finish publish (C1/C3s): markIntent writes the story marker
+// right before them, and they run through runPublishingCall, so an answer without a verdict
+// is publish_pending_check and the next run checks the Page's stories first.
+async function publishFbStory(post, { pageId, pageToken, mediaPath, video, markIntent = async () => {} }) {
+  if (post.type === 'image') {
+    const problem = fbPhotoFileProblem(mediaPath, fs.statSync(mediaPath).size);
+    if (problem) throw Object.assign(new Error(problem.reason), { fbCode: 'unsupported' });
+    const photo = await fbStep('FB story photo upload', () => uploadFbPhoto(pageId, pageToken, mediaPath, { published: 'false' }));
+    await markIntent({ at: new Date().toISOString(), kind: 'story', photoId: String(photo.id) });
+    const res = await runPublishingCall('FB photo story', () => graph('POST', `/${pageId}/photo_stories`, { photo_id: photo.id, access_token: pageToken }));
+    if (res && res.success === false) throw storyRefused(`FB photo story: Meta answered success:false ${JSON.stringify(res)}`);
+    return String(res.post_id || photo.id);
+  }
+  const start = await fbStep('FB video story start', () => graph('POST', `/${pageId}/video_stories`, { upload_phase: 'start', access_token: pageToken }));
+  const videoId = start.video_id;
+  const uploadUrl = start.upload_url || `${RUPLOAD_VIDEO}/${videoId}`;
+  await fbRuploadVideo(uploadUrl, pageToken, video.path, `FB story rupload ${videoId}`);
+  return finishFbVideoStory(pageId, pageToken, videoId, { markIntent });
+}
+
+// The video_stories finish: the call that publishes a video story. Also the C3s re-finish
+// of the SAME video when an earlier finish left it a draft.
+async function finishFbVideoStory(pageId, pageToken, videoId, { markIntent = async () => {} } = {}) {
+  await markIntent({ at: new Date().toISOString(), kind: 'story', videoId: String(videoId) });
+  const res = await runPublishingCall(`FB video story finish (${videoId})`, () => graph('POST', `/${pageId}/video_stories`, { upload_phase: 'finish', video_id: videoId, access_token: pageToken }));
+  if (res && res.success === false) throw storyRefused(`FB video story finish: Meta answered success:false ${JSON.stringify(res)}`);
+  return String(res.post_id || videoId);
+}
+
+// Meta answered the publishing call with success:false: a verdict (nothing went live), so
+// the marker goes like on a definitive 4xx and the next run publishes normally.
+function storyRefused(message) {
+  const err = new Error(message);
+  err.clearMarker = true;
+  return err;
+}
+
 async function cmdPublishDue(args) {
   if (metaLanePaused('publish-due')) return;
   const { abs, plan } = loadPlan(args.plan);
@@ -1208,11 +1370,20 @@ async function cmdPublishDue(args) {
     // publishes reels + stories + feed images + carousels. FB is gated by the per-client
     // platform policy (deny-by-default); a disabled FB target is skipped while IG still
     // publishes.
-    const fbTargeted = platforms.includes('facebook') && (post.type === 'reel' || isFbPhotoPost(post));
+    // "Also as story": the story targets of this post (instagram/facebook in platforms,
+    // alsoStory:true, eligible type). A Facebook story counts as Facebook-targeted even
+    // when the main type would not publish on Facebook (a type=video post), but only
+    // with facebook in platforms and the platform policy allowing it.
+    const storyLanes = storyLanesFor(post);
+    const fbMainTargeted = platforms.includes('facebook') && (post.type === 'reel' || isFbPhotoPost(post));
+    const fbStoryTargeted = platforms.includes('facebook') && storyLanes.includes('facebook');
+    const fbTargeted = fbMainTargeted || fbStoryTargeted;
     if (fbTargeted && !fbEnabled) console.log(`[skip] ${post.id}: facebook publishing is disabled by platform policy (instagram unaffected).`);
-    const wantsFb = fbTargeted && fbEnabled;
+    const wantsFb = fbMainTargeted && fbEnabled;
+    const wantsFbStory = fbStoryTargeted && fbEnabled;
     const wantsIg = platforms.includes('instagram');
-    if (!wantsFb && !wantsIg) continue;
+    const wantsIgStory = wantsIg && storyLanes.includes('instagram');
+    if (!wantsFb && !wantsIg && !wantsFbStory) continue;
     const dueMs = Date.parse(post.scheduledAt);
     if (Number.isNaN(dueMs) || dueMs > now) continue;
 
@@ -1226,7 +1397,7 @@ async function cmdPublishDue(args) {
     if (igCapBlock || fbCapBlock) {
       if (igCapBlock) { console.log(`[warn] ${post.id}: ${igCapBlock} - skipping IG.`); RUN.results.push(captionBlockRow(post, 'instagram', igCapBlock)); }
       if (fbCapBlock) { console.log(`[warn] ${post.id}: ${fbCapBlock} - skipping FB.`); RUN.results.push(captionBlockRow(post, 'facebook', fbCapBlock)); }
-      if ((!wantsIg || igCapBlock) && (!wantsFb || fbCapBlock)) continue; // every wanted lane blocked
+      if ((!wantsIg || igCapBlock) && (!wantsFb || fbCapBlock) && !wantsFbStory) continue; // every wanted lane blocked
     }
 
     const lateMin = Math.round((now - dueMs) / 60000);
@@ -1237,8 +1408,12 @@ async function cmdPublishDue(args) {
     // the minted half's id fences it from re-posting on the retry).
     const fbDone = () => !wantsFb || (post.type === 'reel' ? Boolean(post.fbReelId) : Boolean(post.fbPostId));
     const igDone = () => !wantsIg || Boolean(post.igMediaId);
+    // The story targets count too: a post with alsoStory is posted only once its stories
+    // are out as well (a failed story keeps it planned; the next run publishes only the
+    // story, the minted main ids fence the reel/photo from posting twice).
+    const storiesDone = () => (!wantsIgStory || Boolean(post.igStoryId)) && (!wantsFbStory || Boolean(post.fbStoryId));
     const markPostedIfDone = async () => {
-      if (post.status === 'posted' || !fbDone() || !igDone()) return false;
+      if (post.status === 'posted' || !fbDone() || !igDone() || !storiesDone()) return false;
       post.status = 'posted';
       post.postedAt = new Date(now).toISOString();
       await savePlan(abs, plan, [post.id]);
@@ -1424,6 +1599,8 @@ async function cmdPublishDue(args) {
       const targets = [
         wantsFb && post.type === 'reel' && !post.fbReelId ? 'FB-reel' : null,
         wantsIg && !post.igMediaId ? `IG-${post.type}` : null,
+        wantsIgStory && !post.igStoryId ? 'IG-story' : null,
+        wantsFbStory && !post.fbStoryId ? 'FB-story' : null,
       ].filter(Boolean).join(' + ');
       console.log(`[dry] ${post.id}: would publish ${targets || '(nothing - already done)'} from ${mediaPath}`);
       continue;
@@ -1644,6 +1821,80 @@ async function cmdPublishDue(args) {
           await reportMetaBlock(err);
           break;
         }
+      }
+    }
+
+    // "Also as story": each story target runs once its lane's main publish has its id
+    // (or, for a Facebook story on a type Facebook does not publish, on its own). Never
+    // republishes the main post: the main ids fence those branches above.
+    const storyTargets = [
+      wantsIgStory && post.igMediaId && !post.igStoryId ? 'instagram' : null,
+      wantsFbStory && fbDone() && !post.fbStoryId ? 'facebook' : null,
+    ].filter(Boolean);
+    if (storyTargets.length) {
+      let video = { path: mediaPath, cut: false, tmp: null };
+      let blocked368 = null;
+      try {
+        if (post.type !== 'image') video = await storyVideoSource(mediaPath, post.id);
+        for (const lane of storyTargets) {
+          let adopted = false;
+          try {
+            let id = null;
+            if (lane === 'instagram') id = await publishIgStory(post, { igUserId, pageToken, video });
+            else {
+              // C1/C3s: the same unconfirmed-publish contract as the FB reel and photo halves.
+              // The story runs only once the main FB half has its id (fbDone), so any marker
+              // here is the story's own; one of another kind is not ours to resolve or to
+              // overwrite, so the owner decides.
+              const markIntent = async (marker) => { post.fbPublishPending = marker; await savePlan(abs, plan, [post.id]); };
+              const pending = post.fbPublishPending;
+              if (pending && pending.kind !== 'story') throw unconfirmedError(null, `a pending Facebook ${pending.kind || 'publish'} that is not this story`);
+              if (pending) {
+                const r = await resolvePendingFb(pageId, pageToken, pending);
+                if (r.wait) throw pendingCheckError(null, `checking the Page's stories after ${new Date(r.at + PUBLISH_SETTLE_MS).toISOString()}`);
+                if (r.adopt) { id = r.adopt.id; adopted = true; }
+                if (r.refinish) {
+                  console.log(`[info] ${post.id}: FB story video ${r.refinish.videoId} is still a draft after an unconfirmed finish: finishing the same video again.`);
+                  id = await finishFbVideoStory(pageId, pageToken, r.refinish.videoId, { markIntent });
+                }
+              }
+              if (!id) id = await publishFbStory(post, { pageId, pageToken, mediaPath, video, markIntent });
+              post.fbPublishPending = null;
+            }
+            if (lane === 'instagram') post.igStoryId = id; else post.fbStoryId = id;
+            appendAttempt(post, { ts: new Date().toISOString(), platform: lane, action: 'publish-story', ok: true, errorCode: null, errorMessage: null, lateMin, actor: ACTOR, ...(adopted ? { adopted: true } : {}) });
+            await savePlan(abs, plan, [post.id]);
+            RUN.results.push({ postId: post.id, platform: lane, action: 'publish-story', ok: true, id, ...(video.cut ? { cutToSec: STORY_MAX_SECONDS } : {}), ...(adopted ? { adopted: true } : {}) });
+            console.log(adopted
+              ? `[ok] ${post.id}: the Page already shows this Facebook story (${id}) after an unconfirmed publish: adopted, not posted again.`
+              : `[ok] ${post.id}: also published as a ${lane === 'instagram' ? 'Instagram' : 'Facebook'} story (${id}).`);
+          } catch (err) {
+            // A definitive refusal published nothing: the marker goes. Every other outcome
+            // keeps it, so the next run checks the Page's stories before it publishes.
+            if (lane === 'facebook' && err.clearMarker) post.fbPublishPending = null;
+            appendAttempt(post, { ts: new Date().toISOString(), platform: lane, action: 'publish-story', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), lateMin, actor: ACTOR });
+            await savePlan(abs, plan, [post.id]);
+            RUN.results.push({ postId: post.id, platform: lane, action: 'publish-story', ok: false, errorCode: err.fbCode || 'engine_failure', errorMessage: err.message.slice(0, 300), retriable: err.retriable, ...(lane === 'facebook' && post.fbPublishPending ? { fbPublishPending: post.fbPublishPending } : {}) });
+            console.error(`[err] ${post.id}: ${lane} story failed - ${err.message}`);
+            if (err.fbCode === 368) { blocked368 = err; break; }
+          }
+        }
+      } catch (err) {
+        // The cut itself failed (ffmpeg missing or broken): one honest failed attempt per
+        // story target, nothing uploaded. The main publish already stands.
+        for (const lane of storyTargets) {
+          appendAttempt(post, { ts: new Date().toISOString(), platform: lane, action: 'publish-story', ok: false, errorCode: 'story_cut_failed', errorMessage: `could not cut the video to ${STORY_MAX_SECONDS}s for the story: ${err.message}`.slice(0, 300), lateMin, actor: ACTOR });
+          RUN.results.push({ postId: post.id, platform: lane, action: 'publish-story', ok: false, errorCode: 'story_cut_failed', errorMessage: `could not cut the video to ${STORY_MAX_SECONDS}s for the story: ${err.message}`.slice(0, 300) });
+        }
+        await savePlan(abs, plan, [post.id]);
+        console.error(`[err] ${post.id}: story video cut failed - ${err.message}`);
+      } finally {
+        if (video.tmp) fs.rmSync(video.tmp, { force: true });
+      }
+      if (blocked368) {
+        RUN.blocked368 = true;
+        await reportMetaBlock(blocked368);
+        break;
       }
     }
 

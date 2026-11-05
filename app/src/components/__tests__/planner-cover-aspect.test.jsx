@@ -2,8 +2,8 @@ import { render } from '@testing-library/react';
 import { describe, it, expect } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PostCard } from '../Planner.jsx';
-import { CoverThumb } from '../ui.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
+import { PostStatusPill } from '../ui.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 
 // PostCard now carries the shared post-action menu (usePostActions -> RowMenu), which
@@ -29,13 +29,13 @@ const renderCard = (post) =>
 // draws its grid tile (4:5), not the native 9:16; a reel no platform crops keeps 9:16.
 
 const base = {
-  id: 'p1', media: null, image: '', caption: 'hello world',
+  id: 'p1', media: { exists: true, cover: '/media/cover.jpg' }, image: '', caption: 'hello world',
   platforms: ['youtube'], derivedState: 'waiting-due', approval: 'approved',
   scheduledAt: '2026-06-21T09:00:00.000Z',
 };
 
 function coverClass(container) {
-  // CoverThumb with no src renders its placeholder div carrying the aspect class.
+  // The cover img carries the aspect class.
   return container.querySelector('[class*="aspect-"]').className;
 }
 
@@ -66,22 +66,78 @@ describe('Planner PostCard cover aspect (Mandate D)', () => {
   });
 });
 
-// Judge round 2: the card's ⋯ and time chip sit over the cover's top edge, and on a text
-// post that cover is the caption itself, so the chips covered the words. The text tile
-// now starts below the chip row (the browser flow measures the boxes; this pins the hook).
-describe('Planner PostCard text cover leaves room for the overlay chips', () => {
-  it('insets the caption tile below the ⋯ / time chip row and clamps what fits', () => {
-    const { container } = renderCard({ ...base, type: 'text', platforms: ['linkedin'] });
-    const p = container.querySelector('[data-text-preview] p');
-    expect(p).not.toBeNull();
-    expect(p.className).toContain('pt-8');
-    expect(p.className).toContain('line-clamp-2');
+// Media-first rows (2026-11-05): a text post has no picture, so its Week card is all text
+// instead of a fake image of its own words. The time rides inline after the ⋯ in the top-left
+// corner, the pill takes its own full-width line under it (beside the time a 7-column week
+// clipped it), and the caption is one run clamped to six lines.
+describe('Planner PostCard text card', () => {
+  it('draws no cover tile: inline time chip, then the caption clamped to six lines', () => {
+    const { container } = renderCard({ ...base, media: null, type: 'text', platforms: ['linkedin'], caption: 'First line\nsecond line' });
+    expect(container.querySelector('[data-text-preview]')).toBeNull();
+    expect(container.querySelector('[class*="aspect-"]')).toBeNull();
+    const top = container.querySelector('[data-text-card]');
+    expect(top).not.toBeNull();
+    const timeLine = top.querySelector('[data-text-card-time]');
+    expect(timeLine.className).toContain('pl-7');
+    // The inline chip carries the time as text (the overlay chip is absolutely positioned).
+    expect(timeLine.querySelector('[role="img"]').className).not.toContain('absolute');
+    // The pill is NOT on the indented time line: it has the card's whole width to itself.
+    expect(timeLine.nextElementSibling).not.toBeNull();
+    expect(timeLine.contains(timeLine.nextElementSibling)).toBe(false);
+    expect(top.className).not.toMatch(/pl-7|flex-nowrap/);
+    const caption = container.querySelector('[data-row-caption]');
+    expect(caption).toHaveTextContent('First line second line');
+    expect(caption.className).toContain('line-clamp-6');
   });
 
-  it('other surfaces keep the full tile (no overlay there)', () => {
-    const { container } = render(<CoverThumb textPreview="hello world" className="h-12" />);
-    const p = container.querySelector('[data-text-preview] p');
-    expect(p.className).not.toContain('pt-8');
-    expect(p.className).toContain('line-clamp-4');
+  it('a media card shows the whole caption as one run on two lines, a YouTube title bold above it', () => {
+    const { container } = renderCard({ ...base, type: 'youtube-short', title: 'Morning light', caption: 'Morning light\nA study with 140 people.\nSource below.' });
+    expect(container.querySelector('[data-row-title]')).toHaveTextContent('Morning light');
+    const caption = container.querySelector('[data-row-caption]');
+    expect(caption).toHaveTextContent('A study with 140 people. Source below.');
+    expect(caption.className).toContain('line-clamp-2');
+  });
+
+  it('an Instagram card shows no title line, the caption keeps its first line', () => {
+    const { container } = renderCard({ ...base, type: 'reel', platforms: ['instagram'], title: 'Working title', caption: 'First line\nsecond line' });
+    expect(container.querySelector('[data-row-title]')).toBeNull();
+    expect(container.querySelector('[data-row-caption]')).toHaveTextContent('First line second line');
+  });
+});
+
+// A pill never reads as broken (owner, 2026-11-05): in a narrow week column a word like
+// "Veröffentlicht" hyphenated over two lines inside the pill. The Week card is a size
+// container, and its pill (PostStatusPill fit) folds to its glyph under 7.5rem: the word stays
+// the accessible name and rides a tooltip. Every other pill is unchanged.
+describe('Planner PostCard status pill fits the column', () => {
+  const FOLD = '[@container(max-width:7.5rem)]:sr-only';
+  for (const [name, post] of [
+    ['text card', { ...base, media: null, type: 'text', platforms: ['linkedin'] }],
+    ['media card', base],
+  ]) {
+    it(`${name}: the card is a size container and its pill folds to its glyph in a narrow column`, () => {
+      const { container } = renderCard(post);
+      expect(container.firstChild.className).toContain('[container-type:inline-size]');
+      const label = container.querySelector('[data-pill-label]');
+      expect(label.className).toContain(FOLD);
+      expect(label.className).not.toMatch(/hyphens|break-words/);
+      const pill = label.parentElement;
+      expect(pill.className).toContain('[@container(max-width:7.5rem)]:p-1');
+      // The word rides a tooltip (the Tip trigger stamps data-state).
+      expect(pill).toHaveAttribute('data-state');
+    });
+  }
+
+  it('a pill without fit is unchanged: no fold, no tooltip', () => {
+    const { container } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <TooltipProvider>
+          <PostStatusPill post={base} />
+        </TooltipProvider>
+      </QueryClientProvider>,
+    );
+    const label = container.querySelector('[data-pill-label]');
+    expect(label.className).not.toMatch(/@container|sr-only|hyphens/);
+    expect(label.parentElement).not.toHaveAttribute('data-state');
   });
 });

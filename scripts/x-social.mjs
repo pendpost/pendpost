@@ -31,7 +31,7 @@
  * post.file), byte-for-byte in HD, via X's chunked media upload (INIT/APPEND/
  * FINALIZE/STATUS). No hosting layer, no Cloudinary.
  *
- * Tweet text comes from post.xCaption (capped 280) and falls back to post.caption
+ * Tweet text comes from post.xCaption (capped at the account's post limit: 280, or 25,000 with long posts) and falls back to post.caption
  * when xCaption is unset - the additive per-platform override pattern LinkedIn uses
  * for liDescription. A video post is type 'video' (xCaption + the render); a text-only
  * tweet is type 'text' (xCaption / caption, no media).
@@ -73,7 +73,8 @@ import { isPollPost, pollOptions, pollDurationMinutes, pollBlocker, pollBlockRow
 import { isCarouselPost, carouselItems, carouselBlocker, carouselBlockRow } from '../lib/carousel.mjs';
 import { avSyncBlocker, avSyncBlockRow } from '../lib/assets.mjs';
 import { oauth1Header } from '../lib/x-oauth1.mjs';
-import { xWeightedLength, X_TWEET_LIMIT } from '../lib/x-text.mjs';
+import { xWeightedLength, xPostLimit } from '../lib/x-text.mjs';
+import { loadState, xSubscriptionType } from '../lib/state.mjs';
 import { envPath, describeFetchFailure, isFetchFailure } from '../lib/util.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -101,7 +102,14 @@ const DEFAULT_PORT = 8087;
 const DEFAULT_REDIRECT = 'http://localhost:8087/callback';
 // The SAME counter as the readiness validator (lib/x-text.mjs): URLs count 23,
 // emoji and CJK count 2, so a tweet approved as fitting is never refused here.
-const TWEET_LIMIT = X_TWEET_LIMIT;
+// The limit is per account: 25,000 when the last health probe saw a subscription with
+// long posts (state.health.x.subscriptionType, the same cache the preflight reads),
+// else 280. No extra API call here: if the cache is stale and X refuses the post, that
+// refusal lands as a structured ok:false row like any other publish error.
+function tweetLimit() {
+  try { return xPostLimit(xSubscriptionType(loadState())); } catch { return xPostLimit(null); }
+}
+const LIMIT_WHY = (limit) => (limit > 280 ? `X caps this account's posts at ${limit}` : `X caps posts at ${limit} without a subscription that includes long posts`);
 // Refresh when the access token expires within this window (it lasts ~2h).
 const REFRESH_BUFFER_MS = 10 * 60 * 1000;
 // Per-part chunk for the chunked media upload (X caps a part at 5 MB).
@@ -533,7 +541,7 @@ function resolveMediaPath(plan, post) {
 
 const isX = (post) => (post.platforms || []).includes('x');
 const isTextPost = (post) => post.type === 'text';
-// Tweet text: the per-platform xCaption override (capped 280) falls back to the
+// Tweet text: the per-platform xCaption override (capped at the account's post limit) falls back to the
 // shared caption - same additive pattern LinkedIn uses for liDescription.
 const tweetText = (post) => (post.xCaption || post.caption || '').trim();
 
@@ -650,6 +658,7 @@ async function cmdValidate(args) {
     console.log(`\n----- ${post.id} -----`);
     const text = tweetText(post);
     const len = xWeightedLength(text);
+    const TWEET_LIMIT = tweetLimit();
     const overLimit = len > TWEET_LIMIT;
     console.log(`[preview] type:    ${post.type}`);
     console.log(`[preview] text (${len}/${TWEET_LIMIT}${overLimit ? ' - OVER LIMIT' : ''}):`);
@@ -669,6 +678,7 @@ async function cmdPublishDue(args) {
   const token = await ensureFreshToken();
   const now = Date.now();
   let published = 0;
+  const TWEET_LIMIT = tweetLimit();
 
   for (const post of plan.posts || []) {
     if (args.only && post.id !== args.only) continue;
@@ -742,7 +752,7 @@ async function cmdPublishDue(args) {
     const textLen = xWeightedLength(text);
     if (textLen > TWEET_LIMIT) {
       console.log(`[warn] ${post.id}: text is ${textLen} chars as X counts them (> ${TWEET_LIMIT}) - set a shorter xCaption; skipping.`);
-      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `tweet is ${textLen} chars as X counts them (URLs 23, emoji 2) - X caps non-Premium posts at ${TWEET_LIMIT}. Shorten the caption or split it into a thread.` });
+      RUN.results.push({ postId: post.id, platform: 'x', action: 'publish', ok: false, errorCode: 'invalid_input', errorMessage: `tweet is ${textLen} chars as X counts them (URLs 23, emoji 2) - ${LIMIT_WHY(TWEET_LIMIT)}. Shorten the caption or split it into a thread.` });
       continue;
     }
 
@@ -986,9 +996,12 @@ async function cmdProbe() {
   }
   try {
     const token = await ensureFreshToken();
-    const me = await api('GET', '/users/me', { token });
+    // subscription_type (None/Basic/Premium/PremiumPlus) sets the account's post limit;
+    // lib/health.mjs caches it in state.health.x for the gates (lib/x-text.mjs xPostLimit).
+    const me = await api('GET', '/users/me', { token, query: { 'user.fields': 'subscription_type' } });
     const expiresAt = Number(readEnv('X_TOKEN_EXPIRES_AT') || 0) || null;
-    RUN.results.push({ platform: 'x', action: 'probe', ok: true, detail: `connected as @${me?.data?.username || '?'}`, tokenExpiresAt: expiresAt });
+    const subscriptionType = typeof me?.data?.subscription_type === 'string' ? me.data.subscription_type : null;
+    RUN.results.push({ platform: 'x', action: 'probe', ok: true, detail: `connected as @${me?.data?.username || '?'}`, tokenExpiresAt: expiresAt, subscriptionType });
   } catch (err) {
     RUN.results.push({ platform: 'x', action: 'probe', ok: false, detail: String(err.message || err).slice(0, 200) });
   }
@@ -1152,7 +1165,7 @@ async function cmdDiscover() {
   }
   try {
     const token = await ensureFreshToken();
-    const me = await api('GET', '/users/me', { token, query: { 'user.fields': 'profile_image_url,name,username' } });
+    const me = await api('GET', '/users/me', { token, query: { 'user.fields': 'profile_image_url,name,username,subscription_type' } });
     const u = me?.data || {};
     const handle = u.username || (readEnv('X_HANDLE') || '').replace(/^@/, '') || null;
     RUN.results.push(discoverOk('x', {

@@ -114,4 +114,16 @@ describe('Composer X tweet-text counter signals over-limit beyond color (r2-1/r2
     // Crossing the limit populates the transition announcement.
     await waitFor(() => expect(region.textContent.length).toBeGreaterThan(0));
   });
+
+  it('an account with long posts (accounts.x.postLimit 25000) is not over at 286', async () => {
+    const user = userEvent.setup();
+    renderComposer({ accounts: { meta: { configured: true }, x: { authenticated: true, subscriptionType: 'Premium', postLimit: 25000 } } });
+    const textarea = await showXField(user);
+    await user.click(textarea);
+    await user.paste('a'.repeat(286));
+    const counter = document.getElementById('composer-x-counter');
+    await waitFor(() => expect(counter.textContent).toContain('25000'));
+    expect(counter).not.toHaveClass('text-red-600');
+    expect(counter.querySelector('svg')).toBeNull();
+  });
 });

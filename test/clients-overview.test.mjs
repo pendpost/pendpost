@@ -255,10 +255,12 @@ try {
   // 162 routes / 135 tools = +GET /api/session (spec 56, the Studio token hand-off; a UI-only read, no MCP twin).
   // 164 routes / 136 tools = +agent_fix_post with its REST twin POST /api/plans/<c>/posts/<id>/agent-fix (studio fix flow) and the UI-facing GET /api/agent-fix (no MCP twin): routes +2, tools +1.
   // 165 routes / 136 tools = +GET /api/dashboard-update (the update toast status read, no MCP twin), routes +1.
+  // 167 routes / 138 tools = +media_cleanup with its REST twin POST /api/media/cleanup (docs/specs/media-cleanup.md): +1 each.
+  // 169 routes / 138 tools = +GET /api/whats-new and POST /api/whats-new/seen (docs/specs/whats-new.md), UI-only reads and a display preference: +2 routes, no tool.
   // 166 routes / 137 tools = +restore_post with its REST twin POST /api/plans/<c>/posts/<id>/restore (post trash, planner bulk 2026-11-01): +1 each.
-  ok(/166 routes, 137 tools/.test(parityOut), `parity is 166 routes / 137 tools: ${parityOut.trim()}`);
+  ok(/169 routes, 138 tools/.test(parityOut), `parity is 169 routes / 138 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 166/137 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 169/138 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

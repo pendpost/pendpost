@@ -4,6 +4,8 @@ import { useUpdateStatus } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { TAP_TARGET } from './ui/recipes.js';
 import { studioFetch } from '../lib/studioToken.js';
+import { useWhatsNew, useMarkWhatsNewSeen } from '../lib/whatsNew.js';
+import WhatsNewDialog from './WhatsNew.jsx';
 
 // Kick off the server-side update (lib/self-update.mjs): pull if upstream is
 // ahead, rebuild, then restart once publishing and agents are idle. Resolves to
@@ -64,6 +66,11 @@ export function formatVersion(v) {
 //   failed    -> what went wrong in one sentence + Try again (+ dismiss)
 //   manual    -> the server cannot restart itself (not under launchd): say so
 //   ready     -> a new bundle landed outside an update (a boot rebuild) + Reload
+//   news      -> pendpost runs a version whose release notes this install has not
+//                seen (GET /api/whats-new): "Updated to 2.10.0" + What's new, which
+//                opens the notes; closing them or the toast remembers the version.
+//                It takes the place of "done" when there are notes, and waits behind
+//                every other state.
 // A quiet offer (`update.quiet`: only local commits moved, same version) applies on
 // the server by itself, so none of the above shows for it. Once the server is back
 // on newer code, a new bundle reloads the page by itself and the reloaded page says
@@ -77,6 +84,12 @@ export default function UpdateToast({ onReload = () => window.location.reload(),
   const [localError, setLocalError] = useState(null); // 'request' | 'check'
   const [lostTooLong, setLostTooLong] = useState(false);
   const serverBusy = useRef(false);
+  const news = useWhatsNew()?.data || null;
+  const markSeen = useMarkWhatsNewSeen();
+  const [newsOpen, setNewsOpen] = useState(null); // the entries the open dialog shows
+  // The version whose notes this page already closed: stays hidden even if a poll
+  // lands before the server has written the marker.
+  const [newsDone, setNewsDone] = useState(null);
 
   const query = useUpdateStatus(Boolean(pending) || serverBusy.current) || {};
   const data = query.data || null;
@@ -206,15 +219,21 @@ export default function UpdateToast({ onReload = () => window.location.reload(),
   const runsTarget = Boolean(target?.commit && running?.commit && target.commit === running.commit);
   const offer = Boolean(update?.available && update?.canApply && !runsTarget && offerId && offerId !== dismissed);
 
+  const hasNews = Boolean(news?.unseen?.length) && newsDone !== news.version;
+  const seeNews = () => { setNewsDone(news?.version); markSeen(news?.version); };
+  const closeNews = () => { setNewsOpen(null); seeNews(); };
+  const newsDialog = newsOpen ? <WhatsNewDialog entries={newsOpen} releasesUrl={news?.releasesUrl} onClose={closeNews} /> : null;
+
   let phase = null;
-  if (done) phase = 'done';
+  if (done && !hasNews) phase = 'done';
   else if (failed) phase = 'failed';
   else if (manual) phase = 'manual';
   else if (step && !quiet) phase = 'progress';
   else if (data?.building && !quiet) phase = 'preparing';
   else if (updateReady) phase = 'ready';
   else if (offer && !quiet) phase = 'offer';
-  if (!phase) return null;
+  else if (hasNews && !newsOpen) phase = 'news';
+  if (!phase) return newsDialog;
 
   const stepText = step === 'starting' ? t('update.step.starting')
     : step === 'downloading' ? t('update.step.downloading')
@@ -230,86 +249,97 @@ export default function UpdateToast({ onReload = () => window.location.reload(),
   const TEXT = 'min-w-0 flex-1 text-xs font-semibold';
   const SUB = 'mt-0.5 text-xs font-normal text-zinc-600 dark:text-zinc-400';
   const primary = `shrink-0 rounded-lg bg-brand px-2.5 py-1 text-xs font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 dark:bg-brand-light dark:text-zinc-900 ${TAP_TARGET}`;
-  const close = (
+  const closeWith = (onClick) => (
     <button
       type="button"
-      onClick={dismiss}
+      onClick={onClick}
       aria-label={t('update.dismiss')}
       className={`shrink-0 rounded-lg p-0.5 text-zinc-500 transition hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:text-zinc-100 ${TAP_TARGET}`}
     >
       <X size={14} aria-hidden="true" />
     </button>
   );
+  const close = closeWith(dismiss);
 
   return (
-    <div
-      role="status"
-      aria-live={phase === 'failed' ? 'assertive' : 'polite'}
-      className="glass-panel fixed bottom-4 right-4 z-50 flex max-w-sm items-center gap-2.5 rounded-2xl px-3.5 py-2.5 shadow-lg"
-    >
-      {phase === 'done' ? (
-        <>
-          <Check size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
-          <span className={TEXT}>{doneText ? t('update.done', { version: doneText }) : t('update.doneNoVersion')}</span>
-        </>
-      ) : phase === 'failed' ? (
-        <>
-          {/* Text first, its one recovery action under it: a long (German) sentence
-              never squeezes into a column beside the button. */}
-          <AlertTriangle size={15} className="mt-0.5 shrink-0 self-start text-red-600 dark:text-red-300" aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold">{t(failureKey)}</p>
-            <button type="button" onClick={triggerUpdate} className={`mt-2 ${primary}`}>{t('update.retry')}</button>
-          </div>
-          <span className="self-start">{close}</span>
-        </>
-      ) : phase === 'manual' ? (
-        <>
-          <RefreshCw size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
-          <span className={TEXT}>{t('update.manual')}</span>
-        </>
-      ) : phase === 'progress' ? (
-        <>
-          <Loader2 size={15} className="shrink-0 animate-spin text-brand motion-reduce:animate-none dark:text-brand-light" aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold">{stepText}</p>
-            {/* Where the update stands: download, install, restart. Decorative; the
-                sentence above is what screen readers hear. */}
-            <div className="mt-1.5 flex gap-1" aria-hidden="true" data-testid="update-steps">
-              {STEPS.map((s, i) => (
-                <span
-                  key={s}
-                  data-state={i < stepIndex ? 'done' : i === stepIndex ? 'current' : 'todo'}
-                  className={`h-1 flex-1 rounded-full ${i < stepIndex ? 'bg-brand dark:bg-brand-light' : i === stepIndex ? 'bg-brand/50 motion-safe:animate-pulse dark:bg-brand-light/60' : 'bg-zinc-200 dark:bg-zinc-700'}`}
-                />
-              ))}
+    <>
+      <div
+        role="status"
+        aria-live={phase === 'failed' ? 'assertive' : 'polite'}
+        className="glass-panel fixed bottom-4 right-4 z-50 flex max-w-sm items-center gap-2.5 rounded-2xl px-3.5 py-2.5 shadow-lg"
+      >
+        {phase === 'news' ? (
+          <>
+            <Check size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
+            <span className={TEXT}>{t('update.done', { version: news.version })}</span>
+            <button type="button" onClick={() => setNewsOpen(news.unseen)} className={primary}>{t('whatsNew.open')}</button>
+            {closeWith(seeNews)}
+          </>
+        ) : phase === 'done' ? (
+          <>
+            <Check size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
+            <span className={TEXT}>{doneText ? t('update.done', { version: doneText }) : t('update.doneNoVersion')}</span>
+          </>
+        ) : phase === 'failed' ? (
+          <>
+            {/* Text first, its one recovery action under it: a long (German) sentence
+                never squeezes into a column beside the button. */}
+            <AlertTriangle size={15} className="mt-0.5 shrink-0 self-start text-red-600 dark:text-red-300" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold">{t(failureKey)}</p>
+              <button type="button" onClick={triggerUpdate} className={`mt-2 ${primary}`}>{t('update.retry')}</button>
             </div>
-          </div>
-        </>
-      ) : phase === 'preparing' ? (
-        <>
-          <Loader2 size={15} className="shrink-0 animate-spin text-brand motion-reduce:animate-none dark:text-brand-light" aria-hidden="true" />
-          <span className={TEXT}>{t('update.preparing')}</span>
-        </>
-      ) : phase === 'ready' ? (
-        <>
-          <RefreshCw size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
-          <span className={TEXT}>{t('update.ready')}</span>
-          <button type="button" onClick={onReload} className={primary}>{t('update.reload')}</button>
-        </>
-      ) : (
-        <>
-          <Download size={15} className="shrink-0 self-start mt-0.5 text-brand dark:text-brand-light" aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <p className="text-xs font-semibold">{t('update.available')}</p>
-            {runningText && targetText ? (
-              <p className={SUB}>{t('update.versions', { running: runningText, target: targetText })}</p>
-            ) : null}
-          </div>
-          <button type="button" onClick={triggerUpdate} className={primary}>{t('update.get')}</button>
-          {close}
-        </>
-      )}
-    </div>
+            <span className="self-start">{close}</span>
+          </>
+        ) : phase === 'manual' ? (
+          <>
+            <RefreshCw size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
+            <span className={TEXT}>{t('update.manual')}</span>
+          </>
+        ) : phase === 'progress' ? (
+          <>
+            <Loader2 size={15} className="shrink-0 animate-spin text-brand motion-reduce:animate-none dark:text-brand-light" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold">{stepText}</p>
+              {/* Where the update stands: download, install, restart. Decorative; the
+                  sentence above is what screen readers hear. */}
+              <div className="mt-1.5 flex gap-1" aria-hidden="true" data-testid="update-steps">
+                {STEPS.map((s, i) => (
+                  <span
+                    key={s}
+                    data-state={i < stepIndex ? 'done' : i === stepIndex ? 'current' : 'todo'}
+                    className={`h-1 flex-1 rounded-full ${i < stepIndex ? 'bg-brand dark:bg-brand-light' : i === stepIndex ? 'bg-brand/50 motion-safe:animate-pulse dark:bg-brand-light/60' : 'bg-zinc-200 dark:bg-zinc-700'}`}
+                  />
+                ))}
+              </div>
+            </div>
+          </>
+        ) : phase === 'preparing' ? (
+          <>
+            <Loader2 size={15} className="shrink-0 animate-spin text-brand motion-reduce:animate-none dark:text-brand-light" aria-hidden="true" />
+            <span className={TEXT}>{t('update.preparing')}</span>
+          </>
+        ) : phase === 'ready' ? (
+          <>
+            <RefreshCw size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
+            <span className={TEXT}>{t('update.ready')}</span>
+            <button type="button" onClick={onReload} className={primary}>{t('update.reload')}</button>
+          </>
+        ) : (
+          <>
+            <Download size={15} className="shrink-0 self-start mt-0.5 text-brand dark:text-brand-light" aria-hidden="true" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold">{t('update.available')}</p>
+              {runningText && targetText ? (
+                <p className={SUB}>{t('update.versions', { running: runningText, target: targetText })}</p>
+              ) : null}
+            </div>
+            <button type="button" onClick={triggerUpdate} className={primary}>{t('update.get')}</button>
+            {close}
+          </>
+        )}
+      </div>
+      {newsDialog}
+    </>
   );
 }

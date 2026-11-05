@@ -39,16 +39,16 @@ function renderPublished({ posts, evergreen = [], onRecycle = () => {} }) {
 
 describe('Published: evergreen recycling filter (dim-3 M1)', () => {
   it('offers no recycling filter when nothing is flagged evergreen', () => {
-    renderPublished({ posts: [post({ id: 'p1', title: 'One', postedAt: iso(40) })], evergreen: [] });
+    renderPublished({ posts: [post({ id: 'p1', caption: 'One', postedAt: iso(40) })], evergreen: [] });
     expect(screen.queryByRole('button', { name: /recycle-worthy/i })).toBeNull();
   });
 
   it('surfaces the filter, narrows to the winner, and recycles it into a fresh draft', async () => {
     const user = userEvent.setup();
     const onRecycle = vi.fn();
-    const winner = post({ id: 'p1', title: 'Winner', postedAt: iso(40) });
+    const winner = post({ id: 'p1', caption: 'Winner', postedAt: iso(40) });
     renderPublished({
-      posts: [winner, post({ id: 'p2', title: 'Ordinary', postedAt: iso(41) })],
+      posts: [winner, post({ id: 'p2', caption: 'Ordinary', postedAt: iso(41) })],
       evergreen: [{ campaign: 'c', postId: 'p1', score: 120 }],
       onRecycle,
     });

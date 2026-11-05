@@ -28,6 +28,7 @@
       "path": "data/media/acme-reel.mp4",
       "caption": "Launch day. Here is the 20-second tour of what Acme actually does.",
       "firstComment": "Questions? Drop them here and we will answer every one.",
+      "alsoStory": true,
       "status": "planned",
       "approval": "draft",
       "createdBy": "agent:claude",

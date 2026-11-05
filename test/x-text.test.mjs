@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { xWeightedLength, xFits, X_TWEET_LIMIT } from '../lib/x-text.mjs';
+import { xWeightedLength, xFits, xPostLimit, X_TWEET_LIMIT, X_LONG_POST_LIMIT } from '../lib/x-text.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -33,6 +33,13 @@ assert.equal(launch.length, 315);
 assert.equal(xWeightedLength(launch), 255);
 assert.equal(xFits(launch), true);
 assert.equal(xFits('a'.repeat(X_TWEET_LIMIT + 1)), false);
+
+// Per-account limit from the X subscription tier (X API v2 subscription_type).
+assert.equal(X_LONG_POST_LIMIT, 25000);
+for (const tier of ['Basic', 'Premium', 'PremiumPlus']) assert.equal(xPostLimit(tier), 25000, `${tier} has long posts`);
+for (const tier of ['None', null, undefined, '', 'premium', 'SomethingNew']) assert.equal(xPostLimit(tier), 280, `${tier} fails closed to 280`);
+assert.equal(xFits('a'.repeat(286), xPostLimit('Premium')), true, 'a 286-char post fits a Premium account');
+assert.equal(xFits('a'.repeat(286), xPostLimit('None')), false, 'a 286-char post does not fit without a subscription');
 
 // Both gates import the shared counter; no raw .length check on tweet text remains.
 const publisher = fs.readFileSync(path.join(ROOT, 'scripts/x-social.mjs'), 'utf8');

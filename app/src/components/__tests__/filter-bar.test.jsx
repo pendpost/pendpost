@@ -157,6 +157,23 @@ describe('FilterBar', () => {
     expect(container.querySelector('[data-filter-row="facets"] [data-filter-legend]')).not.toBeNull();
   });
 
+  // A page's own help (Approvals: its keyboard shortcuts) rides the same "?" popover, under the
+  // status legend and a divider. Other pages pass nothing and the popover is the legend alone.
+  it('the "?" popover shows a page\'s help under the status legend, only when given', async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderBar({ helpExtra: <p data-page-help="">Keys: a approves</p> });
+    await user.click(screen.getByRole('button', { name: 'What the time-chip colours mean' }));
+    const help = await screen.findByText('Keys: a approves');
+    const divider = help.closest('.border-t');
+    expect(divider).not.toBeNull();
+    expect(divider.previousElementSibling.textContent).toMatch(/What the time-chip colours mean/);
+    unmount();
+    renderBar();
+    await user.click(screen.getByRole('button', { name: 'What the time-chip colours mean' }));
+    await screen.findAllByText('What the time-chip colours mean');
+    expect(document.querySelector('[data-page-help]')).toBeNull();
+  });
+
   it('Reset shows only while a filter is set', async () => {
     const user = userEvent.setup();
     const { onReset, unmount } = renderBar();

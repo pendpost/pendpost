@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2, XCircle, Pencil, Trash2, ImagePlus, ImageOff, Camera, CalendarClock, CalendarPlus, PauseCircle, CheckCheck, Send, ExternalLink, FileImage, FileVideo, FileX2, ShieldCheck, ShieldAlert, ShieldX, Power, CornerUpLeft, MoreHorizontal, MessageSquare, ListPlus, ChevronLeft, ChevronRight, Cloud as CloudIcon, Zap, RefreshCw, Pin, PlugZap, ClipboardCopy, Wrench, Crop } from 'lucide-react';
-import { fmtFull, fmtTime, fmtRelative, approvalExpiresAt, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, MANUAL_LANES, postStatusWord, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome, gridCropInfo, postDisplayTitle, failedDisplayKey, liveFailure } from '../lib/format.js';
+import { fmtFull, fmtTime, fmtRelative, approvalExpiresAt, fmtBytes, campaignBaseLabel, effectiveDelivery, unconnectedLanes, MANUAL_LANES, postStatusWord, handOffTarget, effectiveLaneText, mastodonThreadUrl, fieldsForPost, deriveThread, OVERRIDE_FIELD, PLATFORMS, TYPES, formatsForPlatform, typeOptionLabel, isImageMedia, visiblePlatforms, pollDurationKey, postNeedsMedia, publishRunOutcome, gridCropInfo, postDisplayTitle, failedDisplayKey, liveFailure, storyState } from '../lib/format.js';
 import {
   useAccounts, usePendpostHealth, usePlatformValidate, usePresubmitCheck, useValidateMedia, useActiveClient, useRedditFlairs, useInsights, useConfig, useAssets,
   approvePost, rejectPost, deletePost, unschedulePost, reschedulePost, markPosted, verifyPost,
@@ -1727,6 +1727,9 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
             const cardLink = canNavigate && setupLinkOffered(platformValidate, p, onNavigate);
             const { Icon } = meta;
             const verify = platformVerify(post, p, t);
+            // "Also as story": the lane's story rides this same row as one more line
+            // (posted, failed, or still to come). null when the lane carries no story.
+            const story = storyState(post, p);
             const stateCls = state.tier === 'done'
               ? STATUS_INK.ok
               : state.tier === 'warn' || blocked
@@ -1823,6 +1826,18 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
                     {/* Measured post-publish: the rendition Instagram actually serves
                         (media_url ffprobe). Self-hides for non-IG lanes and unmeasured posts. */}
                     {p === 'instagram' ? <ServedBadge served={post.verify?.platforms?.instagram?.served} /> : null}
+                  </div>
+                ) : null}
+                {story ? (
+                  <div className="mt-1 flex items-center gap-2 pl-[25px] text-[11px]">
+                    <span
+                      className={`flex items-center gap-1 ${story.state === 'posted' ? STATUS_INK.ok : story.state === 'failed' ? STATUS_INK.err : 'text-zinc-600 dark:text-zinc-400'}`}
+                      title={story.state === 'failed' && story.message ? story.message : undefined}
+                    >
+                      {story.state === 'posted' ? <CheckCircle2 size={11} aria-hidden="true" /> : null}
+                      {story.state === 'failed' ? <AlertTriangle size={11} aria-hidden="true" /> : null}
+                      {t(`postDetail.story.${story.state}`)}
+                    </span>
                   </div>
                 ) : null}
                 {/* dim-3 M5: this post's stored metric chips, beside its verify

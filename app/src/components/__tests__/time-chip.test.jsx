@@ -153,3 +153,26 @@ describe('MonthView post button accessible name (findings 4 + 5)', () => {
     expect(groups.length).toBeGreaterThan(0);
   });
 });
+
+// The dense chip already leads with the post's status glyph, so the inline time chip drops its
+// calm "approved" check (two checks read "approved" even on a published post). Amber and red
+// keep their icon: a Meta lane halt is said only by this chip.
+describe('TimeChip inline variant: one status glyph per chip', () => {
+  it('approved inline renders the time without an icon', () => {
+    const { container } = renderChip(post({ approval: 'approved' }), {}, 'inline');
+    expect(container.querySelector('[role="img"] svg')).toBeNull();
+  });
+
+  it('needs-approval and halted inline keep their icon', () => {
+    const a = renderChip(post({ approval: 'pending' }), {}, 'inline');
+    expect(a.container.querySelector('[role="img"] svg')).not.toBeNull();
+    a.unmount();
+    const h = renderChip(post({ approval: 'approved', platforms: ['instagram'] }), { metaPaused: true }, 'inline');
+    expect(h.container.querySelector('[role="img"] svg')).not.toBeNull();
+  });
+
+  it('the overlay variant keeps the approved icon', () => {
+    const { container } = renderChip(post({ approval: 'approved' }), {}, 'overlay');
+    expect(container.querySelector('[role="img"] svg')).not.toBeNull();
+  });
+});

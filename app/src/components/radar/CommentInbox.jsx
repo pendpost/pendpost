@@ -42,6 +42,8 @@ const KIND_META = {
 };
 // What an elsewhere item belongs to, by its ref type.
 const REF_LABEL = { radar: 'replies.ref.radar', profile: 'replies.ref.profile', location: 'replies.ref.location', event: 'replies.ref.event' };
+// X's default post limit. The active client's account may allow long posts
+// (accounts.x.postLimit, passed in as xLimit); the all-clients inbox keeps 280.
 const X_REPLY_LIMIT = 280;
 // Where an answer is public, in the words people use ("public on Google", not the product name).
 const PUBLIC_ON = { gbp: 'Google', meta: null };
@@ -153,13 +155,13 @@ function DoneButton({ onDone, t }) {
 
 // The reply field, the same in every row: a VISIBLE label naming who the answer goes to and where
 // it is public (Tier 2: no unlabelled input), Cancel then the primary Send on the right, where
-// Reply was. X keeps its 280 cap with a counter.
-function ReplyBox({ label, sendLabel = null, xCap = false, onSend, onCancel, t }) {
+// Reply was. X keeps its cap (xMax, the account's post limit) with a counter.
+function ReplyBox({ label, sendLabel = null, xCap = false, xMax = X_REPLY_LIMIT, onSend, onCancel, t }) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const fieldId = useId();
-  const over = xCap && draft.length > X_REPLY_LIMIT;
+  const over = xCap && draft.length > xMax;
   const send = async () => {
     const text = draft.trim();
     if (!text || busy || over) return;
@@ -173,7 +175,7 @@ function ReplyBox({ label, sendLabel = null, xCap = false, onSend, onCancel, t }
       <textarea id={fieldId} value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={t('replies.placeholder')} rows={2} className={`${FIELD_MULTILINE} w-full resize-y`} autoFocus />
       <ActionError error={error} small />
       <div className="flex items-center gap-1.5">
-        {xCap ? <span className={`text-[11px] tabular-nums ${over ? 'text-red-600 dark:text-red-300' : META_INK}`}>{t('inbox.reply.charCount', { n: draft.length, max: X_REPLY_LIMIT })}</span> : null}
+        {xCap ? <span className={`text-[11px] tabular-nums ${over ? 'text-red-600 dark:text-red-300' : META_INK}`}>{t('inbox.reply.charCount', { n: draft.length, max: xMax })}</span> : null}
         <button type="button" onClick={onCancel} className={`ml-auto ${BTN_GHOST} ${TAP_TARGET} text-zinc-600 dark:text-zinc-400`}>{t('replies.cancel')}</button>
         <button type="button" onClick={send} disabled={busy || !draft.trim() || over} className={`${BTN_PRIMARY} ${TAP_TARGET}`}>
           {busy ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <Send size={13} aria-hidden="true" />} {sendLabel || t('replies.send')}
@@ -192,7 +194,7 @@ const ReplyButton = ({ onClick, t }) => (
 // A reply under one of our posts. The newest message leads; Reply opens a field addressed to it
 // (when its kind can be answered); History opens the whole thread in place of the preview and
 // carries the open count. Like only where the lane AND the kind allow it.
-function PostRow({ group, isNew, onDone, onReplied, t }) {
+function PostRow({ group, isNew, onDone, onReplied, xLimit, t }) {
   const [replying, setReplying] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [liked, setLiked] = useState(false);
@@ -250,7 +252,7 @@ function PostRow({ group, isNew, onDone, onReplied, t }) {
         <OpenLink url={url} laneKey={laneKey} t={t} />
       </div>
       {replying ? (
-        <ReplyBox label={t('replies.replyTo', { author: latest.author || t('reviews.unknownAuthor'), platform: publicOn(laneKey) })} xCap={laneKey === 'x'} onSend={send} onCancel={() => setReplying(false)} t={t} />
+        <ReplyBox label={t('replies.replyTo', { author: latest.author || t('reviews.unknownAuthor'), platform: publicOn(laneKey) })} xCap={laneKey === 'x'} xMax={xLimit} onSend={send} onCancel={() => setReplying(false)} t={t} />
       ) : (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <DoneButton onDone={() => onDone(group)} t={t} />
@@ -289,7 +291,7 @@ function PostRow({ group, isNew, onDone, onReplied, t }) {
 // A reply that is not under one of our posts. Reply where a write exists: a Google review, an X
 // event, or an answer to one of our Radar replies (queued as an approval-gated reply post under
 // THAT comment, beside "Open in Radar" which lands on the card). The rest open on the platform.
-function ElsewhereRow({ item, isNew, onDone, onReplied, onOpenRadar, onQueued, radar, t }) {
+function ElsewhereRow({ item, isNew, onDone, onReplied, onOpenRadar, onQueued, radar, xLimit, t }) {
   const [replying, setReplying] = useState(false);
   const route = replyRoute(item);
   const url = [item.permalink, item.ref?.url].find(isAbsoluteHttpUrl) || null;
@@ -335,7 +337,7 @@ function ElsewhereRow({ item, isNew, onDone, onReplied, onOpenRadar, onQueued, r
         <OpenLink url={url} laneKey={laneKey} t={t} />
       </div>
       {replying ? (
-        <ReplyBox label={label} sendLabel={route === 'radar' ? t('replies.sendForApproval') : null} xCap={laneKey === 'x'} onSend={send} onCancel={() => setReplying(false)} t={t} />
+        <ReplyBox label={label} sendLabel={route === 'radar' ? t('replies.sendForApproval') : null} xCap={laneKey === 'x'} xMax={xLimit} onSend={send} onCancel={() => setReplying(false)} t={t} />
       ) : (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <DoneButton onDone={() => onDone(item)} t={t} />
@@ -406,14 +408,14 @@ function EmptyState({ t }) {
 
 // The merged list itself (shared by the single-project and the all-projects view). `hidden`: the
 // rows Done just took away while their Undo window runs.
-function ReplyList({ data, hidden, isNew, onDone, onReplied, onOpenRadar, onQueued, radar, t }) {
+function ReplyList({ data, hidden, isNew, onDone, onReplied, onOpenRadar, onQueued, radar, xLimit, t }) {
   const rows = replyRows(data).filter((r) => !hidden.has(r.key));
   if (!rows.length) return <EmptyState t={t} />;
   return (
     <ul className="space-y-2" aria-label={t('replies.segment')}>
       {rows.map((r) => (r.type === 'post'
-        ? <PostRow key={r.key} group={r.group} isNew={isNew} onDone={(g) => onDone(r.key, g.comments.map((c) => c.key), g.clientId)} onReplied={onReplied} t={t} />
-        : <ElsewhereRow key={r.key} item={r.item} isNew={isNew} onDone={(it) => onDone(r.key, [it.key], it.clientId)} onReplied={onReplied} onOpenRadar={onOpenRadar} onQueued={onQueued} radar={radar} t={t} />))}
+        ? <PostRow key={r.key} group={r.group} isNew={isNew} onDone={(g) => onDone(r.key, g.comments.map((c) => c.key), g.clientId)} onReplied={onReplied} xLimit={xLimit} t={t} />
+        : <ElsewhereRow key={r.key} item={r.item} isNew={isNew} onDone={(it) => onDone(r.key, [it.key], it.clientId)} onReplied={onReplied} onOpenRadar={onOpenRadar} onQueued={onQueued} radar={radar} xLimit={xLimit} t={t} />))}
     </ul>
   );
 }
@@ -422,7 +424,7 @@ function ReplyList({ data, hidden, isNew, onDone, onReplied, onOpenRadar, onQueu
 // unanswered }, every entry stamped with its project). onOpenRadar: Radar lands on the card of
 // that Radar reply. radar: { campaign, signalOf(key) } so an answer to a Radar reply can be
 // answered in place (single project only; the all-projects view offers Open in Radar).
-export default function CommentInbox({ onNavigate, onOpenRadar, radar = null, allClients = false, allInbox = null, allFailed = [], allLoading = false }) {
+export default function CommentInbox({ onNavigate, onOpenRadar, radar = null, allClients = false, allInbox = null, allFailed = [], allLoading = false, xLimit = X_REPLY_LIMIT }) {
   const t = useT();
   const qc = useQueryClient();
   const { data: config } = useConfig(true);
@@ -509,7 +511,7 @@ export default function CommentInbox({ onNavigate, onOpenRadar, radar = null, al
     // eslint-disable-next-line react-hooks/exhaustive-deps -- unmount-only flush of the pending Done writes
   }, []);
   const onQueued = () => qc.invalidateQueries({ queryKey: ['plans'] });
-  const listProps = { hidden, isNew, onDone, onReplied, onOpenRadar, onQueued, radar, t };
+  const listProps = { hidden, isNew, onDone, onReplied, onOpenRadar, onQueued, radar, xLimit: allClients ? X_REPLY_LIMIT : xLimit, t };
 
   // While a toast shows, the list keeps that much room below its last row, so the toast never
   // covers a row control at the end of the list (the planner's --pp-toast-h token).

@@ -1,4 +1,4 @@
-import { AlertTriangle, BadgeCheck, CalendarClock, CheckCircle, Clock, Copy, OctagonX, PauseCircle, Pencil, PlugZap, RefreshCw, Send, UserRound } from 'lucide-react';
+import { AlertTriangle, BadgeCheck, CalendarClock, Check, CheckCircle, Clock, Copy, OctagonX, PauseCircle, Pencil, PlugZap, RefreshCw, Send, UserRound } from 'lucide-react';
 import { getActiveLocale, makeT } from './i18n.js';
 // Circular on purpose: postIssue reads format.js helpers and format.js counts postIssue, both
 // only inside function bodies (never at module evaluation), which ESM resolves fine.
@@ -185,6 +185,12 @@ export function timeColumn() {
 // 2026 um 09:00", which was too long for the dense rows and pickers that use it.
 // Composed from the two helpers below rather than a third Intl.DateTimeFormat, so
 // the app can only ever have ONE date style and ONE time style.
+//
+// The one exception is a post ROW's meta line (Freigaben list rows, cards and group rows):
+// fmtRowWhen below reads like speech ("Mo 9. Nov · 17:00", "Mon, Nov 9 · 17:00", "Heute ·
+// 17:00") because a reviewer scans a column of rows for WHEN, not for a stamp. It still ends in
+// fmtTime, so the time style stays one; the full stamp (fmtFull) rides the row's date tooltip.
+// Pickers, the detail panel, exports and tooltips keep fmtFull / fmtStampShort.
 export function fmtFull(iso) {
   return `${fmtDayShort(new Date(iso))}, ${fmtStampShort(iso)}`;
 }
@@ -232,6 +238,33 @@ export function fmtStampShort(iso) {
   const loc = dateLocale();
   const date = new Intl.DateTimeFormat(loc, { timeZone: TZ, day: '2-digit', month: '2-digit', year: '2-digit' }).format(new Date(iso));
   return `${date} · ${fmtTime(iso)}`;
+}
+
+// A post row's "when" (see the note above fmtFull): Today / Tomorrow / Yesterday by name,
+// otherwise weekday + day + short month, the year only outside the current calendar year, then
+// the time. Built from Intl parts in dateLocale(): the abbreviation dots go ("Mo." -> "Mo",
+// "Nov." -> "Nov") and German drops the comma after the weekday, so de-CH reads "Mo 9. Nov"
+// and en-US keeps its "Mon, Nov 9". Day words are locale keys: Intl's numeric:'auto' words come
+// out lower case ("heute", "today"), wrong at the head of a line. Days compare in TZ.
+const DAY_WORDS = { '-1': 'format.day.yesterday', 0: 'format.day.today', 1: 'format.day.tomorrow' };
+const dayIndex = (key) => { const [y, m, d] = key.split('-').map(Number); return Date.UTC(y, m - 1, d) / 86400000; };
+export function fmtRowWhen(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const key = dayKey(date);
+  const todayKey = dayKey(new Date());
+  const word = DAY_WORDS[dayIndex(key) - dayIndex(todayKey)];
+  if (word) return `${makeT(getActiveLocale())(word)} · ${fmtTime(iso)}`;
+  const loc = dateLocale();
+  const withYear = key.slice(0, 4) !== todayKey.slice(0, 4);
+  const parts = new Intl.DateTimeFormat(loc, { timeZone: TZ, weekday: 'short', day: 'numeric', month: 'short', ...(withYear ? { year: 'numeric' } : {}) }).formatToParts(date);
+  const german = loc.split('-')[0] === 'de';
+  const day = parts.map((p, i) => {
+    if (p.type === 'weekday' || p.type === 'month') return p.value.replace(/\.$/, '');
+    if (german && p.type === 'literal' && parts[i - 1]?.type === 'weekday') return ' ';
+    return p.value;
+  }).join('').trim();
+  return `${day} · ${fmtTime(iso)}`;
 }
 
 export function fmtDayShort(date) {
@@ -356,8 +389,12 @@ export const STAIR = {
   halted: { cls: 'bg-rose-400/15 text-rose-700 dark:text-rose-300 ring-rose-400/30', bar: 'bg-rose-400', strip: 'bg-rose-400/10', ink: 'text-rose-700 dark:text-rose-300' },
   pending: { cls: 'bg-zinc-500/12 text-zinc-600 dark:text-zinc-300 ring-zinc-500/25', bar: 'bg-zinc-400', strip: 'bg-zinc-500/10', ink: 'text-zinc-600 dark:text-zinc-300' },
   inMotion: { cls: 'bg-emerald-400/15 text-emerald-700 dark:text-emerald-400 ring-emerald-400/30', bar: 'bg-emerald-400', strip: 'bg-emerald-400/10' },
-  published: { cls: 'bg-emerald-600/18 text-emerald-800 dark:text-emerald-300 ring-emerald-600/45', bar: 'bg-emerald-600', strip: 'bg-emerald-600/10' },
+  published: { cls: 'bg-emerald-600/18 text-emerald-800 dark:text-emerald-300 ring-emerald-600/45', bar: 'bg-emerald-600', strip: 'bg-emerald-600/10', solid: 'bg-emerald-600 text-white ring-emerald-600 dark:bg-emerald-500 dark:text-zinc-950 dark:ring-emerald-500' },
 };
+// `solid` (published only): the FILLED disk the dense planner chip wears once a post is out.
+// Hollow ring = approved and waiting, filled disk = done, so the two read apart by SHAPE at
+// 10px, not by a half-shade of green. Glyph contrast (WCAG 1.4.11, >= 3:1): white on
+// emerald-600 3.77, zinc-950 on emerald-500 7.9.
 
 // The ONE "needs you" mark (studio fix flow polish, 2026-11-01): the header badge and the
 // planner tray's count wear the same halted (rose) stop and the same TriangleAlert glyph, in
@@ -629,10 +666,15 @@ export const ATTENTION_WORDS = new Set(['draft', 'pending', 'rejected', 'overdue
 // glyph without the word, so two words must differ in shape, not only in hue).
 const AMBER_PILL = 'bg-amber-500/15 text-amber-700 dark:text-amber-300 ring-amber-500/30';
 const SKY_PILL = 'bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30';
+//
+// `solid` (posted, fired-assumed): the filled glyph only the dense Week/Month chip
+// (CompactPostCard) wears, so a published post reads "done" at a glance. PostStatusPill reads
+// `cls`/`Icon` and keeps its word, so the pill is unchanged.
 export const ROW_STATUS_META = {
   ...STATUS_PILL_META,
+  posted: { ...STATUS_PILL_META.posted, solid: { cls: STAIR.published.solid, Icon: Check } },
   approved: { cls: STAIR.inMotion.cls, bar: '', strip: '', Icon: CheckCircle },
-  'fired-assumed': { cls: STAIR.published.cls, bar: '', strip: '', Icon: Send },
+  'fired-assumed': { cls: STAIR.published.cls, bar: '', strip: '', Icon: Send, solid: { cls: STAIR.published.solid, Icon: Send } },
   edited: { cls: AMBER_PILL, bar: '', strip: '', Icon: AlertTriangle },
   blocked: { cls: AMBER_PILL, bar: '', strip: '', Icon: PlugZap },
   postYourself: { cls: SKY_PILL, bar: '', strip: '', Icon: Copy },
@@ -681,6 +723,102 @@ export function postDisplayTitle(post, fallback) {
   const firstLine = post?.caption?.split('\n')[0]?.trim();
   if (firstLine && !ISO_TITLE_RE.test(firstLine)) return firstLine;
   return fallback || post?.id || '';
+}
+
+// The type word on a post ROW's meta line, where the platform glyph already names the lane:
+// "Short", not "YouTube Short" (the glyph says YouTube). A type with a row-only short label
+// (typeShort.* in the locale packs: the YouTube and Nostr types, whose labels carry the
+// platform's name) uses it; every other type keeps its type.* label. Filters, aria-labels,
+// the detail panel and Insights keep type.* in full.
+export function rowTypeLabel(t, type) {
+  const key = `typeShort.${type}`;
+  const short = t(key);
+  return short === key ? t(`type.${type}`) : short;
+}
+
+// The lanes that publish post.title as a real, visible title: the YouTube video title, the
+// Reddit post title, the Pinterest pin title and the WordPress / Ghost article title. Every
+// other lane (Instagram, Facebook, TikTok, X, Mastodon, ...) publishes one continuous caption,
+// so turning its first sentence into a bold "title" splits one text into two voices. The
+// LinkedIn link-card title is the card's own and stays inside the LinkedIn card.
+export const TITLED_LANES = new Set(['youtube', 'reddit', 'pinterest', 'wordpress', 'ghost']);
+
+// The VISIBLE title of a post row: post.title, only when it is set (and not a machine
+// timestamp, the same guard as postDisplayTitle) AND at least one of the post's lanes
+// publishes it. '' otherwise: the row then shows no title line, only the caption. Places that
+// need a NAME for a post (aria-labels, tooltips, confirm dialogs) keep postDisplayTitle.
+export function postPublishedTitle(post) {
+  const title = post?.title?.trim();
+  if (!title || ISO_TITLE_RE.test(title)) return '';
+  return (post?.platforms || []).some((p) => TITLED_LANES.has(p)) ? title : '';
+}
+
+// Markdown as plain text for a row (the WordPress / Ghost body is markdown): a cheap regex pass
+// that drops code fences, images and horizontal rules, keeps link and code text, and strips
+// heading, quote, list and emphasis marks. Rows clamp to two or three lines, so this only has to
+// read cleanly, not render.
+export function markdownToText(md) {
+  return String(md || '')
+    .replace(/^[ \t]*(`{3,}|~{3,}).*$/gm, '')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^[ \t]{0,3}([-*_])([ \t]*\1){2,}[ \t]*$/gm, '')
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '')
+    .replace(/^[ \t]{0,3}>[ \t]?/gm, '')
+    .replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]+/gm, '')
+    .replace(/(\*\*|__)(?=\S)(.+?)(?<=\S)\1/g, '$2')
+    .replace(/(^|[^\w*])([*_])(?=\S)(.+?)(?<=\S)\2(?![\w*])/gm, '$1$3')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+// The text one lane would publish, as a row shows it: the lane's effective text (the same engine
+// precedence the hand-off uses, effectiveLaneText below), with the WordPress / Ghost hand-written
+// excerpt first (it is the article's summary) and their markdown body read as plain text.
+function laneRowText(post, platform) {
+  if (platform === 'wordpress' || platform === 'ghost') {
+    const excerpt = String(post?.excerpt || '').trim();
+    return excerpt || markdownToText(effectiveLaneText(post, platform));
+  }
+  return effectiveLaneText(post, platform);
+}
+
+// The text a post row shows: the text that will actually publish. The shared caption wins
+// whenever one of the post's lanes publishes it (a cross-post's caption is the post). Otherwise
+// the first lane with text of its own: the YouTube description, the Reddit text, the Pinterest
+// pin description, the WordPress / Ghost excerpt or body. A titled lane keeps its body in its
+// own field, so a row that read post.caption alone showed a YouTube title with nothing under it.
+// A post none of whose lanes publishes anything still shows its caption, as before.
+export function postBodyText(post) {
+  const cap = String(post?.caption || '').trim();
+  const lanes = post?.platforms || [];
+  if (cap && (!lanes.length || lanes.some((p) => laneRowText(post, p) === cap))) return cap;
+  for (const p of lanes) {
+    const text = laneRowText(post, p);
+    if (text) return text;
+  }
+  return cap;
+}
+
+// The body a row shows (postBodyText), line breaks kept. Under a published title whose words the
+// body repeats as its first line, that line is dropped (it would say the same words twice).
+// Without a published title nothing is ever stripped: the body is the whole text.
+export function postCaptionBody(post) {
+  const cap = postBodyText(post);
+  if (!cap) return '';
+  const title = postPublishedTitle(post);
+  if (!title) return cap;
+  const lines = cap.split('\n');
+  const first = lines.findIndex((l) => l.trim());
+  if (first === -1 || lines[first].trim() !== title) return cap;
+  return lines.slice(first + 1).join('\n').trim();
+}
+
+// The same body as ONE run (line breaks joined with spaces), for rows that clamp it to a few
+// lines: the body is one paragraph in one weight, never a title plus a grey remainder.
+export function postCaptionRun(post) {
+  return postCaptionBody(post).split('\n').map((l) => l.trim()).filter(Boolean).join(' ');
 }
 
 // Mandate F: the shared "what belongs in the Active campaigns picker" rule. An
@@ -1241,6 +1379,13 @@ export function gridDisplayAspect(post) {
 export function isImageMedia(media) {
   return media?.kind === 'image' || /\.(jpe?g|png)(?=$|[?&#])/i.test(media?.url || '');
 }
+// A post with something to look at: a render, a cover, an album slide or a hero image. A text
+// post has none, so a media-first row (Planner List, Freigaben, Published) shows a quiet lane
+// tile in its media column instead of a thumbnail.
+export function hasVisual(post) {
+  const m = post?.media;
+  return Boolean(post?.image || m?.cover || m?.url || m?.path || m?.exists || (Array.isArray(m?.items) && m.items.some((it) => it?.url)));
+}
 // CI-2 / mirrors lib/plans.mjs#postNeedsMedia (server, kept as a small local copy
 // so the browser bundle never imports the server-only lib module - same pattern as
 // PostDetail's COMMENT_CAPABLE_PLATFORMS/EDIT_LANE_ID). Text/article posts
@@ -1361,6 +1506,60 @@ const PLATFORM_FORMATS = {
 };
 export function formatsForPlatform(platformId) {
   return PLATFORM_FORMATS[platformId] || BASE_FALLBACK_FORMATS;
+}
+
+// "Also as story" (post.alsoStory): the same photo or video also goes out as a story
+// on every story lane the post targets. Only Instagram and Facebook publish stories,
+// and only a single-media post (a reel, a video, an image) can be re-used as one; a
+// carousel, a text post or a story itself cannot. The engine records igStoryId /
+// fbStoryId once each story is live, and a failed try as a 'publish-story' attempt.
+export const STORY_LANES = ['instagram', 'facebook'];
+const STORY_ELIGIBLE_TYPES = new Set(['reel', 'video', 'image']);
+const STORY_ID_FIELD = { instagram: 'igStoryId', facebook: 'fbStoryId' };
+
+export function storyEligible(post) {
+  return STORY_ELIGIBLE_TYPES.has(post?.type);
+}
+
+// The post's lanes that would carry the story, in STORY_LANES order (empty when the
+// format cannot be a story).
+export function storyLanes(post) {
+  if (!storyEligible(post)) return [];
+  const targeted = new Set(post?.platforms || []);
+  return STORY_LANES.filter((p) => targeted.has(p));
+}
+
+// The story id the engine minted for a lane. Read from post.ids (the DTO home of every
+// minted id) with the top-level field as a fallback, so either shape reads the same.
+function storyIdFor(post, platform) {
+  const key = STORY_ID_FIELD[platform];
+  if (!key) return null;
+  return post?.ids?.[key] || post?.[key] || null;
+}
+
+// One lane's story state for an alsoStory post: { state: 'posted', id } once the id is
+// there, { state: 'failed', message } when the newest story attempt for the lane failed,
+// else { state: 'pending' }. null when this lane carries no story (switch off, wrong
+// format, not a story lane), so callers render nothing.
+export function storyState(post, platform) {
+  if (post?.alsoStory !== true || !storyLanes(post).includes(platform)) return null;
+  const id = storyIdFor(post, platform);
+  if (id) return { state: 'posted', id };
+  const attempts = Array.isArray(post?.attempts) ? post.attempts : [];
+  for (let i = attempts.length - 1; i >= 0; i -= 1) {
+    const a = attempts[i];
+    if (a?.action !== 'publish-story' || a.platform !== platform) continue;
+    if (a.ok === false) return { state: 'failed', message: a.errorMessage || null };
+    break;
+  }
+  return { state: 'pending' };
+}
+
+// True once every story lane of the post has its story live: the switch then has
+// nothing left to change, so the composer shows it disabled.
+export function storyPosted(post) {
+  const lanes = storyLanes(post);
+  return lanes.length > 0 && lanes.every((p) => Boolean(storyIdFor(post, p)));
 }
 
 // The aspect ratio each lane RECOMMENDS for a format, shown in brackets next to the

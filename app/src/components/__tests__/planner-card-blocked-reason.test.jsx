@@ -38,8 +38,8 @@ function renderCard(post) {
 }
 
 const RED = /(?:^|\s)(?:dark:)?text-(?:red|rose|amber)-/;
-// The caption slot under the meta line (the cover thumb may also echo the text).
-const slot = (card) => [...card.querySelectorAll('p.line-clamp-2')].pop();
+// The caption slot under the meta line (a text card clamps its caption to six lines).
+const slot = (card) => [...card.querySelectorAll('p.line-clamp-2, p.line-clamp-6')].pop();
 
 describe('Planner Blockiert card reason', () => {
   it('one lane: the card says which lane is not connected, in neutral ink, instead of the post text', () => {
@@ -88,7 +88,7 @@ describe('Planner Blockiert list row reason', () => {
   // neutral grey and never the deep rejected red.
   it('one lane: the row names the lane that is not connected, visible, in the halted rose ink', () => {
     renderList([{ ...base, title: 'Tour', platforms: ['telegram', 'linkedin'] }]);
-    const li = row('Tour');
+    const li = row(/short tour of the planner/);
     expect(within(li).getByRole('button', { name: 'Telegram verbinden' })).toBeInTheDocument();
     expect(within(li).queryByText('Blockiert')).toBeNull();
     const why = within(li).getByText('Telegram ist nicht verbunden');
@@ -101,11 +101,11 @@ describe('Planner Blockiert list row reason', () => {
 
   it('several lanes: the plural sentence, a manual paste lane is not named', () => {
     renderList([{ ...base, title: 'Tour', platforms: ['telegram', 'discord', 'reddit'] }]);
-    expect(within(row('Tour')).getByText('Telegram, Discord sind nicht verbunden')).toBeInTheDocument();
+    expect(within(row(/short tour of the planner/)).getByText('Telegram, Discord sind nicht verbunden')).toBeInTheDocument();
   });
 
   it('a connected row keeps its campaign line and says nothing about lanes', () => {
     renderList([{ ...base, title: 'Tour', platforms: ['linkedin'] }]);
-    expect(within(row('Tour')).queryByText(/nicht verbunden/)).toBeNull();
+    expect(within(row(/short tour of the planner/)).queryByText(/nicht verbunden/)).toBeNull();
   });
 });

@@ -180,11 +180,12 @@ describe('an Approvals row reads in one glance', () => {
       const row = rowFor('pendpost 2.10 is out');
       expect(row.textContent).not.toMatch(/Campaign:/);
       expect(row.textContent).not.toMatch(/Release 2 10 0/i);
-      // The title is said once: the bold headline; the body under it is the rest of the caption.
-      expect(within(row).getAllByText('pendpost 2.10 is out')).toHaveLength(1);
-      expect(within(row).getByText(/One status signal per row/)).toBeInTheDocument();
-      // No thumbnail of any kind for a text post (CoverThumb renders an img or a text tile).
+      // An X post publishes no title: no bold line, the caption is one paragraph, first line kept.
+      expect(row.querySelector('[data-row-title]')).toBeNull();
+      expect(within(row).getByText(/^pendpost 2\.10 is out One status signal per row/)).toBeInTheDocument();
+      // No thumbnail for a text post (CoverThumb renders an img or a text tile): a quiet lane tile.
       expect(row.querySelector('img, video')).toBeNull();
+      expect(row.querySelector('[data-row-media] [data-lane-tile="x"]')).not.toBeNull();
       expect(container.querySelectorAll('[data-text-preview]')).toHaveLength(0);
     });
 
@@ -228,7 +229,8 @@ describe('an Approvals row reads in one glance', () => {
     unmount();
     renderApprovals([pendpostX], { seed: bothProjects, density: 'comfortable' });
     expect(dateOf()).toBe(listDate);
-    expect(listDate).toMatch(/^\d{2}\/\d{2}\/\d{2} · \d{2}:\d{2}\s?[AP]M$/);
+    // The row's readable when (fmtRowWhen): a day word, or weekday + day + short month (+ year).
+    expect(listDate).toMatch(/^(Today|Tomorrow|Yesterday|[A-Z][a-z]{2}, [A-Z][a-z]{2} \d{1,2}(, \d{4})?) · \d{2}:\d{2}\s?[AP]M$/);
     // "01:25 PM" never breaks between the time and its AM/PM.
     expect(rowFor('pendpost 2.10 is out').querySelector('[data-row-meta] .tabular-nums').className).toContain('whitespace-nowrap');
   });

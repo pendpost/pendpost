@@ -1,4 +1,5 @@
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import App from '../../App.jsx';
@@ -92,6 +93,26 @@ describe('planner default view (D3)', () => {
     expect(segment(MONTH)).toHaveAttribute('aria-pressed', 'false');
     // No 840px grid on the page at all in the list view.
     expect(document.querySelector('[class*="min-w-[840px]"]')).toBeNull();
+  });
+
+  // The List's keys (j / k, x, Enter, e, Esc) ride the filter bar's "?" popover while the
+  // Planer shows the List, and only then: the page itself carries no hint line.
+  it('the "?" popover lists the List\'s shortcuts in List view only', async () => {
+    const user = userEvent.setup();
+    stubMatchMedia(true);
+    renderApp();
+    await user.click(document.querySelector('[data-filter-legend]'));
+    const keys = await waitFor(() => {
+      const el = document.querySelector('[data-keyboard-shortcuts]');
+      expect(el).not.toBeNull();
+      return el;
+    });
+    expect([...keys.querySelectorAll('kbd')].map((k) => k.textContent)).toEqual(['j', 'k', 'x', 'Enter', 'e', 'Esc']);
+    await user.keyboard('{Escape}');
+    await user.click(segment(WEEK));
+    await user.click(document.querySelector('[data-filter-legend]'));
+    await waitFor(() => expect(document.querySelector('[data-filter-legend]')).toHaveAttribute('aria-expanded', 'true'));
+    expect(document.querySelector('[data-keyboard-shortcuts]')).toBeNull();
   });
 
   it('a wider screen opens on Week', () => {

@@ -66,6 +66,7 @@ attest-key.json
 data/clients.json
 data/.migrated-to-clients
 data/.dashboard-update.json
+data/.whats-new.json
 data/clients/*
 !data/clients/default/
 # Live cloud workspace pairing (workspace UUID + brand map) — local runtime state, never public.

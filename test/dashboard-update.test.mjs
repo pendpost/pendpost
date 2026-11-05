@@ -39,6 +39,9 @@ try {
   const local = updateDecision({ git: true, clean: true, ahead: 0, localNewer: true });
   ok(local.offer === true && local.canApply === true && local.pull === false,
     'HEAD moved since boot, nothing upstream -> offer a rebuild + restart, no pull');
+  const localDirty = updateDecision({ git: true, clean: false, ahead: 0, localNewer: true });
+  ok(localDirty.offer === true && localDirty.canApply === false && localDirty.reason === 'dirty-tree',
+    'HEAD moved but tracked files edited -> offer, NOT applicable (the rebuild would refuse)');
   ok(updateDecision({ git: false, localNewer: true }).offer === false, 'localNewer never offers off a git checkout');
 
   // --- readUpdateStatus (safe defaults + parse) ----------------------------

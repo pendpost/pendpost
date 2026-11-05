@@ -127,6 +127,10 @@ export default function Settings({ focus = null, onNavigate }) {
   // language select; `autoFixBusy` holds the switch while the write is in flight.
   const [autoFix, setAutoFix] = useState(false);
   const [autoFixBusy, setAutoFixBusy] = useState(false);
+  // Delete local media once posted (posting.mediaCleanup.enabled, default off). Same optimistic
+  // flip + revert as autoFix; the grace stays a config value (agent or config.json), not a field.
+  const [mediaCleanup, setMediaCleanup] = useState(false);
+  const [mediaCleanupBusy, setMediaCleanupBusy] = useState(false);
 
   useEffect(() => {
     if (!data) return;
@@ -134,6 +138,7 @@ export default function Settings({ focus = null, onNavigate }) {
     setTimezone(data.posting.defaultTimezone || '');
     setMediaBase(data.posting.publicMediaBaseUrl || '');
     setAutoFix(data.posting.radar?.agent?.autoFix === true);
+    setMediaCleanup(data.posting.mediaCleanup?.enabled === true);
   }, [data?.rev]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Saved on flip (a nested partial write: the server merges it into the agent subtree, so the
@@ -157,6 +162,28 @@ export default function Settings({ focus = null, onNavigate }) {
       } else setError(saveAlert(err, t));
     } finally {
       setAutoFixBusy(false);
+    }
+  };
+
+  // Saved on flip as a partial write: the server shallow-merges it, so graceDays stays as set.
+  const onMediaCleanup = async (next) => {
+    if (!data || mediaCleanupBusy) return;
+    const prior = mediaCleanup;
+    setMediaCleanup(next);
+    setMediaCleanupBusy(true);
+    setError(null);
+    setStaleWrite(false);
+    try {
+      await saveConfig(data.rev, { posting: { mediaCleanup: { enabled: next } } });
+      queryClient.invalidateQueries({ queryKey: ['config'] });
+    } catch (err) {
+      setMediaCleanup(prior);
+      if (err.code === 'stale_write') {
+        setStaleWrite(true);
+        queryClient.invalidateQueries({ queryKey: ['config'] });
+      } else setError(saveAlert(err, t));
+    } finally {
+      setMediaCleanupBusy(false);
     }
   };
 
@@ -357,6 +384,16 @@ export default function Settings({ focus = null, onNavigate }) {
                     </Select>
                   </div>
                 </section>
+
+                {/* Free disk space after posting: one switch, one line (docs/specs/media-cleanup.md).
+                    The daily run deletes only videos every post is done with, after the grace. */}
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
+                  <div className="min-w-0">
+                    <p id="set-media-cleanup" className="text-sm font-bold">{t('settings.mediaCleanup.label')}</p>
+                    <p id="set-media-cleanup-hint" className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.mediaCleanup.hint', { days: data.posting.mediaCleanup?.graceDays ?? 7 })}</p>
+                  </div>
+                  <Switch checked={mediaCleanup} onChange={onMediaCleanup} busy={mediaCleanupBusy} disabled={mediaCleanupBusy} ariaLabel={t('settings.mediaCleanup.label')} />
+                </div>
 
                 {/* Dialog warnings: the owner can tick "don't show this message again" on
                     any confirm/prompt to stop it re-asking. This is the one place to bring

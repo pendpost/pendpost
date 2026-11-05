@@ -17,12 +17,12 @@ const post = {
   title: 'Sourdough', scheduledAt: '2026-09-20T10:00:00Z', approval: 'pending', derivedState: 'pending',
 };
 
-function renderChip(onSelect) {
+function renderChip(onSelect, p = post) {
   return render(
     <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
       <I18nProvider locale="en">
         <TooltipProvider>
-          <CompactPostCard post={post} onSelect={onSelect} dayLabel="Sun 20" />
+          <CompactPostCard post={p} onSelect={onSelect} dayLabel="Sun 20" />
         </TooltipProvider>
       </I18nProvider>
     </QueryClientProvider>,
@@ -75,3 +75,45 @@ describe('Month chip tap target', () => {
     expect(tokens).toEqual(expect.arrayContaining(['flex', 'items-center', 'px-1.5', 'py-0.5']));
   });
 });
+
+// Owner pick 2026-11-04: a published chip's tip carries the way to the live post. Only a
+// provable link (resolveLivePermalink) ever shows; an unpublished chip keeps the bare word.
+describe('Published chip tip: View live link', () => {
+  const pub = { ...post, approval: 'approved', derivedState: 'posted', status: 'posted', permalinks: { linkedin: 'https://www.linkedin.com/feed/update/urn:li:share:1' } };
+
+  it('a published post shows one "View live" link to its permalink', async () => {
+    const user = userEvent.setup();
+    renderChip(vi.fn(), pub);
+    await user.hover(screen.getByRole('button', { name: /Sourdough, Published/ }));
+    const tip = (await screen.findAllByRole('tooltip'))[0];
+    expect(tip).toHaveTextContent('Published');
+    const links = document.querySelectorAll('[data-live-link="linkedin"]');
+    expect(links.length).toBeGreaterThan(0);
+    expect(links[0].getAttribute('href')).toBe(pub.permalinks.linkedin);
+    expect(links[0].getAttribute('target')).toBe('_blank');
+    expect(links[0]).toHaveTextContent('View live');
+  });
+
+  it('several published lanes get one link each, named by platform', async () => {
+    const user = userEvent.setup();
+    renderChip(vi.fn(), { ...pub, platforms: ['linkedin', 'x'], permalinks: { ...pub.permalinks, x: 'https://x.com/i/status/1' } });
+    await user.hover(screen.getByRole('button', { name: /Sourdough, Published/ }));
+    await screen.findAllByRole('tooltip');
+    expect(document.querySelector('[data-live-link="x"]')).not.toBeNull();
+    expect(document.querySelector('[data-live-link="linkedin"]')).toHaveTextContent('LinkedIn');
+  });
+
+  it('a published post with no provable link, and an unpublished one, show no link', async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderChip(vi.fn(), { ...pub, permalinks: {} });
+    await user.hover(screen.getByRole('button', { name: /Sourdough, Published/ }));
+    await screen.findAllByRole('tooltip');
+    expect(document.querySelector('[data-live-link]')).toBeNull();
+    unmount();
+    renderChip(vi.fn(), { ...post, permalinks: pub.permalinks });
+    await user.hover(screen.getByRole('button', { name: /Sourdough, Awaiting approval/ }));
+    await screen.findAllByRole('tooltip');
+    expect(document.querySelector('[data-live-link]')).toBeNull();
+  });
+});
+
