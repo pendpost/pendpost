@@ -3,7 +3,9 @@
 # Multi-stage: build the React dashboard, then run the zero-dependency server.
 
 # ---- stage 1: build the dashboard ----
-FROM node:22-slim AS build
+# Runs on the build machine's own platform: the output is plain JS/CSS, so a
+# multi-arch build never runs npm ci or vite under emulation.
+FROM --platform=$BUILDPLATFORM node:22-slim AS build
 WORKDIR /app/app
 COPY app/package.json app/package-lock.json ./
 RUN npm ci

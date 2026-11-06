@@ -65,6 +65,9 @@ export const IDLE_VARIANTS = {
   // Reddit lane still auto-publishes after approval, warm or cold or promo, exactly as
   // spec 37's reversal decided. Do not read this as that hand-off returning.
   manual: 'bg-sky-500/15 text-sky-700 hover:bg-sky-500/25 dark:text-sky-300',
+  // A control that cannot act right now: a grey outline and muted ink, never a fill (Button's
+  // outline, ui/Button.jsx). A disabled primary keeps reading as live when only its opacity drops.
+  outline: 'text-zinc-500 ring-1 ring-zinc-900/10 dark:text-zinc-400 dark:ring-white/10',
 };
 const SIZES = {
   sm: 'px-2.5 py-1.5 text-xs',

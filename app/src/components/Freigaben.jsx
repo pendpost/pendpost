@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, LayoutGrid, List, Combine, Info, CornerUpLeft, ExternalLink, ArrowDown, ArrowUp, Send, Bot, Copy, Check, Link2, TriangleAlert } from 'lucide-react';
-import { approvePost, rejectPost, markPosted, useAccounts, usePendpostHealth, useConfig, usePlatformValidate } from '../lib/api.js';
+import { CheckCircle2, XCircle, Inbox, Archive, CalendarDays, LayoutGrid, List, Combine, Info, CornerUpLeft, ExternalLink, ArrowDown, ArrowUp, Send, Bot, Copy, Check, Link2, TriangleAlert, Ban } from 'lucide-react';
+import { approvePost, rejectPost, markPosted, useAccounts, usePendpostHealth, useConfig, usePlatformValidate, agentFixPost, getAgentFixes } from '../lib/api.js';
 import { fmtRowWhen, fmtFull, prettyCampaign, comparePostDate, matchesFilters, collectThread, redditPostReadiness, readinessAdvisoryText, unconnectedLanes, isActionable, nextActorOf, postDisplayState, effectiveLaneText, handOffTarget, isAbsoluteHttpUrl, postPublishedTitle, postCaptionRun, gridDisplayAspect, isImageMedia, hasVisual, rowTypeLabel } from '../lib/format.js';
 import { postIssue } from '../lib/postIssue.js';
 import IssueFixButton, { fixLabel, agentAvailable } from './IssueFixButton.jsx';
-import { CoverThumb, LaneTile, LinkCardPreview, showsLinkedinCard, PlatformIcons, NextActorChip, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl, PlatformBlockers } from './ui.jsx';
+import { CoverThumb, LaneTile, LinkCardPreview, showsLinkedinCard, PlatformIcons, NextActorChip, StatusPill, PLATFORM_META, INNER_SURFACE, Skeleton, SelectAllControl } from './ui.jsx';
 import { ClientAvatar } from './ClientSwitcher.jsx';
 import { PROJECT_CHIP, SELECTED_TINT, TAP_TARGET } from './ui/recipes.js';
 import { ShortcutList } from './ui/ShortcutList.jsx';
@@ -22,13 +22,20 @@ import ActionButton, { ONE_SOLID_APPROVE } from './ui/ActionButton.jsx';
 import LinkCaptureRow from './ui/LinkCaptureRow.jsx';
 import LiveLaneLinks from './ui/LiveLaneLinks.jsx';
 import DestinationStrip from './ui/DestinationStrip.jsx';
-import { usePrompt } from './ui/confirm.jsx';
+import { usePrompt, useConfirm } from './ui/confirm.jsx';
 import { ReviewStatusChip } from './ReviewLink.jsx';
 import { useT } from '../lib/i18n.js';
 import { useSetupByClient } from '../lib/setupByClient.js';
 import { humanizeAction, laneLabel } from '../lib/failureCopy.js';
 import ActionError from './ui/ActionError.jsx';
-import { useSelection } from '../lib/useSelection.js';
+import { useSelection, selectionKey } from '../lib/useSelection.js';
+import { hardBlockersOf, approveSplit, skipCauses, skipLine, agentCanTry } from '../lib/approvalBlockers.js';
+import { runAgentFixQueued } from '../lib/bulkPlan.js';
+import { fixFor } from '../lib/agentFix.js';
+import { showToast } from './AppToast.jsx';
+import ApprovalBlockerLine, { PlatformGlyph } from './ApprovalBlockerLine.jsx';
+import ApprovalRunSummary from './ApprovalRunSummary.jsx';
+import UnconnectedProjectsLine, { unconnectedGroups } from './UnconnectedProjectsLine.jsx';
 import { problemCodeText } from '../lib/blockerText.js';
 import { contentSignature, refusalKey, readRefusal, rememberRefusal } from '../lib/refusalMemo.js';
 import { showApproveNotice } from '../lib/approveNotice.js';
@@ -92,7 +99,7 @@ const prefersReduced = () =>
 // (it would also fire open-detail). freigaben-approval-card.test.jsx pins this with
 // a reddit-advisory fixture; an instagram/pending fixture renders no badges and
 // would let the regression back in unnoticed.
-function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed, setup = null, accounts = null, onNavigate = null, reviewRequired = false, lane = false }) {
+function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onToggleSelect, onSelectThread, archived, compact = false, focused = false, registerRef, onArrowNav, onActed, setup = null, accounts = null, onNavigate = null, reviewRequired = false, lane = false, onBlockers = null }) {
   const queryClient = useQueryClient();
   const prompt = usePrompt();
   const t = useT();
@@ -102,6 +109,11 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   // fix, it IS the row's one action (IssueFixButton, the one place a fix runs).
   const issue = useMemo(() => postIssue(post, setup), [post, setup]);
   const hasFix = Boolean(issue?.fix?.type);
+  // A lane that is not connected (issue kind 'blocked') is fixed ONCE per project, not per row
+  // (Freigaben error UX, 2026-11-06): the DestinationStrip in one-project mode, the per-project
+  // line in All-projects mode. The row keeps only a quiet struck-through glyph for it.
+  const connectOnly = issue?.kind === 'blocked';
+  const showFix = hasFix && !connectOnly;
   const fixRef = useRef(null);
   // Handed to the menu only so it drops an item that would repeat the fix (usePostActions).
   const fixDesc = hasFix ? { type: issue.fix.type, label: fixLabel(issue, t, { agent: agentAvailable(setup) }) } : null;
@@ -265,6 +277,17 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
       .map(([platform, v]) => ({ platform, problem: problemCodeText(t, v.problemCodes?.[0]) }));
   }, [platformValidate, t]);
   const hasHardBlockers = blockerReasons.length > 0;
+  // Every hard blocker (lib/approvalBlockers.js), the same list the toolbar's bulk approve and
+  // run summary read: reported up so the bulk approve leaves this post out before the press.
+  // Only a settled verdict is reported (a refetch after an edit keeps the last one), and the
+  // entry leaves with the card.
+  const hardBlockers = useMemo(() => hardBlockersOf(platformValidate), [platformValidate]);
+  const reportKey = selectionKey(post);
+  const verdictReady = platformValidate?.ok === true;
+  useEffect(() => {
+    if (verdictReady && onBlockers) onBlockers(reportKey, hardBlockers);
+  }, [verdictReady, hardBlockers, onBlockers, reportKey]);
+  useEffect(() => () => { onBlockers?.(reportKey, undefined); }, [onBlockers, reportKey]);
   // The first blocker as a one-line reason for the disabled button's tooltip/aria-label, in
   // the SAME localized words as the blocker rows below (lib/blockerText.js). The engine's
   // English line is never the reason; an uncoded problem gets a plain platform sentence.
@@ -272,19 +295,12 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   const blockedReason = hasHardBlockers
     ? t('approvals.card.blockedReason', { reason: blockerReasons[0].problem || t('approvals.card.blockedUncoded', { platform: blockedLane }) })
     : '';
-  // The proactive blocker panel (canon: no dead ends; errors answer what/why/how). Reuses the
-  // SAME PlatformBlockers PostDetail renders, so the queue and the detail speak one language;
-  // it self-hides when clean and only shows here when a hard blocker exists. onFix opens the
-  // editor at the offending field - the one action that recovers.
-  const readinessBlockers = hasHardBlockers ? (
-    <PlatformBlockers
-      platformValidate={platformValidate}
-      showApproval={false}
-      onNavigate={onNavigate}
-      onFix={onEdit ? () => onEdit(post) : undefined}
-      onEdit={onEdit ? () => onEdit(post) : undefined}
-      className="mt-1"
-    />
+  // The blocker line (Freigaben error UX, 2026-11-06): ONE compact line, the platform glyph and
+  // the cause in a few words, the full sentence behind the "?", and the fixes as glyphs (the
+  // agent, a copyable brief, and for a platform the project turned off: turn it on or drop it).
+  // It replaces the boxed PlatformBlockers panel on this surface; the post detail keeps that.
+  const blockerLine = hasHardBlockers ? (
+    <ApprovalBlockerLine post={post} blockers={hardBlockers} offlineLanes={offlineLanes} setup={setup} />
   ) : null;
 
   // The copy-lane hand-off, right on the card (B2). "Selbst posten" only opened the
@@ -379,7 +395,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
       // Content-readiness gate: a post the engine would refuse (e.g. a Mastodon caption over
       // 500 chars) shows the button DISABLED with the reason a hover away, instead of letting
       // the press fail into a red error. The reason itself is rendered proactively below
-      // (readinessBlockers), and reject stays reachable in the ⋯ as the way out.
+      // (blockerLine), and reject stays reachable in the ⋯ as the way out.
       // A refusal that names a blocker keeps Approve disabled (pressing again cannot work);
       // the alert below carries the error and its one recovery. The button never turns into
       // a red "Error" (quietError): a button that names an error is not an action.
@@ -517,13 +533,9 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
   ) : null;
 
   // Why the post needs its fix, as one plain line under the title (the planner row's words):
-  // "X is not connected" for a Blocked post, the tray's cause for a failure. Only when the
-  // row's action is a fix, so a calm post carries no status line at all.
-  const fixBlockedLanes = issue?.kind === 'blocked' ? issue.lanes : [];
-  const reason = !hasFix ? ''
-    : fixBlockedLanes.length
-      ? t(fixBlockedLanes.length > 1 ? 'freigaben.blocked.reasonMany' : 'freigaben.blocked.reason', { platforms: fixBlockedLanes.map((p) => PLATFORM_META[p]?.label || p).join(', ') })
-      : t(`tray.cause.${issue.fix.type}`, { lane: laneLabel(issue.lane) });
+  // the tray's cause for a failure. Only when the row's action is a fix, so a calm post carries
+  // no status line at all. A lane that is not connected says it with the quiet glyph below.
+  const reason = !showFix ? '' : t(`tray.cause.${issue.fix.type}`, { lane: laneLabel(issue.lane) });
   // The status line: the planner row's (Planner.jsx ListRow), so a Blocked post reads the
   // same on both pages. The full sentence also rides a real tooltip, since it may truncate.
   // It only SAYS why; the fix itself sits in the row's one action slot (below).
@@ -535,15 +547,35 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
       </Tip>
     </div>
   ) : null;
-  // The row's ONE action slot, the same place on every row in both layouts: the fix (Connect,
-  // Sign in again, ...) or Approve / the hand-off / live links, always followed by its ⋯. A
-  // fix row's action used to sit on the status line while Approve sat on the title line, so
-  // the action column was ragged.
-  const action = hasFix ? (
+  // The status slot holds the fix's reason, else the blocker line; with both, the blocker line
+  // reads under the row.
+  const statusLine = reasonLine || blockerLine;
+  const blockerBelow = reasonLine ? blockerLine : null;
+  // A lane that is not connected: a quiet grey struck-through glyph per lane, its name on hover.
+  // The connect fix lives once per project (DestinationStrip / UnconnectedProjectsLine).
+  const offlineChip = connectOnly ? (
+    <span data-offline-chip="" className="flex shrink-0 items-center gap-1">
+      {issue.lanes.map((l) => {
+        const tip = t('listBulk.reason.offline', { lanes: PLATFORM_META[l]?.label || l });
+        return (
+          <Tip key={l} label={tip}>
+            <span tabIndex={0} aria-label={tip} className="inline-flex h-7 w-7 items-center justify-center rounded-lg bg-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-white/10">
+              <PlatformGlyph platform={l} off />
+            </span>
+          </Tip>
+        );
+      })}
+    </span>
+  ) : null;
+  // The row's ONE action slot, the same place on every row in both layouts: the fix (Sign in
+  // again, ...) or Approve / the hand-off / live links, always followed by its ⋯. A fix row's
+  // action used to sit on the status line while Approve sat on the title line, so the action
+  // column was ragged.
+  const action = showFix ? (
     <div ref={fixRef} className="-my-1 shrink-0">
       <IssueFixButton issue={issue} post={post} onNavigate={fixNavigate} onEdit={onEdit} size="sm" />
     </div>
-  ) : primary;
+  ) : connectOnly ? offlineChip : primary;
   const topCluster = contextBadges || action || menu ? (
     <>
       {contextBadges}
@@ -707,10 +739,10 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
               {menu}
             </span>
           ) : null}
-          {reasonLine ? <div className="flex min-w-0 basis-full">{reasonLine}</div> : null}
+          {statusLine ? <div className="flex basis-full">{statusLine}</div> : null}
         </div>
         {handOffCapture}
-        {readinessBlockers}
+        {blockerBelow}
         <ActionError error={error} onEdit={onEdit ? () => onEdit(post) : null} onNavigate={onNavigate} />
       </li>
     );
@@ -742,7 +774,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
             <div className="min-w-0 flex-1 basis-full sm:basis-0">{textColumn}</div>
             {/* The status line reads under the text; from sm up the action slot moves up beside
                 the words (order), on a phone it closes the row under the reason it fixes. */}
-            {reasonLine ? <div className="flex min-w-0 basis-full sm:order-3">{reasonLine}</div> : null}
+            {statusLine ? <div className="flex basis-full sm:order-3">{statusLine}</div> : null}
             {topCluster ? (
               <span data-row-action="" className="ml-auto flex shrink-0 items-center gap-1.5 sm:order-2">
                 {topCluster}
@@ -784,7 +816,8 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
                   ml-auto: the pair stays at the card's trailing edge. On a
                   phone the reason takes the card's full width, from sm up it shares the line with
                   the fix. */}
-              {reasonLine ? <div className="flex min-w-0 basis-full sm:basis-0 sm:flex-1">{reasonLine}</div> : <span className="flex-1" />}
+              {/* No min-w-0: the slot may not shrink below its cause; the row wraps the action. */}
+              {statusLine ? <div className="flex basis-full sm:basis-0 sm:flex-1">{statusLine}</div> : <span className="flex-1" />}
               {action || menu ? (
                 <span data-row-action="" className="ml-auto flex shrink-0 items-center gap-1.5">
                   {action}
@@ -795,7 +828,7 @@ function ApprovalCard({ post, posts = [], onOpen, onEdit = null, selected, onTog
           </>
         )}
         {handOffCapture}
-        {readinessBlockers}
+        {blockerBelow}
         <ActionError error={error} onEdit={onEdit ? () => onEdit(post) : null} onNavigate={onNavigate} />
       </div>
     </li>
@@ -1061,6 +1094,52 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
   // so a pressed chip never sits over an empty list.
   const effectiveRadarOnly = radarOnly && radarPending > 0;
 
+  // Freigaben error UX (2026-11-06). blockerMap: each mounted card's hard blockers, keyed by
+  // selectionKey (an empty list = checked and clean; no entry = not known). runReport: what the
+  // last bulk approve left out or had refused, until dismissed or resolved. showOnly: the list
+  // narrowed to those posts. fixProgress: the "fix all with agent" queue, {done,total} or null.
+  const queryClient = useQueryClient();
+  const confirm = useConfirm();
+  const [blockerMap, setBlockerMap] = useState(() => new Map());
+  const reportBlockers = useCallback((key, list) => {
+    setBlockerMap((prev) => {
+      if (list === undefined) {
+        if (!prev.has(key)) return prev;
+        const next = new Map(prev);
+        next.delete(key);
+        return next;
+      }
+      const had = prev.get(key);
+      if (had && had.length === list.length && had.every((b, i) => b.code === list[i].code && b.platform === list[i].platform && b.text === list[i].text)) return prev;
+      const next = new Map(prev);
+      next.set(key, list);
+      return next;
+    });
+  }, []);
+  const [runReport, setRunReport] = useState(null);
+  const [showOnly, setShowOnly] = useState(false);
+  const [fixProgress, setFixProgress] = useState(null);
+  const offlineLanesOf = useCallback((post) => unconnectedLanes(post, setupFor(post)), [setupFor]);
+  const blockersOf = useCallback((post) => blockerMap.get(selectionKey(post)) || [], [blockerMap]);
+  // The run summary, judged LIVE: an entry leaves once its post is decided, edited clean or
+  // connected, so the line goes away by itself when everything it named is resolved. A post
+  // the list does not show right now (a filter) keeps its entry.
+  const postByKey = useMemo(() => new Map(all.map((p) => [selectionKey(p), p])), [all]);
+  const liveReport = useMemo(() => {
+    if (!runReport) return null;
+    const live = [];
+    for (const e of runReport.entries) {
+      const post = postByKey.get(e.key);
+      if (!post || !isActionable(post)) continue;
+      if (e.kind === 'blocked' && blockerMap.has(e.key) && !blockerMap.get(e.key).length) continue;
+      if (e.kind === 'offline' && !offlineLanesOf(post).length) continue;
+      live.push({ ...e, post });
+    }
+    return live.length ? { ok: runReport.ok, entries: live } : null;
+  }, [runReport, postByKey, blockerMap, offlineLanesOf]);
+  // The "show only these" filter releases itself once the line it belongs to is gone.
+  const showKeys = useMemo(() => (showOnly && liveReport ? new Set(liveReport.entries.map((e) => e.key)) : null), [showOnly, liveReport]);
+
   const items = useMemo(() => {
     const base = mode === 'pending' ? actionable : all;
     const newestFirst = sortOrder === 'newest';
@@ -1084,10 +1163,12 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
       // The radar-replies facet: pending tab only, one predicate, flat list - the
       // keyboard a/r triage and roving focus see an ordinary (shorter) items array.
       .filter((p) => mode !== 'pending' || !effectiveRadarOnly || p.radarReplyTo)
+      // The run summary's "show only these".
+      .filter((p) => !showKeys || showKeys.has(selectionKey(p)))
       .sort(mode === 'pending'
         ? (a, b) => (activeIds.has(b.campaign) - activeIds.has(a.campaign)) || byDate(a, b)
         : byDate);
-  }, [all, actionable, mode, platformFilter, typeFilter, statusFilter, activeIds, sortOrder, effectiveRadarOnly, setupFor]);
+  }, [all, actionable, mode, platformFilter, typeFilter, statusFilter, activeIds, sortOrder, effectiveRadarOnly, setupFor, showKeys]);
 
   // What the list renders: one row per post, or, with grouping on, one row per cross-post group.
   // Roving focus, arrow keys and the auto-advance walk these rows; counts stay on POSTS (items).
@@ -1200,40 +1281,102 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
     selectable: actionableItems, effectiveSelection, count: selCount, runBulk, bulkProgress, bulkError, setBulkError,
   } = useSelection({ items, isSelectable: isActionable, threadPool: all });
 
-  // A post pendpost cannot publish (its target lane is not connected). The single-row
-  // approve already swaps to "post yourself" for these; bulk approve must skip them for
-  // the same reason (approving publishes nothing), not silently approve into a void.
-  const isOffline = useCallback((post) => unconnectedLanes(post, setupFor(post)).length > 0, [setupFor]);
-  // Bulk-approve honesty (S3 bulk-skip feedback, fresh-eyes finding 8/19): how many of
-  // the CURRENT selection bulk approve will skip because their lane is offline. Stated in
-  // the approve button's tooltip BEFORE the press - and since skipped posts stay selected
-  // after a bulk approve, it keeps stating it afterwards. Never a dialog, never silent.
-  const offlineSelected = useMemo(() => effectiveSelection.filter(isOffline).length, [effectiveSelection, isOffline]);
+  // What bulk approve leaves out, decided BEFORE the press (Freigaben error UX, 2026-11-06,
+  // owner pick A): a post with a hard blocker (its own Approve is disabled, so the server would
+  // only refuse it) and a post whose lane is not connected (approving publishes nothing). Both
+  // stay selected and visible with their own fix; the server never receives them. The skip
+  // glyph beside Approve says how many and why, a hover away.
+  const selSplit = useMemo(() => approveSplit(effectiveSelection, { blockersOf, offlineLanesOf }), [effectiveSelection, blockersOf, offlineLanesOf]);
+  const selSkipped = selSplit.blocked.length + selSplit.offline.length;
+  const skipTip = selSkipped ? skipLine(skipCauses(selSplit, t), selSkipped, t) : null;
 
   // The ONE bulk approve: the toolbar's approve runs it on the selection, a cross-post group's
-  // "Approve all" on its approvable members. Approve only the publishable posts; a post whose lane
-  // is offline cannot be published, so it is skipped - the manualNeeded note on the approve
-  // states the skip before AND after (skipped posts stay selected), so no separate post-hoc
-  // error is stacked on top of it. The approve notices (image not online yet, brand-rule hints)
-  // say it ONCE for the whole run, also when some posts were refused. A Radar reply past its time
-  // among the approved posts is named as going 5 minutes after the approval.
-  const approveMany = async (list, setErr) => {
-    const connected = list.filter((p) => !isOffline(p));
-    if (!connected.length) {
-      setErr({ text: t('approvals.bulk.offlineOnly', { n: list.length }), raw: null });
-      throw { canceled: true };
-    }
+  // "Approve all" on its approvable members. Only the posts that can publish are sent; what was
+  // left out or refused becomes the run summary line (ApprovalRunSummary), never a red
+  // paragraph of post ids. The approve notices (image not online yet, brand-rule hints) say it
+  // ONCE for the whole run. A Radar reply past its time among the approved posts is named as
+  // going 5 minutes after the approval.
+  const approveMany = async (list) => {
+    const split = approveSplit(list, { blockersOf, offlineLanesOf });
     const results = [];
     const approved = [];
-    try {
-      await runBulk(async (p) => { results.push(await (p.clientId ? approvePost(p.campaign, p.id, undefined, p.clientId) : approvePost(p.campaign, p.id))); approved.push(p); }, t('approvals.bulk.labelApproved'), connected);
-    } finally {
-      showApproveNotice(results, t, { posts: approved });
+    let settled = { done: [], fails: [] };
+    if (split.send.length) {
+      try {
+        await runBulk(async (p) => { results.push(await (p.clientId ? approvePost(p.campaign, p.id, undefined, p.clientId) : approvePost(p.campaign, p.id))); approved.push(p); }, t('approvals.bulk.labelApproved'), split.send, { onSettled: (r) => { settled = r; } });
+      } catch { /* the refusals are in `settled`; the summary line names their causes */ } finally {
+        showApproveNotice(results, t, { posts: approved });
+      }
     }
+    const entries = [
+      ...split.blocked.map(({ post }) => ({ key: selectionKey(post), kind: 'blocked' })),
+      ...split.offline.map(({ post }) => ({ key: selectionKey(post), kind: 'offline' })),
+      ...settled.fails.map((f) => ({ key: selectionKey(f.post), kind: 'failed', text: f.known ? f.text : null })),
+    ];
+    setRunReport(entries.length ? { ok: settled.done.length, entries } : null);
+    setShowOnly(false);
+    // Nothing went through: the button must not flash a success.
+    if (!settled.done.length) throw { canceled: true };
   };
 
-  const manualNote = offlineSelected ? t(offlineSelected === 1 ? 'approvals.bulk.manualNeeded.one' : 'approvals.bulk.manualNeeded', { n: offlineSelected }) : null;
-  const approveLabel = t('approvals.bulk.approveN', { n: selCount });
+  const reportCauses = useMemo(() => {
+    if (!liveReport) return [];
+    const by = (kind) => liveReport.entries.filter((e) => e.kind === kind);
+    return skipCauses({
+      blocked: by('blocked').map((e) => ({ post: e.post, blockers: blockersOf(e.post) })).filter((x) => x.blockers.length),
+      offline: by('offline').map((e) => ({ post: e.post, lanes: offlineLanesOf(e.post) })),
+      failed: by('failed').map((e) => ({ post: e.post, text: e.text })),
+    }, t);
+  }, [liveReport, blockersOf, offlineLanesOf, t]);
+
+  // "Fix all with agent": every blocked post in the current view whose project has an agent and
+  // that has a cause the agent can fix (never a connection, which Connect fixes, and never a
+  // turned-off platform that is the post's only one, which only turning it on fixes). The engine runs one fix
+  // at a time, so it is the planner's queue (runAgentFixQueued), one post after another.
+  const agentFixable = useMemo(
+    () => items.filter((p) => agentCanTry(blockersOf(p), p) && agentAvailable(setupFor(p))),
+    [items, blockersOf, setupFor],
+  );
+  const fixAll = async () => {
+    if (fixProgress || !agentFixable.length) return;
+    const list = agentFixable.slice();
+    const ok = await confirm({
+      title: t('approvals.result.fixAllConfirm.title'),
+      body: t('approvals.result.fixAllConfirm.body', { n: list.length }),
+      confirmLabel: t('approvals.result.fixAllConfirm.ok'),
+    });
+    if (!ok) return;
+    let changed = 0;
+    setFixProgress({ done: 0, total: list.length });
+    try {
+      for (const p of list) {
+        try {
+          const job = await runAgentFixQueued(p, { // eslint-disable-line no-await-in-loop
+            start: async (x) => {
+              await agentFixPost(x.campaign, x.id, x.clientId);
+              queryClient.invalidateQueries({ queryKey: ['agentFix'] });
+            },
+            list: (x) => getAgentFixes(x.clientId),
+            jobFor: (data, x) => fixFor(data, x.campaign, x.id, x.clientId),
+          });
+          if (job?.state === 'done') changed += 1;
+        } catch { /* the row's own agent glyph shows the job's verdict */ }
+        setFixProgress((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
+      }
+    } finally {
+      setFixProgress(null);
+      queryClient.invalidateQueries({ queryKey: ['plans'] });
+      queryClient.invalidateQueries({ queryKey: ['agentFix'] });
+      queryClient.invalidateQueries({ queryKey: ['platform-validate'] });
+    }
+    showToast({ kind: 'success', text: t('approvals.result.fixAllDone', { n: changed }) });
+  };
+
+  // All-projects mode: the posts that wait for a lane that is not connected, ONE line per
+  // project at the top of the queue (one-project mode has the DestinationStrip for it).
+  const unconnected = useMemo(() => (allProjects ? unconnectedGroups(items, offlineLanesOf) : []), [allProjects, items, offlineLanesOf]);
+
+  const approveLabel = t('approvals.bulk.approveN', { n: selSplit.send.length });
   const rejectLabel = t('approvals.bulk.rejectN', { n: selCount });
   // The selecting toolbar is filled only while actually pinned (lib/useStuck.js): in the flow an
   // opaque fill reads as a band on the translucent glass panel.
@@ -1255,7 +1398,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
         data-stuck={toolbarStuck ? '' : undefined}
         className={`flex flex-wrap items-center gap-x-3 gap-y-2 ${selCount ? 'sticky top-0 z-20 -mx-4 -my-2 rounded-2xl px-4 py-2 data-[stuck]:bg-[#fdfefe] dark:data-[stuck]:bg-[#121215]' : ''}`}
       >
-        <div className="flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={t('approvals.view.label')}>
+        <div data-spot="approvals" className="flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={t('approvals.view.label')}>
           {[
             ['pending', pendingVisible ? t('approvals.view.toReviewCount', { n: pendingVisible }) : t('approvals.view.toReview')],
             ['all', t('approvals.view.all')],
@@ -1375,16 +1518,29 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
                   }, setBulkError, t)}
                 />
               </Tip>
-              <Tip label={manualNote ? <>{approveLabel}<br />{manualNote}</> : approveLabel}>
+              <Tip label={approveLabel}>
                 <ActionButton
                   size="icon"
-                  variant="primary"
+                  // Nothing approvable in the selection: the grey outline, not a disabled
+                  // filled green that still reads as the live action.
+                  variant={selSplit.send.length ? 'primary' : 'outline'}
                   icon={CheckCircle2}
                   ariaLabel={bulkProgress && bulkProgress.total > 1 ? t('approvals.action.approvingN', bulkProgress) : approveLabel}
                   className={TAP_TARGET}
-                  onAction={guardAction(() => approveMany(effectiveSelection, setBulkError), setBulkError, t)}
+                  disabled={!selSplit.send.length}
+                  onAction={guardAction(() => approveMany(effectiveSelection), setBulkError, t)}
                 />
               </Tip>
+              {/* What Approve leaves out, BEFORE the press: a muted skip glyph and the count,
+                  the causes a hover away. */}
+              {selSkipped ? (
+                <Tip label={skipTip}>
+                  <span data-bulk-skip="" tabIndex={0} aria-label={skipTip} className="inline-flex h-10 shrink-0 items-center gap-1 rounded-xl px-1.5 text-xs font-bold tabular-nums text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400">
+                    <Ban size={14} className="text-amber-700 dark:text-amber-400" aria-hidden="true" />
+                    {selSkipped}
+                  </span>
+                </Tip>
+              ) : null}
             </>
           ) : null}
         </span>
@@ -1396,9 +1552,23 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
         {selCount || (mode === 'pending' && pendingVisible === items.length) ? null : (
           <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('approvals.postCount', { n: items.length })}</span>
         )}
-        {/* A bulk run's failure summary, on its own line under the controls, only while it
-            exists. */}
+        {/* A bulk reject's failure summary (its reasons, never post ids), only while it exists. */}
         <ActionError error={bulkError} className="basis-full" />
+        {/* What the last bulk approve left out or had refused: ONE quiet line, grouped by cause,
+            until dismissed or resolved. */}
+        {liveReport ? (
+          <ApprovalRunSummary
+            ok={liveReport.ok}
+            total={liveReport.entries.length}
+            causes={reportCauses}
+            showOnly={Boolean(showKeys)}
+            onToggleShow={() => setShowOnly((v) => !v)}
+            fixable={agentFixable.length}
+            onFixAll={fixAll}
+            fixProgress={fixProgress}
+            onDismiss={() => { setRunReport(null); setShowOnly(false); }}
+          />
+        ) : null}
       </div>
 
       {/* WHERE these posts land, stated ONCE for the whole client-scoped list. The
@@ -1411,7 +1581,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
       {/* All-projects mode: the list spans projects whose accounts differ, so one strip
           cannot be true for all of them; each card's project chip says whose post it is and
           each card is judged by its own project's connections. */}
-      {allProjects ? null : (
+      {allProjects ? <UnconnectedProjectsLine groups={unconnected} onNavigate={onNavigate} /> : (
         <DestinationStrip
           platforms={visiblePlatforms}
           accounts={accounts}
@@ -1473,6 +1643,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
                   accounts={accounts}
                   onNavigate={onNavigate}
                   reviewRequired={reviewRequired}
+                  onBlockers={reportBlockers}
                 />
               )}
             />
@@ -1496,6 +1667,7 @@ export default function Freigaben({ campaigns, onOpen, onEdit, clientName = '', 
               accounts={accounts}
               onNavigate={onNavigate}
               reviewRequired={reviewRequired}
+              onBlockers={reportBlockers}
             />
           )))}
         </ul>

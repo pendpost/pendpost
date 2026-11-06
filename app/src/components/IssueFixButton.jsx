@@ -26,6 +26,7 @@ import { Button } from './ui/Button.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import ActionError from './ui/ActionError.jsx';
 import { TAP_TARGET } from './ui/recipes.js';
+import { Tip } from './ui/Tooltip.jsx';
 import { useConfirm, usePrompt } from './ui/confirm.jsx';
 import { useAgentFixes, fixFor } from '../lib/agentFix.js';
 import { useT } from '../lib/i18n.js';
@@ -124,6 +125,18 @@ export default function IssueFixButton({
   // Optional: the post detail hands over its own flows for these three (richer confirms,
   // optimistic delete). Without them the button runs a self-contained version.
   onDiscard = null, onHandOff = null, onMarkPosted = null, handedOff: handedOffProp = null,
+  // iconOnly: a 40px glyph button whose words ride the tooltip and the accessible name (the
+  // approval card's blocker line and the per-project connect line). Connect / reconnect /
+  // edit only; the second "Open in editor" button is left out (the row has its own way in).
+  // agentOnly: for an edit, render nothing unless the agent can run it (no editor fallback).
+  // setup: the post's OWN project's setup, to judge the agent by; else the active project's.
+  iconOnly = false, agentOnly = false, setup = null,
+  // glyph: with iconOnly, a node drawn instead of the fix's own icon (the per-project connect
+  // line draws the lane's struck glyph, so the button itself says which lane it connects).
+  glyph = null,
+  // pill: with iconOnly, a bordered pill with a brand hover, for a glyph that must read as a
+  // button beside the same glyph used as a passive status chip elsewhere.
+  pill = false,
 }) {
   const t = useT();
   const queryClient = useQueryClient();
@@ -145,7 +158,8 @@ export default function IssueFixButton({
   const lane = issue.fix.lane;
   const clientId = issue.clientId ?? post?.clientId ?? null;
   const scope = clientId ? [clientId] : [];
-  const agent = type === 'edit' && issue.fix.agent && agentAvailable(health?.setup);
+  const agent = type === 'edit' && issue.fix.agent && agentAvailable(setup || health?.setup);
+  if (agentOnly && type === 'edit' && !agent) return null;
   const label = fixLabel(issue, t, { agent });
   const aria = fixAriaLabel(issue, t, { agent });
   const Icon = agent ? Bot : ICONS[type] || PlugZap;
@@ -312,6 +326,32 @@ export default function IssueFixButton({
   const disabled = busy || (type === 'cloud' && typeof onNavigate !== 'function')
     || ((type === 'connect' || type === 'reconnect') && !inPlaceConnectLane(lane) && typeof onNavigate !== 'function')
     || (type === 'edit' && !agent && typeof onEdit !== 'function');
+  if (iconOnly) {
+    const tip = busy ? t('issue.agent.working') : aria;
+    return (
+      <span className="inline-flex flex-col items-end">
+        <Tip label={tip}>
+          <button
+            type="button"
+            onClick={onClick}
+            disabled={disabled}
+            aria-busy={busy || undefined}
+            aria-label={tip}
+            className={`inline-flex h-10 shrink-0 items-center justify-center transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 ${pill
+              ? 'min-w-10 rounded-lg border border-zinc-900/15 bg-white/60 px-2 text-zinc-700 hover:border-brand/50 hover:bg-brand/10 dark:border-white/15 dark:bg-white/5 dark:text-zinc-200 dark:hover:border-brand-light/50 dark:hover:bg-brand-light/10'
+              : 'w-10 rounded-xl text-zinc-600 hover:bg-zinc-900/5 hover:text-brand dark:text-zinc-300 dark:hover:bg-white/10 dark:hover:text-brand-light'} ${className}`}
+          >
+            {busy ? <Loader2 size={16} className="motion-safe:animate-spin" aria-hidden="true" /> : glyph || <Icon size={16} aria-hidden="true" />}
+          </button>
+        </Tip>
+        {jobLine?.tone === 'err' && !error ? <ActionError error={{ text: jobLine.text, raw: jobLine.raw }} /> : null}
+        <ActionError error={error} />
+        {connectOpen ? (
+          <ConnectModal lane={lane} clientId={clientId} onClose={() => setConnectOpen(false)} onConnected={onConnected} />
+        ) : null}
+      </span>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Button

@@ -6,7 +6,7 @@ import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 
 // UpdateToast polls GET /api/dashboard-update (useUpdateStatus) and behaves like a
-// desktop updater: it names the running and the new version, shows the real step
+// desktop updater: it names the new version (never a commit), shows the real step
 // the server reports, says "Updated to" once the server is back on the new code,
 // explains a failure with Try again, and remembers a dismissal per commit. The hook
 // is mocked so each test drives the server states directly.
@@ -23,7 +23,13 @@ vi.mock('../../lib/whatsNew.js', async (importOriginal) => ({
   useWhatsNew: () => ({ data: news }),
   useMarkWhatsNewSeen: () => (v) => { seenCalls.push(v); },
 }));
-const NOTE = (version, en, de) => ({ version, date: '2026-11-02', url: `https://example.test/v${version}`, highlights: { en, 'de-CH': de } });
+// One release entry with one item per title pair (the items schema, lib/whats-new.json).
+const NOTE = (version, en, de) => ({
+  version,
+  date: '2026-11-02',
+  url: `https://example.test/changelog#v${version}`,
+  items: en.map((title, i) => ({ kind: 'new', icon: 'layers', title: { en: title, 'de-CH': de[i] }, body: { en: `${title} body.`, 'de-CH': `${de[i]} Text.` } })),
+});
 const newsFor = (version, unseen) => ({ ok: true, version, seen: '2.9.0', unseen, recent: unseen, releasesUrl: 'https://example.test/releases' });
 
 // Node's experimental localStorage has no methods under vitest: install a real one.
@@ -97,25 +103,36 @@ describe('UpdateToast: offer', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('names the running and the new version (package version + short commit)', () => {
+  it('names the new version in one line, with no commit code', () => {
     status = answer();
     renderToast();
-    expect(screen.getByText(/new version is available/i)).toBeInTheDocument();
-    expect(screen.getByText('Installed: 2.9.0 (a1b2c3d). New: 2.10.0 (f4e5d6c)')).toBeInTheDocument();
+    expect(screen.getByText('pendpost 2.10.0 is ready')).toBeInTheDocument();
+    expect(screen.queryByText(/a1b2c3d|f4e5d6c/)).toBeNull();
   });
 
-  it('names both versions in de-CH too', () => {
+  it('reads in de-CH too', () => {
     status = answer();
     renderToast({}, 'de-CH');
-    expect(screen.getByText(/neue Version ist verfügbar/i)).toBeInTheDocument();
-    expect(screen.getByText('Installiert: 2.9.0 (a1b2c3d). Neu: 2.10.0 (f4e5d6c)')).toBeInTheDocument();
+    expect(screen.getByText('pendpost 2.10.0 ist bereit')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /aktualisieren/i })).toBeInTheDocument();
   });
 
-  it('formats whatever part of a version is known', () => {
-    expect(formatVersion(RUN)).toBe('2.9.0\u00a0(a1b2c3d)');
+  it('the same version on a newer commit is "Small improvements ready"', () => {
+    status = answer({ target: { version: RUN.version, commit: NEW.commit } });
+    renderToast({}, 'de-CH');
+    expect(screen.getByText('Kleine Verbesserungen bereit')).toBeInTheDocument();
+  });
+
+  it('an offer with no target version falls back to the plain sentence', () => {
+    status = answer({ target: { version: null, commit: NEW.commit } });
+    renderToast();
+    expect(screen.getByText('A new version is available')).toBeInTheDocument();
+  });
+
+  it('formats the version alone, never the commit', () => {
+    expect(formatVersion(RUN)).toBe('2.9.0');
     expect(formatVersion({ version: '2.9.0', commit: null })).toBe('2.9.0');
-    expect(formatVersion({ version: null, commit: NEW.commit })).toBe('f4e5d6c');
+    expect(formatVersion({ version: null, commit: NEW.commit })).toBe(null);
     expect(formatVersion(null)).toBe(null);
   });
 
@@ -150,7 +167,7 @@ describe('UpdateToast: dismiss per commit', () => {
     first.unmount();
     status = answer({ target: NEWER, id: NEWER.commit });
     renderToast();
-    expect(screen.getByText('Installed: 2.9.0 (a1b2c3d). New: 2.10.1 (0123456)')).toBeInTheDocument();
+    expect(screen.getByText('pendpost 2.10.1 is ready')).toBeInTheDocument();
   });
 
   it('still works when browser storage is blocked (dismissal holds for the page)', async () => {
@@ -257,7 +274,7 @@ describe('UpdateToast: done', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     status = upToDate({ pid: 2, running: NEW });
     rerender(ui({ onUpdate, onReload }));
-    expect(screen.getByText('Updated to 2.10.0 (f4e5d6c)')).toBeInTheDocument();
+    expect(screen.getByText('Updated to 2.10.0')).toBeInTheDocument();
     expect(onReload).not.toHaveBeenCalled();
     await act(async () => { vi.advanceTimersByTime(4500); });
     expect(container).toBeEmptyDOMElement();
@@ -274,7 +291,7 @@ describe('UpdateToast: done', () => {
     expect(onReload).toHaveBeenCalledTimes(1);
     first.unmount(); // the reload
     renderToast();
-    expect(screen.getByText('Updated to 2.10.0 (f4e5d6c)')).toBeInTheDocument();
+    expect(screen.getByText('Updated to 2.10.0')).toBeInTheDocument();
     expect(storage.getItem('pendpost.update.done')).toBe(null);
   });
 
@@ -289,7 +306,7 @@ describe('UpdateToast: done', () => {
     expect(screen.getByText(/restarting pendpost/i)).toBeInTheDocument();
     status = upToDate({ pid: 2, running: NEW });
     second.rerender(ui());
-    expect(screen.getByText('Updated to 2.10.0 (f4e5d6c)')).toBeInTheDocument();
+    expect(screen.getByText('Updated to 2.10.0')).toBeInTheDocument();
   });
 
   it('after the update the same commit is never offered again', async () => {
@@ -334,7 +351,7 @@ describe('UpdateToast: failure', () => {
     status = answer({ target: NEWER, id: NEWER.commit, lastRun: failedRun('pull') });
     renderToast();
     expect(screen.queryByText(/could not download/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/new version is available/i)).toBeInTheDocument();
+    expect(screen.getByText('pendpost 2.10.1 is ready')).toBeInTheDocument();
   });
 
   it('Try again does not flash the previous failure', async () => {
@@ -437,7 +454,7 @@ describe('UpdateToast: quiet local update', () => {
     expect(onReload).toHaveBeenCalledTimes(1);
     first.unmount(); // the reload
     renderToast();
-    expect(screen.getByText('Updated to 2.9.0 (f4e5d6c)')).toBeInTheDocument();
+    expect(screen.getByText('Updated to 2.9.0')).toBeInTheDocument();
   });
 
   it('the reload also happens when this tab missed the progress (asleep in the background)', () => {
@@ -480,7 +497,7 @@ describe('UpdateToast: quiet local update', () => {
   it('a new version is still offered with the toast', () => {
     status = answer({ quiet: false });
     renderToast();
-    expect(screen.getByText(/a new version is available/i)).toBeInTheDocument();
+    expect(screen.getByText('pendpost 2.10.0 is ready')).toBeInTheDocument();
   });
 });
 
@@ -523,7 +540,7 @@ describe('UpdateToast: what is new', () => {
     const headings = within(dialog).getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
     expect(headings).toEqual(['2.10.0', '2.9.0']);
     expect(dialog).toHaveTextContent('Bulk actions in the List.');
-    expect(within(dialog).getByRole('link', { name: 'Full notes for 2.10.0' })).toHaveAttribute('href', 'https://example.test/v2.10.0');
+    expect(within(dialog).getByRole('link', { name: 'All releases' })).toHaveAttribute('href', 'https://example.test/releases');
     // The toast steps aside while its dialog is open.
     expect(screen.queryByRole('status')).toBeNull();
     expect(seenCalls).toEqual([]);
@@ -552,7 +569,7 @@ describe('UpdateToast: what is new', () => {
     news = newsFor('2.10.0', [N210]);
     status = answer({ running: { version: '2.10.0', commit: RUN.commit }, target: NEWER, id: NEWER.commit });
     renderToast();
-    expect(screen.getByRole('status')).toHaveTextContent('A new version is available');
+    expect(screen.getByRole('status')).toHaveTextContent('pendpost 2.10.1 is ready');
     expect(screen.queryByRole('button', { name: "What's new" })).toBeNull();
   });
 
@@ -567,7 +584,7 @@ describe('UpdateToast: what is new', () => {
     expect(screen.getByRole('button', { name: "What's new" })).toBeInTheDocument();
   });
 
-  it('reads in de-CH, highlights included', async () => {
+  it('reads in de-CH, items included', async () => {
     news = newsFor('2.10.0', [N210]);
     renderToast({}, 'de-CH');
     expect(screen.getByRole('status')).toHaveTextContent('Aktualisiert auf 2.10.0');

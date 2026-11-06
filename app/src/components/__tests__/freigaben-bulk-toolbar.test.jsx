@@ -222,18 +222,19 @@ describe('Freigaben bulk actions in the toolbar', () => {
     expect(rejectPost).toHaveBeenCalledWith('spring', 'p2', undefined);
   });
 
-  it('a failed run shows its alert under the toolbar controls, and only then', async () => {
+  it('a failed run leaves ONE quiet summary line under the toolbar controls, and only then', async () => {
     approvePost.mockRejectedValue(new Error('HTTP 500 internal'));
     const user = userEvent.setup();
-    renderFreigaben([posts[0]]);
+    const { container } = renderFreigaben([posts[0]]);
     await user.click(rowBoxes()[0]);
-    expect(screen.queryByRole('alert')).toBeNull();
+    expect(container.querySelector('[data-run-summary]')).toBeNull();
     await user.click(approveBtn(1));
-    const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/0 approved, 1 failed: p1/);
-    // Its own line in the toolbar row, after the controls.
-    const errorLine = alert.closest('.basis-full');
-    expect(errorLine).not.toBeNull();
-    expect(errorLine.parentElement.contains(approveBtn(1))).toBe(true);
+    await screen.findByText(t('approvals.result.notApproved', { n: 1 }));
+    const line = container.querySelector('[data-run-summary]');
+    // No post id, no red alert; its own line in the toolbar row, after the controls.
+    expect(line.textContent).not.toMatch(/p1/);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(line.className).toMatch(/(^|\s)basis-full(\s|$)/);
+    expect(line.parentElement.contains(approveBtn(1))).toBe(true);
   });
 });

@@ -8,7 +8,7 @@ You do not need to write code to move pendpost forward. Pick the path that match
 
 - **A quick idea or piece of feedback.** Use the **Share feedback** link in the dashboard, open the feedback issue form, or post in [Discussions](https://github.com/pendpost/pendpost/discussions) under Ideas. Feedback never phones home: the in-app link just opens your browser on a prefilled GitHub page, and it prefills only non-sensitive facts (version, run method, mode, Node, OS), never your `.env` or any credential.
 - **A concrete bug or feature.** Open an issue and pick the bug report or feature request form. The form asks for what a maintainer needs to act on it.
-- **A deeper, design-level change** (a new plugin seam, a persistence change, anything that touches how the core works). Start an RFC: see [`docs/rfcs/README.md`](docs/rfcs/README.md), copy the template, and open the discussion in the RFCs category. This gets design agreement before anyone writes the code. The full design lives in [`docs/specs/feedback-pipeline.md`](docs/specs/feedback-pipeline.md).
+- **A deeper, design-level change** (a new plugin seam, a persistence change, anything that touches how the core works). Start an RFC: see [`docs/rfcs/README.md`](docs/rfcs/README.md), copy the template, and open the discussion in the RFCs category. This gets design agreement before anyone writes the code.
 
 For where to get help rather than give feedback, see [SUPPORT.md](SUPPORT.md).
 

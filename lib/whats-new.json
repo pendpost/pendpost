@@ -1,83 +1,193 @@
 {
-  "$comment": "What's new, shown once in the Studio after an update. One entry per released version, newest first. Each highlight is one plain sentence an operator notices, in en and de-CH (real umlauts, never the sharp s), no em dashes. Write the entry before `node ops/release.mjs bump`; test/whats-new.test.mjs fails when the running VERSION has none. The full notes link defaults to the GitHub release of that version; set `url` to override it.",
+  "$comment": "What's new, shown once in the Studio after an update. One entry per released version, newest first. Each entry holds 2 to 4 items: kind (new, improved or fixed), icon (a lucide name from ICONS in lib/whats-new.mjs), a title of 2 to 5 words (max 32 characters, no period) and a body of ONE plain sentence (max 90 characters), both in en and de-CH (real umlauts, never the sharp s, du-form), run through the humanizer, no em dashes. Optional go: a spot key the Studio maps to the page where the feature lives. Write the entry before `node ops/release.mjs bump`; test/whats-new.test.mjs fails when the running VERSION has none. The full notes link is https://pendpost.com/changelog#v<version>.",
   "releases": [
+    {
+      "version": "2.12.0",
+      "date": "2026-11-06",
+      "items": [
+        {
+          "kind": "improved", "icon": "list-checks", "go": "approvals",
+          "title": { "en": "Bulk approve skips blocked posts", "de-CH": "Blockiertes bleibt draussen" },
+          "body": {
+            "en": "Approving many posts leaves out the ones that can't go out, and one line says why.",
+            "de-CH": "Gibst du viele Beiträge frei, bleiben blockierte draussen, und eine Zeile sagt, warum."
+          }
+        },
+        {
+          "kind": "improved", "icon": "wrench", "go": "approvals",
+          "title": { "en": "Fix it on the card", "de-CH": "Direkt auf der Karte beheben" },
+          "body": {
+            "en": "A blocked post shows its cause in one short line, with the fix right beside it.",
+            "de-CH": "Ein blockierter Beitrag zeigt den Grund in einer kurzen Zeile, die Lösung gleich daneben."
+          }
+        },
+        {
+          "kind": "new", "icon": "sparkles",
+          "title": { "en": "Show me", "de-CH": "Zeig mir" },
+          "body": {
+            "en": "A note here can take you to the spot in the Studio where the change lives.",
+            "de-CH": "Ein Eintrag hier führt dich zur Stelle im Studio, an der sich etwas geändert hat."
+          }
+        }
+      ]
+    },
     {
       "version": "2.11.0",
       "date": "2026-11-05",
-      "highlights": {
-        "en": [
-          "Switch on Also as story, and one post goes out as a feed post and as a story on Instagram and Facebook.",
-          "An edit can no longer slip past approval: a new cover, an agent's fix or a change to an older approved post asks you again.",
-          "Posts show their picture or video first, selecting is one slim line of icons, and after each update this note tells you what changed."
-        ],
-        "de-CH": [
-          "Schalte «Auch als Story» ein, und ein Beitrag erscheint auf Instagram und Facebook als Feed-Beitrag und als Story.",
-          "Eine Änderung rutscht nicht mehr an der Freigabe vorbei: Ein neues Cover, eine Korrektur des Agenten oder eine Änderung an einem älteren freigegebenen Beitrag braucht wieder deine Freigabe.",
-          "Beiträge zeigen zuerst ihr Bild oder Video, die Auswahl ist eine schlanke Zeile mit Symbolen, und nach jedem Update sagt dir diese Notiz, was neu ist."
-        ]
-      }
+      "items": [
+        {
+          "kind": "new", "icon": "layers",
+          "title": { "en": "Also as story", "de-CH": "Auch als Story" },
+          "body": {
+            "en": "One post goes out as a feed post and as a story on Instagram and Facebook.",
+            "de-CH": "Ein Beitrag erscheint auf Instagram und Facebook als Feed-Beitrag und als Story."
+          }
+        },
+        {
+          "kind": "improved", "icon": "shield-check", "go": "approvals",
+          "title": { "en": "Approval after every edit", "de-CH": "Neue Freigabe bei Änderungen" },
+          "body": {
+            "en": "A new cover, an agent's fix or an edit to an approved post comes back to you.",
+            "de-CH": "Neues Cover, Korrektur des Agenten oder Änderung: Du gibst den Beitrag neu frei."
+          }
+        },
+        {
+          "kind": "improved", "icon": "image",
+          "title": { "en": "Picture first", "de-CH": "Bild zuerst" },
+          "body": {
+            "en": "Post cards lead with their picture or video.",
+            "de-CH": "Beitragskarten zeigen zuerst ihr Bild oder Video."
+          }
+        },
+        {
+          "kind": "improved", "icon": "list-checks", "go": "bulk-select",
+          "title": { "en": "Slim selection bar", "de-CH": "Schlanke Auswahlleiste" },
+          "body": {
+            "en": "Selecting posts brings up one slim line of icons.",
+            "de-CH": "Wählst du Beiträge aus, erscheint eine schlanke Zeile mit Symbolen."
+          }
+        }
+      ]
     },
     {
       "version": "2.10.0",
       "date": "2026-11-02",
-      "highlights": {
-        "en": [
-          "A blocked post now has a button that fixes it. A tray at the top of the planner groups the problems by cause.",
-          "In the planner List you can select many posts and approve, move or delete them in one go. Undo works, and deleted posts wait 30 days in the trash.",
-          "Radar shows a handful of strong asks instead of a long feed, and every reply to you lands in one list."
-        ],
-        "de-CH": [
-          "Ein blockierter Beitrag zeigt jetzt direkt den Knopf, mit dem du ihn behebst. Oben im Planer fasst eine Leiste die Probleme nach Ursache zusammen.",
-          "In der Planer-Liste wählst du mehrere Beiträge aus und gibst sie in einem Schritt frei, verschiebst oder löschst sie. Du kannst es rückgängig machen, und Gelöschtes bleibt 30 Tage im Papierkorb.",
-          "Radar zeigt wenige gute Anfragen statt eines langen Feeds, und jede Antwort an dich landet in einer Liste."
-        ]
-      }
+      "items": [
+        {
+          "kind": "new", "icon": "wrench", "go": "fix-tray",
+          "title": { "en": "Fix button for blocked posts", "de-CH": "Fix-Knopf für Blockaden" },
+          "body": {
+            "en": "Blocked posts get a fix button, and a tray atop the planner sorts them by cause.",
+            "de-CH": "Blockierte Beiträge haben einen Fix-Knopf, oben im Planer nach Ursache sortiert."
+          }
+        },
+        {
+          "kind": "new", "icon": "list-checks", "go": "bulk-select",
+          "title": { "en": "Many posts at once", "de-CH": "Mehrere Beiträge auf einmal" },
+          "body": {
+            "en": "In the planner List you approve, move or delete many posts in one go.",
+            "de-CH": "In der Planer-Liste gibst du viele Beiträge auf einmal frei, verschiebst oder löschst sie."
+          }
+        },
+        {
+          "kind": "new", "icon": "undo-2",
+          "title": { "en": "Undo and trash", "de-CH": "Rückgängig und Papierkorb" },
+          "body": {
+            "en": "Bulk actions can be undone, and deleted posts wait 30 days in the trash.",
+            "de-CH": "Sammelaktionen machst du rückgängig, und Gelöschtes bleibt 30 Tage im Papierkorb."
+          }
+        },
+        {
+          "kind": "improved", "icon": "radar", "go": "radar",
+          "title": { "en": "Fewer, stronger asks", "de-CH": "Weniger, bessere Anfragen" },
+          "body": {
+            "en": "Radar shows a handful of strong asks, and every reply to you lands in one list.",
+            "de-CH": "Radar zeigt wenige starke Anfragen, und jede Antwort an dich landet in einer Liste."
+          }
+        }
+      ]
     },
     {
       "version": "2.9.0",
       "date": "2026-10-28",
-      "highlights": {
-        "en": [
-          "When a post can't be approved, the Studio tells you why and how to fix it, in your language.",
-          "A check that blocks a post shows in red and disables Approve before you click.",
-          "YouTube uploads carry the right language, a category and the AI disclosure."
-        ],
-        "de-CH": [
-          "Lässt sich ein Beitrag nicht freigeben, sagt dir das Studio in deiner Sprache, was nicht stimmt und wie du es behebst.",
-          "Eine Prüfung, die einen Beitrag blockiert, erscheint rot, und «Freigeben» ist gesperrt, bevor du klickst.",
-          "YouTube-Uploads haben die richtige Sprache, eine Kategorie und den KI-Hinweis."
-        ]
-      }
+      "items": [
+        {
+          "kind": "improved", "icon": "circle-alert",
+          "title": { "en": "Reasons in your language", "de-CH": "Gründe in deiner Sprache" },
+          "body": {
+            "en": "When a post can't be approved, the Studio says why and how to fix it.",
+            "de-CH": "Lässt sich ein Beitrag nicht freigeben, sagt dir das Studio, warum und wie du es behebst."
+          }
+        },
+        {
+          "kind": "improved", "icon": "shield-alert", "go": "approvals",
+          "title": { "en": "Red checks lock Approve", "de-CH": "Rote Prüfung sperrt Freigabe" },
+          "body": {
+            "en": "A check that blocks a post shows in red before you click Approve.",
+            "de-CH": "Eine Prüfung, die einen Beitrag blockiert, erscheint rot, bevor du freigibst."
+          }
+        },
+        {
+          "kind": "fixed", "icon": "youtube",
+          "title": { "en": "Complete YouTube uploads", "de-CH": "Vollständige YouTube-Uploads" },
+          "body": {
+            "en": "YouTube uploads carry the right language, a category and the AI disclosure.",
+            "de-CH": "YouTube-Uploads haben die richtige Sprache, eine Kategorie und den KI-Hinweis."
+          }
+        }
+      ]
     },
     {
       "version": "2.8.0",
       "date": "2026-10-27",
-      "highlights": {
-        "en": [
-          "Facebook Pages get photo and carousel posts, checked like everything else.",
-          "Radar can find and score signals with reply drafting switched off, if you write every reply yourself."
-        ],
-        "de-CH": [
-          "Facebook-Seiten bekommen Foto- und Karussell-Beiträge, geprüft wie alles andere.",
-          "Radar findet und bewertet Signale auch mit ausgeschalteten Antwortentwürfen, falls du jede Antwort selbst schreibst."
-        ]
-      }
+      "items": [
+        {
+          "kind": "new", "icon": "images",
+          "title": { "en": "Facebook photos and carousels", "de-CH": "Facebook-Fotos und Karussells" },
+          "body": {
+            "en": "Facebook Pages get photo and carousel posts, checked like everything else.",
+            "de-CH": "Facebook-Seiten bekommen Foto- und Karussell-Beiträge, geprüft wie alles andere."
+          }
+        },
+        {
+          "kind": "new", "icon": "radar", "go": "radar",
+          "title": { "en": "Radar without drafts", "de-CH": "Radar ohne Entwürfe" },
+          "body": {
+            "en": "Radar finds and scores signals with reply drafting off, for when you write each reply.",
+            "de-CH": "Radar findet und bewertet Signale auch ohne Antwortentwürfe, wenn du selbst schreibst."
+          }
+        }
+      ]
     },
     {
       "version": "2.7.0",
       "date": "2026-10-14",
-      "highlights": {
-        "en": [
-          "Radar looks for people who need you and skips comments that just happen to mention a keyword. One tap teaches it.",
-          "pendpost only messages you when it can't fix a problem itself, and it tells you the fix.",
-          "LinkedIn and X sign-ins renew themselves well before they expire."
-        ],
-        "de-CH": [
-          "Radar sucht Leute, die dich brauchen, und übergeht Kommentare, die bloss zufällig ein Stichwort enthalten. Ein Klick bringt ihm etwas bei.",
-          "pendpost meldet sich nur noch, wenn es ein Problem nicht selbst lösen kann, und nennt dir die Lösung.",
-          "Anmeldungen bei LinkedIn und X erneuern sich lange vor dem Ablauf von selbst."
-        ]
-      }
+      "items": [
+        {
+          "kind": "improved", "icon": "radar", "go": "radar",
+          "title": { "en": "Radar finds who needs you", "de-CH": "Radar findet, wer dich braucht" },
+          "body": {
+            "en": "It skips comments that only mention a keyword, and one tap teaches it more.",
+            "de-CH": "Radar übergeht Kommentare, die nur ein Stichwort nennen, und lernt aus einem Klick."
+          }
+        },
+        {
+          "kind": "improved", "icon": "bell-off",
+          "title": { "en": "Fewer alerts", "de-CH": "Weniger Meldungen" },
+          "body": {
+            "en": "pendpost only messages you when it can't fix a problem itself, and names the fix.",
+            "de-CH": "pendpost meldet sich nur, wenn es ein Problem nicht selbst löst, und nennt dir die Lösung."
+          }
+        },
+        {
+          "kind": "improved", "icon": "key-round",
+          "title": { "en": "No expired sign-ins", "de-CH": "Keine abgelaufenen Anmeldungen" },
+          "body": {
+            "en": "LinkedIn and X sign-ins renew themselves well before they expire.",
+            "de-CH": "Anmeldungen bei LinkedIn und X erneuern sich lange vor dem Ablauf von selbst."
+          }
+        }
+      ]
     }
   ]
 }

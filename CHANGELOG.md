@@ -4,6 +4,33 @@ All notable changes to pendpost are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and pendpost adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.0] - 2026-11-06
+
+Approving many posts at once now leaves out the ones that cannot go out, and says why in one line, instead of sending them and failing. In Approvals a blocked post shows its cause in one short line with the fix beside it. When a project has Facebook turned off, you can turn it back on or take Facebook off the post from that line, and your agent may now remove such a platform from a post (it can never add one). What's new is shorter: a few items per release, each with a Show me link to where the change lives, and the full notes are on pendpost.com/changelog. The container image runs on Apple Silicon, and pendpost has plugin bundles for Claude Code and Cursor.
+
+### Added
+
+- Show me in What's new. Each release lists two to four short items marked New, Improved or Fixed, each with an icon. An item about a page has a Show me link that opens the page and marks the spot with a ring. "All releases" at the foot of the dialog opens pendpost.com/changelog, the full notes for every version.
+- Fixes for a turned-off Facebook on the approval card. When Facebook publishing is off for a project, a post that goes to Facebook gets two buttons on its Approvals row: turn Facebook on for this project, or remove Facebook from this post. Turn on is hidden while the operator lock (`PENDPOST_DISABLED_PLATFORMS`) holds Facebook off, since a setting cannot turn it on then, and remove is hidden when Facebook is the post's only platform. Every blocked row also has "Copy a brief for an agent", which copies the problem as text for any agent you use.
+- The agent can remove a turned-off platform. Fix with agent may now take Facebook off a post when Facebook is turned off for the project and the post has another platform to go to. It can only drop a platform that the post's own check flags as off: adding a platform, emptying the list or dropping any other platform is refused and ends the job. Turning the project setting on stays yours. A post whose only platform is Facebook is never handed to the agent, and like every agent edit the post comes back to you for approval.
+- Claude Code and Cursor plugins, in the public repo. `packaging/claude-plugin/` connects Claude Code to the pendpost server already running on this computer (`http://127.0.0.1:8090/mcp`) instead of starting a copy of its own. `.cursor-plugin/` and `mcp.json` add pendpost to Cursor and start the exact release with `npx pendpost@2.12.0 --stdio`. `llms-install.md` is an install guide written for agents such as Cline; it asks for an absolute `PENDPOST_ROOT`, because a bare `npx` install would keep your workspace inside the npm cache.
+
+### Changed
+
+- Bulk approve in Approvals skips what cannot go out. A post whose own Approve is disabled, or one on a platform that is not connected, is left out, and before you press, the approve button shows a skip mark with the count. When nothing in the selection can be approved, the button looks disabled. After the run, one quiet line in the selection bar names what was left out or refused: the count, one chip per cause, Show only these, Fix all with agent and Dismiss. Fix all with agent asks before it starts, then edits the posts one after another, and each comes back to you. The line never shows post ids.
+- A blocked post in Approvals shows one compact line instead of a boxed panel: the platform icon, a short cause such as "Text too long for X", a ? that holds the full sentence, and icon buttons for the fixes. On a narrow screen the buttons wrap below the cause, which is never cut off.
+- Platforms that are not connected get one line per project above the list, and each platform icon on it is that platform's Connect button ("Connect LinkedIn"). The rows keep only a struck-through platform icon. In All projects view every project gets its own line.
+- The update toast names only the version ("pendpost 2.12.0 is ready"), or reads "Small improvements ready" when only the commit moved. Help & feedback shows the version and keeps the commit in its tooltip.
+- `GET /api/whats-new` returns `items` (kind, icon, title, body and an optional `go` spot) for each release instead of `highlights`, and each release's `url` is its anchor on pendpost.com/changelog instead of a GitHub release page.
+- `server.json` carries a `title` for registry and directory listings, and `CITATION.cff` takes its `date-released` from the CHANGELOG heading of the release.
+
+### Fixed
+
+- The Facebook-off message says where the post still goes. For a post whose only platform is Facebook it said the post "would only reach Instagram"; it now says the post would go nowhere. A post without Instagram reads that it would reach only its other platforms.
+- `docker pull ghcr.io/pendpost/pendpost` works on Apple Silicon. The image was built for amd64 only, so arm64 machines got "no matching manifest for linux/arm64". It is now published for both.
+- The docs no longer offer `brew install`: the Homebrew tap was never published. The formula stays ready in `packaging/homebrew/`, and the 1.0.x entry below carries a correction.
+- README links that pointed at files the public repo never ships (`docs/specs/`, `site-docs/`) are gone, and `docs/rfcs/` now ships so its links work.
+
 ## [2.11.0] - 2026-11-05
 
 One post can now go out twice: switch on Also as story on a reel, a video or a single image, and pendpost publishes it as a feed post and as a story on Instagram and the Facebook Page, under one approval. Approval closes two gaps. A new cover, an agent's fix or an edit to an older approved post asks you again, and a later reschedule no longer clears that ask. Approvals, the planner and Published show each post media first, with the text the platform will really publish, and selecting posts in Approvals or the planner List is now one slim line with icon actions. pendpost can free disk space by deleting a video once every post that uses it is out, and it tries to fetch back a video that an upcoming post still needs. X accounts with a paid subscription can publish long posts. After an update, the Studio tells you what changed.
@@ -505,7 +532,7 @@ The largest release since 1.0: a full Radar listening-and-reply engine, native c
 - Always-on self-host: deploy templates for Fly.io, Railway, and Render (`deploy/`) and an always-on self-host guide, so Instagram, LinkedIn, and X publish on schedule even when your computer is off.
 - An optional in-server bearer-token auth gate that activates only when `PENDPOST_HOST` is non-loopback and `PENDPOST_AUTH_TOKEN` is set; the loopback default stays no-auth and unchanged. `PENDPOST_PUBLIC_HOST` extends the host allowlist for a public deployment, and `GET /api/health` is exempt so platform health checks work.
 - A cloud-ready publish-job seam: `lib/publish-job.mjs` builds a versioned, approval-proof publish-job envelope that a separate always-on runtime can consume, with a second approval fence that refuses unapproved or self-approved posts. The contract is documented in `docs/specs/cloud-integration-contract.md`.
-- More ways to install: a published container image on GHCR (`docker run -p 8090:8090 ghcr.io/pendpost/pendpost`, no clone needed) and a Homebrew tap (`brew install pendpost/tap/pendpost`). Release automation publishes the npm package with provenance and the image when a GitHub release is cut (`.github/workflows/release-npm.yml`, `release-image.yml`).
+- More ways to install: a published container image on GHCR (`docker run -p 8090:8090 ghcr.io/pendpost/pendpost`, no clone needed). (Correction, November 2026: this entry also announced a Homebrew tap. The formula in `packaging/homebrew/` is ready, but the tap was never published, so `brew install` does not work yet. Use `npx pendpost` or Docker.) Release automation publishes the npm package with provenance and the image when a GitHub release is cut (`.github/workflows/release-npm.yml`, `release-image.yml`).
 
 ### Changed
 - The dashboard and marketing copy now make the per-platform power-off truth explicit: Facebook and YouTube schedule natively and fire even when your computer is off, while Instagram, LinkedIn, and X need pendpost running. The post detail shows a per-platform delivery hint and the schedule badges carry a one-line tooltip.

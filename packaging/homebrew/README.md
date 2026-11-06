@@ -1,5 +1,9 @@
 # Homebrew tap
 
+> **Status (November 2026): not published.** The tap repo `pendpost/homebrew-tap` does not
+> exist yet, so the command below does not work and no page advertises it. The steps under
+> "One-time setup" make it real.
+
 `brew install pendpost/tap/pendpost` for macOS and Linux users. The formula is a
 thin wrapper over the published npm package (`depends_on "node"`), so there is no
 separate binary to maintain: a release flows npm -> formula bump -> `brew upgrade`.

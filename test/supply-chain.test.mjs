@@ -58,6 +58,26 @@ const npmPkgEntry = (serverJson.packages || []).find((p) => p.registryType === '
 ok(Boolean(npmPkgEntry), 'server.json declares an npm package entry');
 ok(npmPkgEntry.version === pkgVersion, `server.json npm package version (${npmPkgEntry.version}) matches package.json (${pkgVersion})`);
 
+// Directory plugin bundles. Cursor (repo root): manifest version and the exact npx pin must
+// equal package.json, since a stale pin would install an old release. Claude
+// (packaging/claude-plugin): the directory refuses local stdio servers from unverified orgs,
+// so the bundle connects to the running daemon's loopback HTTP endpoint and runs nothing.
+{
+  const v = JSON.parse(read('.cursor-plugin/plugin.json')).version;
+  ok(v === pkgVersion, `Cursor plugin manifest version (${v}) matches package.json (${pkgVersion})`);
+  const mcpDoc = JSON.parse(read('mcp.json'));
+  const servers = Object.values(mcpDoc.mcpServers || mcpDoc);
+  const pins = servers.flatMap((sv) => (sv.args || []).filter((a) => /^pendpost(@|$)/.test(a)).map((a) => a.split('@')[1]));
+  ok(pins.length === 1 && pins[0] === pkgVersion, `Cursor plugin npx launcher is pinned to pendpost@${pkgVersion} (got ${pins.join(', ') || 'none'})`);
+}
+{
+  const v = JSON.parse(read('packaging/claude-plugin/.claude-plugin/plugin.json')).version;
+  ok(v === pkgVersion, `Claude plugin manifest version (${v}) matches package.json (${pkgVersion})`);
+  const servers = Object.values(JSON.parse(read('packaging/claude-plugin/.mcp.json')));
+  ok(servers.length === 1 && servers[0].type === 'http' && servers[0].url === 'http://127.0.0.1:8090/mcp' && !servers[0].command,
+    'Claude plugin connects to the daemon over HTTP at 127.0.0.1:8090/mcp and launches no local program');
+}
+
 // CHANGELOG.md: the latest RELEASED heading is the first "## [x.y.z]" that is
 // not the "[Unreleased]" placeholder. That heading's version must match.
 const changelog = read('CHANGELOG.md');
@@ -65,6 +85,14 @@ const headings = [...changelog.matchAll(/^##\s*\[([^\]]+)\]/gm)].map((m) => m[1]
 const latestReleased = headings.find((h) => h.toLowerCase() !== 'unreleased') || null;
 ok(Boolean(latestReleased), `CHANGELOG.md has a released version heading (latest: ${latestReleased})`);
 ok(latestReleased === pkgVersion, `latest released CHANGELOG.md heading (${latestReleased}) matches package.json (${pkgVersion})`);
+
+// CITATION.cff date-released must be the date on that same CHANGELOG heading.
+// `ops/release.mjs bump` writes it; this catches a hand bump that left it stale
+// (2.10.0 shipped 2026-11-02 while the file still said 2026-10-14).
+const headingDate = (changelog.match(new RegExp(`^##\\s*\\[${pkgVersion.replace(/\./g, '\\.')}\\]\\s*-\\s*(\\d{4}-\\d{2}-\\d{2})`, 'm')) || [])[1];
+const cffDate = (cffSrc.match(/^date-released:\s*["']?(\d{4}-\d{2}-\d{2})["']?\s*$/m) || [])[1];
+ok(Boolean(headingDate), `CHANGELOG.md [${pkgVersion}] heading carries a release date`);
+ok(cffDate === headingDate, `CITATION.cff date-released (${cffDate}) matches the CHANGELOG.md [${pkgVersion}] date (${headingDate})`);
 
 // ---- (c) the published tarball allowlist stays tight -----------------------
 // package.json `files` is an ALLOWLIST and npm does NOT apply .gitignore when it

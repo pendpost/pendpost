@@ -364,14 +364,14 @@ describe('Freigaben reports its tab via onModeChange', () => {
 describe('Freigaben bulk approve', () => {
   const p3 = { ...pendingPost, id: 'p3', title: 'Summer promo', caption: 'Summer promo headline\nBody reviewers read.' };
 
-  it('settles when one post fails, names the reason, leaves loading, and keeps the failed post selected', async () => {
+  it('settles when one post fails, says it in ONE quiet line without post ids, leaves loading, and keeps the failed post selected', async () => {
     const user = userEvent.setup();
     // p1 approves; the other post fails with a lane reason.
     approvePost.mockImplementation((_c, id) => (id === 'p3'
       ? Promise.reject(new Error('Mastodon still processing the media'))
       : Promise.resolve({ ok: true })));
 
-    renderFreigaben([pendingPost, p3]);
+    const { container } = renderFreigaben([pendingPost, p3]);
     const boxes = screen.getAllByRole('checkbox', { name: /select post/i });
     for (const b of boxes) await user.click(b); // eslint-disable-line no-await-in-loop
 
@@ -379,16 +379,22 @@ describe('Freigaben bulk approve', () => {
 
     // Both posts were attempted and the run settled (the old bug never got here).
     await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(2));
-    // The summary names the failed post; WHY (the server's own English line) rides the
-    // "?" beside it, never the alert itself.
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toMatch(/1 failed: p3$/);
-    expect(alert.textContent).not.toMatch(/Mastodon still processing/);
-    expect(screen.getByRole('button', { name: /more about this/i })).toHaveAccessibleDescription('p3: Mastodon still processing the media');
+    // The run summary: the count, one chip per cause, never a post id or the server's line,
+    // and no red alert paragraph.
+    await screen.findByText(t('approvals.result.notApproved', { n: 1 }));
+    const line = container.querySelector('[data-run-summary]');
+    expect(line).not.toBeNull();
+    expect(line.textContent).not.toMatch(/p3|p1/);
+    expect(line.textContent).not.toMatch(/Mastodon still processing/);
+    expect(screen.getByRole('button', { name: t('approvals.result.dismiss') })).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
     // The button recovered out of the loading state (no spinner label lingers).
     await waitFor(() => expect(screen.queryByText(/Approving/)).not.toBeInTheDocument());
     // The failed post stays selected for a retry; the succeeded one is dropped.
     expect(screen.getByRole('checkbox', { name: t('approvals.bulk.selected', { n: 1 }) })).toBeInTheDocument();
+    // Dismiss clears the line.
+    await user.click(screen.getByRole('button', { name: t('approvals.result.dismiss') }));
+    expect(container.querySelector('[data-run-summary]')).toBeNull();
   });
 
   it('shows live N/total progress while the batch runs', async () => {

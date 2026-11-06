@@ -1,10 +1,12 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft } from 'lucide-react';
 import { Modal, CloseButton, EYEBROW, INNER_SURFACE } from './ui.jsx';
 import { TAP_TARGET } from './ui/recipes.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { WhatsNewList } from './WhatsNew.jsx';
 import { useWhatsNew } from '../lib/whatsNew.js';
+import { jumpToSpot } from '../lib/spotJump.js';
 import { useT } from '../lib/i18n.js';
 import { useBuildStatus } from '../lib/api.js';
 import { buildFeedbackTarget } from '../lib/feedback.js';
@@ -44,6 +46,12 @@ export default function FeedbackDialog({ onClose }) {
   const [view, setView] = useState('form'); // 'form' | 'news'
   const { data: news } = useWhatsNew();
   const version = news?.version || health?.version;
+  // The running commit, for debugging only: a plain title on the version line. Read from the
+  // update toast's own poll (same key), without a second poll of its own.
+  const { data: updateStatus } = useQuery({ queryKey: ['dashboard-update'], enabled: false });
+  const commit = typeof updateStatus?.update?.running?.commit === 'string' ? updateStatus.update.running.commit.slice(0, 7) : undefined;
+  // "Show me" in the notes: close this dialog, then jump to the spot.
+  const go = (key) => { onClose(); jumpToSpot(key); };
 
   const diagnostics = {
     version: health?.version,
@@ -74,7 +82,7 @@ export default function FeedbackDialog({ onClose }) {
           <h2 className="font-display text-lg font-bold">{t('whatsNew.title')}</h2>
           <span className="-mr-1.5 ml-auto"><CloseButton onClose={onClose} label={t('ui.action.close')} /></span>
         </div>
-        <WhatsNewList entries={news?.recent} releasesUrl={news?.releasesUrl} />
+        <WhatsNewList entries={news?.recent} releasesUrl={news?.releasesUrl} onGo={go} />
       </Modal>
     );
   }
@@ -126,7 +134,7 @@ export default function FeedbackDialog({ onClose }) {
       <div className="flex flex-wrap items-center justify-end gap-2">
         {version ? (
           <p className="w-full text-xs text-zinc-500 sm:mr-auto sm:w-auto dark:text-zinc-400">
-            <span className="tabular-nums">{t('whatsNew.versionLine', { version })}</span>
+            <span className="tabular-nums" title={commit}>{t('whatsNew.versionLine', { version })}</span>
             {' '}
             <button type="button" onClick={() => setView('news')} className={`rounded text-zinc-700 underline underline-offset-2 transition hover:text-zinc-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-white ${TAP_TARGET}`}>
               {t('whatsNew.open')}

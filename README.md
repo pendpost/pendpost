@@ -3,6 +3,9 @@
 **Agent-operated social media with a human approval gate.**
 
 [![CI](https://github.com/pendpost/pendpost/actions/workflows/ci.yml/badge.svg)](https://github.com/pendpost/pendpost/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/pendpost.svg)](https://www.npmjs.com/package/pendpost)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-io.github.pendpost%2Fpendpost-7c3aed.svg)](https://registry.modelcontextprotocol.io/v0/servers?search=io.github.pendpost/pendpost)
+[![Glama](https://img.shields.io/badge/Glama-listed-0f172a.svg)](https://glama.ai/mcp/servers/imuc6rdqwp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
 [![MCP native](https://img.shields.io/badge/MCP-native-7c3aed.svg)](https://modelcontextprotocol.io)
@@ -69,6 +72,8 @@ The planner and the approval queue are the two screens you live in: draft and sc
 The easiest path self-boots: pendpost speaks MCP over native stdio, so the client launches the server for you - nothing to start first.
 
 Claude Desktop (one-click): install the pendpost `.mcpb` bundle attached to each [GitHub release](https://github.com/pendpost/pendpost/releases). It self-boots `npx -y pendpost --stdio` and opens the approval dashboard in the same process.
+
+Claude Code and Cursor plugins: the Claude plugin bundle lives in [`packaging/claude-plugin/`](packaging/claude-plugin/) and the Cursor plugin manifest in [`.cursor-plugin/`](.cursor-plugin/). The Cursor plugin launches the pinned `npx pendpost@<version> --stdio` server; the Claude plugin connects to a running pendpost at `http://127.0.0.1:8090/mcp`, so start `npx pendpost` first. Agents that install servers for you (for example Cline) can follow [`llms-install.md`](llms-install.md).
 
 Any stdio MCP client:
 
@@ -183,7 +188,7 @@ pendpost is built in the open and we want your feedback. There are three ways in
 - **A bug or a feature request:** open an issue and pick the matching form.
 - **A deeper proposal** (a new integration seam, a change to how the core works): open an RFC. See [`docs/rfcs/README.md`](docs/rfcs/README.md).
 
-No account? A short feedback form on [pendpost.com](https://pendpost.com) forwards into GitHub for you. See [SUPPORT.md](SUPPORT.md) for where to get help, and [`docs/specs/feedback-pipeline.md`](docs/specs/feedback-pipeline.md) for how the whole feedback pipeline works.
+No account? A short feedback form on [pendpost.com](https://pendpost.com) forwards into GitHub for you. See [SUPPORT.md](SUPPORT.md) for where to get help and [CONTRIBUTING.md](CONTRIBUTING.md) for how feedback turns into issues and pull requests.
 
 ## Status
 
@@ -191,7 +196,7 @@ pendpost is maintained part-time by a small team and is early. Expect rough edge
 
 ## Docs
 
-The full reference lives at **[docs.pendpost.com](https://docs.pendpost.com)** (source in `site-docs/`). Marketing, pricing, and every [download option](https://pendpost.com/download) live at **[pendpost.com](https://pendpost.com)**.
+The full reference lives at **[docs.pendpost.com](https://docs.pendpost.com)**. Marketing, pricing, and every [download option](https://pendpost.com/download) live at **[pendpost.com](https://pendpost.com)**.
 
 ## License
 

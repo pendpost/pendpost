@@ -34,6 +34,9 @@ export function problemCodeText(t, code) {
   // so a `<key>.shared` variant is preferred when the pack has one.
   const keys = [`blockers.${code.code}`, code.code];
   if (params.override === false) keys.unshift(`blockers.${code.code}.shared`);
+  // A code whose truth depends on the post names its variant (validate.fbDisabled: 'only' when
+  // Facebook is the post's only platform, 'others' when Instagram is not on it).
+  if (typeof params.variant === 'string' && /^[a-z]+$/i.test(params.variant)) keys.unshift(`blockers.${code.code}.${params.variant}`);
   for (const key of keys) {
     const s = t(key, params);
     if (s && s !== key) return s;

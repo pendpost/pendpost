@@ -38,6 +38,7 @@ import Cloud from './components/Cloud.jsx';
 import Radar from './components/Radar.jsx';
 import FirstRunEmptyState from './components/FirstRunEmptyState.jsx';
 import NeedsYouTray from './components/NeedsYouTray.jsx';
+import { SPOT_EVENT } from './lib/spotJump.js';
 import { groupIssues, postIssue } from './lib/postIssue.js';
 import { systemRows } from './lib/needsYou.js';
 import PlannerRunNow from './components/PlannerRunNow.jsx';
@@ -702,6 +703,21 @@ export default function App() {
     setStatusFilter([]);
     setPage(p);
   };
+  // "Show me" from What's new (lib/spotJump.js): open the spot's page the way a sidebar
+  // click does, and the List when the spot lives there. The jump itself then finds the
+  // [data-spot] element and pulses it.
+  const navigateRef = useRef(navigateTo);
+  navigateRef.current = navigateTo;
+  useEffect(() => {
+    const onSpot = (e) => {
+      const { page: p, view: v } = e.detail || {};
+      if (!PAGES.includes(p)) return;
+      navigateRef.current(p);
+      if (v) setView(v);
+    };
+    window.addEventListener(SPOT_EVENT, onSpot);
+    return () => window.removeEventListener(SPOT_EVENT, onSpot);
+  }, []);
   // Flag/unflag the currently-scoped campaign as internal. When hiding it while
   // the debug view is off, snap the picker back to "active" so it never points at
   // a now-hidden campaign. Refetch plans so every view reflects the new flag.

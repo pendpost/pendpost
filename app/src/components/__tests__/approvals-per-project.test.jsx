@@ -98,12 +98,15 @@ describe('each post is judged by its own project', () => {
     expect(within(row).queryByRole('button', { name: /connect x/i })).not.toBeInTheDocument();
   });
 
-  it('a post whose own project lacks X reads not connected, with Connect X', () => {
-    renderApprovals([pendpostX, tillX], { seed: bothProjects });
+  it('a post whose own project lacks X wears the quiet X glyph; Connect X sits once on TILL\'s project line', () => {
+    const { container } = renderApprovals([pendpostX, tillX], { seed: bothProjects });
     const row = rowFor('TILL weekly note');
-    expect(within(row).getByText('X is not connected')).toBeInTheDocument();
-    expect(within(row).getByRole('button', { name: 'Connect X' })).toBeInTheDocument();
+    expect(within(row).getByLabelText('X not connected')).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: 'Connect X' })).not.toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    const lines = container.querySelectorAll('[data-unconnected-projects] [data-project]');
+    expect([...lines].map((l) => l.getAttribute('data-project'))).toEqual(['till']);
+    expect(within(lines[0]).getByRole('button', { name: 'Connect X' })).toBeInTheDocument();
   });
 
   it('the Connect fix of another project names that project to the navigation', () => {
@@ -165,11 +168,12 @@ describe('an Approvals row reads in one glance', () => {
       expect(items[0]).toHaveTextContent('Reject');
     });
 
-    it(`${density}: a blocked row has exactly one action, the fix, and no pill beside it`, () => {
+    it(`${density}: a blocked row has no action button of its own, only the quiet glyph, and no pill`, () => {
       renderApprovals([tillX], { seed: bothProjects, density });
       const row = rowFor('TILL weekly note');
       const actions = rowActions(row).map((b) => b.getAttribute('aria-label') || b.textContent.trim());
-      expect(actions).toEqual(['Connect X']);
+      expect(actions).toEqual([]);
+      expect(within(row).getByLabelText('X not connected').closest('[data-row-action]')).not.toBeNull();
       expect(within(row).queryByText(/^Blocked$/)).not.toBeInTheDocument();
       expect(within(row).queryByText(/copy and post yourself/i)).not.toBeInTheDocument();
       expect(within(row).queryByText(/^Reject$/)).not.toBeInTheDocument();
@@ -192,24 +196,20 @@ describe('an Approvals row reads in one glance', () => {
     // Release polish 2026-11-01: Approve sat top-right on the title line while Connect sat
     // bottom-right on the alert line, so the action column was ragged. Every row now has ONE
     // action slot holding its action and its ⋯; the rose status line only says why.
-    it(`${density}: Approve and the fix sit in the same action slot, each with its ⋯`, () => {
+    it(`${density}: Approve and the quiet glyph sit in the same action slot, each with its ⋯`, () => {
       renderApprovals([pendpostX, tillX], { seed: bothProjects, density });
-      for (const [title, name] of [['pendpost 2.10 is out', 'Approve'], ['TILL weekly note', 'Connect X']]) {
-        const row = rowFor(title);
-        const slots = row.querySelectorAll('[data-row-action]');
+      const slotOf = (title) => {
+        const slots = rowFor(title).querySelectorAll('[data-row-action]');
         expect(slots).toHaveLength(1);
-        expect(within(slots[0]).getByRole('button', { name })).toBeInTheDocument();
         expect(within(slots[0]).getByRole('button', { name: 'More actions' })).toBeInTheDocument();
-      }
-      const status = rowFor('TILL weekly note').querySelector('[data-row-status]');
-      expect(status).toHaveTextContent('X is not connected');
-      expect(within(status).queryByRole('button')).toBeNull();
+        return slots[0];
+      };
+      expect(within(slotOf('pendpost 2.10 is out')).getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+      expect(within(slotOf('TILL weekly note')).getByLabelText('X not connected')).toBeInTheDocument();
+      // No red status line for a lane that is not connected (Freigaben error UX, 2026-11-06).
+      expect(rowFor('TILL weekly note').querySelector('[data-row-status]')).toBeNull();
       expect(rowFor('pendpost 2.10 is out').querySelector('[data-row-status]')).toBeNull();
-      // Dark: the fix pill's fill differs from the row's zinc-800 surface, so it keeps its shape.
-      const fix = within(rowFor('TILL weekly note')).getByRole('button', { name: 'Connect X' });
       expect(rowFor('TILL weekly note').className).toMatch(/dark:bg-zinc-800(\s|$)/);
-      expect(fix.className).toMatch(/dark:bg-zinc-700\/60/);
-      expect(fix.className).not.toMatch(/dark:bg-zinc-800/);
     });
 
     it(`${density}: the date's tooltip names the campaign humanised, version dots kept`, async () => {
