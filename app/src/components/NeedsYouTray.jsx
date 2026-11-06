@@ -275,7 +275,7 @@ export default function NeedsYouTray({
   const shown = phoneFolded ? [] : hidden ? lines.slice(0, TRAY_CAP) : lines;
 
   return (
-    <section id="planner-tray" aria-labelledby="planner-tray-title" className="glass-panel scroll-mt-4 rounded-2xl px-4 py-2.5">
+    <section id="planner-tray" data-spot="fix-tray" data-spot-inset="" aria-labelledby="planner-tray-title" className="glass-panel scroll-mt-4 rounded-2xl px-4 py-2.5">
       <div className="flex items-center gap-2">
         <h2 id="planner-tray-title" className="flex items-center gap-2 pt-0.5 text-sm font-bold tracking-tight">
           {t('tray.title')}

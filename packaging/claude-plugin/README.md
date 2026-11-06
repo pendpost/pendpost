@@ -8,12 +8,23 @@ post it created itself.
 
 ## What the plugin runs
 
-One local MCP server over stdio: `npx -y pendpost@<version> --stdio`, pinned to an exact
-release. It downloads the `pendpost` package from npm on first start and runs it on your
-machine. The same process serves the approval dashboard at http://127.0.0.1:8090, bound to
-loopback only. Its workspace (plans, drafts, media, activity log and your platform
-credentials in `.env`) lives in the plugin's own data folder (`PENDPOST_ROOT` is set to
-`${CLAUDE_PLUGIN_DATA}`).
+Nothing. The plugin adds one MCP server that Claude connects to over HTTP at
+`http://127.0.0.1:8090/mcp`: the endpoint of pendpost running on your own machine. It
+starts no program and downloads no package. pendpost binds to loopback only, so the
+endpoint is never reachable from the network.
+
+## Before you start
+
+Start pendpost once, and leave it running while you work with Claude:
+
+```bash
+npx pendpost
+```
+
+Or install the macOS app from https://pendpost.com/download. Either way the approval
+dashboard opens at http://127.0.0.1:8090, and the same process answers Claude at `/mcp`.
+Your workspace (plans, drafts, media, activity log and your platform credentials in `.env`)
+stays in that local install.
 
 ## What it sends and fetches
 
@@ -21,16 +32,15 @@ credentials in `.env`) lives in the plugin's own data folder (`PENDPOST_ROOT` is
 - When you connect a platform and approve a post, pendpost calls that platform's own API to
   publish it and to read its insights.
 - If you turn on Radar, it reads public posts from the sources you enable.
-- npm is contacted once to download the pinned package.
 
 Every tool carries a `title` plus `readOnlyHint` or `destructiveHint`. Read-only tools can
 never publish. `publish_due_run` publishes for real and needs `confirm: true`.
 
 ## Getting started
 
-Ask Claude to call `pendpost_health`. Its `setup` field lists each platform and the steps to
-connect it. Secrets (tokens, keys) are entered by you in a local command or the dashboard,
-never by Claude. Docs: https://docs.pendpost.com/mcp-server
+With pendpost running, ask Claude to call `pendpost_health`. Its `setup` field lists each
+platform and the steps to connect it. Secrets (tokens, keys) are entered by you in a local
+command or the dashboard, never by Claude. Docs: https://docs.pendpost.com/mcp-server
 
 ## Privacy Policy
 

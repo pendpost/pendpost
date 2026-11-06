@@ -87,7 +87,7 @@ export function BarAction({ id, icon: Icon, label, onClick, disabled = false, re
   );
 }
 
-export function ListBar({ count, allSelected, someSelected, onToggleAll, onClear, actions = null, barRef = null }) {
+export function ListBar({ count, allSelected, someSelected, onToggleAll, onClear, actions = null, barRef = null, spot = undefined }) {
   const t = useT();
   const selecting = count > 0;
   const label = t('approvals.bulk.selected', { n: count });
@@ -106,7 +106,7 @@ export function ListBar({ count, allSelected, someSelected, onToggleAll, onClear
       // top while pinned: the glass panel composited over the page, opaque, Approvals' surface.
       className={`-mx-4 mb-1 flex h-9 min-w-0 items-center gap-3 px-6 ${selecting ? 'sticky top-0 z-30 rounded-2xl data-[stuck]:bg-[#fdfefe] dark:data-[stuck]:bg-[#121215]' : ''}`}
     >
-      <label className="flex min-w-0 cursor-pointer items-center gap-3 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
+      <label data-spot={spot} className="flex min-w-0 cursor-pointer items-center gap-3 rounded-lg text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
         <span className={`${TAP_TARGET} flex h-7 w-4 shrink-0 items-center justify-center`}>
           <Checkbox
             checked={allSelected}

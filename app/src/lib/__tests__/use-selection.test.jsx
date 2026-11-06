@@ -126,7 +126,7 @@ describe('useSelection', () => {
 });
 
 describe('runBulk (S6 partial failure)', () => {
-  it('deselects what went through, keeps failures and skips selected, and throws ONE summary naming the failed posts', async () => {
+  it('deselects what went through, keeps failures and skips selected, and throws ONE summary without post ids', async () => {
     const { result } = useIt({ items: [a, b, c], nameOf: (p) => `Post ${p.id}` });
     act(() => result.current.selectAll());
     let thrown = null;
@@ -140,9 +140,11 @@ describe('runBulk (S6 partial failure)', () => {
         }, 'deleted', undefined, { onSettled: (r) => { settled = r; } });
       } catch (e) { thrown = e; }
     });
-    expect(thrown?.message).toBe('1 deleted, 1 failed: Post b');
+    // The count only: no post id or name in the sentence (the failed row stays selected).
+    expect(thrown?.message).toBe('1 deleted, 1 failed');
+    expect(thrown?.message).not.toMatch(/Post b|\bb\b/);
     // The raw engine line rides the "?" detail only, never the sentence.
-    expect(thrown?.detail).toBe('Post b: engine said no');
+    expect(thrown?.detail).toBe('engine said no');
     expect(settled.done.map((p) => p.id)).toEqual(['a']);
     expect(settled.skipped.map((p) => p.id)).toEqual(['c']);
     expect(result.current.effectiveSelection.map((p) => p.id)).toEqual(['b', 'c']);

@@ -12,7 +12,8 @@
 //     Approvals keeps its explicit "part of a thread" button (selectThread) instead.
 //   - runBulk loops the selection one post at a time, shows {done}/{total} progress, refreshes
 //     the plans, deselects only the posts that went through (failures stay selected for a retry,
-//     and the bar with its summary stays in view), and throws ONE plain summary when any failed.
+//     and the bar with its summary stays in view), and throws ONE plain summary when any failed
+//     (its reasons, never the post ids).
 //
 // Pure helpers are exported so the rules are tested without React.
 import { useCallback, useMemo, useRef, useState } from 'react';
@@ -169,10 +170,12 @@ export function useSelection({ items = [], isSelectable = always, keyOf = select
   };
 }
 
-// The one failure summary a bulk run throws: "{ok} {label}, {failed} failed: {ids}". A failure
-// whose reason is known names it beside its post; the raw engine lines ride the "?" only.
+// The one failure summary a bulk run throws: "{ok} {label}, {failed} failed: {reasons}". Never
+// a post id (Freigaben error UX, 2026-11-06): the rows that failed stay selected and say why
+// themselves, so the line names each known reason ONCE; the raw engine lines ride the "?" only.
 export function bulkSummaryError({ ok, label, fails }, t) {
-  const ids = fails.map((f) => (f.known ? `${f.id} (${f.text})` : f.id)).join(', ');
-  const detail = fails.filter((f) => f.raw).map((f) => `${f.id}: ${f.raw}`).join('\n') || null;
-  return plainError(t('approvals.bulk.summary', { ok, label, failed: fails.length, ids }), detail);
+  const reasons = [...new Set(fails.filter((f) => f.known && f.text).map((f) => f.text))].join(', ');
+  const head = t('approvals.bulk.failedSummary', { ok, label, failed: fails.length });
+  const detail = [...new Set(fails.filter((f) => f.raw).map((f) => f.raw))].join('\n') || null;
+  return plainError(reasons ? `${head}: ${reasons}` : head, detail);
 }

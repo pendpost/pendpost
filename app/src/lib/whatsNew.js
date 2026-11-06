@@ -4,7 +4,7 @@ import { studioFetch } from './studioToken.js';
 // What's new after an update (docs/specs/whats-new.md). GET /api/whats-new names
 // the running version, the release notes this install has not seen yet (newest
 // first) and the recent ones. The notes ship with pendpost (lib/whats-new.json),
-// so this works offline; only the "Full notes" link needs the network.
+// so this works offline; only the changelog link needs the network.
 export const WHATS_NEW_KEY = ['whats-new'];
 
 export function useWhatsNew() {
@@ -39,11 +39,23 @@ export function useMarkWhatsNewSeen() {
   };
 }
 
-// The highlights in the active locale, English when a translation is missing.
-export function highlightsFor(entry, locale) {
-  const h = entry?.highlights || {};
-  const list = h[locale] || h[String(locale || '').split('-')[0]] || h.en;
-  return Array.isArray(list) ? list : [];
+// One title or body string in the active locale: the exact locale, then its
+// language ("de" for "de-CH"), then English.
+function pick(text, locale) {
+  if (!text || typeof text !== 'object') return '';
+  return text[locale] || text[String(locale || '').split('-')[0]] || text.en || '';
+}
+
+// The entry's items, each with its title and body resolved for the active locale.
+export function itemsFor(entry, locale) {
+  const items = Array.isArray(entry?.items) ? entry.items : [];
+  return items.map((it) => ({
+    kind: it.kind,
+    icon: it.icon,
+    title: pick(it.title, locale),
+    body: pick(it.body, locale),
+    go: it.go || null,
+  }));
 }
 
 // "2 November 2026" / "2. November 2026", from the entry's YYYY-MM-DD (noon UTC,

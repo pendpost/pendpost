@@ -66,39 +66,37 @@ beforeEach(() => {
   markPosted.mockClear();
 });
 
-describe('bulk-approve skip honesty (S3 bulk-skip feedback)', () => {
-  it('states inline how many selected posts bulk approve will skip, approves only the connected ones, and keeps the note after the press', async () => {
+describe('bulk-approve skip honesty (S3 bulk-skip feedback, Freigaben error UX 2026-11-06)', () => {
+  it('shows a muted skip glyph with the count BEFORE the press, approves only the connected ones, and keeps the offline post selected', async () => {
     const user = userEvent.setup();
-    renderFreigaben([offlinePost, connectedPost]);
+    const { container } = renderFreigaben([offlinePost, connectedPost]);
     await user.click(screen.getByRole('checkbox', { name: /select all/i }));
 
-    // The note rides the approve's tooltip BEFORE anything is pressed - one offline post in scope.
-    const approve = await screen.findByRole('button', { name: 'Approve 2' });
-    await user.hover(approve);
-    expect(await screen.findByRole('tooltip')).toHaveTextContent('1 post needs manual posting');
-    // Not a visible line of its own.
-    expect(screen.queryAllByText('1 post needs manual posting').every((el) => el.closest('[data-radix-popper-content-wrapper]'))).toBe(true);
-    await user.unhover(approve);
+    // Approve counts only what it will send; the skip glyph says the rest, its causes a hover away.
+    const approve = await screen.findByRole('button', { name: 'Approve 1' });
+    const skip = container.querySelector('[data-bulk-skip]');
+    expect(skip).not.toBeNull();
+    expect(skip.textContent).toBe('1');
+    expect(skip).toHaveAttribute('aria-label', expect.stringMatching(/^1 will not be approved: .+ not connected$/));
 
     await user.click(approve);
-    // Only the connected post was approved; the offline one was skipped, stays
-    // selected, and the tooltip keeps stating the skip - never silent.
+    // Only the connected post was approved; the offline one was never sent, stays selected,
+    // and the run summary names its cause (no id).
     await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(1));
     expect(approvePost).toHaveBeenCalledWith('c1', 'con1');
-    const after = await screen.findByRole('button', { name: 'Approve 1' });
-    await user.unhover(after);
-    await user.hover(after);
-    await waitFor(() => expect(screen.getByRole('tooltip')).toHaveTextContent('1 post needs manual posting'));
+    await screen.findByText('1 not approved');
+    expect(screen.getByRole('checkbox', { name: '1 selected' })).toBeInTheDocument();
+    expect(container.querySelector('[data-bulk-skip]').textContent).toBe('1');
+    // Nothing left to send: Approve is disabled, the glyph still says why.
+    expect(screen.getByRole('button', { name: 'Approve 0' })).toBeDisabled();
   });
 
-  it('adds no note when every selected post is publishable', async () => {
+  it('shows no skip glyph when every selected post is publishable', async () => {
     const user = userEvent.setup();
-    renderFreigaben([connectedPost]);
+    const { container } = renderFreigaben([connectedPost]);
     await user.click(screen.getByRole('checkbox', { name: /select all/i }));
-    await user.hover(await screen.findByRole('button', { name: 'Approve 1' }));
-    const tip = await screen.findByRole('tooltip');
-    expect(tip).toHaveTextContent('Approve 1');
-    expect(tip).not.toHaveTextContent(/manual posting/i);
+    await screen.findByRole('button', { name: 'Approve 1' });
+    expect(container.querySelector('[data-bulk-skip]')).toBeNull();
   });
 });
 

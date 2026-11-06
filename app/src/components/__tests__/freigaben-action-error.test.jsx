@@ -94,13 +94,16 @@ describe('Freigaben action errors speak a plain sentence', () => {
     expect(alert).not.toHaveTextContent(/HTTP/);
   });
 
-  it('a failed bulk approve names the failed post but keeps the server line off the alert', async () => {
+  it('a failed bulk approve leaves one quiet summary line, no post id and no server line', async () => {
     approvePost.mockRejectedValue(new Error('HTTP 500 internal'));
     const user = userEvent.setup();
-    renderFreigaben();
+    const { container } = renderFreigaben();
     await user.click(screen.getByRole('checkbox', { name: /select post/i }));
     await user.click(await screen.findByRole('button', { name: 'Approve 1' }));
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/0 approved, 1 failed: p1/));
-    expect(screen.getByRole('alert')).not.toHaveTextContent(/HTTP 500/);
+    await screen.findByText('1 not approved');
+    const line = container.querySelector('[data-run-summary]');
+    expect(line.textContent).not.toMatch(/p1/);
+    expect(line.textContent).not.toMatch(/HTTP 500/);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

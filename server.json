@@ -3,7 +3,7 @@
   "name": "io.github.pendpost/pendpost",
   "title": "pendpost",
   "description": "Local-first social MCP: an agent drafts and schedules posts; you approve before anything publishes.",
-  "version": "2.11.0",
+  "version": "2.12.0",
   "repository": {
     "url": "https://github.com/pendpost/pendpost",
     "source": "github"
@@ -13,7 +13,7 @@
     {
       "registryType": "npm",
       "identifier": "pendpost",
-      "version": "2.11.0",
+      "version": "2.12.0",
       "runtimeHint": "npx",
       "transport": { "type": "stdio" },
       "packageArguments": [

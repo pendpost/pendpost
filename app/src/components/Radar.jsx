@@ -1101,7 +1101,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           and each row's 44px tap boxes reached into the next (the "?" kept 44x30, the tab
           144x32). The row gap only exists once the header wraps, so desktop is unchanged; 20px
           lets the boxes of stacked rows meet instead of overlapping. */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-5">
+      <div data-spot="radar" className="flex flex-wrap items-center gap-x-2 gap-y-5 rounded-xl">
         <RadarIcon size={18} className="text-brand dark:text-brand-light" aria-hidden="true" />
         <h2 className="font-display text-base font-bold">{t('nav.radar')}</h2>
         {/* UX issue 10: a tag, not a warning - the info-chip recipe (quiet zinc), not a status

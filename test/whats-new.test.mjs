@@ -35,24 +35,55 @@ try {
   ok(Boolean(wn.entryFor(VERSION)), `lib/whats-new.json has an entry for the running version ${VERSION} (write it before \`node ops/release.mjs bump\`)`);
   ok(doc.releases[0].version === VERSION, `the newest entry (${doc.releases[0].version}) is the running version ${VERSION}`);
 
-  const base = { version: '9.1.0', date: '2026-11-05', highlights: { en: ['One.'], 'de-CH': ['Eins.'] } };
-  ok(wn.validateNotes({ releases: [base] }).length === 0, 'a minimal entry is valid');
-  ok(wn.validateNotes({ releases: [{ ...base, highlights: { en: ['A \u2014 b.'], 'de-CH': ['Eins.'] } }] }).some((p) => /em or en dash/.test(p)), 'an em dash is refused');
-  ok(wn.validateNotes({ releases: [{ ...base, highlights: { en: ['One.'], 'de-CH': ['Gro\u00dfe Freude.'] } }] }).some((p) => /sharp s/.test(p)), 'the sharp s is refused in de-CH');
-  ok(wn.validateNotes({ releases: [{ ...base, highlights: { en: ['One.'] } }] }).some((p) => /de-CH needs/.test(p)), 'a missing de-CH translation is refused');
-  ok(wn.validateNotes({ releases: [{ ...base, highlights: { en: ['1', '2', '3', '4'], 'de-CH': ['1', '2', '3', '4'] } }] }).some((p) => /1 to 3/.test(p)), 'more than three highlights are refused');
-  ok(wn.validateNotes({ releases: [{ ...base, version: '9.0.0' }, base] }).some((p) => /newest first/.test(p)), 'entries out of order are refused');
-  ok(wn.validateNotes({ releases: [base, base] }).some((p) => /twice/.test(p)), 'a duplicate version is refused');
-  ok(wn.validateNotes({ releases: [{ ...base, date: '5.11.2026' }] }).some((p) => /date/.test(p)), 'a bad date is refused');
+  // A valid item and entry; each case below breaks exactly one rule.
+  const item = (over = {}) => ({
+    kind: 'new',
+    icon: 'layers',
+    title: { en: 'Also as story', 'de-CH': 'Auch als Story' },
+    body: { en: 'One post goes out as a feed post and a story.', 'de-CH': 'Ein Beitrag erscheint als Feed-Beitrag und als Story.' },
+    ...over,
+  });
+  const base = { version: '9.1.0', date: '2026-11-05', items: [item(), item({ kind: 'improved', icon: 'shield-check', go: 'approvals' })] };
+  const withItem = (over) => ({ releases: [{ ...base, items: [item(over), item()] }] });
+  const refused = (d, re) => wn.validateNotes(d).some((p) => re.test(p));
+  ok(wn.validateNotes({ releases: [base] }).length === 0, 'a minimal entry with two items is valid');
+  ok(wn.KINDS.join() === 'new,improved,fixed' && Object.isFrozen(wn.KINDS) && Object.isFrozen(wn.ICONS), 'KINDS and ICONS are frozen lists');
+  const lucideDir = ['app/node_modules', '../../../app/node_modules'].map((d) => path.join(import.meta.dirname, '..', d, 'lucide-react/dist/esm/icons')).find((d) => fs.existsSync(d));
+  if (lucideDir) ok(wn.ICONS.every((n) => fs.existsSync(path.join(lucideDir, `${n}.js`))), 'every ICONS name exists in lucide-react');
+  ok(refused({ releases: [{ ...base, items: [item()] }] }, /2 to 4 "items"/), 'a single item is refused');
+  ok(refused({ releases: [{ ...base, items: [item(), item(), item(), item(), item()] }] }, /2 to 4 "items"/), 'five items are refused');
+  ok(refused({ releases: [{ ...base, items: undefined }] }, /2 to 4 "items"/), 'an entry without items is refused');
+  ok(refused({ releases: [{ version: '9.1.0', date: '2026-11-05', highlights: { en: ['One.'], 'de-CH': ['Eins.'] } }] }, /"highlights" is the old format/), 'the legacy highlights shape is refused with a clear message');
+  ok(refused(withItem({ kind: 'added' }), /"kind" must be one of/), 'an unknown kind is refused');
+  ok(refused(withItem({ icon: 'rocket-ship' }), /not in ICONS/), 'an icon outside ICONS is refused');
+  ok(refused(withItem({ go: 'Approvals' }), /"go" must be a lowercase slug/), 'a go key that is not a lowercase slug is refused');
+  ok(refused(withItem({ go: 'a' }), /"go"/), 'a one-letter go key is refused');
+  ok(refused(withItem({ title: { en: 'A title that is far too long to fit', 'de-CH': 'Kurz' } }), /title\.en is over 32/), 'a title over 32 characters is refused');
+  ok(refused(withItem({ title: { en: 'Also as story.', 'de-CH': 'Auch als Story' } }), /title\.en ends with a period/), 'a title ending in a period is refused');
+  ok(refused(withItem({ body: { en: `${'x'.repeat(90)}.`, 'de-CH': 'Ein Satz.' } }), /body\.en is over 90/), 'a body over 90 characters is refused');
+  ok(refused(withItem({ body: { en: 'One post. Two stories.', 'de-CH': 'Ein Satz.' } }), /body\.en is more than one sentence/), 'a body of two sentences is refused');
+  ok(refused(withItem({ body: { en: 'No period at the end', 'de-CH': 'Ein Satz.' } }), /body\.en does not end with a period/), 'a body without a closing period is refused');
+  ok(refused(withItem({ title: { en: 'Also as story' } }), /title\.de-CH is missing/), 'a missing de-CH title is refused');
+  ok(refused(withItem({ body: { en: 'One sentence.' } }), /body\.de-CH is missing/), 'a missing de-CH body is refused');
+  ok(refused(withItem({ body: { en: 'A \u2014 b.', 'de-CH': 'Ein Satz.' } }), /em or en dash/), 'an em dash is refused');
+  ok(refused(withItem({ title: { en: 'A \u2013 b', 'de-CH': 'Kurz' } }), /em or en dash/), 'an en dash in a title is refused');
+  ok(refused(withItem({ body: { en: 'One.', 'de-CH': 'Gro\u00dfe Freude.' } }), /sharp s/), 'the sharp s is refused in de-CH');
+  ok(refused({ releases: [{ ...base, version: '9.0.0' }, base] }, /newest first/), 'entries out of order are refused');
+  ok(refused({ releases: [base, base] }, /twice/), 'a duplicate version is refused');
+  ok(refused({ releases: [{ ...base, version: '9.1' }] }, /x\.y\.z/), 'a bad version is refused');
+  ok(refused({ releases: [{ ...base, date: '5.11.2026' }] }, /date/), 'a bad date is refused');
   ok(wn.compareVersions('2.10.0', '2.9.0') === 1 && wn.compareVersions('2.9.0', '2.10.0') === -1 && wn.compareVersions('1.0.0', '1.0.0') === 0, 'versions compare numerically, not as text');
-  ok(wn.loadNotes()[0].url === `${wn.RELEASES_URL}/tag/v${doc.releases[0].version}`, 'the full-notes link defaults to the GitHub release of that version');
+  const loaded = wn.loadNotes();
+  ok(wn.CHANGELOG_URL === 'https://pendpost.com/changelog', 'the full notes live on the pendpost.com changelog');
+  ok(loaded[0].url === `https://pendpost.com/changelog#v${doc.releases[0].version}`, 'the full-notes link is the changelog anchor of that version');
+  ok(loaded.every((r) => Array.isArray(r.items) && r.items.length >= 2 && !('highlights' in r)), 'loadNotes returns items, never highlights');
 
   // ===== (b) the seen marker =================================================
   const notes = [
-    { version: '3.0.0', date: '2026-12-01', highlights: base.highlights },
-    { version: '2.11.0', date: '2026-11-20', highlights: base.highlights },
-    { version: '2.10.0', date: '2026-11-02', highlights: base.highlights },
-    { version: '2.9.0', date: '2026-10-28', highlights: base.highlights },
+    { version: '3.0.0', date: '2026-12-01', items: base.items },
+    { version: '2.11.0', date: '2026-11-20', items: base.items },
+    { version: '2.10.0', date: '2026-11-02', items: base.items },
+    { version: '2.9.0', date: '2026-10-28', items: base.items },
   ];
   const fresh = fs.mkdtempSync(path.join(WS, 'fresh-'));
   ok(wn.seedSeen({ running: '2.11.0', dataRoot: fresh, notes }) === '2.11.0', 'a fresh workspace starts at the running version');
@@ -92,7 +123,9 @@ try {
   let res = await fetch(`${url}/api/whats-new`);
   let body = await res.json();
   ok(res.status === 200 && body.version === VERSION, 'GET /api/whats-new names the running version');
-  ok(body.unseen[0]?.version === VERSION && body.unseen[0].highlights.en.length > 0 && body.unseen[0].highlights['de-CH'].length > 0, 'and its unseen notes in en and de-CH');
+  const top = body.unseen[0];
+  ok(top?.version === VERSION && top.items.length >= 2 && top.items.every((i) => i.title.en && i.title['de-CH'] && i.body.en && i.body['de-CH']), 'and its unseen items in en and de-CH');
+  ok(body.releasesUrl === 'https://pendpost.com/changelog' && top.url === `https://pendpost.com/changelog#v${VERSION}`, 'the full-notes links point at the changelog');
   res = await post({ version: '99.0.0' });
   ok(res.status === 400, 'a version newer than the running one is refused');
   res = await post({ version: 'latest' });

@@ -73,7 +73,7 @@ The easiest path self-boots: pendpost speaks MCP over native stdio, so the clien
 
 Claude Desktop (one-click): install the pendpost `.mcpb` bundle attached to each [GitHub release](https://github.com/pendpost/pendpost/releases). It self-boots `npx -y pendpost --stdio` and opens the approval dashboard in the same process.
 
-Claude Code and Cursor plugins: the Claude plugin bundle lives in [`packaging/claude-plugin/`](packaging/claude-plugin/) and the Cursor plugin manifest in [`.cursor-plugin/`](.cursor-plugin/). Both launch the same pinned `npx pendpost@<version> --stdio` server. Agents that install servers for you (for example Cline) can follow [`llms-install.md`](llms-install.md).
+Claude Code and Cursor plugins: the Claude plugin bundle lives in [`packaging/claude-plugin/`](packaging/claude-plugin/) and the Cursor plugin manifest in [`.cursor-plugin/`](.cursor-plugin/). The Cursor plugin launches the pinned `npx pendpost@<version> --stdio` server; the Claude plugin connects to a running pendpost at `http://127.0.0.1:8090/mcp`, so start `npx pendpost` first. Agents that install servers for you (for example Cline) can follow [`llms-install.md`](llms-install.md).
 
 Any stdio MCP client:
 

@@ -1167,12 +1167,24 @@ export const youtubeUpdateProfile = ({ description, keywords, country, defaultLa
 export const setMetaLane = (body) => postJson('/api/state/meta-lane', { ...body, actor: ACTOR });
 // Edit non-secret config (identifiers -> .env, posting vars -> config.json).
 // Secrets are display-only and never sent. set = { identifiers?, posting? }.
-export const saveConfig = (ifRev, set) => postJson('/api/config', { ifRev, set, actor: ACTOR });
+// `clientId` (optional, trailing): the project the write is FOR. It rides the JSON body like
+// every other scoped write (handleApi binds it), so an all-projects card writes ITS project's
+// config, never the active one's. The ifRev must then be THAT project's rev (fetchConfig(id)).
+export const saveConfig = (ifRev, set, clientId) => postJson('/api/config', { ifRev, set, actor: ACTOR, ...(clientId ? { clientId } : {}) });
 // A one-shot READ of the config, outside React Query. The ledger's platform verbs (a probe, a
 // handle confirm, a lane resume) write config server-side, so the rev a cached read is holding
 // can be stale by the time the owner touches the next control. The caller re-reads the rev with
 // this and re-sends the SAME value once, which is a refusal the owner should never have to see.
-export const fetchConfig = () => getJson('/api/config');
+// `clientId` (optional): read that project's config (GET reads ?clientId=).
+export const fetchConfig = (clientId) => getJson(`/api/config${clientId ? `?clientId=${encodeURIComponent(clientId)}` : ''}`);
+// Turn one platform on (or off) for ONE project: read that project's config for its rev and
+// current policy map, then write the whole map back with the one key changed. posting.platforms
+// is replaced as a whole by setConfig (no shallow merge), so the other entries must ride along.
+export async function setPlatformEnabled(platform, on, clientId) {
+  const cfg = await fetchConfig(clientId);
+  const current = (cfg && cfg.posting && cfg.posting.platforms && typeof cfg.posting.platforms === 'object') ? cfg.posting.platforms : {};
+  return saveConfig(cfg?.rev, { posting: { platforms: { ...current, [platform]: on === true } } }, clientId);
+}
 
 // Operator-only connect ceremony (POST /api/connect). Kicks off the engine's connect
 // command for one platform against the active client; the ENGINE writes the .env (the

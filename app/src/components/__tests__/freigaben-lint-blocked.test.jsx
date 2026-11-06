@@ -84,16 +84,21 @@ describe('Freigaben approve refused by the brand-lint gate (#40)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Der Text verstösst auf X gegen eine Markenregel (Banned phrase). Passe den Text für X an oder entferne X aus dem Beitrag.');
   });
 
-  it('a bulk approve lists the refused post by post with its reason, and approves the rest', async () => {
+  it('a bulk approve groups the refusal by its reason in ONE quiet line (no post id), and approves the rest', async () => {
     approvePost.mockImplementation((campaign, id) => (id === 'p2' ? Promise.reject(lintBlocked()) : Promise.resolve({ ok: true })));
     const user = userEvent.setup();
-    renderFreigaben([clean, dirty]);
+    const { container } = renderFreigaben([clean, dirty]);
     for (const box of screen.getAllByRole('checkbox', { name: /select post/i })) await user.click(box);
     await user.click(await screen.findByRole('button', { name: 'Approve 2' }));
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(
-      '1 approved, 1 failed: p2 (The caption breaks a brand rule on X (Banned phrase). Edit the caption for X or remove X from the post.)',
-    ));
+    await screen.findByText('1 not approved');
     expect(approvePost).toHaveBeenCalledTimes(2);
+    const line = container.querySelector('[data-run-summary]');
+    expect(line.textContent).not.toMatch(/p2/);
+    const chip = line.querySelector('[data-cause^="failed:"]');
+    expect(chip).not.toBeNull();
+    expect(chip.getAttribute('aria-label')).toMatch(/^The caption breaks a brand rule on X/);
+    expect(chip.getAttribute('aria-label')).toMatch(/: 1 post$/);
+    expect(screen.getByLabelText('1 approved, 1 not approved')).toBeInTheDocument();
   });
 });
 

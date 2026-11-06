@@ -140,6 +140,27 @@
   .radar-scan-bar { animation: none !important; background: currentColor; }
 }
 
+/* "Show me" from What's new (lib/spotJump.js): the spot it lands on wears a brand ring for
+   about 1.5s. An outline, so it never fights the element's own box-shadow or ring; it fades
+   in and out once. Under reduced motion the ring simply shows and goes. */
+@keyframes pp-spot-pulse {
+  0%, 100% { outline-color: transparent; }
+  20%, 70% { outline-color: var(--spot-ring); }
+}
+.spot-pulse {
+  --spot-ring: var(--accent, #0f766e);
+  outline: 2px solid transparent;
+  outline-offset: 4px;
+  animation: pp-spot-pulse 1.5s ease-in-out both;
+}
+/* A spot that spans the scroll panel edge to edge (the planner tray) draws its ring inside,
+   or the panel would clip it. */
+.spot-pulse[data-spot-inset] { outline-offset: -2px; }
+.dark .spot-pulse { --spot-ring: var(--accent-light, #5eead4); }
+@media (prefers-reduced-motion: reduce) {
+  .spot-pulse { animation: none; outline-color: var(--spot-ring); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [class~="pp-anim"], [style*="pp-breathe"], [style*="pp-chevron-clear"],
   [style*="pp-rest"], [style*="pp-glow-pulse"] {

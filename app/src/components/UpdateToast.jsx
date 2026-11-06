@@ -48,20 +48,19 @@ function isEditing() {
   return Boolean(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)));
 }
 
-// "2.9.0 (a1b2c3d)": the package version plus the short commit, whichever is known.
-// A no-break space keeps one version on one line when the toast wraps.
+// "2.9.0": the package version alone. The commit means nothing to an operator; it stays
+// reachable as the title of the version line in Help and feedback.
 export function formatVersion(v) {
-  const sha = typeof v?.commit === 'string' ? v.commit.slice(0, 7) : null;
-  if (v?.version && sha) return `${v.version}\u00a0(${sha})`;
-  return v?.version || sha || null;
+  return v?.version || null;
 }
 
 // The update flow shares one small toast, bottom-right, like a desktop app's
 // updater. It polls GET /api/dashboard-update and shows exactly one of:
-//   available -> "A new version is available", running vs new version, Update + dismiss
+//   available -> "pendpost 2.11.0 is ready" (or "Small improvements ready" when only the
+//                commit moved), Update + dismiss
 //   progress  -> the real step the server reports: downloading, installing, waiting
 //                for publishing or an agent, restarting (polled every 1.5 s)
-//   done      -> "Updated to 2.10.0 (f4e5d6c)" for a few seconds once the server is
+//   done      -> "Updated to 2.10.0" for a few seconds once the server is
 //                back on the new code (after an automatic reload when the bundle changed)
 //   failed    -> what went wrong in one sentence + Try again (+ dismiss)
 //   manual    -> the server cannot restart itself (not under launchd): say so
@@ -241,13 +240,16 @@ export default function UpdateToast({ onReload = () => window.location.reload(),
         : step === 'waiting' ? t(update?.waitingFor === 'publishing' ? 'update.waitingPublish' : update?.waitingFor === 'agent' ? 'update.waitingAgent' : 'update.restarting')
           : t('update.restarting');
   const stepIndex = step === 'installing' ? 1 : (step === 'waiting' || step === 'restarting') ? 2 : 0;
-  const runningText = formatVersion(running);
   const targetText = formatVersion(target);
   const doneText = formatVersion(done);
+  // The offer in one line: the new version, or "small improvements" when the version is the
+  // same and only the commit moved (the develop channel).
+  const offerText = !targetText ? t('update.available')
+    : targetText === formatVersion(running) ? t('update.patch')
+      : t('update.offer', { version: targetText });
 
   // One text style for every state, so the toast reads as one control.
   const TEXT = 'min-w-0 flex-1 text-xs font-semibold';
-  const SUB = 'mt-0.5 text-xs font-normal text-zinc-600 dark:text-zinc-400';
   const primary = `shrink-0 rounded-lg bg-brand px-2.5 py-1 text-xs font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1 dark:bg-brand-light dark:text-zinc-900 ${TAP_TARGET}`;
   const closeWith = (onClick) => (
     <button
@@ -327,13 +329,8 @@ export default function UpdateToast({ onReload = () => window.location.reload(),
           </>
         ) : (
           <>
-            <Download size={15} className="shrink-0 self-start mt-0.5 text-brand dark:text-brand-light" aria-hidden="true" />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold">{t('update.available')}</p>
-              {runningText && targetText ? (
-                <p className={SUB}>{t('update.versions', { running: runningText, target: targetText })}</p>
-              ) : null}
-            </div>
+            <Download size={15} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" />
+            <span className={TEXT}>{offerText}</span>
             <button type="button" onClick={triggerUpdate} className={primary}>{t('update.get')}</button>
             {close}
           </>

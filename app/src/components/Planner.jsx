@@ -1149,6 +1149,7 @@ function ListBulkBar({ sel, setupFor, barRef }) {
       allSelected={allSelected}
       someSelected={count > 0 && !allSelected}
       onToggleAll={toggleAll}
+      spot="bulk-select"
       onClear={clear}
       actions={actions}
     />
