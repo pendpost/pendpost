@@ -1,7 +1,7 @@
 {
   "name": "pendpost",
   "displayName": "pendpost",
-  "version": "2.12.0",
+  "version": "2.12.1",
   "description": "Local-first social media planner: your agent drafts and schedules posts for Instagram, Facebook, LinkedIn, YouTube, X, Mastodon, Nostr and more, and nothing publishes until you approve it.",
   "author": {
     "name": "Nomadik GmbH",

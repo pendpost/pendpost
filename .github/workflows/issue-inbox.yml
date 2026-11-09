@@ -1,7 +1,8 @@
 name: Issue inbox
 
-# Copies the open issues of the public repo pendpost/pendpost into the `autopilot-inbox`
-# branch of this private repo, for the issue autopilot routine (docs/issue-autopilot/SKILL.md).
+# Copies the open issues of the public repo pendpost/pendpost into the ref `refs/autopilot/inbox`
+# of this private repo, for the issue autopilot routine (docs/issue-autopilot/SKILL.md). It is a
+# ref, not a branch: Vercel builds every branch, and a data-only branch failed its build daily.
 # The routine's cloud sandbox has API access to pendpost/site only; giving it the public repo
 # would mean a push-capable token next to text written by strangers. This job reads the public
 # issues anonymously (no token for the public repo exists anywhere) and the routine reads
@@ -51,15 +52,15 @@ jobs:
           console.log(`snapshot: ${out.length} open issues`);
           '
 
-      - name: Publish the snapshot as a single-commit branch
+      - name: Publish the snapshot as a single-commit ref (not a branch)
         working-directory: inbox
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          git init -q -b autopilot-inbox
+          git init -q -b inbox
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add issues.json
           git commit -q -m "inbox: open issues of pendpost/pendpost"
-          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" autopilot-inbox
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" HEAD:refs/autopilot/inbox

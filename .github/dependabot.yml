@@ -56,6 +56,11 @@ updates:
       # astro toolchain supports 7.
       - dependency-name: "typescript"
         update-types: ["version-update:semver-major"]
+      # lucide v1 removed the platform brand icons (youtube and others) that the
+      # changelog page renders from lib/whats-new.json; the 1.70.0 bump (#217) broke
+      # the Vercel build on /changelog. Same hold as lucide-react in /app.
+      - dependency-name: "lucide-static"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"

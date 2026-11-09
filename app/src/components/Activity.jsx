@@ -106,6 +106,9 @@ const ACTION_LABEL = {
   'asset-upload': 'activity.action.assetUpload',
   reschedule: 'activity.action.reschedule',
   unschedule: 'activity.action.unschedule',
+  // The local engine took a pushed job back from the cloud (the post was edited, unapproved,
+  // parked or deleted here), so the cloud will not fire the old copy (lib/cloud-client.mjs).
+  'cloud-withdraw': 'activity.action.cloudWithdraw',
   'campaign-create': 'activity.action.campaignCreate',
   'campaign-activate': 'activity.action.campaignActivate',
   'campaign-deactivate': 'activity.action.campaignDeactivate',
@@ -353,7 +356,7 @@ export const ACTION_GROUPS = [
   // are audit, not content events - the default feed HIDES their successes (a
   // failure always surfaces) behind the one reveal line at the feed foot, so
   // "what happened to my posts" leads and "what the daemon did" is one click away.
-  { key: 'system', label: 'activity.action.group.system', actions: ['scheduler-start', 'scheduler-stop', 'run', 'engine-run', 'probe', 'token-refresh', 'insights', 'insights-fetch', 'cloud-reconcile', 'cloud-backstop', 'client-activate', 'client-create', 'client-update', 'client-archive', 'client-unarchive'] },
+  { key: 'system', label: 'activity.action.group.system', actions: ['scheduler-start', 'scheduler-stop', 'run', 'engine-run', 'probe', 'token-refresh', 'insights', 'insights-fetch', 'cloud-reconcile', 'cloud-backstop', 'cloud-withdraw', 'client-activate', 'client-create', 'client-update', 'client-archive', 'client-unarchive'] },
   // 'cadence-defer' (Meta lane throttle) belongs with the Meta blocks, not with
   // real publishes - so one chip isolates/hides the throttle noise.
   // 'lane-resumed' is the generic lane breaker's resume - it files with the
