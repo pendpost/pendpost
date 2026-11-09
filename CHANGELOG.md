@@ -4,6 +4,20 @@ All notable changes to pendpost are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and pendpost adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.1] - 2026-11-09
+
+When you edit, park, unapprove or delete a post that the always-on cloud already holds, the cloud now takes its copy back and never sends it. Before this, the cloud kept the version it was given and posted the old text at the old time.
+
+### Fixed
+
+- Changes reach the cloud. The local engine works out which cloud jobs must not fire (a post was edited since its approval, unapproved, parked, rejected or deleted) and sends them in one batch to the cloud's new withdraw endpoint before each push. Anything still owed is kept in `state.cloudWithdrawPending` and sent again on the next push until the cloud answers. An older cloud that does not know the endpoint is asked again once an hour. Approve or reschedule the post again and it is pushed again as usual.
+- A deleted post's cloud job is no longer forgotten. Before the engine prunes the record of a deleted post, it turns that record into a pending withdraw, so the job still gets cancelled.
+- Activity shows a "Cloud job withdrawn" row under System.
+
+### Changed
+
+- Dependency updates for the app (jsdom 31 and the app group), the website and the container release workflow.
+
 ## [2.12.0] - 2026-11-06
 
 Approving many posts at once now leaves out the ones that cannot go out, and says why in one line, instead of sending them and failing. In Approvals a blocked post shows its cause in one short line with the fix beside it. When a project has Facebook turned off, you can turn it back on or take Facebook off the post from that line, and your agent may now remove such a platform from a post (it can never add one). What's new is shorter: a few items per release, each with a Show me link to where the change lives, and the full notes are on pendpost.com/changelog. The container image runs on Apple Silicon, and pendpost has plugin bundles for Claude Code and Cursor.

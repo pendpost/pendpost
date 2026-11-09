@@ -1588,6 +1588,7 @@
     "activity.action.assetUpload": "Asset hochgeladen",
     "activity.action.reschedule": "Neu geplant",
     "activity.action.unschedule": "Geparkt",
+    "activity.action.cloudWithdraw": "Cloud-Auftrag zurückgezogen",
     "activity.action.campaignCreate": "Kampagne erstellt",
     "activity.action.campaignActivate": "Kampagne aktiviert",
     "activity.action.campaignDeactivate": "Kampagne archiviert",

@@ -2,6 +2,28 @@
   "$comment": "What's new, shown once in the Studio after an update. One entry per released version, newest first. Each entry holds 2 to 4 items: kind (new, improved or fixed), icon (a lucide name from ICONS in lib/whats-new.mjs), a title of 2 to 5 words (max 32 characters, no period) and a body of ONE plain sentence (max 90 characters), both in en and de-CH (real umlauts, never the sharp s, du-form), run through the humanizer, no em dashes. Optional go: a spot key the Studio maps to the page where the feature lives. Write the entry before `node ops/release.mjs bump`; test/whats-new.test.mjs fails when the running VERSION has none. The full notes link is https://pendpost.com/changelog#v<version>.",
   "releases": [
     {
+      "version": "2.12.1",
+      "date": "2026-11-09",
+      "items": [
+        {
+          "kind": "fixed", "icon": "pen-line",
+          "title": { "en": "Edits reach the cloud", "de-CH": "Änderungen erreichen die Cloud" },
+          "body": {
+            "en": "Change a post the cloud already holds and it takes the old copy back.",
+            "de-CH": "Änderst du einen Beitrag, den die Cloud schon hat, zieht sie die alte Fassung zurück."
+          }
+        },
+        {
+          "kind": "fixed", "icon": "trash-2",
+          "title": { "en": "Removed means removed", "de-CH": "Entfernt heisst entfernt" },
+          "body": {
+            "en": "Park, unapprove or delete a post and the cloud won't send it either.",
+            "de-CH": "Parkst, verwirfst oder löschst du einen Beitrag, sendet ihn auch die Cloud nicht."
+          }
+        }
+      ]
+    },
+    {
       "version": "2.12.0",
       "date": "2026-11-06",
       "items": [

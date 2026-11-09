@@ -833,6 +833,7 @@
     "activity.action.assetUpload": "Asset uploaded",
     "activity.action.reschedule": "Rescheduled",
     "activity.action.unschedule": "Parked",
+    "activity.action.cloudWithdraw": "Cloud job withdrawn",
     "activity.action.campaignCreate": "Campaign created",
     "activity.action.campaignActivate": "Campaign activated",
     "activity.action.campaignDeactivate": "Campaign archived",
