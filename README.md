@@ -55,7 +55,7 @@ npx -y pendpost
 # then open http://127.0.0.1:8090
 ```
 
-No account, no signup - pendpost runs locally and starts immediately. You can draft, approve, and schedule a full campaign right away; the first run ships an example "Acme Launch" campaign in `data/plans`, so you see real content at once. Connect a platform in **Setup** when you are ready to publish - until then a lane is live-but-unauthenticated, so publishing simply waits for the connection rather than faking it.
+No account, no signup - pendpost runs locally and starts immediately. You can draft, approve, and schedule a full campaign right away. The planner starts empty; press New post or ask your agent for a first draft. Connect a platform in **Setup** when you are ready to publish - until then a lane is live-but-unauthenticated, so publishing simply waits for the connection rather than faking it.
 
 Prefer git or docker?
 

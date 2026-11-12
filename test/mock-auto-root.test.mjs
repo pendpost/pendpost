@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // test/mock-auto-root.test.mjs - PENDPOST_MODE=mock with no PENDPOST_ROOT runs in a
-// per-user temp workspace seeded with the shipped demo (and only the demo).
+// per-user temp workspace that starts empty (pendpost ships no example campaign).
 //
 // Regression: since the mock-root fence (c5f2a2fd) the documented first run,
 // `PENDPOST_MODE=mock npx pendpost`, exited "mock mode refused" because the data
@@ -39,7 +39,7 @@ function probe(env) {
 }
 
 try {
-  // Mock, no root: temp workspace, passes the fence, seeded with the demo only.
+  // Mock, no root: temp workspace, passes the fence, starts empty.
   {
     const r = probe({ PENDPOST_MODE: 'mock' });
     assert.equal(r.auto, true);
@@ -47,11 +47,10 @@ try {
     assert.equal(r.fenced, false, 'the auto mock root must pass the fence');
     assert.equal(r.seeded, true);
     const plans = path.join(r.root, 'data', 'plans');
-    assert.deepEqual(fs.readdirSync(plans).sort(), ['acme-launch', 'active-plans.json']);
+    assert.deepEqual(fs.readdirSync(plans).sort(), ['active-plans.json']);
     const manifest = JSON.parse(fs.readFileSync(path.join(plans, 'active-plans.json'), 'utf8'));
-    assert.deepEqual(manifest.plans.map((p) => p.id), ['acme-launch']);
-    const media = fs.readdirSync(path.join(r.root, 'data', 'media'));
-    assert.ok(media.length > 0 && media.every((f) => f.startsWith('acme-')), `unexpected media: ${media}`);
+    assert.deepEqual(manifest.plans, []);
+    assert.deepEqual(fs.readdirSync(path.join(r.root, 'data', 'media')), []);
     // A second boot never re-seeds over existing data.
     assert.equal(probe({ PENDPOST_MODE: 'mock' }).seeded, false);
   }

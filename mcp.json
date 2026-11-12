@@ -2,7 +2,7 @@
   "mcpServers": {
     "pendpost": {
       "command": "npx",
-      "args": ["-y", "pendpost@2.13.0", "--stdio"]
+      "args": ["-y", "pendpost@2.13.1", "--stdio"]
     }
   }
 }

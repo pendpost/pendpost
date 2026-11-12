@@ -2,6 +2,28 @@
   "$comment": "What's new, shown once in the Studio after an update. One entry per released version, newest first. Each entry holds 2 to 4 items: kind (new, improved or fixed), icon (a lucide name from ICONS in lib/whats-new.mjs), a title of 2 to 5 words (max 32 characters, no period) and a body of ONE plain sentence (max 90 characters), both in en and de-CH (real umlauts, never the sharp s, du-form), run through the humanizer, no em dashes. Optional go: a spot key the Studio maps to the page where the feature lives. Write the entry before `node ops/release.mjs bump`; test/whats-new.test.mjs fails when the running VERSION has none. The full notes link is https://pendpost.com/changelog#v<version>.",
   "releases": [
     {
+      "version": "2.13.1",
+      "date": "2026-11-12",
+      "items": [
+        {
+          "kind": "fixed", "icon": "shield-check",
+          "title": { "en": "No example campaign", "de-CH": "Keine Beispielkampagne" },
+          "body": {
+            "en": "A new install starts empty, so no example post can go out on a real account.",
+            "de-CH": "Eine neue Installation startet leer, also geht kein Beispielbeitrag auf ein echtes Konto."
+          }
+        },
+        {
+          "kind": "improved", "icon": "layers",
+          "title": { "en": "Mock mode starts clean", "de-CH": "Mock-Modus startet leer" },
+          "body": {
+            "en": "Mock mode opens an empty workspace in your temp folder, like a real first run.",
+            "de-CH": "Der Mock-Modus öffnet einen leeren Arbeitsbereich im Temp-Ordner, wie ein echter Start."
+          }
+        }
+      ]
+    },
+    {
       "version": "2.13.0",
       "date": "2026-11-12",
       "items": [

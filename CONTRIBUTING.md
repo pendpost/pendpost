@@ -21,7 +21,7 @@ npm start            # boot the server on http://127.0.0.1:8090
 npm run check        # run the full check: syntax, parity, and the test suite
 ```
 
-The first run ships an example "Acme Launch" campaign so you have content to work with. Start pendpost with `PENDPOST_MODE=mock` and every platform lane runs through the credential-free mock driver; drive the full loop `draft -> approve -> schedule -> publish -> insights` there before you touch live credentials. Without `PENDPOST_MODE=mock` pendpost is live, so an unconnected lane waits for its credential rather than publishing. Build the dashboard with `npm run build` if it is not already built.
+A fresh workspace starts with no campaigns. Start pendpost with `PENDPOST_MODE=mock` and every platform lane runs through the credential-free mock driver; drive the full loop `draft -> approve -> schedule -> publish -> insights` there before you touch live credentials. Without `PENDPOST_MODE=mock` pendpost is live, so an unconnected lane waits for its credential rather than publishing. Build the dashboard with `npm run build` if it is not already built.
 
 ## Branching and releases
 
