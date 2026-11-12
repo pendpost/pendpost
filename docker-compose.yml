@@ -11,6 +11,10 @@ services:
       - "127.0.0.1:8090:8090"
     environment:
       PENDPOST_HOST: "0.0.0.0"
+      # Safe without a token ONLY because ports above publishes on host loopback.
+      # Without this flag the server refuses a non-loopback bind with no
+      # PENDPOST_AUTH_TOKEN (lib/flags.mjs bindRefusal).
+      PENDPOST_ALLOW_UNAUTHENTICATED: "1"
       # Demo: every lane fakes its publishes, in a throwaway workspace inside the
       # container (the data volume below is never touched), even with a .env mounted.
       # PENDPOST_MODE: "mock"

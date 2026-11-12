@@ -34,6 +34,7 @@ import { humanizeAction, humanizeFailure, plainError } from '../lib/failureCopy.
 import ActionError from './ui/ActionError.jsx';
 import { showApproveNotice } from '../lib/approveNotice.js';
 import { canPublishNowPost, isHeldRetry } from '../lib/postActions.js';
+import { withMinBusy } from '../lib/useRecheck.js';
 import { postIssue } from '../lib/postIssue.js';
 import IssueCard from './IssueCard.jsx';
 
@@ -855,7 +856,9 @@ function PostDetailBody({ post, posts = [], triage = null, triageIndex = -1, pos
   // (read-only; writes a non-destructive verify block, never publishes).
   const onVerify = async () => {
     setError(null);
-    const res = await verifyPost(post.campaign, post.id);
+    // withMinBusy: a fast read-back still shows its spinner (and the cleared sentence) long
+    // enough to see, so a repeated "not live yet" visibly ran again.
+    const res = await withMinBusy(() => verifyPost(post.campaign, post.id));
     setVerifyResult(res); // Spec 51 (D2): overlay the returned per-platform provenance on the row
     refresh();
     // Only a real live read-back is a success. verify_post returns ok:true even

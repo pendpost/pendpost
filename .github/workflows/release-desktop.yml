@@ -14,7 +14,19 @@ name: release desktop
 #                           release as pendpost-macos.dmg / pendpost-windows-setup.exe.
 #   * release, no secrets -> assembles everything, then SKIPS the upload (an unsigned
 #                           asset must never land on a public release) and prints how
-#                           to enable it. The job still goes green.
+#                           to enable it.
+#   * workflow_dispatch with release_tag -> builds that tag's code and, with secrets,
+#                           attaches the signed .dmg to that EXISTING release. This is
+#                           how a release that missed its .dmg gets it back without
+#                           cutting a new version (a plain re-run reuses the old
+#                           workflow file, so it cannot pick up a fix made here).
+#
+# GUARD: the verify-assets job fails the run whenever a release ends up without
+# pendpost-macos.dmg, whatever the cause (runner label retired, signing secrets
+# gone, notary down). pendpost.com/download links to that asset, so a missing .dmg
+# is a broken download, never a cosmetic gap. v2.12.0 and v2.12.1 shipped without
+# one for days because the macOS job was cancelled before its first step and
+# nothing went red.
 #
 # Owner secrets to enable signing (see packaging/desktop/README.md):
 #   macOS  : APPLE_DEVELOPER_ID_CERT_P12_BASE64, APPLE_DEVELOPER_ID_CERT_PASSWORD,
@@ -28,6 +40,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release to attach the signed .dmg to (e.g. v2.12.1). Empty = unsigned build artifact only."
+        required: false
+        default: ""
 
 permissions:
   contents: write # upload assets to the release
@@ -39,7 +56,14 @@ jobs:
     # self-hosted runner to register or keep online. The Developer ID cert is
     # imported from secrets into an ephemeral keychain below, so hosted signing
     # works without a pre-provisioned Mac.
-    runs-on: macos-14
+    #
+    # `macos-latest`, not a pinned version: GitHub retired every macOS 14 image on
+    # 2026-11-02, after which `macos-14` jobs are refused with "The configuration
+    # 'macos-14-arm64-us-default' is not supported" and end up cancelled with zero
+    # steps. The build only needs swiftc + lipo + hdiutil + codesign + notarytool,
+    # and the launcher targets macOS 12, so following the newest image is safer
+    # than a pin that silently ages out. verify-assets below catches any breakage.
+    runs-on: macos-latest
     # Must exceed the notarize step's `notarytool --wait --timeout 45m`, else a
     # slow-but-working Apple notary queue trips the JOB cap and cancels the run
     # before stapling (happened on the first real release: Apple took ~28m+, the
@@ -47,8 +71,31 @@ jobs:
     # repo, so give the 45m notary budget ~13m of headroom for sign/staple/upload.
     timeout-minutes: 58
     if: github.repository == 'pendpost/pendpost'
+    env:
+      # The release this run attaches to: the published release, or the
+      # release_tag a dispatch names. Empty = dispatch build, artifact only.
+      # Reaches shells only via env + quoting, never inline ${{ }} in run - the
+      # documented defense against workflow script injection.
+      TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
     steps:
+      - name: Check the target release
+        if: github.event_name == 'workflow_dispatch' && env.TAG != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Fail in seconds, not after a 10-minute build + notarization.
+        run: |
+          set -euo pipefail
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::release_tag must look like v1.2.3, got: $TAG" >&2; exit 1
+          fi
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName
+
       - uses: actions/checkout@v7
+        with:
+          # Build exactly the tagged code on a release_tag dispatch (empty = the
+          # default ref: the release tag, or the dispatched branch).
+          ref: ${{ inputs.release_tag }}
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -58,13 +105,8 @@ jobs:
       - name: Resolve version
         id: ver
         shell: bash
-        # Event data (TAG) reaches the shell only via env + quoting, never inline
-        # ${{ }} in run - the documented defense against workflow script injection.
-        env:
-          EVENT: ${{ github.event_name }}
-          TAG: ${{ github.event.release.tag_name }}
         run: |
-          if [ "$EVENT" = "release" ]; then
+          if [ -n "$TAG" ]; then
             v="${TAG#v}"
           else
             v="$(node -p "require('./package.json').version")"
@@ -159,21 +201,20 @@ jobs:
         run: hdiutil create -volname pendpost -srcfolder build/pendpost.app -ov -format UDZO build/pendpost-macos.dmg
 
       - name: Attach .dmg to the release
-        if: github.event_name == 'release' && steps.signing.outputs.enabled == 'true'
+        if: env.TAG != '' && steps.signing.outputs.enabled == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.release.tag_name }}
         shell: bash
-        run: gh release upload "$TAG" build/pendpost-macos.dmg --clobber
+        run: gh release upload "$TAG" build/pendpost-macos.dmg --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Release without signing secrets (skip upload)
-        if: github.event_name == 'release' && steps.signing.outputs.enabled != 'true'
+        if: env.TAG != '' && steps.signing.outputs.enabled != 'true'
         shell: bash
         run: |
           echo "::warning title=macOS desktop asset not attached::Apple signing secrets are not set, so the unsigned .dmg was NOT attached to this release (it would trip Gatekeeper). Add APPLE_DEVELOPER_ID_CERT_P12_BASE64, APPLE_DEVELOPER_ID_CERT_PASSWORD, APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (see packaging/desktop/README.md) and re-run."
 
       - name: Upload .dmg as a build artifact (dispatch)
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && env.TAG == ''
         uses: actions/upload-artifact@v7
         with:
           name: pendpost-macos-dmg
@@ -269,3 +310,46 @@ jobs:
         with:
           name: pendpost-windows-setup
           path: build/desktop-win/out/pendpost-windows-setup.exe
+
+  # ------------------------------------------------------- Asset guard -----
+  # Fails the run, loudly, whenever a release ends up without pendpost-macos.dmg.
+  # Runs even when the macos job is cancelled or fails (that is the whole point:
+  # v2.12.0 and v2.12.1 lost their .dmg to a job cancelled before step one, and
+  # the run only showed a grey "cancelled"). Release-day signal for the operator;
+  # pendpost.com/download separately falls back to the newest release that still
+  # has a .dmg, so users are never sent to a 404 in the meantime.
+  verify-assets:
+    needs: macos
+    if: >-
+      always() && github.repository == 'pendpost/pendpost' &&
+      (github.event_name == 'release' || inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Release carries pendpost-macos.dmg
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+        run: |
+          set -euo pipefail
+          assets="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if grep -qx 'pendpost-macos.dmg' <<<"$assets"; then
+            echo "Release $TAG carries pendpost-macos.dmg." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          fix="gh workflow run release-desktop.yml --repo $GITHUB_REPOSITORY --ref main -f release_tag=$TAG"
+          {
+            echo "## macOS download missing on $TAG"
+            echo "The macos job ended as **$MACOS_RESULT** and the release has no pendpost-macos.dmg."
+            echo "pendpost.com/download is serving the newest older release that has one."
+            echo "Fix the macos job (check its annotations), land the fix on main, then run:"
+            echo '```'
+            echo "$fix"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error title=macOS download missing::Release $TAG has no pendpost-macos.dmg (macos job: $MACOS_RESULT). After fixing the macos job, re-attach with: $fix"
+          exit 1

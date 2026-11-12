@@ -121,7 +121,7 @@ export function CarouselPreview({ items = [], aspect, ratio, mixed, onEdit }) {
                 between slides, so the sticky media column never reflows. */}
             <span
               className="flex h-full w-full transition-transform duration-[350ms] ease-out motion-reduce:transition-none"
-              style={{ transform: `translateX(-${i * 100}%)` }}
+              style={{ transform: `translateX(${i ? -i * 100 : 0}%)` }}
             >
               {list.map((item, n) => (
                 <span key={`${item.path || item.file || 'slide'}-${n}`} className="h-full w-full shrink-0 grow-0 basis-full">

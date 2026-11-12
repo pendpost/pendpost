@@ -4,6 +4,37 @@ All notable changes to pendpost are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and pendpost adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.13.0] - 2026-11-12
+
+The Mac app can be downloaded again. GitHub retired the build machine the Mac release used, so 2.12.0 and 2.12.1 came out without one. This release also closes ten gaps that a security audit of pendpost found in November. Most of them were ways an agent connected over MCP could reach a file or an action it should never touch. In the Studio, every Check again button now shows that it ran, and an update no longer tells you to commit or stash files.
+
+### Security
+
+- pendpost now refuses to start on a non-loopback address (for example `PENDPOST_HOST=0.0.0.0`) when `PENDPOST_AUTH_TOKEN` is not set. Before this, anyone who could reach the port could send a forged `Host` header and use the whole API, every MCP tool and the Studio owner token. The container image hit this with the published `docker run -p 8090:8090` command. The new command publishes on your own machine only: `docker run -p 127.0.0.1:8090:8090 -e PENDPOST_ALLOW_UNAUTHENTICATED=1 ghcr.io/pendpost/pendpost`. `docker compose up` keeps working unchanged. Fly, Render and Railway deploys now need `PENDPOST_AUTH_TOKEN` set.
+- Operator actions need the Studio token. The 15 REST calls that connect, replace, copy or delete credentials, and the ones that connect, migrate, eject, sign out of or bill the cloud, refuse a request without it (`403 owner_token_required`). Reads, rechecks, pushes and heals stay open to agents. The cloud key only travels over https (plain http is allowed for a cloud on your own machine), and checkout and billing links open only when they are plain https.
+- `asset_upload` with a `filePath` checks that the file really is a JPEG, PNG, MP4 or MOV. An agent could otherwise copy any local file into the media folder under an image name and fetch it back over `/media`, a client's signing key included.
+- `captionPath` must name a real `.srt` or `.vtt` file outside dot folders. pendpost checks this when the field is written and again at publish, and the file has to contain subtitle timings. Before, an agent could point it at the client `.env`, and the YouTube lane would have uploaded that file as captions.
+- A reviewer's share link can decide only the posts waiting for that review, or ones a reviewer already decided. It can no longer approve a post you rejected or one you moved into an internal campaign.
+- Respond for me takes decisions only from pendpost's own triage run. A token that only that run's brief carries binds the two, so another MCP client can no longer plant a signal and report a reply of its own while the drafter is idle. The automation browser only opens the platform's own hosts, and it blocks the daemon on its real port at every loopback address.
+- A triage decision can no longer queue an original post. Only the theme sweep does that, and only behind `engage.originalPosts.enabled`.
+- The Mac app hands only http, https and mailto links to your system, and a feed item keeps its link only when it is http or https. A hostile feed could otherwise have opened any URL scheme handler with one click.
+- Dependabot's auto-merge only acts on Dependabot's own pull request, at the commit CI checked.
+
+### Changed
+
+- Every Check again button shows that it is working, then the result. That covers Published, post detail, Verify, Connect, cloud issues, Recheck in Cmd-K, Radar lanes, Needs you, the rules check and AI answers. When nothing changed, it says so with the time: "Checked again at 10:42, no change."
+- pendpost draws its own platform logos now, so the Studio and the website could move to lucide 1.61.
+- An empty week or month in the planner jumps to the nearest post. With no post to jump to, it offers New post.
+- Dependency updates for the app and the website.
+
+### Fixed
+
+- The macOS download works again. The Mac build runs on the current GitHub runner, a release now fails when `pendpost-macos.dmg` is missing, and the download button on pendpost.com points at the newest release that has one.
+- An update no longer stops with "commit or stash your changes" when only a `package-lock.json` changed. pendpost puts the committed lockfile back. If you really have edits in the folder, the update waits and tries again every minute instead of showing an error, and Try again shows that it ran.
+- The README's approval queue picture was a browser error page. It and the planner picture are real screenshots again.
+
 ## [2.12.1] - 2026-11-09
 
 When you edit, park, unapprove or delete a post that the always-on cloud already holds, the cloud now takes its copy back and never sends it. Before this, the cloud kept the version it was given and posted the old text at the old time.

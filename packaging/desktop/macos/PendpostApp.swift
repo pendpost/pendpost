@@ -150,9 +150,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
     }
 
     // A target="_blank" / window.open never spawns an in-app window: open the url in the
-    // system browser and return nil (no child WKWebView).
+    // system browser and return nil (no child WKWebView). Only http(s) and mailto reach the OS:
+    // a link from remote content (a feed item, a comment) must never launch an arbitrary URL
+    // scheme handler (smb:, an editor's scheme, a settings pane) without the confirmation a
+    // browser shows (security audit 2026-11).
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-        if let url = navigationAction.request.url { NSWorkspace.shared.open(url) }
+        if let url = navigationAction.request.url,
+           let scheme = url.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" || scheme == "mailto" {
+            NSWorkspace.shared.open(url)
+        }
         return nil
     }
 

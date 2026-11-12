@@ -1,6 +1,6 @@
 # pendpost
 
-**Agent-operated social media with a human approval gate.**
+**Your AI agent drafts and schedules your social posts. Nothing publishes until you approve it.**
 
 [![CI](https://github.com/pendpost/pendpost/actions/workflows/ci.yml/badge.svg)](https://github.com/pendpost/pendpost/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/pendpost.svg)](https://www.npmjs.com/package/pendpost)
@@ -8,12 +8,23 @@
 [![Glama](https://img.shields.io/badge/Glama-listed-0f172a.svg)](https://glama.ai/mcp/servers/imuc6rdqwp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](package.json)
-[![MCP native](https://img.shields.io/badge/MCP-native-7c3aed.svg)](https://modelcontextprotocol.io)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 <p align="center">
-  <img src="https://pendpost.com/readme/readme-hero-preview.png" alt="pendpost: an AI agent drafts and schedules posts; a human approval gate decides what publishes" width="820">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://pendpost.com/readme/readme-hero-light.png">
+    <img src="https://pendpost.com/readme/readme-hero-dark.png" alt="pendpost: your agents draft, you approve, then it ships" width="820">
+  </picture>
 </p>
+
+<p align="center">
+  <a href="https://pendpost.com">Website</a> · <a href="https://docs.pendpost.com">Docs</a> · <a href="#quickstart">Quickstart</a> · <a href="https://pendpost.com/services">Cloud</a> · <a href="https://github.com/pendpost/pendpost/releases">Releases</a>
+</p>
+
+```bash
+npx -y pendpost   # Node 22+, then open http://127.0.0.1:8090
+```
+
+If this is the approval step you were looking for, a star on the repo helps other people find it.
 
 pendpost is a free, open-source (MIT), local-first social media planner where an AI agent drafts and schedules posts across Instagram, Facebook, LinkedIn, YouTube, X, Telegram, Discord, Mastodon, and Nostr, plus long-form blogs on WordPress and Ghost, with Reddit, Pinterest, TikTok, and Google Business Profile in beta, all behind a human approval gate you control. It is MCP-native: AI agents draft, lint, schedule, and queue your posts, but nothing goes live until a human approves it. It is built for developers, agencies, and technical solopreneurs who want agents to do the work without handing them the keys, and without getting accounts flagged.
 
@@ -22,7 +33,10 @@ pendpost is a free, open-source (MIT), local-first social media planner where an
 Most "AI social" tools are schedulers with an agent bolted on. pendpost is the opposite. It is an operations layer designed around the agent-plus-human workflow, and these are the parts a scheduler does not give you:
 
 <p align="center">
-  <img src="https://pendpost.com/readme/approval-gate-diagram-preview.png" alt="The approval gate: an agent drafts, you approve by default, and only then does it publish" width="820">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="https://pendpost.com/readme/approval-gate-diagram-light.png">
+    <img src="https://pendpost.com/readme/approval-gate-diagram-dark.png" alt="The approval gate: an agent drafts, you approve by default, and only then does it publish" width="820">
+  </picture>
 </p>
 
 - **Human approval gate.** Every post carries an approval state (`draft`, `approved`, `rejected`) and is fail-closed: a post with no approval will not publish. `plan_create_post` always creates a draft, and only `approve_post` or `reject_post` can flip it. Nothing publishes until it's approved. By default that's you; auto-approve is owner-only and revocable.
@@ -34,10 +48,10 @@ Most "AI social" tools are schedulers with an agent bolted on. pendpost is the o
 
 ## Quickstart
 
-One line, no setup:
+One line, no account (needs Node 22 or newer):
 
 ```bash
-npx pendpost
+npx -y pendpost
 # then open http://127.0.0.1:8090
 ```
 

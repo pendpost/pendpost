@@ -13,11 +13,17 @@ import assert from 'node:assert';
 let pass = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); pass += 1; };
 
-const { authGateEnabled, checkAuth, authToken, isLoopbackHost } = await import('../lib/flags.mjs');
+const { authGateEnabled, checkAuth, authToken, isLoopbackHost, bindRefusal } = await import('../lib/flags.mjs');
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const savedHost = process.env.PENDPOST_HOST;
 const savedToken = process.env.PENDPOST_AUTH_TOKEN;
 const savedPublic = process.env.PENDPOST_PUBLIC_HOST;
+const savedAllow = process.env.PENDPOST_ALLOW_UNAUTHENTICATED;
 
 const setEnv = (host, token) => {
   if (host === undefined) delete process.env.PENDPOST_HOST; else process.env.PENDPOST_HOST = host;
@@ -68,6 +74,35 @@ try {
   ok(isLoopbackHost('127.0.0.1') && isLoopbackHost('localhost') && isLoopbackHost('::1') && isLoopbackHost(''), 'isLoopbackHost: loopback + empty classified as loopback');
   ok(!isLoopbackHost('0.0.0.0') && !isLoopbackHost('100.64.0.2'), 'isLoopbackHost: 0.0.0.0 and a Tailscale IP are non-loopback');
 
+  // ---- (7) fail closed at boot: non-loopback bind without a token is refused ---
+  // Regression (security audit 2026-11): with the gate OFF the Host allowlist was the
+  // only control, and a network peer sets Host itself, getting REST, MCP and the
+  // Studio token. The documented `docker run -p 8090:8090` image hit exactly this.
+  delete process.env.PENDPOST_ALLOW_UNAUTHENTICATED;
+  setEnv('0.0.0.0', undefined);
+  ok(typeof bindRefusal() === 'string' && /PENDPOST_AUTH_TOKEN/.test(bindRefusal()), 'non-loopback bind with no token: boot is refused');
+  setEnv('100.64.0.2', undefined);
+  ok(typeof bindRefusal() === 'string', 'Tailscale IP with no token: boot is refused');
+  setEnv('0.0.0.0', 'secret-token');
+  ok(bindRefusal() === null, 'non-loopback bind with a token: boot allowed (gate ON)');
+  setEnv(undefined, undefined);
+  ok(bindRefusal() === null, 'loopback default: boot allowed (unchanged)');
+  setEnv('0.0.0.0', undefined);
+  process.env.PENDPOST_ALLOW_UNAUTHENTICATED = '1';
+  ok(bindRefusal() === null, 'explicit PENDPOST_ALLOW_UNAUTHENTICATED=1 (loopback-published container): boot allowed');
+  process.env.PENDPOST_ALLOW_UNAUTHENTICATED = 'yes';
+  ok(typeof bindRefusal() === 'string', 'only the exact value 1 opts out');
+  delete process.env.PENDPOST_ALLOW_UNAUTHENTICATED;
+
+  // The real server exits non-zero before binding in that posture.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-bindrefusal-'));
+  const serverPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'server.mjs');
+  const env = { ...process.env, PENDPOST_ROOT: root, PENDPOST_HOST: '0.0.0.0', PENDPOST_PORT: '0', PENDPOST_STUDIO_TOKEN_DIR: root };
+  delete env.PENDPOST_AUTH_TOKEN; delete env.PENDPOST_ALLOW_UNAUTHENTICATED; delete env.PENDPOST_MODE;
+  const r = spawnSync(process.execPath, [serverPath], { env, encoding: 'utf8', timeout: 20000 });
+  fs.rmSync(root, { recursive: true, force: true });
+  ok(r.status === 1 && /refusing to listen on 0\.0\.0\.0/.test(`${r.stdout}${r.stderr}`), 'server.mjs on 0.0.0.0 with no token exits 1 with the refusal message');
+
   console.log(`[auth-gate] OK - gate OFF by default (loopback unchanged), activates only on non-loopback host + token, bearer enforced (${pass} assertions).`);
 } catch (err) {
   console.error(`[auth-gate] FAIL: ${err.message}`);
@@ -76,4 +111,5 @@ try {
   if (savedHost === undefined) delete process.env.PENDPOST_HOST; else process.env.PENDPOST_HOST = savedHost;
   if (savedToken === undefined) delete process.env.PENDPOST_AUTH_TOKEN; else process.env.PENDPOST_AUTH_TOKEN = savedToken;
   if (savedPublic === undefined) delete process.env.PENDPOST_PUBLIC_HOST; else process.env.PENDPOST_PUBLIC_HOST = savedPublic;
+  if (savedAllow === undefined) delete process.env.PENDPOST_ALLOW_UNAUTHENTICATED; else process.env.PENDPOST_ALLOW_UNAUTHENTICATED = savedAllow;
 }

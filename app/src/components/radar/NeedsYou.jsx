@@ -27,6 +27,7 @@ import { FIELD, FIELD_MULTILINE } from '../ui/tokens.js';
 import { Tip } from '../ui/Tooltip.jsx';
 import InfoTip from '../ui/InfoTip.jsx';
 import { SOURCE_META, RowMenu, sourceLabel } from './RadarFeed.jsx';
+import useRecheck from '../../lib/useRecheck.js';
 
 // Collapsed height of the strip, in rows (row 8e3: never more than five without asking).
 const VISIBLE = 5;
@@ -74,6 +75,9 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [copied, setCopied] = useState(false);
+  // The login / switch-account check: held for the minimum busy time, and a second identical
+  // "still not logged in" is dated, so a re-check never looks like the old line left standing.
+  const check = useRecheck();
 
   const meta = SOURCE_META[ask.lane] || { Icon: Radio, color: '' };
   const Glyph = meta.Icon;
@@ -157,20 +161,21 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
       Icon: RefreshCw,
       disabled: false,
       onClick: async () => {
-        setBusy(true);
         setError(null);
-        try {
-          const res = await engageProbe(ask.lane);
-          queryClient.invalidateQueries({ queryKey: ['engage-asks'] });
-          queryClient.invalidateQueries({ queryKey: ['engage'] });
-          if (res && res.usable) onResolved(ask, sentLine());
-          else { setError({ text: t('radar.ask.error.check', { platform }), raw: null }); setBusy(false); }
-        } catch (err) {
-          // The check itself failed (pendpost unreachable, a server error): say the check
-          // failed, never "Could not send" - nothing was being sent.
-          setError(errReason(err, t, 'radar.ask.error.probe', { platform }));
-          setBusy(false);
-        }
+        const out = await check.run(async () => {
+          try {
+            const res = await engageProbe(ask.lane);
+            queryClient.invalidateQueries({ queryKey: ['engage-asks'] });
+            queryClient.invalidateQueries({ queryKey: ['engage'] });
+            return res && res.usable ? null : { text: t('radar.ask.error.check', { platform }), raw: null };
+          } catch (err) {
+            // The check itself failed (pendpost unreachable, a server error): say the check
+            // failed, never "Could not send" - nothing was being sent.
+            return errReason(err, t, 'radar.ask.error.probe', { platform });
+          }
+        });
+        if (out) setError({ ...out, check: true });
+        else onResolved(ask, t('radar.ask.resolved.loggedIn'));
       },
     };
   })();
@@ -259,7 +264,7 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
           {/* One plain sentence; the server's raw line rides the shared "?" only, never inline. */}
           {error ? (
             <div className="flex flex-wrap items-center gap-1.5 text-xs text-red-600 dark:text-red-400">
-              <p role="alert">{error.text}</p>
+              <p role="alert">{[error.text, error.check ? check.again : ''].filter(Boolean).join(' ')}</p>
               <InfoTip label={error.raw} />
               <button type="button" onClick={primary.onClick} className={`font-bold underline underline-offset-2 ${TAP_TARGET}`}>{t('radar.ask.error.retry')}</button>
             </div>
@@ -270,9 +275,9 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
         <div className="flex shrink-0 items-center gap-1">
           <RowMenu showDismiss={false} extraItems={menuItems} t={t} />
           <Tip label={primary.label}>
-            <button type="button" onClick={primary.onClick} disabled={busy || primary.disabled} className={`${BTN_PRIMARY} ${TAP_TARGET}`}>
-              {busy ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <PrimaryIcon size={13} aria-hidden="true" />}
-              {busy ? t('radar.ask.sending') : primary.label}
+            <button type="button" onClick={primary.onClick} disabled={busy || check.busy || primary.disabled} aria-busy={busy || check.busy || undefined} className={`${BTN_PRIMARY} ${TAP_TARGET}`}>
+              {busy || check.busy ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <PrimaryIcon size={13} aria-hidden="true" />}
+              {check.busy ? t('radar.ask.checking') : busy ? t('radar.ask.sending') : primary.label}
             </button>
           </Tip>
         </div>

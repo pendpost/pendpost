@@ -209,9 +209,20 @@ try {
   ok(r.ok !== true, 'a symlink to the token file is refused (real path check)');
   r = await up(path.join(dataDir, '.env'), 'env.png');
   ok(r.ok !== true, 'a dotfile source (.env) is refused');
-  fs.writeFileSync(path.join(TOKEN_DIR, 'real.png'), 'png');
+  // A real PNG header: asset_upload checks that a filePath source really is the media its
+  // new name promises (security audit 2026-11).
+  const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(16)]);
+  fs.writeFileSync(path.join(TOKEN_DIR, 'real.png'), PNG);
   r = await up(path.join(TOKEN_DIR, 'real.png'), 'real.png');
   ok(r.ok === true, `an ordinary file is still uploaded (${r.code || 'ok'})`);
+  // Regression: a non-dot, non-media file (an attest key, a config, any local file) cannot be
+  // copied into data/media under an image name, so GET /media can never hand it out.
+  fs.writeFileSync(path.join(TOKEN_DIR, 'attest-key.json'), JSON.stringify({ privateKey: 'DUMMY-KEY' }));
+  r = await up(path.join(TOKEN_DIR, 'attest-key.json'), 'k.png');
+  ok(r.ok !== true && /magic-byte/.test(r.message || ''), 'a non-media file renamed to .png is refused (magic-byte check)');
+  fs.writeFileSync(path.join(TOKEN_DIR, 'notes.txt'), 'secret notes that are long enough');
+  r = await up(path.join(TOKEN_DIR, 'notes.txt'), 'n.mp4');
+  ok(r.ok !== true, 'a text file renamed to .mp4 is refused');
   // Identity, not name: a case variant, a symlink and a HARD LINK (a different name, no dot
   // segment anywhere) to the token file are all the same file.
   ok(T.isStudioTokenPath(path.join(tokenDir, 'Studio-Token')) && T.isStudioTokenPath(path.join(TOKEN_DIR, '.PENDPOST', 'STUDIO-TOKEN-8099')), 'a case-variant spelling of a token path is caught');

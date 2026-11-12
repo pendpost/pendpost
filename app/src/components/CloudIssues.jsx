@@ -19,10 +19,13 @@ import { useT } from '../lib/i18n.js';
 import { failedDisplayKey, fmtRelative, fmtTime } from '../lib/format.js';
 import { failureKey, humanizeFailure, laneLabel } from '../lib/failureCopy.js';
 import { recheckCloud, pushCloud, useSetCloudSync } from '../lib/cloud.js';
+import { humanizeAction } from '../lib/failureCopy.js';
+import useRecheck from '../lib/useRecheck.js';
 import { Button } from './ui/Button.jsx';
 import ActionButton from './ui/ActionButton.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { TAP_TARGET } from './ui/recipes.js';
+import InfoTip from './ui/InfoTip.jsx';
 
 export { laneLabel };
 
@@ -157,43 +160,58 @@ export function useCloudFix() {
 }
 
 // The ONE fix button (check again / send again), built on ActionButton's state machine.
-// idle -> working (spinner, disabled, aria-busy; the label never changes, so the width
-// holds) -> fixed (a check, then the row folds away via onFixed) | still ("not yet ·
-// HH:MM") | error ("check failed"; the button stays live, so it retries). The
+// idle -> working (spinner, disabled, aria-busy, held for useRecheck's minimum; the label
+// never changes, so the width holds) -> fixed (a check, then the row folds away via onFixed)
+// | still ("not yet · HH:MM") | error (the known reason, else "check failed"; the button
+// stays live, so it retries). A second identical still/error is dated as a new check. The
 // result line is a polite live region, and every outcome is said in words, never by colour
 // or motion alone.
 export function FixButton({ action = 'recheck', gone, onFixed, className = '' }) {
   const t = useT();
   const fix = useCloudFix();
-  const [outcome, setOutcome] = useState(null); // null | { kind: 'fixed'|'still'|'error', at? }
+  const check = useRecheck();
+  const [outcome, setOutcome] = useState(null); // null | { kind: 'fixed'|'still'|'error', at?, text?, raw? }
   const run = async () => {
     setOutcome(null);
-    const r = await fix(action, gone);
-    if (r.fixed) {
+    const out = await check.run(async () => {
+      try {
+        const r = await fix(action, gone);
+        return r.fixed ? { kind: 'fixed', key: 'fixed', r } : { kind: 'still', key: 'still', r };
+      } catch (err) {
+        return { kind: 'error', ...humanizeAction(err, t, { fallbackKey: 'connection.issue.checkFailed' }) };
+      }
+    });
+    if (out.kind === 'fixed') {
       setOutcome({ kind: 'fixed' });
       onFixed?.();
       await wait(COLLAPSE_MS);
-      r.commit();
+      out.r.commit();
       return;
     }
-    r.commit();
-    setOutcome({ kind: 'still', at: r.checkedAt });
+    if (out.kind === 'still') {
+      out.r.commit();
+      setOutcome({ kind: 'still', at: out.r.checkedAt });
+    } else {
+      setOutcome({ kind: 'error', text: out.text, raw: out.raw });
+    }
     throw NOT_YET;
   };
   const Icon = outcome?.kind === 'fixed' ? Check : action === 'resend' ? Send : RefreshCw;
   const line = outcome?.kind === 'fixed' ? t('connection.issue.fixed')
-    : outcome?.kind === 'still' ? t('connection.issue.still', { time: fmtTime(outcome.at) })
-      : outcome?.kind === 'error' ? t('connection.issue.checkFailed') : '';
+    : outcome?.kind === 'still' ? (check.again || t('connection.issue.still', { time: fmtTime(outcome.at) }))
+      : outcome?.kind === 'error' ? [outcome.text, check.again].filter(Boolean).join(' ') : '';
   return (
     <div className={`flex flex-col items-start gap-1 ${className}`}>
       <ActionButton
         onAction={run}
-        onError={() => setOutcome({ kind: 'error' })}
         icon={Icon}
         labels={{ idle: action === 'resend' ? t('connection.issue.resend') : t('connection.issue.recheck') }}
         className={TAP_TARGET}
       />
-      <p aria-live="polite" className={line ? 'text-[11px] text-zinc-500 dark:text-zinc-400' : 'sr-only'}>{line}</p>
+      <span className="flex items-start gap-1">
+        <p aria-live="polite" className={!line ? 'sr-only' : outcome?.kind === 'error' ? 'text-[11px] text-red-600 dark:text-red-300' : 'text-[11px] text-zinc-500 dark:text-zinc-400'}>{line}</p>
+        {outcome?.kind === 'error' ? <InfoTip label={outcome.raw && outcome.raw !== outcome.text ? outcome.raw : null} /> : null}
+      </span>
     </div>
   );
 }

@@ -57,7 +57,7 @@ describe('PostPreview for a healthy album', () => {
   it('moves the frame when another slide is chosen, without changing the frame height', () => {
     const { container } = render(<PostPreview post={album(items)} />);
     const track = container.querySelector('[style*="translateX"]');
-    expect(track.getAttribute('style')).toContain('translateX(-0%)');
+    expect(track.getAttribute('style')).toContain('translateX(0%)');
     fireEvent.click(screen.getByRole('button', { name: 'Show slide 5' }));
     expect(container.querySelector('[style*="translateX"]').getAttribute('style')).toContain('translateX(-400%)');
     expect(screen.getByRole('button', { name: 'Show slide 5' })).toHaveAttribute('aria-current', 'true');

@@ -104,7 +104,23 @@ const isGitRepo = (cwd) => git(['rev-parse', '--is-inside-work-tree'], { cwd }).
 // stray render) never reach the build: committed code cannot import them, and
 // if upstream adds a file at the same path `git pull --ff-only` fails instead
 // of overwriting it. Counting them blocked every update over a backup tarball.
-const cleanTree = (cwd) => { const r = git(['status', '--porcelain', '--untracked-files=no'], { cwd }); return r.ok && r.out === ''; };
+//
+// A package-lock.json that differs from the committed one is npm noise, not an
+// edit: an `npm install` with another npm version rewrites it (npm 10 drops the
+// `libc` fields npm 11 writes, so every Dependabot bump left the tree "dirty" and
+// blocked every update). The committed lockfile is the truth, so a lockfile-only
+// drift counts as clean and apply() restores it. A real dependency change also
+// edits package.json, which still counts.
+const isLockfile = (p) => path.basename(p) === 'package-lock.json';
+// Edited or staged tracked files, split into real edits and lockfile drift.
+// null when git cannot answer (treated as dirty).
+export function treeChanges(cwd) {
+  const r = git(['diff', '--name-only', '-z', 'HEAD'], { cwd });
+  if (!r.ok) return null;
+  const all = r.out.split('\0').filter(Boolean);
+  return { edits: all.filter((p) => !isLockfile(p)), lockfiles: all.filter(isLockfile) };
+}
+const cleanTree = (cwd) => { const c = treeChanges(cwd); return Boolean(c) && c.edits.length === 0; };
 
 // Atomic write (tmp + rename) so a concurrent reader (GET /api/health, every 15s)
 // never parses a half-written status and momentarily loses the prompt.
@@ -148,7 +164,13 @@ export function gitCheck({ repo = REPO_ROOT, statusDir = path.join(REPO_ROOT, 'd
 // build), so the Studio shows the real step instead of a guess.
 export async function apply({ pull = false, repo = REPO_ROOT, appDir = APP_DIR, statusDir = path.join(repo, 'data'), onStep = () => {} } = {}) {
   if (!isGitRepo(repo)) return { ok: false, step: 'check', reason: 'not-a-git-checkout' };
-  if (!cleanTree(repo)) return { ok: false, step: 'check', reason: 'dirty-tree' };
+  const changes = treeChanges(repo);
+  // `dirty` names the edited files (at most 10) so the Studio can show what it waits for.
+  if (!changes || changes.edits.length) return { ok: false, step: 'check', reason: 'dirty-tree', dirty: (changes?.edits || []).slice(0, 10) };
+  if (changes.lockfiles.length) {
+    git(['checkout', '--', ...changes.lockfiles], { cwd: repo });
+    console.error(`[dashboard-build] restored the committed ${changes.lockfiles.join(', ')} (npm rewrote it locally)`);
+  }
   if (pull) onStep('downloading');
   if (pull && !git(['pull', '--ff-only'], { cwd: repo, timeout: 120_000 }).ok) {
     gitCheck({ repo, statusDir, fetch: false });

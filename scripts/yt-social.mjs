@@ -346,10 +346,28 @@ export function resolveCoverPath(post, mediaPath = null) {
 // render (mirrors the cover-sibling convention). Engines only READ it. Returns an
 // absolute path or null. captions.insert applies it post-hoc even on a PRIVATE
 // video (unlike a cover it needs no phone verification).
+// A plan field can be written by an agent, so the named file is re-checked here before it is
+// read and uploaded (security audit 2026-11): a subtitle extension, a real path with no dot
+// directory or dotfile, and a regular file.
+export function captionFileAllowed(abs) {
+  if (typeof abs !== 'string' || !/\.(srt|vtt)$/i.test(abs)) return false;
+  let real;
+  try { real = fs.realpathSync(abs); } catch { return false; }
+  if (!/\.(srt|vtt)$/i.test(real)) return false;
+  // Dot segments inside the install or workspace root's own prefix are not counted (a checkout
+  // under a .claude/worktrees/... directory still works), exactly as readUploadSource does.
+  const roots = [process.env.PENDPOST_ROOT, path.resolve(__dirname, '..')].filter(Boolean)
+    .map((r) => { try { return fs.realpathSync(r); } catch { return path.resolve(r); } });
+  const base = roots.filter((r) => real === r || real.startsWith(r + path.sep)).sort((a, b) => b.length - a.length)[0];
+  const rest = base ? path.relative(base, real) : real;
+  if (rest.split(path.sep).some((seg) => seg.startsWith('.') && seg !== '.')) return false;
+  try { return fs.statSync(real).isFile(); } catch { return false; }
+}
+
 function resolveCaptionPath(post) {
   if (post.captionPath) {
     const abs = path.isAbsolute(post.captionPath) ? post.captionPath : path.resolve(__dirname, '..', post.captionPath);
-    return fs.existsSync(abs) ? abs : null;
+    return fs.existsSync(abs) && captionFileAllowed(abs) ? abs : null;
   }
   const media = post.path && fs.existsSync(post.path) ? path.resolve(post.path) : null;
   if (!media) return null;
@@ -390,7 +408,10 @@ async function setThumbnail(videoId, jpgPath, token) {
 // (no schema change). Needs the youtube.force-ssl scope. isDraft=false publishes the
 // track (not forced-on). Applies even on a PRIVATE video.
 async function setCaption(videoId, srtPath, { language = 'en', name = 'English', isDraft = false } = {}, token) {
+  if (!captionFileAllowed(srtPath)) throw new Error('caption file refused: not a subtitle file (.srt/.vtt) outside a dot directory');
   const srt = fs.readFileSync(srtPath);
+  // A subtitle track always carries cue timings ('-->'); anything else is not uploaded.
+  if (!srt.toString('utf8', 0, Math.min(srt.length, 65536)).includes('-->')) throw new Error('caption file refused: no subtitle cue timings found');
   const boundary = `pendpost-${crypto.randomBytes(8).toString('hex')}`;
   const meta = JSON.stringify({ snippet: { videoId, language, name, isDraft } });
   const head = Buffer.from(

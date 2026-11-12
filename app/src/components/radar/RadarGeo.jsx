@@ -7,6 +7,7 @@ import { INNER_SURFACE, EYEBROW } from '../ui.jsx';
 import { Tip } from '../ui/Tooltip.jsx';
 import { TAP_TARGET, PILL_TONES, STATUS_INK } from '../ui/recipes.js';
 import { BacklogRow } from './RadarFeed.jsx';
+import ActionError from '../ui/ActionError.jsx';
 
 // Radar GEO cluster (split out of the former ~1850-line Radar.jsx monolith, 2026-08-05).
 // The KI-Sichtbarkeit / GEO layer: the comparison-page backlog card (reusing the feed's
@@ -110,7 +111,7 @@ function QuestionRow({ q, qLog, t }) {
 //   (b) Are AI answers naming you? - the aggregate KPI plus one quiet row PER QUESTION
 //       (mention rate + dot trend, or "not checked yet"), so the questions the owner typed
 //       in Settings are visible where their results land (owner round 3, point 3).
-function GeoSection({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, agentLive }) {
+function GeoSection({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, geoError = null, agentLive }) {
   const backlog = Array.isArray(geo?.comparisonBacklog) ? geo.comparisonBacklog : [];
   const rate = geo?.footprintRate || { checks: 0, mentioned: 0, rate: 0 };
   const log = Array.isArray(geo?.footprint) ? geo.footprint : [];
@@ -200,6 +201,8 @@ function GeoSection({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, 
               )
             ) : null}
           </div>
+          {/* The card's own Check now refusal, here where the click was (not the page banner). */}
+          <ActionError error={geoBusy ? null : geoError} />
           <div className="space-y-1.5">
               {rate.checks > 0 ? (
                 <>
@@ -292,7 +295,7 @@ function PanelMenu({ onDisable, onGeoReset, onSetupAutoReply = null, t }) {
 // quiet line - the headline "are AI answers naming you?" - that expands in place to the full
 // GeoSection. Renders nothing until there is data (both halves are derived; absence means "not
 // yet", never a card explaining its own emptiness).
-function GeoStrip({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, agentLive }) {
+function GeoStrip({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, geoError = null, agentLive }) {
   const rate = geo?.footprintRate || { checks: 0, rate: 0 };
   const backlog = Array.isArray(geo?.comparisonBacklog) ? geo.comparisonBacklog : [];
   const questions = Array.isArray(geo?.buyingQuestions) ? geo.buyingQuestions : [];
@@ -317,7 +320,7 @@ function GeoStrip({ geo, t, canDraftPages, onNavigate, onGeoRecheck, geoBusy, ag
         <span className="min-w-0 flex-1 truncate text-sm text-zinc-600 dark:text-zinc-300">{summary}</span>
         <ChevronDown size={16} className={`shrink-0 text-zinc-500 transition ${open ? 'rotate-180' : ''}`} aria-hidden="true" />
       </button>
-      {open ? <GeoSection geo={geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={geoBusy} agentLive={agentLive} /> : null}
+      {open ? <GeoSection geo={geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={geoBusy} geoError={geoError} agentLive={agentLive} /> : null}
     </div>
   );
 }

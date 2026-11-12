@@ -38,6 +38,7 @@ try {
   const { getConfig } = await import('../lib/config.mjs');
   const { readEnv } = await import('../lib/util.mjs');
   const { handleApi } = await import('../lib/api.mjs');
+  const { studioToken, STUDIO_TOKEN_HEADER } = await import('../lib/studio-token.mjs');
 
   initMultiClient();
   ok(createClient({ id: 'brandb', displayName: 'Brand B', actor: 'owner' }).ok, 'createClient brandb');
@@ -58,7 +59,7 @@ try {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const adopt = async (body) => {
-    const r = await fetch(`${base}/api/agent/adopt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const r = await fetch(`${base}/api/agent/adopt`, { method: 'POST', headers: { 'Content-Type': 'application/json', [STUDIO_TOKEN_HEADER]: studioToken() }, body: JSON.stringify(body) });
     return { status: r.status, body: await r.json(), raw: null };
   };
 

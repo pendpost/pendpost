@@ -10,6 +10,7 @@ import { publishRunOutcome, unconnectedLanes } from './format.js';
 import { usePostSetup } from './setupByClient.js';
 import { humanizeAction, humanizeFailure } from './failureCopy.js';
 import { showApproveNotice } from './approveNotice.js';
+import { withMinBusy } from './useRecheck.js';
 
 // The overview's post-action set - the SAME actions PostDetail offers, made reachable
 // from a card/row's three-dots menu (ui/RowMenu) so an operator can act without opening
@@ -118,9 +119,16 @@ export function usePostActions(post, { onEdit, fix = null, setup } = {}) {
     }
   };
 
+  // The menu is gone once clicked, so the toast tells the whole check: a spinner notice while
+  // it reads back (held for the minimum busy time), then what came back. A not-live answer is
+  // a result to say, never silence.
   const verify = async () => {
+    showToast({ kind: 'progress', text: t('postDetail.action.verifyLoading') });
     try {
-      await verifyPost(post.campaign, post.id);
+      const res = await withMinBusy(() => verifyPost(post.campaign, post.id));
+      showToast(res?.liveCount
+        ? { kind: 'success', text: t('postDetail.verify.announce', { live: res.liveCount, total: res.checked || res.liveCount }) }
+        : { kind: 'error', text: t('postDetail.verify.notLive') });
     } catch (err) {
       showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
     } finally {

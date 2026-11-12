@@ -22,6 +22,7 @@ import NeedsYou from './radar/NeedsYou.jsx';
 import LaneReadinessLine, { SETUP_LANE, BLUESKY_ENV_VARS, CopyEnvLinesButton } from './radar/LaneReadinessLine.jsx';
 import InfoTip from './ui/InfoTip.jsx';
 import { showToast } from './AppToast.jsx';
+import useRecheck from '../lib/useRecheck.js';
 
 // The Radar (beta) Studio panel (spec 32, Pattern P4-read + P9). A distinct read: a
 // ranked, deduped feed of EXTERNAL buyer conversations scored by buying intent - unlike
@@ -209,6 +210,10 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   const [checkNote, setCheckNote] = useState(null);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState(null);
+  // The AI-answers card's own "Check now": its refusal is said ON the card (the page banner sits
+  // far above it), held for the minimum busy time, and a repeated identical refusal is dated.
+  const geoCheck = useRecheck();
+  const [geoError, setGeoError] = useState(null);
   const [pausing, setPausing] = useState(false);
   // Row 12: immediate, no confirmation popover, one toast that carries Resume back. Pause is
   // resumable and distinct from a platform "cooling down" - two different words, on purpose.
@@ -399,19 +404,23 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   // apply exactly as they do for a normal scan.
   const onGeoRecheck = async () => {
     setScanning(true);
-    setError(null);
-    try {
-      await radarAgentScan({ scope: 'geo' });
-    } catch (err) {
-      // Same as onScan: the geo recheck also returns on row-save now, so the start-refusal
-      // code (in_flight / disabled / not_configured) is humanized by errAlert and never
-      // collapses into a false "scan failed" - the job row carries the real outcome.
-      setError(errAlert(err, t, 'radar.error.scan'));
-    } finally {
-      setScanning(false);
-      queryClient.invalidateQueries({ queryKey: ['radar'] });
-    }
+    setGeoError(null);
+    const out = await geoCheck.run(async () => {
+      try {
+        await radarAgentScan({ scope: 'geo' });
+        return null;
+      } catch (err) {
+        // Same as onScan: the geo recheck also returns on row-save now, so the start-refusal
+        // code (in_flight / disabled / not_configured) is humanized by errAlert and never
+        // collapses into a false "scan failed" - the job row carries the real outcome.
+        return errAlert(err, t, 'radar.error.scan');
+      }
+    });
+    setScanning(false);
+    queryClient.invalidateQueries({ queryKey: ['radar'] });
+    setGeoError(out);
   };
+  const geoErrorShown = geoError ? { ...geoError, text: [geoError.text, geoCheck.again].filter(Boolean).join(' ') } : null;
 
   // WS2: turn a suggested search from a low/zero-yield run into a saved query, reusing the SAME
   // saveConfig query-write the settings editor uses (RadarSearches.jsx). Recognition over recall -
@@ -1701,7 +1710,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
               {/* KI-Sichtbarkeit, minimal: one quiet line at the foot of the feed. Per-client
                   (feed.geo is the active client's), so hidden in the all-projects overview. */}
               {!allClients ? (
-                <GeoStrip geo={feed?.geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={scanning || jobRunning} agentLive={agentLive} />
+                <GeoStrip geo={feed?.geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={scanning || jobRunning} geoError={geoErrorShown} agentLive={agentLive} />
               ) : null}
             </div>
           ) : allClients ? (
@@ -1748,7 +1757,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                   ) : null}
                 </div>
               </div>
-              <GeoStrip geo={feed?.geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={scanning || jobRunning} agentLive={agentLive} />
+              <GeoStrip geo={feed?.geo} t={t} canDraftPages={canDraftPages} onNavigate={onNavigate} onGeoRecheck={onGeoRecheck} geoBusy={scanning || jobRunning} geoError={geoErrorShown} agentLive={agentLive} />
             </div>
           )}
         </>

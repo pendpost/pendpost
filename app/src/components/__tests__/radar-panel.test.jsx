@@ -9,6 +9,7 @@ import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { TAP_TARGET } from '../ui/recipes.js';
+import { recheckTiming, MIN_BUSY_MS } from '../../lib/useRecheck.js';
 
 // The Radar (beta) Studio panel (spec 32, Pattern P4-read + P9): renders the opt-in
 // beta gate, the ranked scored signal feed, and the compact query editor. Covers every
@@ -2758,6 +2759,42 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(screen.queryByText('0%')).not.toBeInTheDocument();
   });
 
+  // The card's own "Check now": a refused start used to land in the page banner at the TOP of
+  // the Radar page, far above this card at the foot of the feed, and a fast answer barely showed
+  // the spinner. Now it spins for the minimum, and the reason sits under the card's header, with
+  // a dated line when the same refusal comes back.
+  describe('AI answers Check now', () => {
+    const openCard = async (user) => {
+      feedData.geo = { comparisonBacklog: [], footprint: [], footprintRate: { checks: 0, mentioned: 0, rate: 0 }, buyingQuestions: ['best scheduler?'] };
+      renderPanel();
+      await user.click(screen.getByRole('button', { name: /watching 1 ai answer question/i }));
+      return screen.getByText('Are AI answers naming you?').closest('.space-y-2');
+    };
+
+    it('holds "Checking…" for the minimum on a fast start', async () => {
+      recheckTiming.minBusyMs = MIN_BUSY_MS;
+      const user = userEvent.setup();
+      const card = await openCard(user);
+      await user.click(within(card).getByRole('button', { name: /^check now$/i }));
+      await new Promise((r) => { setTimeout(r, MIN_BUSY_MS / 2); });
+      expect(within(card).getByRole('button', { name: /checking/i })).toBeDisabled();
+      await waitFor(() => expect(within(card).getByRole('button', { name: /^check now$/i })).not.toBeDisabled(), { timeout: 2000 });
+    });
+
+    it('a refused start is said on the card, and a repeat is dated', async () => {
+      radarAgentScanMock.mockRejectedValue(Object.assign(new Error('HTTP 423'), { code: 'in_flight' }));
+      const user = userEvent.setup();
+      const card = await openCard(user);
+      await user.click(within(card).getByRole('button', { name: /^check now$/i }));
+      const alert = await within(card).findByRole('alert');
+      expect(alert.textContent.trim().length).toBeGreaterThan(10);
+      expect(alert).not.toHaveTextContent(/checked again/i);
+      await user.click(await within(card).findByRole('button', { name: /^check now$/i }));
+      await waitFor(() => expect(within(card).getByRole('alert')).toHaveTextContent(/checked again at .+, no change/i));
+      radarAgentScanMock.mockImplementation(() => Promise.resolve({ ok: true, enabled: true, job: null }));
+    });
+  });
+
   // REVERSAL, recorded: this asserted that an EMPTY GEO section renders "honest empty states".
   // Spec 35 meant that as data honesty (never a fake 0%), and the honesty holds - but the
   // rendering did not. Each card was ~240px whose entire content was one line saying there is
@@ -3116,6 +3153,40 @@ describe('Radar panel - spec 50 S5 engage states', () => {
     expect(screen.getByText(/skipped · this community bans automated posts/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /check rules again/i }));
     await waitFor(() => expect(engageCommunityRecheckMock).toHaveBeenCalledWith('reddit', 'r/socialmedia'));
+  });
+
+  // "Check rules again" clears the cached rule; the skipped row stays as it is until the next
+  // scan, so before this the click left the row identical. It now spins for the minimum, says
+  // what it did, and dates a repeat (also a repeated identical failure).
+  it('Check rules again spins, then says what it did; a repeat is dated', async () => {
+    recheckTiming.minBusyMs = MIN_BUSY_MS;
+    const user = userEvent.setup();
+    withEngage({ actionId: 'a1', status: 'skipped', waitingOn: null, kinds: ['reply'], reason: 'community_rule' });
+    renderPanel();
+    const btn = () => screen.getByRole('button', { name: /check rules again/i });
+    await user.click(btn());
+    await new Promise((r) => { setTimeout(r, MIN_BUSY_MS / 2); });
+    expect(btn()).toHaveAttribute('aria-busy', 'true');
+    expect(btn()).toBeDisabled();
+    expect(await screen.findByText(/^Checked at .+\. The next scan reads this community's rules again\.$/, {}, { timeout: 2000 })).toBeInTheDocument();
+    recheckTiming.minBusyMs = 0;
+    await waitFor(() => expect(btn()).not.toBeDisabled());
+    await user.click(btn());
+    expect(await screen.findByText(/checked again at .+, no change/i)).toBeInTheDocument();
+  });
+
+  it('Check rules again: a repeated identical failure is dated', async () => {
+    engageCommunityRecheckMock.mockImplementation(() => Promise.reject(new TypeError('Load failed')));
+    const user = userEvent.setup();
+    withEngage({ actionId: 'a1', status: 'skipped', waitingOn: null, kinds: ['reply'], reason: 'community_rule' });
+    renderPanel();
+    const btn = () => screen.getByRole('button', { name: /check rules again/i });
+    await user.click(btn());
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Could not check the rules again\. Could not reach your local pendpost\. Is it running\?$/);
+    await waitFor(() => expect(btn()).not.toBeDisabled());
+    await user.click(btn());
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/checked again at .+, no change/i));
+    engageCommunityRecheckMock.mockImplementation(() => Promise.resolve({ ok: true }));
   });
 
   it('a skip decision with no action row still says so, in your words', () => {

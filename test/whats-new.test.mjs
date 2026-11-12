@@ -49,7 +49,9 @@ try {
   ok(wn.validateNotes({ releases: [base] }).length === 0, 'a minimal entry with two items is valid');
   ok(wn.KINDS.join() === 'new,improved,fixed' && Object.isFrozen(wn.KINDS) && Object.isFrozen(wn.ICONS), 'KINDS and ICONS are frozen lists');
   const lucideDir = ['app/node_modules', '../../../app/node_modules'].map((d) => path.join(import.meta.dirname, '..', d, 'lucide-react/dist/esm/icons')).find((d) => fs.existsSync(d));
-  if (lucideDir) ok(wn.ICONS.every((n) => fs.existsSync(path.join(lucideDir, `${n}.js`))), 'every ICONS name exists in lucide-react');
+  // A platform name (youtube) draws the shared brand mark instead: lucide has no brand glyphs since 1.0.
+  const brandMarks = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, '..', 'app/src/components/ui/brand-marks.json'), 'utf8')).marks;
+  if (lucideDir) ok(wn.ICONS.every((n) => brandMarks[n] || [`${n}.js`, `${n}.mjs`].some((f) => fs.existsSync(path.join(lucideDir, f)))), 'every ICONS name exists in lucide-react or brand-marks.json');
   ok(refused({ releases: [{ ...base, items: [item()] }] }, /2 to 4 "items"/), 'a single item is refused');
   ok(refused({ releases: [{ ...base, items: [item(), item(), item(), item(), item()] }] }, /2 to 4 "items"/), 'five items are refused');
   ok(refused({ releases: [{ ...base, items: undefined }] }, /2 to 4 "items"/), 'an entry without items is refused');

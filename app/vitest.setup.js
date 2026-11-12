@@ -1,11 +1,16 @@
 // Vitest setup: jest-dom matchers (toBeInTheDocument, etc.) plus jest-axe's
 // toHaveNoViolations for the accessibility checks on key screens.
 import '@testing-library/jest-dom/vitest';
-import { expect, afterEach } from 'vitest';
+import { expect, afterEach, beforeEach } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import { toHaveNoViolations } from 'jest-axe';
+import { recheckTiming } from './src/lib/useRecheck.js';
 
 expect.extend(toHaveNoViolations);
+
+// The recheck buttons hold their spinner for a minimum time (lib/useRecheck.js) so a fast answer
+// is still seen. Suites that do not test that minimum run without it; the ones that do set it.
+beforeEach(() => { recheckTiming.minBusyMs = 0; });
 
 // Unmount and clear the jsdom DOM after every test so queries never match
 // leftover nodes from a previous test (RTL auto-cleanup is not guaranteed

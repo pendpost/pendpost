@@ -196,6 +196,25 @@ try {
   });
   setLaneRuntime('hackernews', { usable: true, reason: 'ready', handleSeen: 'pendpost', pausedUntil: null, pauseReason: null });
 
+  // ---- 0. lane-host binding (security audit 2026-11) -----------------------------------------
+  // The target must be on the lane's own platform: a planted signal pointing at the local Studio
+  // or another site never reaches the logged-in automation browser.
+  console.log('\n-- lane-host binding --');
+  ok(browser.laneUrlAllowed('hackernews', 'https://news.ycombinator.com/item?id=1') === true, 'an HN item url is allowed on the hackernews lane');
+  for (const bad of ['http://127.0.0.1:8090/#/settings', 'https://attacker.example/item?id=1', 'http://news.ycombinator.com/item?id=1', 'https://user:pw@news.ycombinator.com/x', 'https://x.com/a']) {
+    ok(browser.laneUrlAllowed('hackernews', bad) === false, `refused on hackernews: ${bad}`);
+  }
+  const pwArgv = browser.playwrightMcpArgv({ profileDir: '/p' });
+  const blocked = String(pwArgv[pwArgv.indexOf('--blocked-origins') + 1] || '').split(';');
+  const daemonOrigin = `http://127.0.0.1:${Number(process.env.PENDPOST_PORT || 8090)}`;
+  ok(blocked.includes(daemonOrigin) && blocked.includes(`http://localhost:${Number(process.env.PENDPOST_PORT || 8090)}`), `the automation browser blocks the daemon origin WITH its port (${daemonOrigin})`);
+  seedSignal('hackernews', 'loop-1', { url: 'http://127.0.0.1:8090/#/settings' });
+  seedRow('loop-1', 'hackernews', 'reply', { signalKey: 'hackernews loop-1' });
+  const hostRunner = fakeRunner({ report: { lane: 'hackernews', code: 'ok', results: [] } });
+  const hostRes = await runBrowserBatch({ lane: 'hackernews', rowIds: ['loop-1'], runner: hostRunner });
+  ok(hostRunner.calls.length === 0 && hostRes.ran === false, 'a row whose target is not on the platform never spawns the browser child');
+  ok(rowOf('loop-1').status === 'skipped' && rowOf('loop-1').result.code === 'target_gone', 'and the row is skipped as target_gone');
+
   // ---- 1. the dry run (D19, risk 6) -------------------------------------------------------
   console.log('\n-- the dry run stops before submit --');
   seedSignal('hackernews', 'dry-1');

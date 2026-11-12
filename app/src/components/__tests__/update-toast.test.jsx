@@ -1,7 +1,7 @@
 import { render, screen, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import UpdateToast, { formatVersion } from '../UpdateToast.jsx';
+import UpdateToast, { formatVersion, postDashboardUpdate } from '../UpdateToast.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 
@@ -73,6 +73,8 @@ const ui = (props = {}, locale = 'en') => (
   </I18nProvider>
 );
 const renderToast = (props, locale) => render(ui(props, locale));
+// Keyboard focus (Tab) opens a Tip; a programmatic focus does not.
+const tabTo = async (el) => { for (let i = 0; i < 10 && document.activeElement !== el; i += 1) await userEvent.tab(); };
 const clickUpdate = async () => userEvent.click(screen.getByRole('button', { name: /^update$/i }));
 
 let storage;
@@ -340,6 +342,43 @@ describe('UpdateToast: failure', () => {
     expect(onUpdate).toHaveBeenCalledTimes(2);
   });
 
+  it('open edits after a click: a calm wait that names the files, never "commit or stash"', async () => {
+    const onUpdate = vi.fn().mockResolvedValue({ ok: true, started: true, state: 'installing' });
+    status = answer();
+    const { rerender } = renderToast({ onUpdate });
+    await clickUpdate();
+    status = answer({ state: 'waiting', waitingFor: 'edits', dirtyFiles: ['lib/a.mjs', 'app/src/B.jsx'] });
+    rerender(ui({ onUpdate }));
+    expect(screen.getByText(/waiting for the changes in progress/i)).toBeInTheDocument();
+    expect(screen.queryByText(/commit or stash/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /try again/i })).toBeNull();
+    expect(screen.queryByTestId('update-steps')).toBeNull();
+    await tabTo(screen.getByRole('button', { name: 'Details' }));
+    expect((await screen.findByRole('tooltip')).textContent).toContain('Changed files: lib/a.mjs, app/src/B.jsx');
+  });
+
+  it('a build failure shows the log tail behind the info icon', async () => {
+    status = answer({ lastRun: { ...failedRun('build', '2020-01-01T00:00:00.000Z'), detail: 'vite: Could not resolve "jsdom"' } });
+    renderToast();
+    await tabTo(screen.getByRole('button', { name: 'Details' }));
+    expect((await screen.findByRole('tooltip')).textContent).toContain('Could not resolve "jsdom"');
+  });
+
+  it('Try again visibly runs, and a repeat failure says "failed again" with the time', async () => {
+    const onUpdate = vi.fn().mockResolvedValue({ ok: false, code: 'invalid_input' });
+    status = answer();
+    renderToast({ onUpdate });
+    await clickUpdate();
+    expect(await screen.findByText(/turned down the update request/i)).toBeInTheDocument();
+    expect(screen.queryByText(/failed again/i)).toBeNull();
+    let release;
+    onUpdate.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    await userEvent.click(screen.getByRole('button', { name: /try again/i }));
+    expect(screen.getByText('Starting the update …')).toBeInTheDocument();
+    release({ ok: false, code: 'invalid_input' });
+    expect(await screen.findByText(/failed again at \d{1,2}:\d{2}/i, {}, { timeout: 2000 })).toBeInTheDocument();
+  });
+
   it('the failure is still there after a reload (the server keeps it for that commit)', () => {
     status = answer({ lastRun: failedRun('pull', '2020-01-01T00:00:00.000Z') });
     renderToast();
@@ -370,7 +409,18 @@ describe('UpdateToast: failure', () => {
     status = answer();
     renderToast({ onUpdate });
     await clickUpdate();
-    expect(await screen.findByText(/did not accept the update request/i)).toBeInTheDocument();
+    expect(await screen.findByText(/turned down the update request/i)).toBeInTheDocument();
+  });
+
+  it('an HTTP refusal without an ok field is a failure, never an endless "Starting"', async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async (url, init) => (String(url).includes('dashboard-update') && init?.method === 'POST'
+      ? new Response(JSON.stringify({ code: 'invalid_input', message: 'origin not allowed' }), { status: 403 })
+      : new Response('{}', { status: 200 })));
+    try {
+      const body = await postDashboardUpdate();
+      expect(body.ok).toBe(false);
+    } finally { globalThis.fetch = realFetch; }
   });
 
   it('no answer at all (network) is a failure too', async () => {
@@ -378,15 +428,7 @@ describe('UpdateToast: failure', () => {
     status = answer();
     renderToast({ onUpdate });
     await clickUpdate();
-    expect(await screen.findByText(/did not accept the update request/i)).toBeInTheDocument();
-  });
-
-  it('uncommitted changes are named right away', async () => {
-    const onUpdate = vi.fn().mockResolvedValue({ ok: false, code: 'invalid_input', reason: 'dirty-tree' });
-    status = answer();
-    renderToast({ onUpdate });
-    await clickUpdate();
-    expect(await screen.findByText(/uncommitted changes/i)).toBeInTheDocument();
+    expect(await screen.findByText(/turned down the update request/i)).toBeInTheDocument();
   });
 
   it('a restart that never comes back becomes a failure, not an endless spinner', async () => {
@@ -439,8 +481,19 @@ describe('UpdateToast: quiet local update', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('a refused quiet apply (dirty tree) shows no failure', () => {
-    status = quietOffer({ lastRun: { ok: false, step: 'check', reason: 'dirty-tree', at: '2026-11-01T12:00:00.000Z', target: LOCAL.commit } });
+  it('a failed quiet apply never shows, even once the offer stops being quiet', () => {
+    const quietRun = { ok: false, step: 'build', reason: 'build-failed', quiet: true, at: '2026-11-01T12:00:00.000Z', target: LOCAL.commit };
+    status = quietOffer({ lastRun: quietRun });
+    const { container, rerender } = renderToast();
+    expect(container).toBeEmptyDOMElement();
+    // A dirty tree used to flip `quiet` off and surface the refusal the owner never asked for.
+    status = quietOffer({ quiet: false, lastRun: quietRun });
+    rerender(ui());
+    expect(screen.queryByText(/failed|uncommitted|commit or stash/i)).toBeNull();
+  });
+
+  it('a quiet wait for open edits shows nothing', () => {
+    status = quietOffer({ state: 'waiting', waitingFor: 'edits', dirtyFiles: ['lib/a.mjs'] });
     const { container } = renderToast();
     expect(container).toBeEmptyDOMElement();
   });
