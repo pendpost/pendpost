@@ -19,15 +19,13 @@ updates:
           - patch
     ignore:
       # Breaking majors deferred to a dedicated, tested migration (not hygiene
-      # bumps): tailwind v4 (config rewrite) and lucide v1 (removed the platform
-      # brand icons this app relies on).
+      # bumps): tailwind v4 (config rewrite). lucide is on 1.x since 2026-11-10;
+      # brand marks come from app/src/components/ui/brand-marks.json, never lucide.
       # tailwindcss: a grouped dependabot bump slipped past the semver-major
       # ignore on 2026-10-14 (3.4.13 -> 4.3.3) and broke the app build (prepack
       # rebuilds app/dist), so lock it by explicit version range, not update-type.
       - dependency-name: "tailwindcss"
         versions: [">=4.0.0"]
-      - dependency-name: "lucide-react"
-        update-types: ["version-update:semver-major"]
       # eslint 9/10 needs the flat-config migration and the react-hooks plugin
       # rule changes; stay on eslint 8 + react-hooks 4 until that lands together.
       - dependency-name: "eslint"
@@ -55,11 +53,6 @@ updates:
       # (^5 || ^6) and breaks the Vercel build (ERESOLVE). Stay on TS 6 until the
       # astro toolchain supports 7.
       - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
-      # lucide v1 removed the platform brand icons (youtube and others) that the
-      # changelog page renders from lib/whats-new.json; the 1.70.0 bump (#217) broke
-      # the Vercel build on /changelog. Same hold as lucide-react in /app.
-      - dependency-name: "lucide-static"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions

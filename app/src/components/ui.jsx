@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Facebook, Instagram, Linkedin, Youtube, X, AlertOctagon, AlertTriangle, Info, Wrench, Pencil, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
+import { X, AlertOctagon, AlertTriangle, Info, Wrench, Pencil, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
 import { STATE_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, postStatusWord, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtStampShort } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
@@ -11,164 +11,32 @@ import { INNER_SURFACE, FIELD_SURFACE, DISABLED_PRIMARY, EYEBROW, FIELD, FIELD_E
 import { TAP_TARGET, PILL_TONES, STATUS_INK } from './ui/recipes.js';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT } from '../lib/i18n.js';
+import { BrandMark } from './ui/BrandMark.jsx';
 import { validateRowText, recoveryFor } from '../lib/blockerText.js';
 import { usePostSetup } from '../lib/setupByClient.js';
 
-// The X (Twitter) brand glyph. lucide-react's `X` is the close/cross icon, and
-// lucide dropped brand marks, so the wordmark is an inline SVG here. fill follows
-// currentColor so the theme-aware PLATFORM_META color (near-black in light, near-
-// white in dark) drives it, exactly like the other brand icons take their hex.
-function XLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      className={className}
-      role={labelled ? 'img' : undefined}
-      aria-hidden={labelled ? undefined : true}
-      {...props}
-    >
-      <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-    </svg>
-  );
-}
-
-// Telegram + Discord brand marks (lucide dropped brand glyphs, same as X above).
-// fill follows currentColor so the theme-aware PLATFORM_META color drives them.
-function TelegramLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z" />
-    </svg>
-  );
-}
-function DiscordLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z" />
-    </svg>
-  );
-}
-// Reddit + Pinterest + TikTok brand marks (same inline pattern; lucide has no brand glyphs).
-function RedditLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.561 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.701zM9.25 12C8.561 12 8 12.562 8 13.25c0 .687.561 1.248 1.25 1.248.687 0 1.248-.561 1.248-1.249 0-.688-.561-1.249-1.249-1.249zm5.5 0c-.687 0-1.248.561-1.248 1.25 0 .687.561 1.248 1.249 1.248.688 0 1.249-.561 1.249-1.249 0-.687-.562-1.249-1.25-1.249zm-5.466 3.99a.327.327 0 0 0-.231.094.33.33 0 0 0 0 .463c.842.842 2.484.913 2.961.913.477 0 2.105-.056 2.961-.913a.361.361 0 0 0 .029-.463.33.33 0 0 0-.464 0c-.547.533-1.684.73-2.512.73-.828 0-1.979-.196-2.512-.73a.326.326 0 0 0-.232-.095z" />
-    </svg>
-  );
-}
-function PinterestLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M12.017 0C5.396 0 .029 5.367.029 11.987c0 5.079 3.158 9.417 7.618 11.162-.105-.949-.199-2.403.041-3.439.219-.937 1.406-5.957 1.406-5.957s-.359-.72-.359-1.781c0-1.663.967-2.911 2.168-2.911 1.024 0 1.518.769 1.518 1.688 0 1.029-.653 2.567-.992 3.992-.285 1.193.6 2.165 1.775 2.165 2.128 0 3.768-2.245 3.768-5.487 0-2.861-2.063-4.869-5.008-4.869-3.41 0-5.409 2.562-5.409 5.199 0 1.033.394 2.143.889 2.741.099.12.112.225.085.345-.09.375-.293 1.199-.334 1.363-.053.225-.172.271-.402.165-1.495-.69-2.433-2.878-2.433-4.646 0-3.776 2.748-7.252 7.92-7.252 4.158 0 7.392 2.967 7.392 6.923 0 4.135-2.607 7.462-6.233 7.462-1.214 0-2.354-.629-2.758-1.379l-.749 2.848c-.269 1.045-1.004 2.352-1.498 3.146 1.123.345 2.306.535 3.55.535 6.607 0 11.985-5.365 11.985-11.987C23.97 5.39 18.592.026 11.985.026L12.017 0z" />
-    </svg>
-  );
-}
-function TiktokLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 1.4-.54 2.79-1.35 3.94-1.31 1.92-3.58 3.17-5.91 3.21-1.43.08-2.86-.31-4.08-1.03-2.02-1.19-3.44-3.37-3.65-5.71-.02-.5-.03-1-.01-1.49.18-1.9 1.12-3.72 2.58-4.96 1.66-1.44 3.98-2.13 6.15-1.72.02 1.48-.04 2.96-.04 4.44-.99-.32-2.15-.23-3.02.37-.63.41-1.11 1.04-1.36 1.75-.21.51-.15 1.07-.14 1.61.24 1.64 1.82 3.02 3.5 2.87 1.12-.01 2.19-.66 2.77-1.61.19-.33.4-.67.41-1.06.1-1.79.06-3.57.07-5.36.01-4.03-.01-8.05.02-12.07z" />
-    </svg>
-  );
-}
-// Wave-2 brand marks (same inline pattern). Mastodon + WordPress are the official
-// simple-icons glyphs; Ghost has no fill-friendly brand mark (its logo is a wordmark),
-// so a plain ghost silhouette stands in; Nostr has no canonical logo at all, so a
-// minimal asterisk-node emblem (the protocol's relay-fanout shape) stands in; GBP
-// uses a storefront (Material `storefront`, Apache-2.0) - the product's own icon.
-function MastodonLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M23.268 5.313c-.35-2.578-2.617-4.61-5.304-5.004C17.51.242 15.792 0 11.813 0h-.03c-3.98 0-4.835.242-5.288.309C3.882.692 1.496 2.518.917 5.127.64 6.412.61 7.837.661 9.143c.074 1.874.088 3.745.26 5.611.118 1.24.325 2.47.62 3.68.55 2.237 2.777 4.098 4.96 4.857 2.336.792 4.849.923 7.256.38.265-.061.527-.132.786-.213.585-.184 1.27-.39 1.774-.753a.057.057 0 0 0 .023-.043v-1.809a.052.052 0 0 0-.02-.041.053.053 0 0 0-.046-.01 20.282 20.282 0 0 1-4.709.545c-2.73 0-3.463-1.284-3.674-1.818a5.593 5.593 0 0 1-.319-1.433.053.053 0 0 1 .066-.054c1.517.363 3.072.546 4.632.546.376 0 .75 0 1.125-.01 1.57-.044 3.224-.124 4.768-.422.038-.008.077-.015.11-.024 2.435-.464 4.753-1.92 4.989-5.604.008-.145.03-1.52.03-1.67.002-.512.167-3.63-.024-5.545zm-3.748 9.195h-2.561V8.29c0-1.309-.55-1.976-1.67-1.976-1.23 0-1.846.79-1.846 2.35v3.403h-2.546V8.663c0-1.56-.617-2.35-1.848-2.35-1.112 0-1.668.668-1.67 1.977v6.218H4.822V8.102c0-1.31.337-2.35 1.011-3.12.696-.77 1.608-1.164 2.74-1.164 1.311 0 2.302.5 2.962 1.498l.638 1.06.638-1.06c.66-.999 1.65-1.498 2.96-1.498 1.13 0 2.043.395 2.74 1.164.675.77 1.012 1.81 1.012 3.12z" />
-    </svg>
-  );
-}
-function WordPressLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M21.469 6.825c.84 1.537 1.318 3.3 1.318 5.175 0 3.979-2.156 7.456-5.363 9.325l3.295-9.527c.615-1.54.82-2.771.82-3.864 0-.405-.026-.78-.07-1.11m-7.981.105c.647-.03 1.232-.105 1.232-.105.582-.075.514-.93-.067-.899 0 0-1.755.135-2.88.135-1.064 0-2.85-.15-2.85-.15-.585-.03-.661.855-.075.885 0 0 .54.061 1.125.09l1.68 4.605-2.37 7.08L5.354 6.9c.649-.03 1.234-.1 1.234-.1.585-.075.516-.93-.065-.896 0 0-1.746.138-2.874.138-.2 0-.438-.008-.69-.015C4.911 3.15 8.235 1.215 12 1.215c2.809 0 5.365 1.072 7.286 2.833-.046-.003-.091-.009-.141-.009-1.06 0-1.812.923-1.812 1.914 0 .89.513 1.643 1.06 2.531.411.72.89 1.643.89 2.977 0 .915-.354 1.994-.821 3.479l-1.075 3.585-3.9-11.61.001.014zM12 22.784c-1.059 0-2.081-.153-3.048-.437l3.237-9.406 3.315 9.087c.024.053.05.101.078.149-1.12.393-2.325.609-3.582.609M1.211 12c0-1.564.336-3.05.935-4.39L7.29 21.709C3.694 19.96 1.212 16.271 1.211 12M12 0C5.385 0 0 5.385 0 12s5.385 12 12 12 12-5.385 12-12S18.615 0 12 0" />
-    </svg>
-  );
-}
-function GhostLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path fillRule="evenodd" d="M12 2a9 9 0 0 1 9 9v9.5a3 3 0 0 1-6 0 3 3 0 0 1-6 0 3 3 0 0 1-6 0V11a9 9 0 0 1 9-9Zm-3 7.2a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Zm6 0a1.3 1.3 0 1 0 0 2.6 1.3 1.3 0 0 0 0-2.6Z" />
-    </svg>
-  );
-}
-function NostrLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      {[0, 60, 120, 180, 240, 300].map((a) => (
-        <g key={a} transform={`rotate(${a} 12 12)`}>
-          <rect x="11.25" y="3.9" width="1.5" height="6.4" rx="0.75" />
-          <circle cx="12" cy="3.4" r="1.6" />
-        </g>
-      ))}
-      <circle cx="12" cy="12" r="2.3" />
-    </svg>
-  );
-}
-function GbpLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="m21.9 8.89-1.05-4.37c-.22-.9-1-1.52-1.91-1.52H5.05c-.9 0-1.69.63-1.9 1.52L2.1 8.89c-.24 1.02-.02 2.06.62 2.88.08.11.19.19.28.29V19c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2v-6.94c.09-.09.2-.18.28-.28.64-.82.87-1.87.62-2.89zm-2.99-3.9 1.05 4.37c.1.42.01.84-.25 1.17-.14.18-.44.47-.94.47-.61 0-1.14-.49-1.21-1.14L16.98 5l1.93-.01zM13 5h1.96l.54 4.52c.05.39-.07.78-.33 1.07-.22.26-.54.41-.95.41-.67 0-1.22-.59-1.22-1.31V5zM8.49 9.52 9.04 5H11v4.69c0 .72-.55 1.31-1.29 1.31-.34 0-.65-.15-.89-.41a1.42 1.42 0 0 1-.33-1.07zm-4.45-.16L5.05 5h1.97l-.58 4.86c-.08.65-.6 1.14-1.21 1.14-.49 0-.8-.29-.93-.47-.27-.32-.36-.75-.26-1.17zM5 19v-6.03c.08.01.15.03.23.03.87 0 1.66-.36 2.24-.95.6.6 1.4.95 2.31.95.87 0 1.65-.36 2.23-.93.59.57 1.39.93 2.29.93.84 0 1.64-.35 2.24-.95.58.59 1.37.95 2.24.95.08 0 .15-.02.23-.03V19H5z" />
-    </svg>
-  );
-}
-// Radar (beta) SEARCH-source marks (spec 33). Bluesky butterfly + the Hacker News
-// "Y" square. These two are LISTENING sources, never publish targets - they only ever
-// render as a Radar source badge (the Composer/Setup never show them).
-function BlueskyLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M5.77 3.63C8.33 5.55 11.08 9.44 12 11.53c.92-2.09 3.67-5.98 6.23-7.9C20.07 2.25 23 1.14 23 4.48c0 .67-.38 5.6-.61 6.4-.78 2.79-3.62 3.5-6.15 3.07 4.42.75 5.55 3.24 3.12 5.73-4.62 4.73-6.64-1.19-7.16-2.71-.1-.28-.14-.41-.2-.29-.06-.12-.1.01-.2.29-.52 1.52-2.54 7.44-7.16 2.71-2.43-2.49-1.3-4.98 3.12-5.73-2.53.43-5.37-.28-6.15-3.07C1.38 10.08 1 5.15 1 4.48c0-3.34 2.93-2.23 4.77-.85z" />
-    </svg>
-  );
-}
-function HackerNewsLogo({ size = 16, className = '', ...props }) {
-  const labelled = props['aria-label'];
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className} role={labelled ? 'img' : undefined} aria-hidden={labelled ? undefined : true} {...props}>
-      <path d="M0 0v24h24V0H0zm12.6 13.5V18h-1.3v-4.5L7.8 6.6h1.5l2.6 5.1 2.6-5.1h1.5l-3.4 6.9z" />
-    </svg>
-  );
-}
+// Platform brand marks come from ui/BrandMark.jsx (lucide has no brand glyphs since 1.0).
+const mark = (name) => function Mark(props) { return <BrandMark name={name} {...props} />; };
 
 export const PLATFORM_META = {
-  facebook: { Icon: Facebook, color: 'text-[#1877F2]', label: 'Facebook' },
-  instagram: { Icon: Instagram, color: 'text-[#E4405F]', label: 'Instagram' },
-  linkedin: { Icon: Linkedin, color: 'text-[#0A66C2]', label: 'LinkedIn' },
-  youtube: { Icon: Youtube, color: 'text-[#FF0000]', label: 'YouTube' },
-  x: { Icon: XLogo, color: 'text-zinc-900 dark:text-zinc-100', label: 'X' },
-  telegram: { Icon: TelegramLogo, color: 'text-[#229ED9]', label: 'Telegram' },
-  discord: { Icon: DiscordLogo, color: 'text-[#5865F2]', label: 'Discord' },
-  reddit: { Icon: RedditLogo, color: 'text-[#FF4500]', label: 'Reddit' },
-  pinterest: { Icon: PinterestLogo, color: 'text-[#E60023]', label: 'Pinterest' },
-  tiktok: { Icon: TiktokLogo, color: 'text-zinc-900 dark:text-zinc-100', label: 'TikTok' },
-  mastodon: { Icon: MastodonLogo, color: 'text-[#6364FF]', label: 'Mastodon' },
-  wordpress: { Icon: WordPressLogo, color: 'text-[#21759B]', label: 'WordPress' },
-  ghost: { Icon: GhostLogo, color: 'text-zinc-900 dark:text-zinc-100', label: 'Ghost' },
-  nostr: { Icon: NostrLogo, color: 'text-[#8E30EB]', label: 'Nostr' },
-  gbp: { Icon: GbpLogo, color: 'text-[#4285F4]', label: 'Google Business Profile' },
+  facebook: { Icon: mark('facebook'), color: 'text-[#1877F2]', label: 'Facebook' },
+  instagram: { Icon: mark('instagram'), color: 'text-[#E4405F]', label: 'Instagram' },
+  linkedin: { Icon: mark('linkedin'), color: 'text-[#0A66C2]', label: 'LinkedIn' },
+  youtube: { Icon: mark('youtube'), color: 'text-[#FF0000]', label: 'YouTube' },
+  x: { Icon: mark('x'), color: 'text-zinc-900 dark:text-zinc-100', label: 'X' },
+  telegram: { Icon: mark('telegram'), color: 'text-[#229ED9]', label: 'Telegram' },
+  discord: { Icon: mark('discord'), color: 'text-[#5865F2]', label: 'Discord' },
+  reddit: { Icon: mark('reddit'), color: 'text-[#FF4500]', label: 'Reddit' },
+  pinterest: { Icon: mark('pinterest'), color: 'text-[#E60023]', label: 'Pinterest' },
+  tiktok: { Icon: mark('tiktok'), color: 'text-zinc-900 dark:text-zinc-100', label: 'TikTok' },
+  mastodon: { Icon: mark('mastodon'), color: 'text-[#6364FF]', label: 'Mastodon' },
+  wordpress: { Icon: mark('wordpress'), color: 'text-[#21759B]', label: 'WordPress' },
+  ghost: { Icon: mark('ghost'), color: 'text-zinc-900 dark:text-zinc-100', label: 'Ghost' },
+  nostr: { Icon: mark('nostr'), color: 'text-[#8E30EB]', label: 'Nostr' },
+  gbp: { Icon: mark('gbp'), color: 'text-[#4285F4]', label: 'Google Business Profile' },
   // Radar (beta) SEARCH sources (spec 33) - listening only, never publish targets.
-  bluesky: { Icon: BlueskyLogo, color: 'text-[#0085FF]', label: 'Bluesky' },
-  hackernews: { Icon: HackerNewsLogo, color: 'text-[#FF6600]', label: 'Hacker News' },
+  bluesky: { Icon: mark('bluesky'), color: 'text-[#0085FF]', label: 'Bluesky' },
+  hackernews: { Icon: mark('hackernews'), color: 'text-[#FF6600]', label: 'Hacker News' },
 };
 
 export function PlatformIcons({ platforms, size = 13 }) {

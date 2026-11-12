@@ -34,7 +34,7 @@ import { bootApprovalNotifier } from './lib/notify.mjs';
 import { bootReviewServer } from './lib/review-server.mjs';
 import { healConnection, resealChangedBrands } from './lib/cloud-client.mjs';
 import { startHealthSchedule } from './lib/health.mjs';
-import { authGateEnabled, checkAuth } from './lib/flags.mjs';
+import { authGateEnabled, checkAuth, bindRefusal } from './lib/flags.mjs';
 import { assertMockRootAllowed } from './lib/mode.mjs';
 import { setSessionOrigins, writeStudioTokenFile, STUDIO_TOKEN_HEADER } from './lib/studio-token.mjs';
 
@@ -54,6 +54,17 @@ const PORT = daemonPort();
 // container image can bind 0.0.0.0 inside its own network namespace; the host
 // still exposes it on 127.0.0.1 (docker-compose maps 127.0.0.1:8090:8090).
 const HOST = process.env.PENDPOST_HOST || '127.0.0.1';
+
+// Fail closed: a non-loopback bind with no PENDPOST_AUTH_TOKEN would leave every
+// face open to any network peer (the Host allowlist is a header the peer sets).
+// Refuse to start unless the operator opted out for a loopback-published container.
+{
+  const refusal = bindRefusal(HOST.trim().toLowerCase());
+  if (refusal) {
+    logLine('err', refusal);
+    process.exit(1);
+  }
+}
 
 // SEC-1: loopback binding does NOT stop a malicious website in the owner's
 // browser from reading this API cross-origin. Only pendpost's own origins

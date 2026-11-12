@@ -112,6 +112,25 @@ try {
   h = updaterFor(A, headSha(A)).health();
   ok(h.available === false && h.running.commit === headSha(B), 'after the restart into the new commit nothing is on offer');
 
+  // --- npm lockfile drift is not an edit: apply restores it and carries on ---
+  writeCommit(A, 'package-lock.json', '{"lockfileVersion":3,"libc":["glibc"]}\n', 'lock');
+  g(['push'], A);
+  fs.writeFileSync(path.join(A, 'package-lock.json'), '{"lockfileVersion":3}\n');
+  gitCheck({ repo: A, statusDir: A, fetch: false });
+  ok(readUpdateStatus(A).clean === true, 'a lockfile-only drift counts as a clean tree');
+  const r2 = await apply({ pull: false, repo: A, appDir, statusDir: A });
+  ok(r2.ok === true, `lockfile drift does not block the apply (${r2.reason || 'ok'})`);
+  ok(fs.readFileSync(path.join(A, 'package-lock.json'), 'utf8').includes('libc'), 'and the committed lockfile is restored');
+
+  // --- a real edit blocks, and names the file ---------------------------------
+  fs.writeFileSync(path.join(A, 'f.txt'), 'work in progress');
+  fs.writeFileSync(path.join(A, 'package-lock.json'), '{}\n');
+  gitCheck({ repo: A, statusDir: A, fetch: false });
+  ok(readUpdateStatus(A).clean === false, 'an edited tracked file counts as dirty');
+  const r3 = await apply({ pull: false, repo: A, appDir, statusDir: A });
+  ok(r3.ok === false && r3.reason === 'dirty-tree' && r3.dirty.join(',') === 'f.txt', 'apply refuses and names only the real edit, not the lockfile');
+  ok(fs.readFileSync(path.join(A, 'f.txt'), 'utf8') === 'work in progress', 'the edit is untouched');
+
   console.log(`[self-update-repo] OK - versions, running-commit guard, apply steps (${pass} assertions).`);
 } catch (err) {
   console.error('FAIL:', err.message);

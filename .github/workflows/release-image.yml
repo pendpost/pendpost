@@ -2,7 +2,7 @@ name: release image
 
 # Build the container image and push it to GHCR when a GitHub Release is published
 # (owner action), or on a manual dispatch. This gives a no-clone install:
-#   docker run -p 8090:8090 ghcr.io/pendpost/pendpost
+#   docker run -p 127.0.0.1:8090:8090 -e PENDPOST_ALLOW_UNAUTHENTICATED=1 ghcr.io/pendpost/pendpost
 # It reuses the repo Dockerfile (multi-stage: build the dashboard, run the
 # zero-dependency server, bind 0.0.0.0 inside the container only). Tags: the
 # release version and `latest`. Multi-arch (amd64 + arm64) so a plain `docker pull`

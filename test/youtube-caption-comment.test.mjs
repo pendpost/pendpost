@@ -40,6 +40,12 @@ try {
   ok(!validateFieldValues({ captionPath: 'data/media/v.de.srt', captionLang: 'de' }), 'captionPath + captionLang (strings) pass validateFieldValues');
   const bad = validateFieldValues({ captionPath: 123 });
   ok(bad && bad.code === 'invalid_input', 'a non-string captionPath is rejected (invalid_input)');
+  // Security audit 2026-11: an agent must not be able to point captionPath at a secret; the
+  // YouTube engine would upload the file's bytes as a caption track at publish.
+  for (const cp of ['/Users/x/pendpost/data/clients/default/.env', '/home/x/.ssh/id_ed25519', 'notes.txt', 'data/.hidden/v.srt', '/home/x/.config/a.srt']) {
+    const r = validateFieldValues({ captionPath: cp });
+    ok(r && r.code === 'invalid_input', `captionPath refused at write: ${cp}`);
+  }
 
   // ===== (3) LIVE-ONLY: caption/comment/featured are no-ops in mock (no real call) =====
   fs.mkdirSync(path.join(WS, 'data', 'plans', 'c'), { recursive: true });
@@ -59,6 +65,15 @@ try {
   ok(/\[mock\] caption is live-only/.test(runYt(['caption', '--plan', plan, '--only', 'yt1'], 'mock')), 'caption is skipped in mock mode (no real YouTube call)');
   ok(/\[mock\] comment is live-only/.test(runYt(['comment', '--plan', plan, '--only', 'yt1'], 'mock')), 'comment is skipped in mock mode');
   ok(/\[mock\] featured is live-only/.test(runYt(['featured', '--id', 'VID123'], 'mock')), 'featured is skipped in mock mode');
+
+  // ===== (3b) publish-time re-check (security audit 2026-11) =====
+  const { captionFileAllowed } = await import('../scripts/yt-social.mjs');
+  fs.writeFileSync(path.join(WS, 'data', 'media', 'secret.env'), 'YT_CLIENT_SECRET=dummy\n');
+  fs.mkdirSync(path.join(WS, 'outside', '.ssh'), { recursive: true });
+  fs.writeFileSync(path.join(WS, 'outside', '.ssh', 'id.srt'), 'PRIVATE KEY');
+  ok(captionFileAllowed(path.join(WS, 'data', 'media', 'v.de.srt')) === true, 'a real .srt in the workspace is allowed at publish');
+  ok(captionFileAllowed(path.join(WS, 'data', 'media', 'secret.env')) === false, 'a non-subtitle file is refused at publish');
+  ok(captionFileAllowed(path.join(WS, 'outside', '.ssh', 'id.srt')) === false, 'a file in a dot directory is refused at publish, even with an .srt name');
 
   // ===== (4) LIVE dry-run: caption resolves captionPath; comment shows firstComment =====
   const capDry = runYt(['caption', '--plan', plan, '--only', 'yt1', '--dry-run'], 'live');

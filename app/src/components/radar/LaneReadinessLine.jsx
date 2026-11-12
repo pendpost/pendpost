@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { engageProbe, engageConfirmHandle, resumeLane, errReason } from '../../lib/api.js';
 import { fmtTime, replyLaneState } from '../../lib/format.js';
 import { useT } from '../../lib/i18n.js';
-import { Copy, Check } from 'lucide-react';
+import useRecheck from '../../lib/useRecheck.js';
+import { Copy, Check, Loader2 } from 'lucide-react';
 import { BTN_QUIET, TAP_TARGET } from '../ui/recipes.js';
 import InfoTip from '../ui/InfoTip.jsx';
 
@@ -68,6 +69,11 @@ export default function LaneReadinessLine({ lane, label, runtime = {}, copyOnly 
   // state of a lane nobody probed - that state is "Not checked yet" with a control that ends it.
   const [probing, setProbing] = useState(false);
   const [err, setErr] = useState(null);
+  // The probe's own receipt. A not-logged-in / wrong-account line keeps its word while the probe
+  // runs, so without this a check that found the same thing left the line exactly as it was.
+  // useRecheck holds the spinner for the minimum and dates a repeated identical answer.
+  const check = useRecheck();
+  const [probed, setProbed] = useState(null); // null | { at, failed }
 
   if (copyOnly) {
     return <span className="text-zinc-500 dark:text-zinc-400">{t('radar.engage.auto.lane.copyOnly')}</span>;
@@ -81,19 +87,39 @@ export default function LaneReadinessLine({ lane, label, runtime = {}, copyOnly 
   // Each verb fails in its own words (check / confirm / resume). errReason appends the reason
   // only when it is a known sentence (timeout, offline), so an unknown error reads as the plain
   // verb sentence alone instead of doubling up on a generic "That did not work".
-  const run = (fn, { probe = false, errorKey = 'autonomy.engage.lane.error.check' } = {}) => {
+  const run = (fn, { errorKey } = {}) => {
     setBusy(true);
-    if (probe) setProbing(true);
     setErr(null);
+    setProbed(null);
     fn()
       .then(() => onRefresh?.())
       .catch((e) => setErr(errReason(e, t, errorKey, { platform: label })))
-      .finally(() => { setBusy(false); setProbing(false); });
+      .finally(() => { setBusy(false); });
   };
   // The same verb under two words: "Check again" after a probe has answered, "Check now" on a
   // lane never looked at. One control either way.
+  const probe = async () => {
+    setBusy(true);
+    setProbing(true);
+    setErr(null);
+    setProbed(null);
+    const out = await check.run(async () => {
+      try {
+        const res = await engageProbe(lane);
+        onRefresh?.();
+        return res?.usable ? null : { key: `still:${res?.reason || ''}` };
+      } catch (e) {
+        return { error: errReason(e, t, 'autonomy.engage.lane.error.check', { platform: label }), key: `error:${e?.message || ''}` };
+      }
+    });
+    if (out?.error) setErr(out.error);
+    setProbed(out ? { at: new Date().toISOString(), failed: Boolean(out.error) } : null);
+    setBusy(false);
+    setProbing(false);
+  };
   const probeButton = (labelKey) => (
-    <button type="button" disabled={busy} onClick={() => run(() => engageProbe(lane), { probe: true })} className={`${BTN_QUIET} ${TAP_TARGET}`}>
+    <button type="button" disabled={busy} aria-busy={check.busy || undefined} onClick={probe} className={`${BTN_QUIET} ${TAP_TARGET} inline-flex items-center gap-1`}>
+      {check.busy ? <Loader2 size={11} className="motion-safe:animate-spin" aria-hidden="true" /> : null}
       {t(labelKey)}
     </button>
   );
@@ -174,11 +200,16 @@ export default function LaneReadinessLine({ lane, label, runtime = {}, copyOnly 
           reaches 8px above its own 28px face: a 24px gap lets the two boxes meet instead of the
           action covering the lower half of the "?" (measured 44x26 before). */}
       <span className={`flex flex-wrap items-center gap-x-2 ${hasInfo ? 'gap-y-6' : 'gap-y-1'}`}>{line}</span>
-      {/* One plain sentence; the server's raw line rides the shared "?" only, never inline. */}
+      {/* One plain sentence; the server's raw line rides the shared "?" only, never inline. A
+          repeated identical probe failure carries the dated "checked again" line. */}
       {err ? (
         <span className="mt-0.5 flex items-center gap-1 text-[11px] font-bold text-red-600 dark:text-red-300">
-          <span role="alert">{err.text}</span>
+          <span role="alert">{[err.text, probed?.failed ? check.again : ''].filter(Boolean).join(' ')}</span>
           <InfoTip label={err.raw} />
+        </span>
+      ) : probed && !probed.failed && state !== 'ready' ? (
+        <span role="status" className="mt-0.5 block text-[11px] text-zinc-500 dark:text-zinc-400">
+          {check.again || t('recheck.checkedAt', { time: fmtTime(probed.at) })}
         </span>
       ) : null}
     </>

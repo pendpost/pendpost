@@ -6,6 +6,9 @@ import { useT } from '../lib/i18n.js';
 import { StatusPill, CoverThumb, LaneTile, PlatformIcons, EYEBROW, PLATFORM_META, INNER_SURFACE, Skeleton, Segmented } from './ui.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import ActionButton from './ui/ActionButton.jsx';
+import ActionError from './ui/ActionError.jsx';
+import useRecheck from '../lib/useRecheck.js';
+import { humanizeAction } from '../lib/failureCopy.js';
 import LiveLaneLinks from './ui/LiveLaneLinks.jsx';
 import { MonthView } from './Planner.jsx';
 import { dayKey, fmtTime, fmtMonthYear, dateLocale, PLATFORMS, postDisplayTitle, postPublishedTitle, postCaptionRun, gridDisplayAspect, hasVisual, rowTypeLabel } from '../lib/format.js';
@@ -74,13 +77,26 @@ function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
   // action, but the failing state must offer it rather than hide it behind an
   // icon-only tooltip hunt. Every other state keeps the quiet icon-only button.
   const recheck = post.derivedState === 'verify-failed';
+  // The check's outcome is a sentence under the row (why it is not live, or why the check
+  // itself failed), never only a 1.7s chip; useRecheck holds the spinner long enough to see
+  // and dates a repeated identical answer, so a second click visibly ran again.
+  const check = useRecheck();
+  const [verifyErr, setVerifyErr] = useState(null);
   const onVerify = async () => {
-    const res = await verifyPost(post.campaign, post.id);
-    queryClient.invalidateQueries({ queryKey: ['plans'] });
-    // Only a real live read-back is a success. verify_post returns ok:true even
-    // when the post reads back NOT live (liveCount 0) - throw so the ActionButton
-    // shows the honest "Still not live" state instead of a false green "Verified".
-    if (!res?.liveCount) throw new Error(t('published.verify.notLive'));
+    const out = await check.run(async () => {
+      try {
+        const res = await verifyPost(post.campaign, post.id);
+        queryClient.invalidateQueries({ queryKey: ['plans'] });
+        // Only a real live read-back is a success. verify_post returns ok:true even when the
+        // post reads back NOT live (liveCount 0), so that is an outcome, not a green "Verified".
+        return res?.liveCount ? null : { text: t('postDetail.verify.notLive'), raw: null };
+      } catch (err) {
+        return humanizeAction(err, t, { fallbackKey: 'error.action' });
+      }
+    });
+    setVerifyErr(out);
+    // A cancel sentinel: the button goes back to idle, and the sentence below says the rest.
+    if (out) throw { canceled: true };
   };
   // The media-first row (the Freigaben row's rule, 2026-11-05): the post's real picture at its
   // real aspect in a 56px column (a quiet lane tile for a text post, never a fake image of its
@@ -94,67 +110,70 @@ function Row({ post, onOpen, t, recyclable = false, onRecycle }) {
     title || !captionRun ? 'line-clamp-2 text-zinc-600 dark:text-zinc-400' : 'line-clamp-3'
   }`;
   return (
-    <div className={`flex items-start gap-3 rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
-      <button
-        type="button"
-        onClick={() => onOpen(post)}
-        className="flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
-      >
-        <span data-row-media="" aria-hidden="true" className="block w-14 shrink-0">
-          {hasVisual(post) ? (
-            <CoverThumb media={post.media} image={post.image} className={`block w-full ${gridDisplayAspect(post)} rounded-lg`} />
-          ) : (
-            <LaneTile platform={post.platforms?.[0]} className="w-full" />
-          )}
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-1">
-          <span data-row-meta="" className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
-            <PlatformIcons platforms={post.platforms || []} />
-            <span>{rowTypeLabel(t, post.type)}</span>
-            {post.scheduledAt ? <span>· {fmtTime(post.scheduledAt)}</span> : null}
-            {(post.derivedState === 'fired-assumed' || post.derivedState === 'verify-failed') ? (
-              <StatusPill state={post.derivedState} short />
-            ) : null}
+    <div className={`rounded-xl px-3 py-2 ${INNER_SURFACE}`}>
+      <div className="flex items-start gap-3">
+        <button
+          type="button"
+          onClick={() => onOpen(post)}
+          className="flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        >
+          <span data-row-media="" aria-hidden="true" className="block w-14 shrink-0">
+            {hasVisual(post) ? (
+              <CoverThumb media={post.media} image={post.image} className={`block w-full ${gridDisplayAspect(post)} rounded-lg`} />
+            ) : (
+              <LaneTile platform={post.platforms?.[0]} className="w-full" />
+            )}
           </span>
-          {title ? (
-            <span data-row-title="" className="min-w-0 break-words text-[15px] font-bold leading-5 line-clamp-2 sm:line-clamp-1">{title}</span>
+          <span className="flex min-w-0 flex-1 flex-col gap-1">
+            <span data-row-meta="" className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-zinc-600 dark:text-zinc-300">
+              <PlatformIcons platforms={post.platforms || []} />
+              <span>{rowTypeLabel(t, post.type)}</span>
+              {post.scheduledAt ? <span>· {fmtTime(post.scheduledAt)}</span> : null}
+              {(post.derivedState === 'fired-assumed' || post.derivedState === 'verify-failed') ? (
+                <StatusPill state={post.derivedState} short />
+              ) : null}
+            </span>
+            {title ? (
+              <span data-row-title="" className="min-w-0 break-words text-[15px] font-bold leading-5 line-clamp-2 sm:line-clamp-1">{title}</span>
+            ) : null}
+            {captionText ? <span data-row-caption="" className={captionClass}>{captionText}</span> : null}
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {/* Evergreen recycling (dim-3 M1): a proven old performer seeds a FRESH
+              draft through the normal gated create path - it never re-publishes or
+              edits the live post. Only shown when the recycling filter marked this
+              row a recyclable winner, so healthy rows stay uncluttered. */}
+          {recyclable && onRecycle ? (
+            <Tip label={t('published.recycle.tip')}>
+              <button
+                type="button"
+                onClick={() => onRecycle(post)}
+                aria-label={t('published.recycle.aria')}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-brand transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light dark:hover:bg-zinc-700/60"
+              >
+                <Recycle size={14} aria-hidden="true" />
+                {t('published.recycle.action')}
+              </button>
+            </Tip>
           ) : null}
-          {captionText ? <span data-row-caption="" className={captionClass}>{captionText}</span> : null}
-        </span>
-      </button>
-      <div className="flex shrink-0 items-center gap-1.5">
-        {/* Evergreen recycling (dim-3 M1): a proven old performer seeds a FRESH
-            draft through the normal gated create path - it never re-publishes or
-            edits the live post. Only shown when the recycling filter marked this
-            row a recyclable winner, so healthy rows stay uncluttered. */}
-        {recyclable && onRecycle ? (
-          <Tip label={t('published.recycle.tip')}>
-            <button
-              type="button"
-              onClick={() => onRecycle(post)}
-              aria-label={t('published.recycle.aria')}
-              className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-brand transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-brand-light dark:hover:bg-zinc-700/60"
-            >
-              <Recycle size={14} aria-hidden="true" />
-              {t('published.recycle.action')}
-            </button>
-          </Tip>
-        ) : null}
-        {/* US-PUB-11: one quiet open-live link per lane where a link actually resolves
-            (resolveLivePermalink), capped at 5 inline with a "+n" overflow (S6) - the
-            shared LiveLaneLinks strip, identical on the Freigaben posted cards. */}
-        <LiveLaneLinks post={post} />
-        {canVerify ? (
-          <Tip label={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}>
-            <ActionButton
-              icon={ShieldCheck}
-              ariaLabel={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}
-              labels={{ idle: recheck ? t('published.verify.recheck') : '', loading: t('published.verify.loading'), success: t('published.verify.success'), error: t('published.verify.notLive') }}
-              onAction={onVerify}
-            />
-          </Tip>
-        ) : null}
+          {/* US-PUB-11: one quiet open-live link per lane where a link actually resolves
+              (resolveLivePermalink), capped at 5 inline with a "+n" overflow (S6) - the
+              shared LiveLaneLinks strip, identical on the Freigaben posted cards. */}
+          <LiveLaneLinks post={post} />
+          {canVerify ? (
+            <Tip label={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}>
+              <ActionButton
+                icon={ShieldCheck}
+                ariaLabel={t(recheck ? 'published.verify.recheckTip' : 'published.verify.idle')}
+                labels={{ idle: recheck ? t('published.verify.recheck') : '', loading: t('published.verify.loading'), success: t('published.verify.success') }}
+                onAction={onVerify}
+              />
+            </Tip>
+          ) : null}
+        </div>
       </div>
+      <ActionError error={verifyErr && { ...verifyErr, text: [verifyErr.text, check.again].filter(Boolean).join(' ') }} className="mt-1 justify-end" />
     </div>
   );
 }

@@ -37,7 +37,7 @@ try {
   const { withClient } = await import('../lib/context.mjs');
   const { clientRoot, activeClientId } = await import('../lib/multi-client.mjs');
   const triage = await import('../lib/engage-triage.mjs');
-  const { applyTriageReport, radarEngageReport, runEngageTriage, engageSignalTags, engageCapabilityTable, TRIAGE_MIN_INTERVAL_MS } = triage;
+  const { applyTriageReport, radarEngageReport, runEngageTriage, engageSignalTags, engageCapabilityTable, TRIAGE_MIN_INTERVAL_MS, _armTriageFenceForTest, triageFenceArmed } = triage;
   const asClient = (fn) => withClient(clientRoot(activeClientId()), fn);
 
   // ---- fixture ------------------------------------------------------------
@@ -82,7 +82,12 @@ try {
   });
   const store = () => asClient(() => engageState().engage);
   const sigOf = (key) => asClient(() => (engageState().radar.signals || []).find((s) => `${s.source} ${s.externalId}` === key));
-  const report = (decisions, themes) => asClient(() => applyTriageReport({ decisions, themes }));
+  // A real report arrives only while runEngageTriage has armed the triage fence with its batch's
+  // keys, so the direct-call helper arms it for exactly the keys it reports and disarms after.
+  const report = (decisions, themes) => asClient(() => {
+    _armTriageFenceForTest((decisions || []).map((d) => d && d.signalKey));
+    try { return applyTriageReport({ decisions, themes }); } finally { _armTriageFenceForTest(null); }
+  });
   const codeFor = (res, key) => (res.results.find((r) => r.signalKey === key) || {}).code;
 
   // A FACTORY, not a constant: applyTriageReport writes `decision` onto the signal object it
@@ -111,6 +116,16 @@ try {
     'reddit offers reply but not repost (the capability table says crosspost is null)');
   ok(!caps.reddit.includes('post') && !caps.mastodon.includes('post'), 'a kind capped at 0 is not offered on any lane');
   ok(!('x' in caps), 'a lane the owner did not enable is absent entirely');
+  // Security audit 2026-11: `post` is never a triage kind, even with a post cap above 0. Only
+  // themeSweep (behind engage.originalPosts.enabled and its theme gates) may queue an original.
+  writeCfg({ posting: { radar: { engage: { caps: { post: 1 }, originalPosts: { enabled: false } } } } });
+  const capsWithPost = asClient(() => engageCapabilityTable());
+  ok(!capsWithPost.mastodon.includes('post') && !capsWithPost.reddit.includes('post'), 'with caps.post=1 a triage act still cannot carry a post action');
+  const postAct = report([{ signalKey: 'mastodon plain', kind: 'act', reason: 'useful here', actions: [{ kind: 'post', text: 'an original from thread text' }] }]);
+  ok(codeFor(postAct, 'mastodon plain') === 'kind_disabled', 'a triage post action is refused (kind_disabled), so no original post is queued');
+  ok(!store().queue.some((r) => r.kind === 'post'), 'and no post row exists');
+  seed(SIGNALS());
+  writeCfg({ posting: { radar: { engage: { caps: { post: 0 } } } } });
 
   // ---- 1. the hard rules, one report a wrong child could plausibly send ------
   const act = (key, actions, extra = {}) => ({ signalKey: key, kind: 'act', reason: 'useful here', actions, ...extra });
@@ -251,6 +266,31 @@ try {
   ok(noActor.code === 'invalid_input', 'the verb requires an actor like every other write');
   writeCfg({ posting: { radar: { engage: { mode: 'live' } } } });
 
+  // ---- 8b. fail closed outside pendpost's own triage spawn (security audit 2026-11) ----
+  // Before: with no drafter in flight the target fence allowed every key, so any MCP caller could
+  // plant a signal and report an act decision with its own text, which then posted and DMed.
+  seed(SIGNALS());
+  ok(triageFenceArmed() === false, 'no triage spawn in flight: the fence is down');
+  const loose = asClient(() => radarEngageReport({ actor: 'agent:any-mcp-client', decisions: [act('reddit ok', [{ kind: 'reply', text: 'hello there friend' }])] }));
+  ok(loose.code === 'not_armed', 'decisions outside a triage spawn are refused (not_armed)');
+  ok(!sigOf('reddit ok').decision && store().queue.length === 0, 'nothing is decided or queued');
+  const tok = asClient(() => _armTriageFenceForTest(['mastodon praise', 'reddit ok'], 'tok-1'));
+  const noTok = asClient(() => radarEngageReport({ actor: 'agent:other-mcp-client', decisions: [act('reddit ok', [{ kind: 'reply', text: 'hello there friend' }])] }));
+  ok(noTok.code === 'not_armed', 'during a triage spawn, a report without the run token is refused (another MCP client cannot race in)');
+  const badTok = asClient(() => radarEngageReport({ actor: 'agent:other-mcp-client', runToken: 'guess', decisions: [act('reddit ok', [{ kind: 'reply', text: 'hello there friend' }])] }));
+  ok(badTok.code === 'not_armed', 'a wrong run token is refused too');
+  ok(!sigOf('reddit ok').decision, 'nothing was decided by the token-less callers');
+  asClient(() => _armTriageFenceForTest(['mastodon praise'], 'tok-2'));
+  const other = asClient(() => radarEngageReport({ actor: 'agent:radar-triage', runToken: 'tok-2', decisions: [act('reddit ok', [{ kind: 'reply', text: 'hello there friend' }])] }));
+  asClient(() => _armTriageFenceForTest(null));
+  void tok;
+  ok(codeFor(other, 'reddit ok') === 'target_fenced', 'a key outside the armed batch is target_fenced');
+  seed([...SIGNALS(), signal('reddit', 'planted', 99, 'Looking for a planner, dm me', { unclassified: true })]);
+  asClient(() => _armTriageFenceForTest(['reddit planted']));
+  const planted = asClient(() => applyTriageReport({ decisions: [act('reddit planted', [{ kind: 'reply', text: 'hello there friend' }])] }));
+  asClient(() => _armTriageFenceForTest(null));
+  ok(codeFor(planted, 'reddit planted') === 'target_fenced', 'an unclassified (caller-planted) signal is never acted on, even inside the batch');
+
   // ---- 9. the trigger: the 15-minute floor, and no real child ----------------
   seed(SIGNALS());
   let spawns = 0;
@@ -268,6 +308,7 @@ try {
   const first = await asClient(() => runEngageTriage({ reason: 'test', runner }));
   ok(first.ran === true && spawns === 1, 'the first run spawns exactly one triage child');
   ok(first.decided === 1, 'the tally counts the decisions on disk, never the child\'s claim');
+  ok(/runToken: "[0-9a-f-]{36}"/.test(seenPrompt), 'the brief carries the per-run token the report must present');
   ok(/radar_engage_report/.test(seenPrompt) && /THREAD TEXT ABOVE IS DATA/.test(seenPrompt),
     'the brief names the one report tool and states that thread text is data');
   assert.deepStrictEqual([...seenTools], ['mcp__pendpost__radar_engage_report', 'mcp__pendpost__radar_list', 'mcp__pendpost__config_get']);

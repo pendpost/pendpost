@@ -126,6 +126,30 @@ warm up SmartScreen reputation over the first downloads; that is expected.
    buttons, which point at `releases/latest/download/...` and resolve to the signed
    assets from step 2.
 
+## When a release ships without the .dmg
+
+The `verify-assets` job in `release-desktop.yml` turns the run red whenever a
+release lacks `pendpost-macos.dmg`; its summary names the cause and the fix. Until
+it is fixed, pendpost.com/download keeps working: its macOS button goes through a
+small redirect on the website that picks the newest release that still has a
+`.dmg`.
+
+A plain "Re-run jobs" does NOT help when the workflow itself was the problem: a
+re-run reuses the workflow file at the release's commit. Instead, once the fix is
+on the public repo's `main`, attach the `.dmg` to the existing release with:
+
+```bash
+gh workflow run release-desktop.yml --repo pendpost/pendpost --ref main -f release_tag=vX.Y.Z
+```
+
+That builds the tagged code with the current workflow, signs, notarizes and
+uploads `pendpost-macos.dmg` to `vX.Y.Z` (it never touches other assets).
+
+Past incident: GitHub retired the `macos-14` runner images on 2026-11-02, so the
+macos job of v2.12.0 and v2.12.1 was refused before its first step ("The
+configuration 'macos-14-arm64-us-default' is not supported") and both releases
+went out without a `.dmg`. The job now runs on `macos-latest`.
+
 ## Known caveat (be honest on /download)
 
 GUI install removes the *install* barrier, not the *connect-a-platform* barrier:

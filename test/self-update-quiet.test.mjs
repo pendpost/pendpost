@@ -125,13 +125,27 @@ try {
   h.finish({ ok: true, step: 'done' });
   ok(h.u.health().state === 'waiting' && h.calls.exits.length === 0, 'an agent job started meanwhile -> the existing idle wait before the restart');
 
-  // --- a refused apply waits for the next HEAD change ----------------------
+  // --- open edits: the quiet apply waits for them, silently -----------------
+  h = harness({ status: { clean: false } });
+  h.at(0); h.u.quietTick();
+  h.at(10); h.u.quietTick();
+  ok(h.calls.apply.length === 1, 'a dirty tree does not stop a quiet apply from starting');
+  h.finish({ ok: false, step: 'check', reason: 'dirty-tree', dirty: ['lib/x.mjs'] });
+  hl = h.u.health();
+  ok(hl.state === 'waiting' && hl.waitingFor === 'edits' && hl.quiet === true && hl.lastRun === null, 'open edits -> a quiet wait, no failure the Studio could show');
+  h.flush();
+  ok(h.calls.apply.length === 2, 'it looks again a minute later, without waiting for a new commit');
+  h.finish({ ok: true, step: 'done' });
+  h.flush();
+  ok(h.calls.exits[0] === RESTART_EXIT_CODE, 'clean now -> applied and restarted');
+
+  // --- a failed apply (build) waits for the next HEAD change -----------------
   h = harness();
   h.at(0); h.u.quietTick();
   h.at(10); h.u.quietTick();
-  h.finish({ ok: false, step: 'check', reason: 'dirty-tree' });
+  h.finish({ ok: false, step: 'build', reason: 'build-failed' });
   hl = h.u.health();
-  ok(hl.state === null && hl.lastRun.ok === false && hl.quiet === true, 'dirty tree -> refused, nothing restarts, the offer stays quiet');
+  ok(hl.state === null && hl.lastRun.ok === false && hl.lastRun.quiet === true && hl.quiet === true, 'build failed -> nothing restarts, the failure is marked quiet');
   h.at(20); h.u.quietTick();
   h.at(60); h.u.quietTick();
   ok(h.calls.apply.length === 1, 'no retry for the same HEAD (no spam)');

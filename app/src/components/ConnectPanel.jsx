@@ -7,8 +7,10 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ExternalLink, Loader2, Lock, ShieldCheck } from 'lucide-react';
-import { recheckHealth, connectPlatform, connectStatus } from '../lib/api.js';
+import { recheckHealth, connectPlatform, connectStatus, errReason } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
+import { fmtTime } from '../lib/format.js';
+import useRecheck from '../lib/useRecheck.js';
 import { humanizeConnect } from '../lib/failureCopy.js';
 import { INNER_SURFACE } from './ui.jsx';
 import { TAP_TARGET } from './ui/recipes.js';
@@ -137,13 +139,17 @@ export function ConnectPanel({ platform, fields, interactive, submitLabel = null
   // One poll tick: re-run the liveness probe (the parent unmounts us when the lane flips
   // Connected) AND read the connect ceremony's own status so the consent link / a hard
   // failure surface without waiting for a flip.
-  const pollOnce = async () => {
+  // `report`: the owner's own "Check again" wants a failed status read said, not swallowed.
+  const pollOnce = async ({ report = false } = {}) => {
     try { await recheckHealth(platform, ...scope); } catch { /* keep polling on a probe hiccup */ }
     queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
     queryClient.invalidateQueries({ queryKey: ['accounts'] });
     try {
       applyStatus(await connectStatus(platform, ...scope));
-    } catch { /* a status hiccup is non-fatal; the next tick retries */ }
+    } catch (err) {
+      // A status hiccup is non-fatal for the timer; the next tick retries.
+      if (report) throw err;
+    }
   };
 
   // While 'waiting', poll every 3s. The interval is cleaned up on unmount/state change,
@@ -168,6 +174,7 @@ export function ConnectPanel({ platform, fields, interactive, submitLabel = null
     setState('connecting');
     setError(null);
     setStatus(null);
+    setCheckLine(null);
     connectedFired.current = false;
     try {
       const creds = {};
@@ -183,8 +190,21 @@ export function ConnectPanel({ platform, fields, interactive, submitLabel = null
     }
   };
 
-  // "Check again": run one poll right now instead of waiting for the next tick.
-  const checkAgain = () => { pollOnce(); };
+  // "Check again": run one poll right now instead of waiting for the next tick, busy for at
+  // least the minimum, then say when it looked and what it found (useRecheck dates a repeat).
+  const check = useRecheck();
+  const [checkLine, setCheckLine] = useState(null); // null | { at } | { at, error: { text, raw } }
+  const checkAgain = async () => {
+    const out = await check.run(async () => {
+      try {
+        await pollOnce({ report: true });
+        return { kind: 'still' };
+      } catch (err) {
+        return { kind: 'error', ...errReason(err, t, 'connect.checkFailed') };
+      }
+    });
+    setCheckLine({ at: new Date().toISOString(), error: out.kind === 'error' ? out : null });
+  };
   // "Cancel": stop polling and restore the form (back to idle).
   const cancel = () => { setState('idle'); setError(null); };
 
@@ -243,9 +263,17 @@ export function ConnectPanel({ platform, fields, interactive, submitLabel = null
               <Loader2 size={14} className="inline animate-spin" aria-hidden="true" />
               {t('connect.waiting')}
             </span>
-            <button type="button" onClick={checkAgain} className={BTN_GHOST}>{t('connect.checkAgain')}</button>
+            <button type="button" onClick={checkAgain} disabled={check.busy} aria-busy={check.busy || undefined} className={`${BTN_GHOST} inline-flex items-center gap-1.5`}>
+              {check.busy ? <Loader2 size={14} className="motion-safe:animate-spin" aria-hidden="true" /> : null}
+              {t('connect.checkAgain')}
+            </button>
             <button type="button" onClick={cancel} className={BTN_GHOST}>{t('connect.cancel')}</button>
           </div>
+          {checkLine && !check.busy ? (
+            checkLine.error
+              ? <ActionError error={{ ...checkLine.error, text: [checkLine.error.text, check.again].filter(Boolean).join(' ') }} />
+              : <p role="status" className="text-[11px] text-zinc-600 dark:text-zinc-400">{check.again || t('connect.checked', { time: fmtTime(checkLine.at) })}</p>
+          ) : null}
         </div>
       ) : state === 'error' ? (
         <div className="space-y-2">

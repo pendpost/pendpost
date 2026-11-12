@@ -22,6 +22,7 @@ import { useLint, LintPanel } from '../Composer.jsx';
 import { useLocale } from '../../lib/i18n.js';
 import InfoTip from '../ui/InfoTip.jsx';
 import { jumpToSignal, signalDomId } from '../../lib/radarJump.js';
+import useRecheck from '../../lib/useRecheck.js';
 import { tCount } from '../../lib/i18n.js';
 
 // A failed Radar action is { text, raw, known } from lib/api.js errAlert (or errReason for a
@@ -1112,7 +1113,7 @@ function engageStateOf(signal, t) {
 // The status itself: icon + words, with the facts one focus away. aria-describedby points at
 // a visually hidden node so the detail reaches a keyboard and a screen reader, not only a
 // mouse; the same text rides the house Tip for pointer users.
-function EngageStatus({ signal, t, onRecheckRules, recheckBusy }) {
+function EngageStatus({ signal, t, onRecheckRules, recheckBusy, recheckNote = '' }) {
   const state = engageStateOf(signal, t);
   if (!state) return null;
   const { Icon } = state;
@@ -1142,10 +1143,12 @@ function EngageStatus({ signal, t, onRecheckRules, recheckBusy }) {
       {state.extra ? <span className="text-[11px] text-zinc-500 dark:text-zinc-400">{state.extra}</span> : null}
       {state.communityRule && onRecheckRules ? (
         // No dead end: a cached "this community bans automation" rule can be re-checked.
-        <button type="button" onClick={onRecheckRules} disabled={recheckBusy} className={`${BTN_GHOST} ${TAP_TARGET}`}>
+        <button type="button" onClick={onRecheckRules} disabled={recheckBusy} aria-busy={recheckBusy || undefined} className={`${BTN_GHOST} ${TAP_TARGET} inline-flex items-center gap-1`}>
+          {recheckBusy ? <Loader2 size={11} className="motion-safe:animate-spin" aria-hidden="true" /> : null}
           {t('radar.signal.engage.checkRules')}
         </button>
       ) : null}
+      {state.communityRule && recheckNote ? <span role="status" className="text-[11px] text-zinc-500 dark:text-zinc-400">{recheckNote}</span> : null}
     </span>
   );
 }
@@ -1321,6 +1324,27 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
   const [engageBusy, setEngageBusy] = useState(false);
   const [engageError, setEngageError] = useState(null);
   const queryClient = useQueryClient();
+  // "Check rules again" drops the cached community rule; the skipped row itself only changes on
+  // the next scan, so the click says what it did (held for the minimum busy time), and a repeat,
+  // also a repeated identical failure, is dated by useRecheck.
+  const rulesCheck = useRecheck();
+  const [rulesCheckedAt, setRulesCheckedAt] = useState(null);
+  const recheckRules = async () => {
+    setEngageError(null);
+    setRulesCheckedAt(null);
+    const out = await rulesCheck.run(async () => {
+      try {
+        await engageCommunityRecheck(signal.source, signal.community);
+        queryClient.invalidateQueries({ queryKey: ['radar'] });
+        queryClient.invalidateQueries({ queryKey: ['engage'] });
+        return { key: 'cleared' };
+      } catch (err) {
+        return { error: errReason(err, t, 'radar.signal.engage.checkRules.error'), key: `error:${err?.message || ''}` };
+      }
+    });
+    if (out.error) setEngageError({ ...out.error, rules: true });
+    else setRulesCheckedAt(new Date().toISOString());
+  };
   // R11: when set, the inline editor is a ROUND-2 reply threaded under the author's follow-up
   // comment (this id), not a fresh root reply. Null = the ordinary "Draft reply" path.
   const [threadTo, setThreadTo] = useState(null);
@@ -1573,8 +1597,9 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           <EngageStatus
             signal={signal}
             t={t}
-            recheckBusy={engageBusy}
-            onRecheckRules={signal.community ? () => runEngage(() => engageCommunityRecheck(signal.source, signal.community), 'radar.signal.engage.checkRules.error') : null}
+            recheckBusy={engageBusy || rulesCheck.busy}
+            recheckNote={rulesCheckedAt ? (rulesCheck.again || t('radar.signal.engage.checkRules.done', { time: fmtTime(rulesCheckedAt) })) : ''}
+            onRecheckRules={signal.community ? recheckRules : null}
           />
           {draftingNow ? (
             // The tap's busy state: the agent is writing this signal's reply right now. The
@@ -1898,7 +1923,7 @@ function SignalRow({ signal, accounts, watched, grouped = false, isNew = false, 
           </button>
         </div>
       ) : null}
-      <ActionError error={engageError} />
+      <ActionError error={engageError?.rules && rulesCheck.again ? { ...engageError, text: `${engageError.text} ${rulesCheck.again}` } : engageError} />
 
       {/* The inline draft editor - the "Draft reply" (new reply) path only; reused verbatim. An
           existing draft is edited in Freigaben (its full editor), so no duplicate reply is queued. */}

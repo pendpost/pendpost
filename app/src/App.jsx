@@ -261,6 +261,16 @@ export default function App() {
   // hidden from Published/Planner/Approvals by default. Off = the clean view.
   const [showInternal, setShowInternal] = useState(false);
   const queryClient = useQueryClient();
+  // Cmd-K "Recheck status": one whole-instance probe, then the reads that show its result
+  // (the status dot, Setup's chips) refetch, so the check is not only a toast.
+  const recheckStatus = async () => {
+    try {
+      return await recheckHealth();
+    } finally {
+      queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    }
+  };
   // Selection is a KEY, never an object snapshot (UX-08): the rendered post
   // is re-derived from fresh plan data every render, so an engine publish
   // updates the open detail panel instead of letting it lie.
@@ -1410,9 +1420,9 @@ export default function App() {
                 // hover lift and focus rings; it never caps its height, so it never scrolls down.
                 <div className="-m-4 overflow-x-auto rounded-2xl p-4">
                   {view === 'week' ? (
-                    <WeekView posts={posts} weekStart={weekStart} onSelect={openPost} onEdit={editComposer} onMoveToDay={moveToDay} loading={isLoading} lane={lane} density={density} />
+                    <WeekView posts={posts} weekStart={weekStart} onSelect={openPost} onEdit={editComposer} onMoveToDay={moveToDay} loading={isLoading} lane={lane} density={density} onNew={() => openComposer()} onJump={(d) => setAnchor(startOfWeek(d))} />
                   ) : (
-                    <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} onMoveToDay={moveToDay} loading={isLoading} lane={lane} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
+                    <MonthView posts={posts} monthAnchor={anchor} onSelect={openPost} onMoveToDay={moveToDay} loading={isLoading} lane={lane} onNew={() => openComposer()} onJump={(d) => setAnchor(d)} onShowDay={(day) => { setAnchor(startOfWeek(day)); setView('week'); }} />
                   )}
                 </div>
               ) : (
@@ -1445,7 +1455,7 @@ export default function App() {
           onNew={openComposer}
           onNewThread={openThreadComposer}
           onToggleTheme={toggleDark}
-          onRecheckHealth={recheckHealth}
+          onRecheckHealth={recheckStatus}
           onOpenPost={openPost}
           dark={dark}
           clients={clientsData?.clients || []}

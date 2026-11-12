@@ -39,6 +39,7 @@ function harness(over = {}) {
 
 try {
   // --- offer ---------------------------------------------------------------
+  let r;
   let h = harness({ head: 'old', bootHead: 'old' });
   ok(h.u.health().available === false && h.u.health().reason === 'up-to-date', 'same HEAD as boot, nothing upstream -> no offer');
 
@@ -69,12 +70,30 @@ try {
   ok(h.u.health().available === false, 'read-only dev / mock instance never offers');
   ok(h.u.request().status === 409, 'read-only dev / mock instance refuses the POST');
 
+  // --- open edits: a wait, never an error ------------------------------------
   h = harness({ head: 'old', status: { ahead: 2, clean: false } });
-  ok(h.u.request().status === 400 && h.calls.apply.length === 0, 'upstream ahead on a dirty tree -> refused, nothing spawned');
+  hl = h.u.health();
+  ok(hl.available && hl.canApply, 'upstream ahead on a dirty tree -> still offered (the update waits for the edits)');
+  r = h.u.request();
+  ok(r.status === 200 && r.body.started === true && h.calls.apply[0] === true, 'a click on a dirty tree starts the apply, no 400');
+  h.finish({ ok: false, step: 'check', reason: 'dirty-tree', dirty: ['lib/a.mjs', 'app/src/B.jsx'] });
+  hl = h.u.health();
+  ok(hl.state === 'waiting' && hl.waitingFor === 'edits', 'the refusal turns into waiting for the open edits');
+  ok(hl.dirtyFiles.join(',') === 'lib/a.mjs,app/src/B.jsx', 'and names the files it waits for');
+  ok(hl.lastRun === null, 'open edits are not a failed run');
+  ok(h.u.request().body.started === false && h.calls.apply.length === 1, 'a second click while waiting spawns nothing new');
+  h.flush();
+  ok(h.calls.apply.length === 2 && h.u.health().state === 'downloading', 'a minute later it runs the apply again');
+  h.finish({ ok: true, step: 'done' });
+  h.flush();
+  ok(h.calls.exits[0] === RESTART_EXIT_CODE, 'once the tree is clean it applies and restarts');
+
+  h = harness({ head: 'old', status: { ahead: 2, diverged: true } });
+  ok(h.u.request().status === 400 && h.calls.apply.length === 0, 'diverged -> refused, nothing spawned');
 
   // --- happy path: apply, wait for idle, restart ----------------------------
   h = harness({ head: 'old', status: { ahead: 2 } });
-  let r = h.u.request();
+  r = h.u.request();
   ok(r.body.started === true && h.calls.apply[0] === true, 'upstream ahead + clean -> apply spawned WITH --pull');
   ok(h.u.health().state === 'downloading', 'state is downloading while the pull runs');
   h.step('installing');

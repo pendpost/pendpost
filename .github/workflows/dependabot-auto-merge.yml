@@ -26,7 +26,10 @@ permissions:
 jobs:
   merge:
     runs-on: ubuntu-latest
+    # Only in the private source repo: the public mirror (pendpost/pendpost) accepts fork PRs
+    # from strangers, so this job must never act there (security audit 2026-11).
     if: >-
+      github.repository == 'pendpost/site' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.actor.login == 'dependabot[bot]'
@@ -35,12 +38,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PR_NUMBER: ${{ github.event.workflow_run.pull_requests[0].number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          pr=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number,title --jq '.[0] // empty')
-          if [ -z "$pr" ]; then echo "no open PR for branch $BRANCH"; exit 0; fi
+          # Bind the merge to the exact PR whose CI passed: its number comes from the
+          # workflow_run (empty for a fork PR, which is never merged here), and it must be
+          # dependabot's own PR, from this repo, at the very head SHA that passed CI. A lookup
+          # by branch name returned fork PRs with the same branch name (security audit 2026-11).
+          if [ -z "$PR_NUMBER" ]; then echo "no same-repo PR on this run"; exit 0; fi
+          pr=$(gh api "repos/$REPO/pulls/$PR_NUMBER")
           num=$(echo "$pr" | jq -r '.number')
           title=$(echo "$pr" | jq -r '.title')
+          author=$(echo "$pr" | jq -r '.user.login')
+          head_repo=$(echo "$pr" | jq -r '.head.repo.full_name')
+          head_sha=$(echo "$pr" | jq -r '.head.sha')
+          state=$(echo "$pr" | jq -r '.state')
+          if [ "$author" != "dependabot[bot]" ] || [ "$head_repo" != "$REPO" ] || [ "$head_sha" != "$HEAD_SHA" ] || [ "$state" != "open" ]; then
+            echo "PR #$num is not dependabot's open same-repo PR at the CI head ($author, $head_repo, $head_sha) - not merging"
+            exit 0
+          fi
           echo "evaluating PR #$num: $title"
 
           merge=false
@@ -57,7 +73,7 @@ jobs:
 
           if [ "$merge" = true ]; then
             echo "minor/patch update - merging #$num"
-            gh pr merge "$num" --repo "$REPO" --squash --delete-branch
+            gh pr merge "$num" --repo "$REPO" --squash --delete-branch --match-head-commit "$HEAD_SHA"
           else
             echo "major or unrecognized bump - leaving #$num for human review"
           fi

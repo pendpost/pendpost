@@ -46,10 +46,12 @@ global.fetch = (url, init = {}) => {
   return res({ error: 'unexpected' }, 404);
 };
 
+// The Studio sends its token on every mutating call; /api/connect is owner-only.
+let ownerHeaders = {};
 function jsonReq(method, body) {
   const req = Readable.from([Buffer.from(JSON.stringify(body))]);
   req.method = method;
-  req.headers = { 'content-type': 'application/json' };
+  req.headers = { 'content-type': 'application/json', ...ownerHeaders };
   return req;
 }
 function getReq() {
@@ -69,6 +71,8 @@ try {
   const { mutatePlan, resolvePlanPath } = await import('../lib/planWrite.mjs');
   const { loadPlanStore } = await import('../lib/plans.mjs');
   const { handleApi, noteConnectStart, noteConnectExit, readConnectStatus } = await import('../lib/api.mjs');
+  const { studioToken, STUDIO_TOKEN_HEADER } = await import('../lib/studio-token.mjs');
+  ownerHeaders = { [STUDIO_TOKEN_HEADER.toLowerCase()]: studioToken() };
 
   // ---- (a) not_connected vs needs_scope ----------------------------------------------------
   const planFile = path.join(WS, 'bsky-plan.json');

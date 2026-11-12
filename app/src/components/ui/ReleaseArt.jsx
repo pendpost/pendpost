@@ -1,8 +1,9 @@
 import {
   ArrowUp, BellOff, Plus, Calendar, Check, CircleAlert, Image, Images, Inbox, KeyRound, Languages, Layers,
   ListChecks, MessageCircleReply, MessageSquare, MousePointerClick, PenLine, Radar, RefreshCw,
-  ShieldAlert, ShieldCheck, Sparkles, Trash2, Undo2, Wrench, Youtube,
+  ShieldAlert, ShieldCheck, Sparkles, Trash2, Undo2, Wrench,
 } from 'lucide-react';
+import { BrandMark } from './BrandMark.jsx';
 
 // The art tile of one What's new item (docs/specs/whats-new.md): the item's glyph in the
 // accent on a soft accent squircle, with a small neutral corner badge for its kind. Built
@@ -15,7 +16,10 @@ export const ICON_MAP = {
   'message-circle-reply': MessageCircleReply, 'message-square': MessageSquare,
   'mouse-pointer-click': MousePointerClick, 'pen-line': PenLine, radar: Radar, 'refresh-cw': RefreshCw,
   'shield-alert': ShieldAlert, 'shield-check': ShieldCheck, sparkles: Sparkles, 'trash-2': Trash2,
-  'undo-2': Undo2, wrench: Wrench, youtube: Youtube,
+  'undo-2': Undo2, wrench: Wrench,
+  // A brand mark, not a lucide glyph (lucide has none since 1.0). Filled, so it is drawn
+  // at 90% to match the optical weight of the stroked glyphs.
+  youtube: ({ size = 22 }) => <BrandMark name="youtube" size={Math.round(size * 0.9)} />,
 };
 export const KIND_GLYPH = { new: Plus, improved: ArrowUp, fixed: Check };
 

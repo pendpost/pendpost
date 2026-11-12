@@ -1565,9 +1565,9 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6">
-      {/* No page heading here: the app header already titles the page ("24/7 Cloud-Service");
-          a second H1-sized copy right below it only pushed the content down. */}
-      {connected ? null : <p className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('cloud.subtitle')}</p>}
+      {/* No page heading and no intro line here: the app header titles the page and the
+          off-state card below already says what the service is (2026-11-11 walk: the same
+          "optional, never a paywall" message was on screen four times). */}
 
       {ejectResult ? <EjectChecklist bundle={ejectResult} onDismiss={() => setEjectResult(null)} /> : null}
 

@@ -2,6 +2,44 @@
   "$comment": "What's new, shown once in the Studio after an update. One entry per released version, newest first. Each entry holds 2 to 4 items: kind (new, improved or fixed), icon (a lucide name from ICONS in lib/whats-new.mjs), a title of 2 to 5 words (max 32 characters, no period) and a body of ONE plain sentence (max 90 characters), both in en and de-CH (real umlauts, never the sharp s, du-form), run through the humanizer, no em dashes. Optional go: a spot key the Studio maps to the page where the feature lives. Write the entry before `node ops/release.mjs bump`; test/whats-new.test.mjs fails when the running VERSION has none. The full notes link is https://pendpost.com/changelog#v<version>.",
   "releases": [
     {
+      "version": "2.13.0",
+      "date": "2026-11-12",
+      "items": [
+        {
+          "kind": "fixed", "icon": "shield-check",
+          "title": { "en": "Ten security fixes", "de-CH": "Zehn Lücken geschlossen" },
+          "body": {
+            "en": "Connected agents can no longer reach your files or owner actions.",
+            "de-CH": "Verbundene Agenten kommen nicht mehr an deine Dateien oder Owner-Aktionen."
+          }
+        },
+        {
+          "kind": "improved", "icon": "refresh-cw",
+          "title": { "en": "Check again shows it ran", "de-CH": "Erneut prüfen zeigt Wirkung" },
+          "body": {
+            "en": "Every Check again shows it's working, then the result, even when nothing changed.",
+            "de-CH": "Jede erneute Prüfung zeigt, dass sie läuft, und dann das Ergebnis, auch ohne Änderung."
+          }
+        },
+        {
+          "kind": "fixed", "icon": "calendar",
+          "title": { "en": "Empty weeks find your posts", "de-CH": "Leere Wochen finden Beiträge" },
+          "body": {
+            "en": "An empty week or month in the planner jumps to your nearest post.",
+            "de-CH": "Eine leere Woche oder ein leerer Monat im Planer springt zum nächsten Beitrag."
+          }
+        },
+        {
+          "kind": "fixed", "icon": "wrench",
+          "title": { "en": "Updates wait for your edits", "de-CH": "Updates warten auf Änderungen" },
+          "body": {
+            "en": "An update no longer asks you to commit files and waits until your edits are done.",
+            "de-CH": "Ein Update verlangt keinen Commit mehr und wartet, bis deine Änderungen fertig sind."
+          }
+        }
+      ]
+    },
+    {
       "version": "2.12.1",
       "date": "2026-11-09",
       "items": [

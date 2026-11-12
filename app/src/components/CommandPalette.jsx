@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Search, FileText, CalendarDays, CheckCircle2, Activity, BarChart3, FolderOpen, Settings as SettingsIcon, Plus, Moon, Sun, RefreshCw, CornerDownLeft, CornerUpLeft, Users, Check, Send, Wrench } from 'lucide-react';
-import { prettyCampaign } from '../lib/format.js';
+import { prettyCampaign, fmtTime } from '../lib/format.js';
 import { useT } from '../lib/i18n.js';
+import { withMinBusy } from '../lib/useRecheck.js';
+import { humanizeAction } from '../lib/failureCopy.js';
+import { showToast } from './AppToast.jsx';
 
 // Dep-free subsequence ranker. Returns null when `query` is not a
 // case-insensitive subsequence of `text`; otherwise a score that rewards
@@ -121,7 +124,17 @@ export default function CommandPalette({ posts, onNavigate, onNew, onNewThread, 
         { id: 'new-thread', label: t('threadComposer.new'), hint: t('palette.hintAction'), icon: CornerUpLeft, run: () => onNewThread?.() },
       ]),
       { id: 'theme', label: dark ? t('palette.lightTheme') : t('palette.darkTheme'), hint: t('palette.hintAction'), icon: dark ? Sun : Moon, run: () => onToggleTheme() },
-      { id: 'health', label: t('palette.recheckStatus'), hint: t('palette.hintAction'), icon: RefreshCw, run: () => { onRecheckHealth().catch(() => {}); } },
+      // The palette closes on run, so the toast carries the check: a progress notice (held for
+      // the minimum busy time), then when it checked, or why it could not.
+      { id: 'health', label: t('palette.recheckStatus'), hint: t('palette.hintAction'), icon: RefreshCw, run: async () => {
+        showToast({ kind: 'progress', text: t('palette.recheckStatus.running') });
+        try {
+          const res = await withMinBusy(onRecheckHealth);
+          showToast({ kind: 'success', text: res?.busy ? t('palette.recheckStatus.busy') : t('palette.recheckStatus.done', { time: fmtTime(new Date()) }) });
+        } catch (err) {
+          showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'error.action' }) });
+        }
+      } },
     ];
   }, [dark, onNavigate, onNew, onNewThread, onToggleTheme, onRecheckHealth, allClients, t]);
 

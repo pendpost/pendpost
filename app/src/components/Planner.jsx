@@ -382,29 +382,45 @@ export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, sho
   );
 }
 
-// One shared empty-period state for both Week and Month (the markup was identical
-// in both). The body copy tells the owner to "create a post with New", so when the
-// parent wires onNew we render the matching resolving control - the CTA the copy
-// promises - instead of a dead state. The button is sentence-case, single solid
-// color, weight <= 700, with a Plus icon so the color is never the only signal.
-function EmptyPeriod({ onNew }) {
+// The date of the post nearest to an empty period: the first one after it, else the
+// latest one before it. First run (2026-11-11): the shipped demo campaign lives in other
+// weeks, so the planner opened on an empty week with only "check the filters" as advice.
+export function nearestPostDate(posts, from, to) {
+  let next = null;
+  let prev = null;
+  for (const post of posts || []) {
+    if (!post?.scheduledAt) continue;
+    const d = new Date(post.scheduledAt);
+    if (Number.isNaN(d.getTime())) continue;
+    if (d > to) { if (!next || d < next) next = d; }
+    else if (d < from) { if (!prev || d > prev) prev = d; }
+  }
+  return next || prev;
+}
+
+// One shared empty-period state for both Week and Month. It always ends in one action:
+// when posts exist outside this period, go to the nearest one (the real cause of the
+// empty view); otherwise New post, the action the copy promises. Sentence-case, single
+// solid color, weight <= 700, an icon beside the words so color is never the only signal.
+function EmptyPeriod({ onNew, jumpTo, onJump }) {
   const t = useT();
+  const jump = jumpTo && onJump;
   return (
     <div className="col-span-7 grid place-items-center py-16">
       <div className="max-w-xs space-y-2 text-center">
         <CalendarDays size={26} className="mx-auto text-zinc-500" aria-hidden="true" />
         <p className="text-sm font-bold">{t('planner.empty.periodTitle')}</p>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          {t('planner.empty.periodBody')}
+          {t(jump ? 'planner.empty.periodElsewhere' : 'planner.empty.periodBody')}
         </p>
-        {onNew ? (
+        {jump || onNew ? (
           <button
             type="button"
-            onClick={() => onNew()}
+            onClick={() => (jump ? onJump(jumpTo) : onNew())}
             className="mx-auto mt-1 inline-flex items-center gap-1.5 rounded-xl bg-brand px-3 py-1.5 text-xs font-bold text-white transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand"
           >
-            <Plus size={14} aria-hidden="true" />
-            {t('composer.newPost')}
+            {jump ? <CalendarClock size={14} aria-hidden="true" /> : <Plus size={14} aria-hidden="true" />}
+            {jump ? t('planner.empty.goTo', { date: fmtDayAria(jumpTo) }) : t('composer.newPost')}
           </button>
         ) : null}
       </div>
@@ -412,7 +428,7 @@ function EmptyPeriod({ onNew }) {
   );
 }
 
-export function WeekView({ posts, weekStart, onSelect, onEdit, onMoveToDay, loading, lane, onNew, density = 'comfortable' }) {
+export function WeekView({ posts, weekStart, onSelect, onEdit, onMoveToDay, loading, lane, onNew, onJump, density = 'comfortable' }) {
   const { dragOverKey, dropProps } = useDayDropTarget(onMoveToDay);
   const compact = density === 'compact';
   const days = useMemo(() => Array.from({ length: 7 }, (_, i) => addDays(weekStart, i)), [weekStart]);
@@ -432,7 +448,7 @@ export function WeekView({ posts, weekStart, onSelect, onEdit, onMoveToDay, load
 
   return (
     <div className="grid min-w-[840px] grid-cols-7 gap-3">
-      {allEmpty ? <EmptyPeriod onNew={onNew} /> : null}
+      {allEmpty ? <EmptyPeriod onNew={onNew} onJump={onJump} jumpTo={nearestPostDate(posts, days[0], addDays(days[6], 1))} /> : null}
       {days.map((day) => {
         const key = localDayKey(day);
         const isToday = key === todayKey;
@@ -503,7 +519,7 @@ export function WeekView({ posts, weekStart, onSelect, onEdit, onMoveToDay, load
   );
 }
 
-export function MonthView({ posts, monthAnchor, onSelect, onMoveToDay, loading, lane, onNew, onShowDay }) {
+export function MonthView({ posts, monthAnchor, onSelect, onMoveToDay, loading, lane, onNew, onJump, onShowDay }) {
   const t = useT();
   const { dragOverKey, dropProps } = useDayDropTarget(onMoveToDay);
   const cells = useMemo(() => {
@@ -543,7 +559,7 @@ export function MonthView({ posts, monthAnchor, onSelect, onMoveToDay, loading, 
           {t(`planner.weekday.${d}`)}
         </p>
       ))}
-      {allEmpty ? <EmptyPeriod onNew={onNew} /> : null}
+      {allEmpty ? <EmptyPeriod onNew={onNew} onJump={onJump} jumpTo={nearestPostDate(posts, cells[0], addDays(cells[cells.length - 1], 1))} /> : null}
       {cells.map((day) => {
         const key = localDayKey(day);
         const dayPosts = byDay.get(key) || [];

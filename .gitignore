@@ -74,6 +74,9 @@ data/cloud.json
 data/cloud.json.bak
 # Install-wide "one digest notification a day" stamp (lib/notify.mjs) — runtime state.
 data/notify-digest.json
+# Ad-hoc backup archives of live client data: keep them in ~/pendpost-data-backups, never in git.
+data/*.tgz
+data/*.tar.gz
 
 # Local opt-in: presence makes launcher/serve.sh rebuild app/dist on every agent
 # start (a dev convenience). Stays LOCAL so shipped installs never rebuild on boot.
