@@ -1,6 +1,4 @@
 {
-  "note": "Manifest of campaigns pendpost knows about. The example 'acme-launch' campaign ships so a fresh checkout shows content on first run; delete this entry (and data/plans/acme-launch/) once you add your own.",
-  "plans": [
-    { "id": "acme-launch", "path": "data/plans/acme-launch/post-plan.json", "active": true }
-  ]
+  "note": "Manifest of the campaigns pendpost knows about. A fresh install ships none: create your first with New post in the Studio or the campaign_create tool.",
+  "plans": []
 }

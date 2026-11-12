@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.13.1] - 2026-11-12
+
+pendpost no longer ships an example campaign. The Acme Launch example came with an Instagram post that was already approved, so a new install that connected a real Instagram account could have published it without anyone approving it.
+
+### Fixed
+
+- A fresh install starts with no campaigns. The example `acme-launch` campaign and its `acme-*` media are gone from `data/plans`, `data/media` and `data/clients/default`, and both shipped `active-plans.json` files list nothing. An empty planner offers New post. If your workspace already holds the Acme Launch campaign, delete it before you connect Instagram, or at least reject its `teaser` post.
+
+### Changed
+
+- Mock mode (`PENDPOST_MODE=mock` without `PENDPOST_ROOT`) opens an empty workspace in your temp folder, the same as a live first run.
+- The README, CONTRIBUTING and the docs no longer mention the example.
+
 ## [2.13.0] - 2026-11-12
 
 The Mac app can be downloaded again. GitHub retired the build machine the Mac release used, so 2.12.0 and 2.12.1 came out without one. This release also closes ten gaps that a security audit of pendpost found in November. Most of them were ways an agent connected over MCP could reach a file or an action it should never touch. In the Studio, every Check again button now shows that it ran, and an update no longer tells you to commit or stash files.
