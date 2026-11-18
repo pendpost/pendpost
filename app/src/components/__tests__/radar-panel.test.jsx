@@ -123,6 +123,16 @@ const agentLive = () => ({ setup: { agent: { validation: { state: 'live' }, conn
 const agentNotLive = (state = 'unproven') => ({ setup: { agent: { validation: { state }, connected: false, provider: '' } } });
 
 const CAMPAIGNS = [{ id: 'c1', displayName: 'Campaign One' }];
+// R2 (round 10): one control row. The rarer views (to answer, watched, karma, mentions,
+// replied to you) sit in one Filter menu; sort and the 1h/6h windows sit behind one icon menu.
+async function pickSlice(user, name) {
+  await user.click(screen.getByRole('button', { name: /^filter/i }));
+  await user.click(await screen.findByRole('menuitemradio', { name }));
+}
+async function pickSort(user, name) {
+  await user.click(screen.getByRole('button', { name: /^sort:/i }));
+  await user.click(await screen.findByRole('menuitemradio', { name }));
+}
 function renderPanel({ locale = 'en' } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return {
@@ -273,11 +283,10 @@ describe('Radar panel (spec 32 listening seam)', () => {
     // Ranked: the high-intent reply row renders ABOVE the low-intent chatter row.
     const rows = [...container.querySelectorAll('ol > li')].map((li) => li.textContent).join('|');
     expect(rows.indexOf('high_intent')).toBeLessThan(rows.indexOf('low_intent'));
-    // The redesign dropped the derived priority chip (reply/watch/ignore) as clutter; the score
-    // chip stays as the relevance cue - now a quiet tier WORD (High/Medium/Low), the exact figure
-    // living in its tooltip - and the row carries glyphs.
+    // R3 (round 10): no tier chip either. Priority is carried by the order asserted above; the
+    // exact score lives in the expanded card's fact row. The row still carries glyphs.
     const replyRow = screen.getByText('high_intent').closest('li');
-    expect(within(replyRow).getByText('High')).toBeInTheDocument();
+    expect(within(replyRow).queryByText('High')).not.toBeInTheDocument();
     expect(replyRow.querySelectorAll('svg').length).toBeGreaterThan(0);
   });
 
@@ -313,18 +322,16 @@ describe('Radar panel (spec 32 listening seam)', () => {
   // into Settings/RadarSearches (SourceCoverage), so those cases are covered by the searches suite
   // now; what remains here is how a single row shows a model verdict vs a keyword match.
   describe('signal provenance', () => {
-    it('an agent-SCORED signal names the model rating in its tooltip, distinct from a keyword match', async () => {
+    it('an agent-SCORED signal names the model rating in its fact row, distinct from a keyword match', async () => {
       const user = userEvent.setup();
       feedData.items = [{ ...feedData.items[0], scoredBy: 'agent', intentScore: 82 }];
       renderPanel();
-      // The redesign dropped the loud "Match/Rated {n}" text as clutter; the chip is a quiet tier
-      // WORD, and provenance - whether an agent READ the thread vs a keyword match - plus the exact
-      // figure live in the chip's tooltip (canon: priority by order, not loud badges).
+      // R3 (round 10) retired the tier chip and its tooltip: provenance - whether an agent READ
+      // the thread vs a keyword match - and the exact figure live in the expanded card's fact row
+      // (canon: priority by order, not loud badges).
       const row = screen.getByText('high_intent').closest('li');
-      const chip = within(row).getByText('High');
-      await user.hover(chip);
-      // Radix renders the tooltip content twice (the visible bubble + a visually-hidden a11y copy).
-      expect((await screen.findAllByText(/rated it 82 out of 100/i)).length).toBeGreaterThan(0);
+      await user.click(within(row).getByRole('button', { name: /show everything/i }));
+      expect(within(row).getByText(/score 82, rated by your agent/i)).toBeInTheDocument();
     });
 
     it('leaves a pendpost-scanned signal unmarked (the norm is quiet, colour is for attention)', () => {
@@ -1264,18 +1271,30 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(within(row).queryByRole('button', { name: /found by your search/i })).not.toBeInTheDocument();
   });
 
-  // UX issue 10: "Erledigt"/"Done" used to be a GHOST_BTN (borderless text), visually
-  // indistinguishable from the muted status words beside it. It is now a named, deliberate
-  // secondary action - BTN_QUIET (ring-bordered), a real button both before and after this
-  // change, but now visually distinct from tertiary/ghost affordances like the overflow
-  // trigger and "Abbrechen".
-  it('"Done" renders as the quiet-tier control (BTN_QUIET), not a bare ghost text', () => {
+  // R4 (round 10): a card carries exactly ONE text button, its primary. "Erledigt"/"Done",
+  // "Bearbeiten", "Auf {platform} öffnen" and the other secondaries are glyphs in the ONE
+  // icon-button recipe (BTN_ICON: a filled 28px square, never a bare ghost glyph), each named by
+  // its aria-label and the same words in its Tip, with the 44px hit box.
+  it('"Done", "Not relevant" and the overflow share the icon-button recipe and keep their names', () => {
     renderPanel();
     const row = screen.getByText('high_intent').closest('li');
-    const doneBtn = within(row).getByRole('button', { name: /done/i });
-    // BTN_QUIET carries a ring; BTN_GHOST (the old treatment) does not.
-    expect(doneBtn.className).toMatch(/ring-1/);
-    expect(doneBtn.className).toMatch(/rounded-xl/);
+    for (const name of [/^done$/i, /^not relevant$/i, /more actions/i]) {
+      const btn = within(row).getByRole('button', { name });
+      expect(btn.className).toMatch(/\bh-7\b/);
+      expect(btn.className).toMatch(/rounded-xl/);
+      for (const c of TAP_TARGET.split(/\s+/)) expect(btn).toHaveClass(c);
+    }
+  });
+
+  it('exactly one text button per card: the primary; Open on {platform} beside it is a named glyph', () => {
+    renderPanel();
+    const row = screen.getByText('high_intent').closest('li');
+    // The reply-capable, undrafted row: "Draft reply" is the one primary with words.
+    expect(within(row).getByRole('button', { name: /^draft reply$/i })).toHaveTextContent(/draft reply/i);
+    const open = within(row).getByRole('link', { name: /^open on reddit$/i });
+    expect(open).toHaveTextContent('');
+    expect(open.className).toMatch(/\bh-7\b/);
+    expect(within(row).getByRole('button', { name: /^done$/i })).toHaveTextContent('');
   });
 
   it('a watched signal renders pinned under the Priority sort and its Watch toggle clears it', async () => {
@@ -1288,8 +1307,8 @@ describe('Radar panel (spec 32 listening seam)', () => {
       feedData.items[0],
     ];
     const { container } = renderPanel();
-    // Scope to the Sort group: a "Priority" tier FILTER now shares the word with the sort control.
-    await user.click(within(screen.getByRole('group', { name: /sort/i })).getByRole('button', { name: /priority/i }));
+    // The sort lives in its own menu: the "Priority" tier FILTER shares the word.
+    await pickSort(user, /priority/i);
     const rows = [...container.querySelectorAll('ol > li')].map((li) => li.textContent).join('|');
     expect(rows.indexOf('low_intent')).toBeLessThan(rows.indexOf('high_intent'));
     const watchedRow = screen.getByText('low_intent').closest('li');
@@ -1419,13 +1438,13 @@ describe('Radar panel (spec 32 listening seam)', () => {
     renderPanel();
     // The default landing view is the OPEN worklist, which hides handled items - view the "done"
     // facet to see this answered signal's row.
-    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    await user.click(screen.getByRole('button', { name: /^answered · 1$/i }));
     const row = screen.getByText('pain_point').closest('li');
     // The confirmation pill (a link, since we have a url) replaces the copy button.
     expect(within(row).getByRole('link', { name: /^posted$/i })).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: /copy reply & open thread/i })).not.toBeInTheDocument();
     // The done filter counts it (isAnswered now keys on copyPosted; no author reply back -> "done").
-    expect(screen.getByRole('button', { name: /1 done/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^answered · 1$/i })).toBeInTheDocument();
   });
 
   // Spec 50 P5a coherence fix: once "Respond for me" holds a live row for a signal, the copy
@@ -1515,18 +1534,18 @@ describe('Radar panel (spec 32 listening seam)', () => {
 
   // S7.3 (radar-reliability 2026-08-31): a polluted GEO state (footprint seeded with another
   // brand's rows) is STATE, not config - the only recovery is the owner-gated reset, and it
-  // must be reachable from the Studio. It rides the SAME panel overflow as the kill-switch,
-  // armed by the feed's inline-confirm idiom (a question + explicit yes/cancel), never a
+  // must be reachable from the Studio. It rides the SAME panel overflow as the kill-switch and
+  // asks first through the shared confirm dialog (a question + explicit yes/cancel), never a
   // bare destructive click and never window.confirm.
-  it('Reset GEO lives in the panel overflow, confirms inline, then calls the reset helper and says what it did', async () => {
+  it('Reset GEO lives in the panel overflow, asks first, then calls the reset helper and says what it did', async () => {
     const user = userEvent.setup();
     renderPanel();
     const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
     await user.click(within(headerCluster).getByRole('button', { name: /more actions/i }));
-    // First press ARMS the confirm - nothing is reset yet.
+    // First press ASKS - nothing is reset yet.
     await user.click(screen.getByRole('menuitem', { name: /reset ai visibility/i }));
     expect(radarGeoResetMock).not.toHaveBeenCalled();
-    expect(screen.getByText(/really clear the ai-visibility history\?/i)).toBeInTheDocument();
+    expect(await screen.findByText(/really clear the ai-visibility history\?/i)).toBeInTheDocument();
     // The explicit yes commits, exactly once...
     await user.click(screen.getByRole('button', { name: /^reset$/i }));
     await waitFor(() => expect(radarGeoResetMock).toHaveBeenCalledTimes(1));
@@ -1540,10 +1559,10 @@ describe('Radar panel (spec 32 listening seam)', () => {
     const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
     await user.click(within(headerCluster).getByRole('button', { name: /more actions/i }));
     await user.click(screen.getByRole('menuitem', { name: /reset ai visibility/i }));
-    await user.click(screen.getByRole('button', { name: /cancel/i }));
+    await user.click(await screen.findByRole('button', { name: /cancel/i }));
     expect(radarGeoResetMock).not.toHaveBeenCalled();
-    // Disarmed, the plain entry is back - the confirm never lingers armed.
-    expect(screen.getByRole('menuitem', { name: /reset ai visibility/i })).toBeInTheDocument();
+    // The dialog is gone and nothing lingers armed: the entry asks again from scratch.
+    await waitFor(() => expect(screen.queryByText(/really clear the ai-visibility history\?/i)).not.toBeInTheDocument());
   });
 
   it('with NO GEO state the overflow carries no reset entry - a menu item that resets nothing never renders', async () => {
@@ -1676,7 +1695,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     feedData.items = [{ ...feedData.items[0], replied: { url: 'https://mock.reddit/1/reply', via: 'published', postId: 'radar-reddit-1', campaign: 'c1' }, repliedUrl: 'https://mock.reddit/1/reply' }];
     renderPanel();
     // Handled signals are hidden from the default open worklist - view the "done" facet.
-    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    await user.click(screen.getByRole('button', { name: /^answered · 1$/i }));
     const row = screen.getByText('high_intent').closest('li');
     const replied = within(row).getByRole('link', { name: /replied/i });
     expect(replied).toHaveAttribute('href', 'https://mock.reddit/1/reply');
@@ -1691,7 +1710,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     feedData.items = [{ ...feedData.items[0], replied: { url: null, via: 'manual', postId: 'radar-x-1', campaign: 'c1' }, repliedUrl: null }];
     renderPanel();
     // Handled signals are hidden from the default open worklist - view the "done" facet.
-    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    await user.click(screen.getByRole('button', { name: /^answered · 1$/i }));
     const row = screen.getByText('high_intent').closest('li');
     expect(within(row).getByText(/marked answered by hand/i)).toBeInTheDocument();
     expect(within(row).queryByRole('link', { name: /^replied$/i })).not.toBeInTheDocument();
@@ -1710,7 +1729,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     feedData.items = [{ ...feedData.items[0], replied: { url: null, via: 'published', postId: 'radar-mastodon-7', campaign: 'c1' }, repliedUrl: null }];
     renderPanel();
     // Handled signals are hidden from the default open worklist - view the "done" facet.
-    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    await user.click(screen.getByRole('button', { name: /^answered · 1$/i }));
     const row = screen.getByText('high_intent').closest('li');
     expect(within(row).getByText(/^replied$/i)).toBeInTheDocument();
     expect(within(row).queryByRole('link', { name: /^replied$/i })).not.toBeInTheDocument();
@@ -1879,8 +1898,8 @@ describe('Radar panel (spec 32 listening seam)', () => {
       // Server order: high_intent (rank 1) BEFORE the lower-ranked answered signal.
       feedData.items = [feedData.items[0], answered()];
       renderPanel();
-      // Scope to the Sort group (a "Priority" tier filter now shares the word with the sort).
-      await user.click(within(screen.getByRole('group', { name: /sort/i })).getByRole('button', { name: /priority/i }));
+      // The sort lives in its own menu (a "Priority" tier filter shares the word).
+      await pickSort(user, /priority/i);
       const a = screen.getByText('answered_author').closest('li');
       const b = screen.getByText('high_intent').closest('li');
       // The live conversation renders ABOVE the higher-scored cold signal.
@@ -1942,7 +1961,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
       const user = userEvent.setup();
       feedData.items = twoSignals();
       renderPanel();
-      await user.click(screen.getByRole('button', { name: /newly found/i }));
+      await pickSort(user, /newly found/i);
       // A was found 1 minute ago, B an hour ago: A leads.
       expect(order('old_post_new_find', 'fresh_post_old_find')).toBe(true);
     });
@@ -1951,7 +1970,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
       const user = userEvent.setup();
       feedData.items = twoSignals();
       renderPanel();
-      await user.click(screen.getByRole('button', { name: /newly posted/i }));
+      await pickSort(user, /newly posted/i);
       // B was posted 1 minute ago, A 30 days ago: B leads.
       expect(order('fresh_post_old_find', 'old_post_new_find')).toBe(true);
     });
@@ -2059,15 +2078,19 @@ describe('Radar panel (spec 32 listening seam)', () => {
 
   // S5: the counts are a filter bar above the feed (not a dead header line), derived from the
   // feed (zero new collection). A number is never just a number - it opens the signals behind it.
-  it('S5: a filter bar shows signals / to-act counts derived from the feed; zero chips hide', () => {
-    // beforeEach feed: 2 signals (1 reply=actionable, 1 ignore), 0 watched. Every chip except
-    // "all" hides at zero - a clickable "0 watched" would filter to a guaranteed-empty list
-    // under a header still advertising the total.
+  it('S5: a filter bar shows signals / to-act counts derived from the feed; zero views hide', async () => {
+    // beforeEach feed: 2 signals (1 reply=actionable, 1 ignore), 0 watched, 0 answered. Every view
+    // except Open and All hides at zero - a clickable "0 watched" would filter to a
+    // guaranteed-empty list under a header still advertising the total.
+    const user = userEvent.setup();
     renderPanel();
     const group = screen.getByRole('group', { name: /filter signals/i });
-    expect(within(group).getByRole('button', { name: /2 signals/i })).toBeInTheDocument();
-    expect(within(group).getByRole('button', { name: /1 to answer/i })).toBeInTheDocument();
-    expect(within(group).queryByRole('button', { name: /watched/i })).not.toBeInTheDocument();
+    expect(within(group).getByRole('button', { name: /^all · 2$/i })).toBeInTheDocument();
+    expect(within(group).queryByRole('button', { name: /answered/i })).not.toBeInTheDocument();
+    // The rarer slices ride one Filter menu, each only while it has rows.
+    await user.click(screen.getByRole('button', { name: /^filter$/i }));
+    expect(await screen.findByRole('menuitemradio', { name: /1 to answer/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitemradio', { name: /watched/i })).not.toBeInTheDocument();
   });
 
   // Owner-requested default: Radar opens on the OPEN worklist (everything not yet handled), not
@@ -2084,9 +2107,9 @@ describe('Radar panel (spec 32 listening seam)', () => {
     const group = screen.getByRole('group', { name: /filter signals/i });
     // The open worklist = 2 (both unanswered); the answered one is filtered out and folded into
     // the "done" facet. The open anchor is pressed; the answered author is off-screen.
-    const openChip = within(group).getByRole('button', { name: /2 new/i });
+    const openChip = within(group).getByRole('button', { name: /^open · 2$/i });
     expect(openChip).toHaveAttribute('aria-pressed', 'true');
-    expect(within(group).getByRole('button', { name: /1 done/i })).toBeInTheDocument();
+    expect(within(group).getByRole('button', { name: /^answered · 1$/i })).toBeInTheDocument();
     expect(screen.getByText('high_intent')).toBeInTheDocument();
     expect(screen.queryByText('answered_done')).not.toBeInTheDocument();
   });
@@ -2422,14 +2445,14 @@ describe('Radar panel (spec 32 listening seam)', () => {
       { source: 'reddit', externalId: 'w1', url: 'https://mock.reddit/w1', author: 'watched_user', community: 'r/x', text: 'Keeping an eye on this thread.', ts: new Date().toISOString(), intentScore: 15, intentTags: [], suggestedAction: 'watch', watched: true },
     ];
     renderPanel();
-    const group = screen.getByRole('group', { name: /filter signals/i });
-    // 3 signals / 1 to act / 1 watched; new+answered+karma+mentions hidden at zero.
-    for (const { name, count } of [
-      { name: /1 to answer/i, count: 1 },
-      { name: /1 watched/i, count: 1 },
-      { name: /3 signals/i, count: 3 },
+    // 3 signals / 1 to act / 1 watched; answered+karma+mentions hidden at zero.
+    for (const { name, count, slice } of [
+      { name: /1 to answer/i, count: 1, slice: true },
+      { name: /1 watched/i, count: 1, slice: true },
+      { name: /^all · 3$/i, count: 3 },
     ]) {
-      await user.click(within(group).getByRole('button', { name }));
+      if (slice) await pickSlice(user, name);
+      else await user.click(within(screen.getByRole('group', { name: /filter signals/i })).getByRole('button', { name }));
       // Expand the older/weak group when it renders, so the row count covers the whole view.
       const older = screen.queryByRole('button', { name: /older and weak signals/i });
       if (older && older.getAttribute('aria-expanded') === 'false') await user.click(older);
@@ -2458,7 +2481,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
       </QueryClientProvider>
     );
     const { rerender } = render(tree());
-    await user.click(screen.getByRole('button', { name: /1 watched/i }));
+    await pickSlice(user, /1 watched/i);
     expect(screen.getByText('watched_user')).toBeInTheDocument();
     expect(screen.queryByText('high_intent')).not.toBeInTheDocument();
     // The watched signal disappears from the feed (e.g. unwatched elsewhere); the chip hides.
@@ -2467,7 +2490,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     // No phantom empty view: the full list renders and the "all" chip reads as pressed.
     expect(screen.queryByText(/no signals in this view/i)).not.toBeInTheDocument();
     expect(screen.getByText('high_intent')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /2 signals/i })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /^all · 2$/i })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('S5: clicking the "to act" filter narrows the feed to actionable signals', async () => {
@@ -2478,7 +2501,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     expect(screen.getByText('high_intent')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /older and weak signals/i }));
     expect(screen.getByText('low_intent')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /1 to answer/i }));
+    await pickSlice(user, /1 to answer/i);
     // Only the actionable (reply) signal remains; the ignore chatter is filtered out.
     expect(screen.getByText('high_intent')).toBeInTheDocument();
     expect(screen.queryByText('low_intent')).not.toBeInTheDocument();
@@ -2497,10 +2520,11 @@ describe('Radar panel (spec 32 listening seam)', () => {
     }];
     renderPanel();
     const group = screen.getByRole('group', { name: /filter signals/i });
-    // It appears under "1 done", and the "to answer" chip is hidden (count 0), never both.
-    expect(within(group).getByRole('button', { name: /1 done/i })).toBeInTheDocument();
-    expect(within(group).queryByRole('button', { name: /to answer/i })).not.toBeInTheDocument();
-    await user.click(within(group).getByRole('button', { name: /1 done/i }));
+    // It appears under "Answered · 1", and "to answer" is hidden (count 0), never both. With no
+    // slice above zero, the Filter menu does not render at all.
+    expect(within(group).getByRole('button', { name: /^answered · 1$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^filter/i })).not.toBeInTheDocument();
+    await user.click(within(group).getByRole('button', { name: /^answered · 1$/i }));
     expect(screen.getByText('answered_actionable')).toBeInTheDocument();
   });
 
@@ -2510,7 +2534,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
     const user = userEvent.setup();
     renderPanel();
     expect(screen.getByRole('button', { name: /older and weak signals/i })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: /newly posted/i }));
+    await pickSort(user, /newly posted/i);
     expect(screen.getByRole('button', { name: /older and weak signals/i })).toBeInTheDocument();
     // The demoted chatter stays foldered, not inline.
     expect(screen.queryByText('low_intent')).not.toBeInTheDocument();
@@ -2540,11 +2564,13 @@ describe('Radar panel (spec 32 listening seam)', () => {
   // mention query has surfaced a signal, so it never becomes permanent chrome; the matching
   // signal carries a "Mention" pill, and clicking the chip narrows the feed to mentions.
   describe('R9 brand mentions', () => {
-    it('no mentions -> no mentions chip (hide-at-zero, no permanent chrome)', () => {
+    it('no mentions -> no mentions slice (hide-at-zero, no permanent chrome)', async () => {
       // beforeEach config has only an ordinary query; the feed has no mention signals.
+      const user = userEvent.setup();
       renderPanel();
-      const group = screen.getByRole('group', { name: /filter signals/i });
-      expect(within(group).queryByRole('button', { name: /mentions/i })).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: /^filter$/i }));
+      expect(await screen.findByRole('menuitemradio', { name: /to answer/i })).toBeInTheDocument();
+      expect(screen.queryByRole('menuitemradio', { name: /mention/i })).not.toBeInTheDocument();
     });
 
     it('a mention query with a matching signal shows the chip, the pill, and filters to it', async () => {
@@ -2563,8 +2589,7 @@ describe('Radar panel (spec 32 listening seam)', () => {
       expect(within(mentionRow).getByText('Mention')).toBeInTheDocument();
       // The hide-at-zero chip is present (count 1) and narrows the feed to the mention.
       // Singular for one (judge round 2, item 15): "1 mention", never "1 mentions".
-      const chip = screen.getByRole('button', { name: /^1 mention$/i });
-      await user.click(chip);
+      await pickSlice(user, /^1 mention$/i);
       expect(screen.getByText('fan_person')).toBeInTheDocument();
       expect(screen.queryByText('high_intent')).not.toBeInTheDocument();
     });
@@ -2836,8 +2861,8 @@ describe('Radar panel (spec 32 listening seam)', () => {
     ];
     renderPanel();
     const row = screen.getByText('web_seeker').closest('li');
-    // The score chip is a quiet tier WORD now (74 -> High), the exact figure living in its tooltip.
-    expect(within(row).getByText('High')).toBeInTheDocument();
+    // No tier chip (R3): the order carries priority, the fact row carries the score.
+    expect(within(row).queryByText('High')).not.toBeInTheDocument();
     expect(within(row).getByText('What tool should I use to schedule posts across platforms?')).toBeInTheDocument();
   });
 
@@ -3595,8 +3620,10 @@ describe('Radar panel - final judge fixes', () => {
     renderPanel();
     const about = screen.getByRole('button', { name: /what is radar/i });
     expect(about.className).toMatch(/\bmr-2\b/);
-    const gear = screen.getByRole('button', { name: /radar settings/i });
-    expect(gear.className).toMatch(/\bmr-2\.5\b/);
+    // The gear and the ONE overflow menu (R1): the menu's wrapper carries the extra 8px.
+    const headerCluster = screen.getByRole('button', { name: /scan now/i }).parentElement;
+    const menu = within(headerCluster).getByRole('button', { name: /more actions/i });
+    expect(menu.closest('.ml-2')).not.toBeNull();
     const header = screen.getByRole('heading', { name: 'Radar' }).parentElement;
     expect(header.className).toMatch(/\bgap-y-5\b/);
   });
@@ -3788,7 +3815,7 @@ describe('Radar feed rows - failures speak a plain sentence, raw line behind the
     feedData.items = [{ ...feedData.items[0], replied: { url: null, via: 'manual', postId: 'radar-x-1', campaign: 'c1' }, repliedUrl: null }];
     markPostedMock.mockRejectedValueOnce(new Error('HTTP 500 internal'));
     renderPanel();
-    await user.click(screen.getByRole('button', { name: /1 done/i }));
+    await user.click(screen.getByRole('button', { name: /^answered · 1$/i }));
     const row = screen.getByText('high_intent').closest('li');
     await user.click(within(row).getByRole('button', { name: /add link/i }));
     await user.type(within(row).getByRole('textbox', { name: /link to the published post/i }), 'https://x.com/op/status/9');
@@ -4055,8 +4082,8 @@ describe('Radar panel - Replies to you jumps to the Radar card', () => {
 // Judge round 2 (item 15): one signal reads in the singular, in both languages.
 describe('Radar panel - singular counts', () => {
   it.each([
-    ['de-CH', '1 Signal', 'Den 1 angezeigten entfernen'],
-    ['en', '1 signal', 'Dismiss the 1 shown'],
+    ['de-CH', 'Alle · 1', 'Den 1 angezeigten entfernen'],
+    ['en', 'All · 1', 'Dismiss the 1 shown'],
   ])('%s: "%s" and "%s"', async (locale, chip, clear) => {
     feedData.items = [feedData.items[0]];
     const user = userEvent.setup();

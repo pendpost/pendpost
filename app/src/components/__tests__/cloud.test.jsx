@@ -28,6 +28,7 @@ const setClientAlwaysOn = vi.fn(() => Promise.resolve({ ok: true, clientId: 'glo
 const startCheckout = vi.fn(() => Promise.resolve({ ok: true, url: 'https://checkout.test' }));
 const startBillingPortal = vi.fn(() => Promise.resolve({ ok: true, url: 'https://portal.test' }));
 const setSpendCap = vi.fn(() => Promise.resolve({ ok: true, spendCapCents: 5000 }));
+const redeemClaim = vi.fn(() => Promise.resolve({ ok: true, plan: 'studio', interval: 'month', status: 'active', alreadyRedeemed: false }));
 // POST /api/cloud/recheck (contract: { ok, checkedAt, reached, sync }) and POST /api/cloud/push.
 const CLEAR_SYNC = { state: 'green', reason: 'all_confirmed', pendingCount: 0, overdueCount: 0, failedCount: 0, issues: [], clients: [] };
 const recheckCloud = vi.fn(() => Promise.resolve({ ok: true, checkedAt: '2026-10-16T08:05:00.000Z', reached: true, sync: CLEAR_SYNC }));
@@ -55,6 +56,7 @@ vi.mock('../../lib/cloud.js', () => ({
   startCheckout: (...a) => startCheckout(...a),
   startBillingPortal: (...a) => startBillingPortal(...a),
   setSpendCap: (...a) => setSpendCap(...a),
+  redeemClaim: (...a) => redeemClaim(...a),
   enableStart: (...a) => enableStart(...a),
   healCloud: (...a) => healCloud(...a),
   ejectCloud: (...a) => ejectCloud(...a),
@@ -99,6 +101,7 @@ beforeEach(() => {
   startCheckout.mockClear();
   startBillingPortal.mockClear();
   setSpendCap.mockClear();
+  redeemClaim.mockClear();
   recheckCloud.mockClear();
   pushCloud.mockClear();
   setCloudSync.mockClear();
@@ -114,40 +117,98 @@ describe('Cloud', () => {
     expect(screen.getByRole('status')).toHaveTextContent(/loading/i);
   });
 
-  it('DISABLED: renders the off explainer and an explicit SIGN-IN button (no key fields, story 3)', () => {
+  it('DISABLED: leads with the three tiers and ONE Start button; the explainers sit in a disclosure (decision 6)', () => {
     cloudState = disconnected();
     renderCloud();
     expect(screen.getByText(/24\/7 cloud service is off/i)).toBeInTheDocument();
-    // Story 3: the account action is explicit ("Sign in to the cloud"), no longer hidden
-    // behind "enable a feature". The fresh view headlines sign-in / create account.
-    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /sign in or create your cloud account/i })).toBeInTheDocument();
+    // The three tiers are the first thing to decide on; Starter is the default pick.
+    expect(screen.getAllByRole('radio')).toHaveLength(3);
+    expect(screen.getByRole('radio', { name: /starter/i })).toHaveAttribute('aria-checked', 'true');
+    // ONE primary action, named after the picked tier (sign-in creates the account on the way).
+    expect(screen.getByRole('button', { name: /^start starter/i })).toBeInTheDocument();
+    // The old section heading and its body are gone: one line replaces the four blocks.
+    expect(screen.queryByRole('heading', { name: /sign in or create your cloud account/i })).not.toBeInTheDocument();
     // No key is ever typed: there is no base url / workspace / api-key input.
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
-    // The plans & pricing link is surfaced prominently at the decision point and
-    // opens the marketing services page in a new tab (the only pricing link out).
+    // The prices, the lanes note and the pricing link live behind "How it works".
+    const more = screen.getByText(/how it works/i).closest('details');
+    expect(more).not.toHaveAttribute('open');
     const plansLink = screen.getByRole('link', { name: /view plans and pricing/i });
+    expect(more).toContainElement(plansLink);
     expect(plansLink).toHaveAttribute('href', 'https://pendpost.com/services?from=app');
     expect(plansLink).toHaveAttribute('target', '_blank');
   });
 
-  it('DEEP-LINK (disconnected): a /download?plan=studio launch shows the "you picked Studio" hand-off before sign-in', () => {
-    // First-run funnel: website /services -> /download?plan=studio -> first app open. The
-    // disconnected view must name the chosen tier so the hand-off is honest BEFORE sign-in.
+  it('DISABLED: picking a tier renames Start, and Start carries the pick through sign-in', async () => {
+    cloudState = disconnected();
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByRole('radio', { name: /agency/i }));
+    await user.click(screen.getByRole('button', { name: /^start agency/i }));
+    await waitFor(() => expect(enableStart).toHaveBeenCalled());
+    expect(sessionStorage.getItem('pendpost.cloudLaunch.plan')).toBe('agency');
+    expect(sessionStorage.getItem('pendpost.cloudLaunch.interval')).toBe('month');
+    expect(sessionStorage.getItem('pendpost.cloudLaunch.review')).toBe('1');
+  });
+
+  it('DEEP-LINK (disconnected): a /download?plan=studio launch pre-selects Studio before sign-in', () => {
     cloudState = disconnected();
     renderCloud({ deepLinkPlan: 'studio' });
-    expect(screen.getByText(/you picked studio/i)).toBeInTheDocument();
-    // The sign-in action is still the one obvious next step.
-    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /studio/i })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByRole('button', { name: /^start studio/i })).toBeInTheDocument();
   });
 
   it('DEEP-LINK (disconnected): falls back to the sessionStorage stash when no prop is passed', () => {
-    // App.jsx stashes the launch plan so it survives the sign-in/connect handshake; the Cloud
-    // page reads it from sessionStorage when the prop is absent (the post-handshake re-render).
     sessionStorage.setItem('pendpost.cloudLaunch.plan', 'agency');
     cloudState = disconnected();
     renderCloud();
-    expect(screen.getByText(/you picked agency/i)).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /agency/i })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('CLAIM (disconnected): a ?claim= launch skips the tiers and asks to sign in first', () => {
+    cloudState = disconnected();
+    renderCloud({ deepLinkClaim: 'ABCD-EFGH-JKMN' });
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
+    expect(screen.getByText(/use your code ABCD-EFGH-JKMN/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
+  });
+
+  it('CLAIM (connected): the code field is pre-filled and redeems on ONE click, never by itself', async () => {
+    sessionStorage.setItem('pendpost.cloudLaunch.claim', 'ABCD-EFGH-JKMN');
+    cloudState = connected();
+    subState = { data: { ok: true, status: 'trialing', tier: null, postsUsed: 0, postsIncluded: 10, allowance: 10, billingMode: 'test' } };
+    const user = userEvent.setup();
+    renderCloud();
+    const field = screen.getByRole('textbox', { name: /claim code/i });
+    expect(field).toHaveValue('ABCD-EFGH-JKMN');
+    expect(redeemClaim).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /use code/i }));
+    await waitFor(() => expect(redeemClaim).toHaveBeenCalledWith('ABCD-EFGH-JKMN'));
+    await waitFor(() => expect(sessionStorage.getItem('pendpost.cloudLaunch.claim')).toBeNull());
+    expect(invalidate).toHaveBeenCalled();
+  });
+
+  it('CLAIM (connected): a refused code shows the plain sentence', async () => {
+    cloudState = connected();
+    subState = { data: { ok: true, status: 'trialing', tier: null, postsUsed: 0, postsIncluded: 10, allowance: 10, billingMode: 'test' } };
+    redeemClaim.mockRejectedValueOnce(Object.assign(new Error('This claim code was already used by another workspace.'), { code: 'http_error' }));
+    const user = userEvent.setup();
+    renderCloud();
+    await user.click(screen.getByText(/have a code from pendpost.com/i));
+    await user.type(screen.getByRole('textbox', { name: /claim code/i }), 'zzzz-zzzz-zzzz');
+    await user.click(screen.getByRole('button', { name: /use code/i }));
+    expect(await screen.findByText(/could not use this code/i)).toBeInTheDocument();
+  });
+
+  it('START -> connected: the picked tier opens straight on its order summary', () => {
+    sessionStorage.setItem('pendpost.cloudLaunch.plan', 'studio');
+    sessionStorage.setItem('pendpost.cloudLaunch.interval', 'month');
+    sessionStorage.setItem('pendpost.cloudLaunch.review', '1');
+    cloudState = connected();
+    subState = { data: { ok: true, status: 'trialing', tier: null, postsUsed: 0, postsIncluded: 10, allowance: 10, billingMode: 'test' } };
+    renderCloud();
+    expect(screen.getByText(/review studio/i)).toBeInTheDocument();
+    expect(screen.queryAllByRole('radio')).toHaveLength(0);
   });
 
   it('DEEP-LINK (connected): the sessionStorage stash is consumed-once and cleared after connect', () => {
@@ -184,7 +245,7 @@ describe('Cloud', () => {
     enableStart.mockResolvedValueOnce({ ok: true, authUrl: 'https://cloud.example/connect?state=abc' });
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
+    await user.click(screen.getByRole('button', { name: /^start starter/i }));
     await waitFor(() => expect(enableStart).toHaveBeenCalled());
     expect(await screen.findByRole('status')).toHaveTextContent(/waiting for you to finish signing up/i);
     // A fallback link to the sign-up page and a cancel control are offered.
@@ -364,9 +425,9 @@ describe('Cloud', () => {
     cloudState = disconnected();
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
+    await user.click(screen.getByRole('button', { name: /^start starter/i }));
     await user.click(await screen.findByRole('button', { name: /cancel/i }));
-    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^start starter/i })).toBeInTheDocument();
   });
 
   it('DISABLED: a start failure renders an alert and offers retry', async () => {
@@ -374,7 +435,7 @@ describe('Cloud', () => {
     enableStart.mockRejectedValueOnce(new Error('cloud is unreachable'));
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
+    await user.click(screen.getByRole('button', { name: /^start starter/i }));
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveTextContent('Could not enable the 24/7 service.');
     expect(alert).not.toHaveTextContent(/cloud is unreachable/i);
@@ -979,7 +1040,7 @@ describe('Cloud', () => {
     cloudState = disconnected({ baseUrl: 'https://cloud.pendpost.app' });
     renderCloud();
     expect(screen.getByText(/restore the connection/i)).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /sign in to the cloud/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^start starter/i })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /restore connection/i }));
     expect(healCloud).toHaveBeenCalled();
     expect(invalidate).toHaveBeenCalled();
@@ -989,7 +1050,7 @@ describe('Cloud', () => {
     cloudState = disconnected(); // apiKey present, baseUrl '' - a fresh install, not the half-write
     renderCloud();
     expect(screen.queryByText(/restore the connection/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /sign in to the cloud/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^start starter/i })).toBeInTheDocument();
   });
 
   it('has no axe violations in the disabled state', async () => {
@@ -1040,7 +1101,7 @@ describe('Cloud failures speak a plain sentence, the raw line rides the "?"', ()
     enableStart.mockRejectedValueOnce(new Error());
     const user = userEvent.setup();
     renderCloud();
-    await user.click(screen.getByRole('button', { name: /sign in to the cloud/i }));
+    await user.click(screen.getByRole('button', { name: /^start starter/i }));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not enable the 24/7 service.');
     expect(screen.queryByRole('button', { name: /more about this/i })).not.toBeInTheDocument();
   });

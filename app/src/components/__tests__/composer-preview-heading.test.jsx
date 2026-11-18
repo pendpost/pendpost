@@ -74,8 +74,11 @@ const textOnlyPost = {
 };
 
 describe('Composer hides the preview label + toggle when there is nothing to preview', () => {
-  it('create mode, media format (reel): shows the "Preview" eyebrow and the mobile toggle', () => {
-    renderComposer(); // default type is reel -> there IS something to preview
+  it('create mode, media format (reel): shows the "Preview" eyebrow and the mobile toggle', async () => {
+    const user = userEvent.setup();
+    renderComposer();
+    // Text is the default now (owner decision 9); a reel has something to preview.
+    await user.selectOptions(screen.getByLabelText('Format'), 'reel');
     expect(previewHeading()).toBeInTheDocument();
     expect(previewToggle()).toBeInTheDocument();
   });

@@ -63,7 +63,7 @@ const cardCount = () => screen.queryAllByRole('listitem').length;
 describe('Freigaben "To review" chip agrees with the list it labels', () => {
   it('counts every actionable post when no filter is active', () => {
     renderFreigaben([post('p1', ['instagram']), post('p2', ['bluesky']), post('p3', ['reddit'])]);
-    expect(reviewTab()).toHaveTextContent('To review (3)');
+    expect(reviewTab()).toHaveTextContent('To review 3');
     expect(cardCount()).toBe(3);
   });
 
@@ -73,7 +73,7 @@ describe('Freigaben "To review" chip agrees with the list it labels', () => {
       { platformFilter: ['bluesky'] },
     );
     expect(cardCount()).toBe(1);
-    expect(reviewTab()).toHaveTextContent('To review (1)');
+    expect(reviewTab()).toHaveTextContent('To review 1');
   });
 
   it('counts only the posts the TYPE filter leaves visible', () => {
@@ -82,7 +82,7 @@ describe('Freigaben "To review" chip agrees with the list it labels', () => {
       { typeFilter: ['text'] },
     );
     expect(cardCount()).toBe(1);
-    expect(reviewTab()).toHaveTextContent('To review (1)');
+    expect(reviewTab()).toHaveTextContent('To review 1');
   });
 
   it('a filter matching nothing shows no count, never a phantom badge over an empty list', () => {

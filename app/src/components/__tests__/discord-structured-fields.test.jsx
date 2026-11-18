@@ -245,7 +245,6 @@ describe('Composer — Discord thread targeting + guild event (spec 26)', () => 
   it('create mode omits dcThreadName/dcThreadId/dcEvent when unset (undefined, not null)', async () => {
     const user = userEvent.setup();
     renderCreateComposer();
-    await user.type(screen.getByLabelText('Post ID'), 'newpost1');
     await user.click(screen.getByRole('button', { name: /discord/i }));
     await user.type(screen.getByLabelText('Post text'), 'Hi');
     // A Termin is now mandatory to save - pick today from the schedule picker.

@@ -56,7 +56,13 @@ function renderFreigaben(posts) {
     </QueryClientProvider>,
   );
 }
-const toggle = () => screen.getByRole('button', { name: t('approvals.group.toggle') });
+// Grouping is the ui Switch inside the toolbar's view-options popover (UX round 10, F3). The
+// helper opens the popover when it is closed, then hands back the switch.
+const toggle = async () => {
+  const name = t('approvals.group.toggle');
+  if (!screen.queryByRole('switch', { name })) await userEvent.click(screen.getByRole('button', { name: t('approvals.view.label') }));
+  return screen.getByRole('switch', { name });
+};
 const groupRows = () => document.querySelectorAll('[data-cross-post-group]');
 
 beforeEach(() => {
@@ -82,9 +88,9 @@ describe('crossPostRows (the grouping rule)', () => {
 describe.each(['comfortable', 'compact'])('Freigaben cross-post grouping (%s)', (density) => {
   beforeEach(() => { try { localStorage.setItem('pendpost-approvals-density', density); } catch { /* private mode */ } });
 
-  it('is off by default: the same rows as before', () => {
+  it('is off by default: the same rows as before', async () => {
     renderFreigaben([reel, short]);
-    expect(toggle()).toHaveAttribute('aria-pressed', 'false');
+    expect(await toggle()).toHaveAttribute('aria-checked', 'false');
     expect(groupRows()).toHaveLength(0);
     expect(document.querySelectorAll('[data-group-lane]')).toHaveLength(0);
     expect(screen.getAllByRole('button', { name: t('approvals.action.approve') })).toHaveLength(2);
@@ -93,8 +99,8 @@ describe.each(['comfortable', 'compact'])('Freigaben cross-post grouping (%s)', 
   it('on: a Reel and a Short sharing media and time are one group row with two lane lines', async () => {
     const user = userEvent.setup();
     renderFreigaben([reel, short, textPost]);
-    await user.click(toggle());
-    expect(toggle()).toHaveAttribute('aria-pressed', 'true');
+    await user.click(await toggle());
+    expect(await toggle()).toHaveAttribute('aria-checked', 'true');
     const groups = groupRows();
     expect(groups).toHaveLength(1);
     const group = groups[0];
@@ -109,14 +115,14 @@ describe.each(['comfortable', 'compact'])('Freigaben cross-post grouping (%s)', 
     expect(within(lanes[0]).getByRole('button', { name: t('approvals.action.approve') })).toBeInTheDocument();
     expect(within(lanes[1]).getByRole('button', { name: t('approvals.action.approve') })).toBeInTheDocument();
     expect(screen.getAllByRole('listitem').some((li) => li.textContent.includes('A plain note.') && !li.closest('[data-cross-post-group]'))).toBe(true);
-    // The tab badge keeps counting POSTS.
-    expect(screen.getByText(t('approvals.view.toReviewCount', { n: 3 }))).toBeInTheDocument();
+    // The segment's count keeps counting POSTS.
+    expect(screen.getByRole('button', { name: `${t('approvals.view.toReview')} 3` })).toBeInTheDocument();
   });
 
   it('the group row and its lane lines fill the width and keep their actions at the trailing edge', async () => {
     const user = userEvent.setup();
     renderFreigaben([reel, short]);
-    await user.click(toggle());
+    await user.click(await toggle());
     const group = groupRows()[0];
     const caption = group.querySelector('[data-row-caption]');
     expect(caption.className).not.toMatch(/max-w-/);
@@ -134,7 +140,7 @@ describe.each(['comfortable', 'compact'])('Freigaben cross-post grouping (%s)', 
   it('"Approve all" approves both members through the bulk approve', async () => {
     const user = userEvent.setup();
     renderFreigaben([reel, short]);
-    await user.click(toggle());
+    await user.click(await toggle());
     await user.click(within(groupRows()[0]).getByRole('button', { name: t('approvals.group.approveAll') }));
     await waitFor(() => expect(approvePost).toHaveBeenCalledTimes(2));
     expect(approvePost).toHaveBeenCalledWith('spring', 'reel-1');
@@ -144,7 +150,7 @@ describe.each(['comfortable', 'compact'])('Freigaben cross-post grouping (%s)', 
   it('`a` on the focused group row approves every approvable member', async () => {
     const user = userEvent.setup();
     renderFreigaben([reel, short]);
-    await user.click(toggle());
+    await user.click(await toggle());
     const group = groupRows()[0];
     group.focus();
     expect(group).toHaveFocus();
@@ -155,7 +161,7 @@ describe.each(['comfortable', 'compact'])('Freigaben cross-post grouping (%s)', 
   it('the group checkbox selects every member', async () => {
     const user = userEvent.setup();
     renderFreigaben([reel, short]);
-    await user.click(toggle());
+    await user.click(await toggle());
     await user.click(within(groupRows()[0]).getByRole('checkbox', { name: t('approvals.group.select') }));
     expect(screen.getByText(t('approvals.bulk.selected', { n: 2 }))).toBeInTheDocument();
     // The selected group wears the selection tint, like a selected single row.
@@ -168,7 +174,7 @@ describe('Freigaben cross-post group row accessibility', () => {
   it('has no axe violations with grouping on (the media is a mouse target, the button the control)', async () => {
     const user = userEvent.setup();
     const { container } = renderFreigaben([reel, short]);
-    await user.click(toggle());
+    await user.click(await toggle());
     expect(await axeClean(container)).toHaveNoViolations();
     // The group's open-detail button holds no other control (interactive-nesting contract).
     for (const btn of groupRows()[0].querySelectorAll('button')) {
@@ -181,13 +187,13 @@ describe('Freigaben cross-post grouping preference', () => {
   it('persists the choice in localStorage and reads it back on the next visit', async () => {
     const user = userEvent.setup();
     const { unmount } = renderFreigaben([reel, short]);
-    await user.click(toggle());
+    await user.click(await toggle());
     expect(localStorage.getItem('pendpost-approvals-group')).toBe('on');
     unmount();
     renderFreigaben([reel, short]);
-    expect(toggle()).toHaveAttribute('aria-pressed', 'true');
+    expect(await toggle()).toHaveAttribute('aria-checked', 'true');
     expect(groupRows()).toHaveLength(1);
-    await user.click(toggle());
+    await user.click(await toggle());
     expect(localStorage.getItem('pendpost-approvals-group')).toBe('off');
     expect(groupRows()).toHaveLength(0);
   });

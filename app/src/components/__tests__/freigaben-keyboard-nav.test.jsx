@@ -159,6 +159,8 @@ describe('Freigaben compact density', () => {
     expect(screen.queryByText(/scheduled for/i)).not.toBeInTheDocument();
     // Compact (the list): a Reel publishes no title, so the whole caption, first line included,
     // is one paragraph clamped to three lines.
+    // Density lives in the toolbar's view-options popover (UX round 10).
+    await user.click(screen.getByRole('button', { name: t('approvals.view.label') }));
     await user.click(screen.getByRole('button', { name: t('approvals.density.compact') }));
     const caption = screen.getByText(/full caption body/i);
     expect(caption.closest('[data-row-caption]').className).toMatch(/line-clamp-3/);

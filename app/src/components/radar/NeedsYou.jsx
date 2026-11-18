@@ -26,7 +26,8 @@ import { BTN_PRIMARY, BTN_QUIET, PILL_BASE, PILL_TONES, TAP_TARGET } from '../ui
 import { FIELD, FIELD_MULTILINE } from '../ui/tokens.js';
 import { Tip } from '../ui/Tooltip.jsx';
 import InfoTip from '../ui/InfoTip.jsx';
-import { SOURCE_META, RowMenu, sourceLabel } from './RadarFeed.jsx';
+import { SOURCE_META, sourceLabel } from './RadarFeed.jsx';
+import { RowMenu } from '../ui/RowMenu.jsx';
 import useRecheck from '../../lib/useRecheck.js';
 
 // Collapsed height of the strip, in rows (row 8e3: never more than five without asking).
@@ -193,12 +194,12 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
       // draft (engage_answer takes the ANSWER, and the agent writes the reply from it), so
       // here Edit opens the answer box as a multi-line editor instead of inventing a control
       // whose edit would be silently discarded.
-      ? [{ key: 'edit', label: t('radar.ask.edit'), Icon: Pencil, onClick: () => setEditing((v) => !v) }]
+      ? [{ key: 'edit', label: t('radar.ask.edit'), Icon: Pencil, run: () => setEditing((v) => !v) }]
       : []),
     ...(ask.kind === 'handoff'
-      ? [{ key: 'copy', label: copied ? t('radar.ask.copied') : t('radar.ask.copy'), Icon: Copy, onClick: copyDraft }]
+      ? [{ key: 'copy', label: copied ? t('radar.ask.copied') : t('radar.ask.copy'), Icon: Copy, run: copyDraft }]
       : []),
-    { key: 'skip', label: t('radar.ask.skip'), Icon: SkipForward, onClick: () => run(() => engageDismiss(ask.id), { resolveWith: t('radar.ask.skip') }) },
+    { key: 'skip', label: t('radar.ask.skip'), Icon: SkipForward, run: () => run(() => engageDismiss(ask.id), { resolveWith: t('radar.ask.skip') }) },
   ];
 
   return (
@@ -273,7 +274,7 @@ function AskRow({ ask, resolvedLine, onResolved, clientName, t }) {
         {/* The overflow sits to the LEFT of the primary (S4), so the one thing this row is for
             is the last thing the eye and the tab order reach. */}
         <div className="flex shrink-0 items-center gap-1">
-          <RowMenu showDismiss={false} extraItems={menuItems} t={t} />
+          <RowMenu label={t('radar.signal.more')} items={menuItems} />
           <Tip label={primary.label}>
             <button type="button" onClick={primary.onClick} disabled={busy || check.busy || primary.disabled} aria-busy={busy || check.busy || undefined} className={`${BTN_PRIMARY} ${TAP_TARGET}`}>
               {busy || check.busy ? <Loader2 size={13} className="animate-spin" aria-hidden="true" /> : <PrimaryIcon size={13} aria-hidden="true" />}

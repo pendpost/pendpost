@@ -12,25 +12,34 @@
 //   2. one per root cause (lib/postIssue.js groupIssues, needs-you before blocked, most posts
 //      first): "Bluesky not connected · 4 replies [Connect]". A lane-wide fix (connect,
 //      reconnect, resume, cloud) runs ONCE for the whole group through IssueFixButton: one
-//      connect ceremony releases every post held on that cause. A per-post fix (edit, manual,
-//      discard) runs inline for a single post and reviews the posts one by one otherwise;
+//      connect ceremony releases every post held on that cause. A per-post fix (edit, manual)
+//      runs inline for a single post and reviews the posts one by one otherwise. A discard
+//      (the Radar reply's thread is gone) stays quiet here (UX round 10): Open is the line's
+//      action, beside a neutral trash glyph that asks once, in the line, before it deletes;
 //   3. "Agent fixed N posts, ready to approve -> Review" (lib/agentFix.js doneFixes, only the
 //      posts still waiting for a fresh approval).
 // At scale the tray shows the first three lines and folds the rest into one "n more" row
 // that expands in place (polish 2026-11-01), so a long list never pushes the planner away.
+// The whole tray folds away too (UX round 10), the same way on a phone and on a desktop: the
+// Hide button in its title row puts it away, and the planner header then wears ONE needs-you
+// icon (NeedsYouToggle below) with the count that opens it again. A cause that arrives while
+// it is folded puts a dot on that icon; the tray itself stays put away until the owner opens
+// it. useTrayFold holds the choice per viewer (format.js getTrayCollapsed); with no choice yet
+// a phone starts folded, so the first post starts in the first half of the screen.
 // Every line keeps its action on the same line, right-aligned, on a phone too.
 // The title count is the header badge's count (format.js attentionSummary): every grouped
 // post plus every system row, worn in the SAME needs-you mark as the badge (format.js
 // NEEDS_YOU_MARK: the halted rose stop + TriangleAlert). The groups and rows arrive as props
 // from App, which computes them once for both, so the badge and the tray can never disagree.
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { useIsPhone } from '../lib/useIsPhone.js';
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertCircle, Bot, ChevronDown, ChevronRight, ChevronUp, CloudAlert, Cloud as CloudIcon, FileWarning, Loader2, PauseCircle, Play, ShieldAlert, TriangleAlert } from 'lucide-react';
-import { setSchedulerRunning } from '../lib/api.js';
+import { AlertCircle, Bot, ChevronDown, ChevronRight, ChevronUp, CloudAlert, Cloud as CloudIcon, FileWarning, Loader2, PauseCircle, Play, ShieldAlert, Trash2, TriangleAlert } from 'lucide-react';
+import { Tip } from './ui/Tooltip.jsx';
+import { setSchedulerRunning, deletePost } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
-import { laneLabel } from '../lib/failureCopy.js';
-import { postDisplayTitle, NEEDS_YOU_MARK } from '../lib/format.js';
+import { laneLabel, humanizeAction } from '../lib/failureCopy.js';
+import { postDisplayTitle, NEEDS_YOU_MARK, getTrayCollapsed, setTrayCollapsed } from '../lib/format.js';
 import { needsYouCount } from '../lib/needsYou.js';
 import { useAgentFixes, doneFixes } from '../lib/agentFix.js';
 import { canApprovePost } from '../lib/postActions.js';
@@ -40,6 +49,7 @@ import { PLATFORM_META } from './ui.jsx';
 import { Button } from './ui/Button.jsx';
 import { TAP_TARGET, PROJECT_CHIP } from './ui/recipes.js';
 import { ClientAvatar } from './ClientSwitcher.jsx';
+import { showToast } from './AppToast.jsx';
 
 // The fixes that act on a whole cause at once; every other fix acts on one post.
 const GROUP_FIXES = new Set(['connect', 'reconnect', 'resume', 'cloud']);
@@ -83,22 +93,134 @@ function Row({ glyph, children, action }) {
   );
 }
 
+// A discard in the tray: Open is the line's action, and the trash glyph beside it stays neutral
+// zinc (the List row and the post keep the red "Discard draft"). One tap asks in the line
+// itself, Cancel or Discard draft, never a window.confirm; a failure says so in a toast.
+function DiscardAction({ post, openButton }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const label = t('issue.fix.discard');
+  const discard = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await deletePost(post.campaign, post.id, false, ...(post.clientId ? [post.clientId] : []));
+      queryClient.invalidateQueries({ queryKey: ['plans'] });
+      queryClient.invalidateQueries({ queryKey: ['pendpost-health'] });
+    } catch (err) {
+      showToast({ kind: 'error', text: humanizeAction(err, t, { fallbackKey: 'issue.error.generic' }) });
+      setAsking(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (asking) {
+    return (
+      <div className="flex items-center gap-1.5" data-tray-discard-confirm="">
+        {/* Focus follows the question and lands on the safe answer. */}
+        <Button size="sm" variant="ghost" className={TAP_TARGET} onClick={() => setAsking(false)} autoFocus>
+          {t('ui.confirm.cancel')}
+        </Button>
+        <Button size="sm" variant="danger" className={TAP_TARGET} onClick={discard} disabled={busy} aria-busy={busy || undefined}>
+          {busy ? <Loader2 size={13} className="motion-safe:animate-spin" aria-hidden="true" /> : <Trash2 size={13} aria-hidden="true" />}
+          {label}
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <Tip label={label}>
+        <button
+          type="button"
+          aria-label={label}
+          onClick={() => setAsking(true)}
+          className={`${TAP_TARGET} grid h-7 w-7 place-items-center rounded-xl text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60 dark:hover:text-white`}
+        >
+          <Trash2 size={14} aria-hidden="true" />
+        </button>
+      </Tip>
+      {openButton}
+    </div>
+  );
+}
+
+// The agent changed these posts and they wait for a fresh approval. A fix the owner already
+// approved (or a post that is gone) no longer asks for anything. Shared by the tray and the
+// header icon, so both see the same lines (one query: react-query shares it).
+function useTrayFixed(posts, allClients) {
+  const { data: fixData } = useAgentFixes({ all: allClients });
+  return doneFixes(fixData).filter((f) => {
+    const post = posts.find((p) => p.campaign === f.campaign && p.id === f.postId && (!f.clientId || !p.clientId || p.clientId === f.clientId));
+    return post && canApprovePost(post);
+  });
+}
+
+// One stable key per tray line (the same keys the lines render with), so the folded icon can
+// tell a new cause from one the owner already put away.
+const groupKey = (group) => `${group.clientId ?? ''}|${group.cause}`;
+function trayKeys(groups, system, fixed) {
+  return [...system.map((r) => r.key), ...groups.map(groupKey), ...(fixed.length ? ['agent-done'] : [])];
+}
+
+// The fold, per viewer. `seen` is the list of keys in view when the owner folded the tray
+// (null when it folded by default on a phone: nothing counts as new then).
+export function useTrayFold() {
+  const phone = useIsPhone();
+  const [stored, setStored] = useState(getTrayCollapsed);
+  const collapse = useCallback((keys) => { setTrayCollapsed(true, keys); setStored(keys); }, []);
+  const open = useCallback(() => { setTrayCollapsed(false); setStored(false); }, []);
+  return {
+    collapsed: stored === null ? phone : stored !== false,
+    seen: Array.isArray(stored) ? stored : null,
+    collapse,
+    open,
+  };
+}
+
+// The folded tray: one icon in the planner header, in the needs-you mark with the tray's
+// count, that opens the tray again. A rose dot (and "new" in its name) when a cause turned up
+// after the owner folded it. Nothing at all when nothing needs the owner.
+export function NeedsYouToggle({ groups = [], system = [], posts = [], allClients = false, seen = null, onOpen }) {
+  const t = useT();
+  const fixed = useTrayFixed(posts, allClients);
+  const keys = trayKeys(groups, system, fixed);
+  if (!keys.length) return null;
+  const count = needsYouCount(groups, system);
+  const fresh = Array.isArray(seen) && keys.some((k) => !seen.includes(k));
+  const base = count ? t('tray.open', { count }) : t('tray.title');
+  const label = fresh ? t('tray.openNew', { label: base }) : base;
+  return (
+    <Tip label={label}>
+      <button
+        type="button"
+        data-spot="fix-tray"
+        data-needs-you-mark=""
+        aria-label={label}
+        aria-expanded={false}
+        aria-controls="planner-tray"
+        onClick={onOpen}
+        className={`${NEEDS_YOU_MARK} ${TAP_TARGET} h-8 justify-center rounded-xl px-2 transition hover:brightness-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:hover:brightness-110`}
+      >
+        <TriangleAlert size={14} aria-hidden="true" />
+        {count ? <span className="text-xs font-bold tabular-nums">{count}</span> : null}
+        {fresh ? <span data-tray-new="" className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-rose-500 ring-2 ring-white dark:ring-zinc-900" aria-hidden="true" /> : null}
+      </button>
+    </Tip>
+  );
+}
+
 export default function NeedsYouTray({
   groups = [], system = [], posts = [], setupReady, allClients = false, activeClientId = null,
-  onNavigate, onOpenPost, onEdit, onReview,
+  onNavigate, onOpenPost, onEdit, onReview, onCollapse,
 }) {
   const t = useT();
   const queryClient = useQueryClient();
   const [starting, setStarting] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const phone = useIsPhone();
-  const { data: fixData } = useAgentFixes({ all: allClients });
-  // The agent changed these posts and they wait for a fresh approval. A fix the owner already
-  // approved (or a post that is gone) no longer asks for anything.
-  const fixed = doneFixes(fixData).filter((f) => {
-    const post = posts.find((p) => p.campaign === f.campaign && p.id === f.postId && (!f.clientId || !p.clientId || p.clientId === f.clientId));
-    return post && canApprovePost(post);
-  });
+  const fixed = useTrayFixed(posts, allClients);
   const count = needsYouCount(groups, system);
   if (!groups.length && !system.length && !fixed.length) return null;
 
@@ -135,6 +257,10 @@ export default function NeedsYouTray({
   // default subtle look, size sm), so a fix looks the same wherever it sits.
   const groupAction = (group) => {
     const issue = { ...group, lanes: group.lanes || [group.lane], code: null };
+    if (group.fix?.type === 'discard' && group.posts.length === 1) {
+      const post = group.posts[0];
+      return <DiscardAction post={post} openButton={reviewButton(t('tray.openPost'), undefined, () => onOpenPost?.(post))} />;
+    }
     if (GROUP_FIXES.has(group.fix?.type) || group.posts.length === 1) {
       // The group's project rides along, so App re-scopes before Setup opens for it.
       const nav = group.clientId ? (p, platform, opts) => onNavigate?.(p, platform, opts, group.clientId) : onNavigate;
@@ -240,7 +366,7 @@ export default function NeedsYouTray({
     const short = SHORT_ON_PHONE.has(group.fix?.type);
     return (
       <Row
-        key={`${group.clientId ?? ''}|${group.cause}`}
+        key={groupKey(group)}
         glyph={group.fix?.type === 'cloud' ? <CloudIcon size={15} className={SYSTEM_GLYPH} aria-hidden="true" /> : <LaneGlyph lane={group.lane} />}
         action={groupAction(group)}
       >
@@ -271,8 +397,7 @@ export default function NeedsYouTray({
   ].filter(Boolean);
   const foldable = lines.length > TRAY_CAP;
   const hidden = foldable && !expanded ? lines.length - TRAY_CAP : 0;
-  const phoneFolded = phone && !expanded && lines.length > 0;
-  const shown = phoneFolded ? [] : hidden ? lines.slice(0, TRAY_CAP) : lines;
+  const shown = hidden ? lines.slice(0, TRAY_CAP) : lines;
 
   return (
     <section id="planner-tray" data-spot="fix-tray" data-spot-inset="" aria-labelledby="planner-tray-title" className="glass-panel scroll-mt-4 rounded-2xl px-4 py-2.5">
@@ -286,23 +411,25 @@ export default function NeedsYouTray({
             </span>
           ) : null}
         </h2>
-        {phoneFolded ? (
-          <button
-            type="button"
-            aria-expanded={false}
-            aria-controls="planner-tray-list"
-            data-tray-unfold=""
-            onClick={() => setExpanded(true)}
-            className={`${TAP_TARGET} ml-auto flex items-center gap-1 rounded-lg px-1 py-1 text-xs font-semibold text-zinc-600 transition hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:hover:text-white`}
-          >
-            {t('tray.show')}
-            <ChevronDown size={13} aria-hidden="true" />
-          </button>
+        {onCollapse ? (
+          <Tip label={t('tray.hide')}>
+            <button
+              type="button"
+              aria-label={t('tray.hide')}
+              aria-expanded
+              aria-controls="planner-tray"
+              data-tray-hide=""
+              onClick={() => onCollapse(trayKeys(groups, system, fixed))}
+              className={`${TAP_TARGET} ml-auto grid h-7 w-7 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60 dark:hover:text-white`}
+            >
+              <ChevronUp size={15} aria-hidden="true" />
+            </button>
+          </Tip>
         ) : null}
       </div>
       <ul id="planner-tray-list" className="divide-y divide-zinc-900/[0.06] dark:divide-white/10">
         {shown}
-        {(foldable && !phoneFolded) || (phone && expanded) ? (
+        {foldable ? (
           <li className="py-1">
             <button
               type="button"

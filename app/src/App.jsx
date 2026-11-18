@@ -7,7 +7,7 @@ import { useT, useLocale, useSetLocale, useAdoptLocale, hasStoredLocale } from '
 import { applyAccent, clientAccent, DEFAULT_ACCENT } from './lib/theme.js';
 import { useReschedule } from './lib/useReschedule.js';
 import { useDeliveryState, useInvalidateCloud } from './lib/cloud.js';
-import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, statusCounts, attentionSummary, isLate, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable, getPlannerDensity, setPlannerDensity, NEEDS_YOU_MARK } from './lib/format.js';
+import { startOfWeek, addDays, fmtRange, fmtRangeShort, fmtMonthYear, prettyCampaign, presentPlatforms, matchesFilters, statusCounts, isLate, moveToDayTarget, activeCampaigns, setupIdOf, applySidebarWidth, getSidebarWidth, isActionable, getPlannerDensity, setPlannerDensity } from './lib/format.js';
 import { mergeInboxAll } from './lib/replies.js';
 import { AuroraBackground, NoiseOverlay, FilterChip } from './components/ui.jsx';
 import { TooltipProvider, Tip } from './components/ui/Tooltip.jsx';
@@ -37,15 +37,15 @@ import Clients from './components/Clients.jsx';
 import Cloud from './components/Cloud.jsx';
 import Radar from './components/Radar.jsx';
 import FirstRunEmptyState from './components/FirstRunEmptyState.jsx';
-import NeedsYouTray from './components/NeedsYouTray.jsx';
+import NeedsYouTray, { NeedsYouToggle, useTrayFold } from './components/NeedsYouTray.jsx';
 import { SPOT_EVENT } from './lib/spotJump.js';
 import { groupIssues, postIssue } from './lib/postIssue.js';
 import { systemRows } from './lib/needsYou.js';
-import PlannerRunNow from './components/PlannerRunNow.jsx';
+import { usePlannerRunNow } from './components/PlannerRunNow.jsx';
+import { RowMenu } from './components/ui/RowMenu.jsx';
 import ActivityCheckNow from './components/ActivityCheckNow.jsx';
 import ConnectionStatus from './components/ConnectionStatus.jsx';
 import { TAP_TARGET, TAP_TARGET_Y } from './components/ui/recipes.js';
-import DeliveryExplainer from './components/DeliveryExplainer.jsx';
 
 // Routable pages (hash-synced); composer/assets are still contextual overlays.
 const PAGES = ['planner', 'freigaben', 'activity', 'published', 'insights', 'radar', 'assets', 'setup', 'settings', 'clients', 'cloud'];
@@ -171,12 +171,9 @@ export default function App() {
   // knows which rows to flag; React Query dedupes with the Insights page's own read.
   const reschedule = useReschedule();
   const invalidateCloud = useInvalidateCloud();
-  // Delivery signalling: does a project in view already publish round-the-clock through the
-  // managed cloud? The same delivery state the sidebar card and the header read (contract B,
-  // lib/cloud.js useDeliveryState). Used to suppress the DeliveryExplainer upsell for a user
-  // who is already always-on - you should never be told to set up what you already have.
+  // Delivery signalling: where the projects in view publish from (contract B, lib/cloud.js
+  // useDeliveryState), the same state the sidebar card and the header read.
   const delivery = useDeliveryState({ allClients });
-  const deliveryOnCloud = delivery.cloud.count > 0;
   const [page, setPage] = useState(() => {
     const h = window.location.hash.replace('#', '');
     return PAGES.includes(h) ? h : 'planner';
@@ -205,14 +202,19 @@ export default function App() {
     const portalReturn = cloudParam === 'portal';
     // `paramsPresent` = the url carried ANY launch param we own (even an invalid plan value), so we
     // still strip it on mount; `any` = we have a real action to take (route + maybe pre-select).
-    const paramsPresent = Boolean(planRaw || intervalRaw || cloudParam);
+    // ?claim=<code>: the pendpost.com checkout page's "Open pendpost" link. It only PRE-FILLS the
+    // code on the Cloud page; redeeming it still takes the operator's click.
+    const claimRaw = sp.get('claim');
+    const claim = claimRaw && /^[0-9A-Za-z-]{4,20}$/.test(claimRaw) ? claimRaw.toUpperCase() : null;
+    const paramsPresent = Boolean(planRaw || intervalRaw || cloudParam || claimRaw);
     return {
       plan,
       interval,
+      claim,
       checkoutReturn,
       portalReturn,
       paramsPresent,
-      any: Boolean(plan || checkoutReturn || portalReturn),
+      any: Boolean(plan || claim || checkoutReturn || portalReturn),
     };
   }, []);
   const [cloudReturn, setCloudReturn] = useState(cloudLaunch.checkoutReturn);
@@ -234,6 +236,9 @@ export default function App() {
           sessionStorage.removeItem('pendpost.cloudLaunch.interval');
         }
       } catch { /* sessionStorage may be unavailable; deep-link is best-effort */ }
+    }
+    if (cloudLaunch.claim) {
+      try { sessionStorage.setItem('pendpost.cloudLaunch.claim', cloudLaunch.claim); } catch { /* best-effort */ }
     }
     if (cloudLaunch.any) setPage('cloud');
     // Returning from the Stripe billing portal: force a fresh subscription/usage read so any
@@ -551,6 +556,20 @@ export default function App() {
   // every full-campaigns view (Published, Approvals, run-now) so they never leak a
   // validation campaign. The Composer keeps the full list (you may author into one).
   const visibleCampaigns = useMemo(() => campaigns.filter((c) => showInternal || !c.internal), [campaigns, showInternal]);
+  // The tray's fold (UX round 10): the tray, or one needs-you icon in the planner header.
+  const trayFold = useTrayFold();
+  // Run-now / Check-readiness through the in-app confirm gate (B6), as items of the header's
+  // overflow menu. A recorded Meta-368 disables Run-now and offers Check-readiness instead.
+  const runNow = usePlannerRunNow({
+    pendpostHealth,
+    campaigns: visibleCampaigns,
+    clientName: activeClient?.displayName || activeClient?.id || '',
+    // A folded tray opens first, then scrolls into view on the next frame, once it renders.
+    onCheckReadiness: () => {
+      trayFold.open();
+      requestAnimationFrame(() => document.getElementById('planner-tray')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }));
+    },
+  });
 
   // Type chips reflect only the types selectable in the current page + platform
   // context (A1): with Instagram selected you see Reel/Story, never a LinkedIn
@@ -644,11 +663,9 @@ export default function App() {
     () => systemRows(pendpostHealth, { posts: trayPosts, groups: trayGroups, setupFor: issueSetup, activeClientId, cloud: trayCloud }),
     [pendpostHealth, trayPosts, trayGroups, issueSetup, activeClientId, trayCloud],
   );
-  const attention = useMemo(
-    () => attentionSummary(trayPosts, { setup: issueSetup, system: traySystem.length }),
-    [trayPosts, issueSetup, traySystem],
-  );
-  const attentionTip = attention ? t(attention.kind === 'needs-you' ? 'tray.badge.tip' : 'header.overdue.tip', { count: attention.count }) : '';
+  // Where the tray (or its folded icon) has a place: the planner with campaigns, or another
+  // project that needs the owner (the zero-campaign first-run panel keeps its own checklist).
+  const trayHasPlace = page === 'planner' && (campaigns.length > 0 || trayGroups.some((g) => g.clientId && g.clientId !== activeClientId));
   const nextPost = useMemo(() => {
     const now = Date.now();
     return activePosts
@@ -829,17 +846,6 @@ export default function App() {
     setCampaignFilter('all');
     setPage('planner');
   };
-  // The header badge while something needs the owner: the planner List, filtered to exactly
-  // the posts it counts ('needs-you'), with the "Needs you" tray scrolled into view. A cause
-  // in another project opens the all-projects scope, like the overdue jump.
-  const showNeedsYou = () => {
-    if (!allClients && trayGroups.some((g) => g.clientId && g.clientId !== activeClientId)) setAllClients(true);
-    setStatusFilter(['needs-you']);
-    setView('list');
-    setCampaignFilter('all');
-    setPage('planner');
-    setTimeout(() => document.getElementById('planner-tray')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
-  };
   // The one fix a cloud issue row offers (header popover + Cloud page): 'reconnect' opens
   // Setup focused on that lane, 'open' opens the post. An issue can belong to a project the
   // owner is not viewing (the roll-up spans every always-on project), so re-scope first via
@@ -939,6 +945,71 @@ export default function App() {
   // insights, which share the filter bar but not entry.ok/entry.action.
   const isActivity = page === 'activity';
   const showFilterBar = page === 'planner' || page === 'freigaben' || page === 'activity' || page === 'published' || page === 'insights';
+  // Approvals and Radar carry no header card (UX round 10, F1): there it held only the page
+  // title, the drawer trigger and the "..." menu, a whole panel of chrome above the page's own
+  // first row. The title stays as an sr-only <h1> (the heading outline is unchanged) and the
+  // two controls ride the page's first row instead: the FilterBar on Approvals, the Radar
+  // title row on Radar. Every other page keeps its header. Radar keeps it while the server is
+  // unreachable: the error panel replaces the page, and with it the row the controls ride.
+  const bareHeader = page === 'freigaben' || (page === 'radar' && !isError);
+
+  // Narrow-only trigger for the off-canvas sidebar drawer; hidden on the lg+ rail. Controls the
+  // #app-sidebar drawer. `cls` lets a host row add its own spacing.
+  const drawerButton = (cls = '') => (
+    <button
+      type="button"
+      onClick={() => setSidebarOpen(true)}
+      aria-label={t('app.nav.openMenu')}
+      aria-expanded={sidebarOpen}
+      aria-controls="app-sidebar"
+      className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand lg:hidden ${cls}`}
+    >
+      <Menu size={18} aria-hidden="true" />
+    </button>
+  );
+
+  // The app's ONE overflow menu (owner decision 8, Nov 2026): run-now and card density on the
+  // planner, then the delivery status, language and theme on every page. The delivery popover
+  // opens under this same button and its dot rides the trigger, so a delivery problem stays
+  // visible. It sits in the header, or in the first row of a page without one (bareHeader).
+  // `pageItems` lets a page fold its own overflow entries into this one menu (Radar, round 10
+  // R1): they lead, and a divider sets the app's own entries apart, so a page never shows two
+  // "..." buttons side by side.
+  const renderMoreMenu = (pageItems = []) => (
+    <ConnectionStatus
+      allClients={allClients}
+      onNavigate={setPage}
+      onShowAtRisk={showOverdue}
+      onIssueAction={onCloudIssue}
+      anchor={({ open: openStatus, Icon: DeliveryIcon, label: deliveryLabel, dot }) => (
+        <div className="shrink-0">
+          <RowMenu
+            label={t('app.more')}
+            stopPropagation={false}
+            dot={dot}
+            triggerClassName={`flex h-8 w-8 items-center justify-center rounded-xl bg-zinc-200/60 text-zinc-600 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:text-zinc-300 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
+            items={[
+              ...pageItems,
+              ...(page === 'planner' ? runNow.items : []),
+              page === 'planner' && view === 'week' && {
+                key: 'density',
+                label: t(density === 'compact' ? 'app.density.toComfortable' : 'app.density.toCompact'),
+                Icon: density === 'compact' ? Rows2 : Rows3,
+                run: () => {
+                  setPlannerDensity(density === 'compact' ? 'comfortable' : 'compact');
+                  setDensity(getPlannerDensity());
+                },
+              },
+              { key: 'delivery', label: deliveryLabel, Icon: DeliveryIcon, divider: page === 'planner' || pageItems.some(Boolean), run: openStatus },
+              { key: 'language', label: locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman'), Icon: Languages, run: () => setLocale(locale === 'de-CH' ? 'en' : 'de-CH') },
+              { key: 'theme', label: dark ? t('app.theme.toLight') : t('app.theme.toDark'), Icon: dark ? Sun : Moon, run: toggleDark },
+            ]}
+          />
+        </div>
+      )}
+    />
+  );
+  const moreMenu = renderMoreMenu();
 
   return (
     <TooltipProvider>
@@ -993,7 +1064,32 @@ export default function App() {
           <SidebarResizer />
 
           <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-y-auto scrollbar-soft">
-            {page !== 'composer' ? (
+            {/* The "Needs you" tray (studio fix flow, package C; it replaced the Readiness
+                panel here): one line per thing the owner must do, each with its fix, and
+                nothing when there is nothing to do. The zero-campaign first-run panel below
+                keeps its own readiness checklist, unless ANOTHER project needs the owner: since
+                the header pill went (Nov 2026 header diet) the tray is where that shows.
+                It sits FIRST on the planner, above the header (UX round 10): what needs the owner
+                reads before the week nav, and the filter bar then sits right on the calendar
+                it filters. */}
+            {trayHasPlace && !trayFold.collapsed ? (
+              <NeedsYouTray
+                groups={trayGroupsInView}
+                system={traySystem}
+                posts={trayPostsInView}
+                setupReady={pendpostHealth?.setup?.ready}
+                allClients={allClients}
+                activeClientId={activeClientId}
+                onNavigate={navigateForProject}
+                onOpenPost={openFromTray}
+                onEdit={editComposer}
+                onReview={() => navigateTo('freigaben')}
+                onCollapse={trayFold.collapse}
+              />
+            ) : null}
+            {bareHeader ? (
+              <h1 className="sr-only">{pageTitle(page)}</h1>
+            ) : page !== 'composer' ? (
             // Below sm the header WRAPS (title row, then the icon row right-aligned): at
             // 375px the planner's controls overran one line, so the menu button and the
             // theme toggle were clipped and opening the cloud popover scrolled the page
@@ -1001,19 +1097,8 @@ export default function App() {
             // gap-3, not gap-2: the menu button and the planner's back button each carry a 44px
             // TAP_TARGET box on a 32px button, and two such boxes only stay apart at 12px - across
             // (menu -> back below lg) and down (the wrapped title row -> control row on a phone).
-            <header className="glass-panel flex items-center gap-3 rounded-2xl px-4 py-3 max-sm:flex-wrap">
-              {/* Narrow-only trigger for the off-canvas sidebar drawer; hidden on
-                  the lg+ rail. Controls the #app-sidebar drawer. */}
-              <button
-                type="button"
-                onClick={() => setSidebarOpen(true)}
-                aria-label={t('app.nav.openMenu')}
-                aria-expanded={sidebarOpen}
-                aria-controls="app-sidebar"
-                className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl transition hover:bg-zinc-200/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand lg:hidden`}
-              >
-                <Menu size={18} aria-hidden="true" />
-              </button>
+            <header className="glass-panel relative z-20 flex items-center gap-3 rounded-2xl px-4 py-3 max-sm:flex-wrap">
+              {drawerButton()}
               {page === 'planner' ? (
                 // gap-1.5: Zurück/Weiter (32px) reach 6px past each side to their 44px box; Heute is
                 // already 55px wide, so 6px between them is exactly where the boxes meet.
@@ -1055,17 +1140,6 @@ export default function App() {
                 {page === 'activity' ? <ActivityCheckNow /> : null}
                 {page === 'planner' ? (
                   <>
-                    {/* Run-now / Check-readiness through the in-app confirm gate (B6).
-                        Reuses the shared pendpostHealth read (above); a recorded
-                        Meta-368 disables Run-now and offers Check-readiness instead. */}
-                    <PlannerRunNow
-                      pendpostHealth={pendpostHealth}
-                      campaigns={visibleCampaigns}
-                      clientName={activeClient?.displayName || activeClient?.id || ''}
-                      onCheckReadiness={() =>
-                        document.getElementById('planner-tray')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-                      }
-                    />
                     <div className="flex h-8 shrink-0 items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60" role="group" aria-label={t('app.view.label')}>
                       {[
                         ['week', t('app.view.week'), CalendarDays],
@@ -1087,35 +1161,13 @@ export default function App() {
                         </button>
                       ))}
                     </div>
-                    {/* Week density toggle: one glyph that flips comfortable big cards
-                        vs compact chips, so a busy day stays scannable. Week only -
-                        Month is always compact, List is always dense. */}
-                    {view === 'week' ? (
-                      <Tip label={t(density === 'compact' ? 'app.density.toComfortable' : 'app.density.toCompact')}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = density === 'compact' ? 'comfortable' : 'compact';
-                            setPlannerDensity(next);
-                            setDensity(getPlannerDensity());
-                          }}
-                          aria-pressed={density === 'compact'}
-                          aria-label={t(density === 'compact' ? 'app.density.toComfortable' : 'app.density.toCompact')}
-                          className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand ${
-                            density === 'compact' ? 'text-brand dark:text-brand-light' : 'text-zinc-500 dark:text-zinc-400'
-                          }`}
-                        >
-                          {density === 'compact' ? <Rows3 size={15} aria-hidden="true" /> : <Rows2 size={15} aria-hidden="true" />}
-                        </button>
-                      </Tip>
-                    ) : null}
                     <label className="sr-only" htmlFor="campaign-filter">
                       {t('app.campaign.label')}
                     </label>
                     {/* A native select cannot carry the ::after TAP_TARGET box, so the select
                         itself is the 44px target (transparent, pulled back into the 32px row by
                         -my-1.5) and this span paints the 32px pill and its focus ring. */}
-                    <span className="flex h-8 min-w-0 max-w-[10rem] items-center rounded-xl bg-zinc-200/60 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-brand dark:bg-zinc-800/60">
+                    <span className="flex h-8 min-w-0 max-w-[10rem] max-sm:max-w-[7.5rem] items-center rounded-xl bg-zinc-200/60 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-brand dark:bg-zinc-800/60">
                     <select
                       id="campaign-filter"
                       value={campaignFilter}
@@ -1169,59 +1221,24 @@ export default function App() {
                     ) : null}
                   </>
                 ) : null}
-                {/* Merged delivery + always-on status (replaces the dismissible
-                    SchedulerChip): a persistent symbol next to the language/theme
-                    toggles whose popover folds the keep-open status and the managed
-                    cloud upsell. Present on every page. */}
-                {/* The persistent icon cluster. Each 32px button carries a 44px TAP_TARGET box; gap-3
-                    (12px) is the spacing at which two such boxes meet without overlapping. */}
-                <div className="flex shrink-0 items-center gap-3">
-                  {/* Needs-you / overdue beacon: present ONLY while something needs the owner,
-                      a count in the persistent icon row (the sidebar is out of view on small
-                      screens / collapsed sidebars). It wears the ONE needs-you mark (format.js
-                      NEEDS_YOU_MARK: the halted rose stop + TriangleAlert), the same as the
-                      planner tray's count, in light and dark alike. */}
-                  {attention ? (
-                    <Tip label={attentionTip}>
-                      <button
-                        type="button"
-                        onClick={attention.kind === 'needs-you' ? showNeedsYou : showOverdue}
-                        aria-label={attentionTip}
-                        data-needs-you-mark=""
-                        className={`${TAP_TARGET} ${NEEDS_YOU_MARK} h-8 justify-center rounded-xl px-2.5 transition hover:bg-rose-400/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand`}
-                      >
-                        <TriangleAlert size={14} aria-hidden="true" />
-                        <span className="text-xs font-bold tabular-nums">{attention.count}</span>
-                      </button>
-                    </Tip>
-                  ) : null}
-                  <ConnectionStatus allClients={allClients} onNavigate={setPage} onShowAtRisk={showOverdue} onIssueAction={onCloudIssue} />
-                  {/* Hidden on a phone: at 375px the icon row overran the header and clipped the
-                      theme button. The language stays one tap away in Settings. */}
-                  <Tip label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}>
-                    <button
-                      type="button"
-                      onClick={() => setLocale(locale === 'de-CH' ? 'en' : 'de-CH')}
-                      aria-label={locale === 'de-CH' ? t('app.lang.toEnglish') : t('app.lang.toGerman')}
-                      className={`${TAP_TARGET} hidden h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand sm:flex`}
-                    >
-                      <Languages size={14} aria-hidden="true" />
-                    </button>
-                  </Tip>
-                  <Tip label={dark ? t('app.theme.toLight') : t('app.theme.toDark')}>
-                    <button
-                      type="button"
-                      onClick={toggleDark}
-                      aria-label={dark ? t('app.theme.toLight') : t('app.theme.toDark')}
-                      className={`${TAP_TARGET} flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:ring-2 focus-visible:ring-brand`}
-                    >
-                      {dark ? <Sun size={14} aria-hidden="true" /> : <Moon size={14} aria-hidden="true" />}
-                    </button>
-                  </Tip>
-                </div>
+                {/* The ONE overflow menu (moreMenu, above). The old needs-you pill is gone: the
+                    planner's "Needs you" tray and the sidebar counts carry it. A folded tray leaves
+                    its one icon here, beside the menu, and it opens the tray again. */}
+                {trayHasPlace && trayFold.collapsed ? (
+                  <NeedsYouToggle
+                    groups={trayGroupsInView}
+                    system={traySystem}
+                    posts={trayPostsInView}
+                    allClients={allClients}
+                    seen={trayFold.seen}
+                    onOpen={trayFold.open}
+                  />
+                ) : null}
+                {moreMenu}
               </div>
             </header>
             ) : null}
+            {runNow.dialog}
 
             {/* The shared filter bar (FilterBar.jsx): status tabs with live counts where a status
                 filter applies, then platform icons, Type, reset and the "?" legend. */}
@@ -1243,6 +1260,10 @@ export default function App() {
                 // Approvals' and the Planer List's keyboard shortcuts ride the "?" popover under
                 // the status legend.
                 helpExtra={page === 'freigaben' ? <KeyboardShortcuts /> : page === 'planner' && view === 'list' ? <ListKeyboardShortcuts /> : null}
+                // Approvals has no header card (bareHeader): its drawer trigger and "..." menu
+                // ride this, its first row.
+                lead={page === 'freigaben' ? drawerButton('mr-1') : null}
+                trail={page === 'freigaben' ? moreMenu : null}
                 extra={isActivity ? (
                   <>
                     <span className="h-4 w-px bg-zinc-300 dark:bg-zinc-700" aria-hidden="true" />
@@ -1302,31 +1323,6 @@ export default function App() {
               </div>
             ) : null}
 
-            {/* The "Needs you" tray (studio fix flow, package C; it replaced the Readiness
-                panel here): one line per thing the owner must do, each with its fix, and
-                nothing when there is nothing to do. The zero-campaign first-run panel below
-                keeps its own readiness checklist. */}
-            {page === 'planner' && campaigns.length > 0 ? (
-              <NeedsYouTray
-                groups={trayGroupsInView}
-                system={traySystem}
-                posts={trayPostsInView}
-                setupReady={pendpostHealth?.setup?.ready}
-                allClients={allClients}
-                activeClientId={activeClientId}
-                onNavigate={navigateForProject}
-                onOpenPost={openFromTray}
-                onEdit={editComposer}
-                onReview={() => navigateTo('freigaben')}
-              />
-            ) : null}
-
-            {/* One-time native-vs-live explainer (B-app): shown once per machine, then
-                remembered. It lives on the 24/7 cloud page, the page it explains: in the
-                planner it sat between the Needs-you tray and the posts and pushed every post
-                below the first screen on a phone. */}
-            {page === 'cloud' ? <DeliveryExplainer suppressed={deliveryOnCloud} /> : null}
-
             {/* The content canvas GROWS with its content; <main> above is the one vertical
                 scroller, so the header and filter bar scroll away with the page (owner rule:
                 never a fixed header over a cramped inner scroll box). `grow` keeps a short page
@@ -1377,10 +1373,11 @@ export default function App() {
                   onReturnDismiss={() => setCloudReturn(false)}
                   deepLinkPlan={cloudLaunch.plan}
                   deepLinkInterval={cloudLaunch.interval}
+                  deepLinkClaim={cloudLaunch.claim}
                   onIssueAction={onCloudIssue}
                 />
               ) : page === 'radar' ? (
-                <Radar active={page === 'radar'} campaigns={campaigns} allClients={radarAll} allSignals={radarAllSignals} allFailed={radarAllFailed} allLoading={radarAllLoading} allInbox={radarInboxAll} allInboxFailed={radarInboxAllFailed} allInboxLoading={radarInboxAllLoading} onNavigate={navigateTo} onNewPost={openComposer} onOpenPost={openPost} />
+                <Radar active={page === 'radar'} campaigns={campaigns} allClients={radarAll} allSignals={radarAllSignals} allFailed={radarAllFailed} allLoading={radarAllLoading} allInbox={radarInboxAll} allInboxFailed={radarInboxAllFailed} allInboxLoading={radarInboxAllLoading} onNavigate={navigateTo} onNewPost={openComposer} onOpenPost={openPost} lead={drawerButton('mr-1')} trail={renderMoreMenu} />
               ) : page === 'composer' && composer?.mode === 'thread' ? (
                 <ThreadComposer
                   seed={composer.seed}

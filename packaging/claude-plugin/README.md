@@ -28,7 +28,9 @@ stays in that local install.
 
 ## What it sends and fetches
 
-- Nothing goes to Nomadik GmbH or any pendpost server. There is no telemetry.
+- Nothing goes to Nomadik GmbH or any pendpost server by default. The one opt-in exception is
+  an anonymous weekly install ping (off until you switch it on in Settings): a random install
+  id, the pendpost version and your OS, nothing else.
 - When you connect a platform and approve a post, pendpost calls that platform's own API to
   publish it and to read its insights.
 - If you turn on Radar, it reads public posts from the sources you enable.

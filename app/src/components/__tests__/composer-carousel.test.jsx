@@ -85,7 +85,7 @@ describe('Composer — native carousel block (spec 05)', () => {
     // A single seeded slide pads to 2 rows (CarouselPicker's own "a carousel needs
     // two" rule) - the SECOND row is empty, so its VideoPicker shows the empty-state
     // placeholder. A carousel slide is usually an image, so it must read "Choose
-    // media", never the single-picker's video-specific "Choose video (data/media)".
+    // media", never the single-picker's video-specific "Choose video".
     renderEditComposer(carouselPost(['instagram'], { mediaItems: [{ path: '/tmp/assets/a.jpg' }] }));
     expect(screen.getByText('Choose media')).toBeInTheDocument();
     expect(screen.queryByText(/choose video/i)).not.toBeInTheDocument();

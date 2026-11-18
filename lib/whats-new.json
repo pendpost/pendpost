@@ -2,6 +2,44 @@
   "$comment": "What's new, shown once in the Studio after an update. One entry per released version, newest first. Each entry holds 2 to 4 items: kind (new, improved or fixed), icon (a lucide name from ICONS in lib/whats-new.mjs), a title of 2 to 5 words (max 32 characters, no period) and a body of ONE plain sentence (max 90 characters), both in en and de-CH (real umlauts, never the sharp s, du-form), run through the humanizer, no em dashes. Optional go: a spot key the Studio maps to the page where the feature lives. Write the entry before `node ops/release.mjs bump`; test/whats-new.test.mjs fails when the running VERSION has none. The full notes link is https://pendpost.com/changelog#v<version>.",
   "releases": [
     {
+      "version": "2.14.0",
+      "date": "2026-11-18",
+      "items": [
+        {
+          "kind": "new", "icon": "shield-check", "go": "approvals",
+          "title": { "en": "Approve before you connect", "de-CH": "Freigeben vor dem Verbinden" },
+          "body": {
+            "en": "Approve a post before you connect its platform, and it goes out once you do.",
+            "de-CH": "Gib einen Beitrag frei, bevor du seine Plattform verbindest, und er geht danach raus."
+          }
+        },
+        {
+          "kind": "improved", "icon": "bell-off", "go": "fix-tray",
+          "title": { "en": "Fold away Needs you", "de-CH": "Braucht dich einklappen" },
+          "body": {
+            "en": "Fold the Needs you list into one icon; a dot shows when something new comes up.",
+            "de-CH": "Klapp «Braucht dich» zu einem Symbol zu; ein Punkt zeigt, wenn Neues dazukommt."
+          }
+        },
+        {
+          "kind": "improved", "icon": "radar", "go": "radar",
+          "title": { "en": "Calmer Radar cards", "de-CH": "Ruhigere Radar-Karten" },
+          "body": {
+            "en": "Each card shows one state and one text button; the other actions are icons.",
+            "de-CH": "Jede Karte zeigt einen Status und eine Aktion als Text, der Rest sind Symbole."
+          }
+        },
+        {
+          "kind": "fixed", "icon": "shield-alert",
+          "title": { "en": "Example posts stay drafts", "de-CH": "Beispiele bleiben Entwürfe" },
+          "body": {
+            "en": "The pre-approved Acme example from older versions is a draft again and never goes out.",
+            "de-CH": "Das freigegebene Acme-Beispiel älterer Versionen ist wieder Entwurf und geht nie raus."
+          }
+        }
+      ]
+    },
+    {
       "version": "2.13.1",
       "date": "2026-11-12",
       "items": [

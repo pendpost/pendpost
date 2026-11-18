@@ -10,9 +10,9 @@ import { clearRefusals } from '../../lib/refusalMemo.js';
 const t = makeT('en');
 
 // The media-first row (owner-approved mockup A, 2026-11-05): checkbox | media | words |
-// action. The media leads at its real aspect (or a quiet lane tile for a post with nothing to
-// look at), the meta line sits on top, a bold title shows ONLY when a lane publishes one, the
-// caption is one paragraph, and Approve is tonal except on the focused row.
+// action. The media leads at its real aspect (a post with nothing to look at has no media
+// column, UX round 10), the meta line sits on top, a bold title shows ONLY when a lane
+// publishes one, the caption is one paragraph, and Approve is tonal except on the focused row.
 vi.mock('../../lib/api.js', () => ({
   usePlatformValidate: () => ({ data: null }),
   approvePost: vi.fn(() => Promise.resolve({ ok: true })),
@@ -137,18 +137,22 @@ describe.each(['comfortable', 'compact'])('Freigaben media-first row (%s)', (den
     }
   });
 
-  it('a text post keeps the media column with a quiet tile of its lane', () => {
+  // UX round 10: a post with nothing to look at has no media column. The grey lane tile only
+  // repeated the glyph the meta line shows, so the words take the width.
+  it('a text post has no media column; its lane glyph stays in the meta line', () => {
     renderFreigaben([textPost], { density });
     const row = rowFor('plain LinkedIn note');
-    const tile = row.querySelector('[data-row-media] [data-lane-tile]');
-    expect(tile).toHaveAttribute('data-lane-tile', 'linkedin');
+    expect(row.querySelector('[data-row-media]')).toBeNull();
+    expect(row.querySelector('[data-lane-tile]')).toBeNull();
     expect(row.querySelector('img, video')).toBeNull();
+    expect(within(row.querySelector('[data-row-meta]')).getByLabelText('LinkedIn')).toBeInTheDocument();
   });
 
-  it('a Radar reply tiles its source lane, with the thread above the reply caption', () => {
+  it('a Radar reply has no media column, names its lane in the meta line, and reads under the thread', () => {
     renderFreigaben([radarReply], { density });
     const row = rowFor('bright enough');
-    expect(row.querySelector('[data-row-media] [data-lane-tile]')).toHaveAttribute('data-lane-tile', 'reddit');
+    expect(row.querySelector('[data-row-media]')).toBeNull();
+    expect(within(row.querySelector('[data-row-meta]')).getByLabelText('Reddit')).toBeInTheDocument();
     const thread = within(row).getByText('Do daylight lamps help?');
     const caption = row.querySelector('[data-row-caption]');
     expect(precedes(thread, caption)).toBe(true);
@@ -221,11 +225,11 @@ describe('Freigaben row meta: exceptions only', () => {
     expect(within(rowFor('Bueroangestellten').querySelector('[data-row-meta]')).getByText('720p')).toBeInTheDocument();
   });
 
-  it('drops the "N posts" count when the To review chip already carries it, keeps it on All', () => {
+  it('drops the "N posts" count when the To review segment already carries it, keeps it on All', () => {
     renderFreigaben([reel, textPost], { density: 'compact' });
-    expect(screen.getByText(t('approvals.view.toReviewCount', { n: 2 }))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `${t('approvals.view.toReview')} 2` })).toBeInTheDocument();
     expect(screen.queryByText(t('approvals.postCount', { n: 2 }))).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: t('approvals.view.all') }));
+    fireEvent.click(screen.getByRole('button', { name: t('approvals.view.allShort') }));
     expect(screen.getByText(t('approvals.postCount', { n: 2 }))).toBeInTheDocument();
   });
 });

@@ -81,6 +81,8 @@ describe('Month chip carries the status word as a glyph, never a colour-only dot
 
   // Hollow = approved and waiting, filled = published. The two used to share one CheckCircle
   // half a shade of green apart; the shape must differ, and a published chip settles back.
+  // Both draw the bare Check inside their ring (UX round 10: a CheckCircle in a ring read as a
+  // double ring), so the difference is the box: a filled disk against an empty ring.
   it('a published post wears the SOLID glyph, a different shape from approved', () => {
     const pubPost = { ...liPost, id: 'pub1', title: 'Out post', caption: 'Out post', derivedState: 'posted', status: 'posted' };
     renderMonth([liPost, pubPost]);
@@ -90,9 +92,22 @@ describe('Month chip carries the status word as a glyph, never a colour-only dot
     expect(pub.getAttribute('data-status-glyph')).toBe('posted');
     expect(pub.className).toContain('bg-emerald-600');
     expect(appr.className).not.toContain('bg-emerald-600');
-    expect(pub.querySelector('svg').getAttribute('class')).not.toBe(appr.querySelector('svg').getAttribute('class'));
     // The published chip settles (transparent body), the approved one stays crisp.
     expect(chip(/Out post/).className).toContain('bg-transparent');
     expect(chip(/Calm post/).className).not.toContain('bg-transparent');
+  });
+
+  // UX round 10: the glyph sits in a fixed square box, so it centres geometrically (padding
+  // around the icon left the paper plane and the checks off-centre), and a ring never holds a
+  // CheckCircle (a ring in a ring read as a double ring).
+  it('the glyph sits in a fixed, centred box and draws the bare Check inside the ring', () => {
+    renderMonth([liPost, tgPost]);
+    for (const g of [glyphOf(/Calm post/), glyphOf(/Planner tour/)]) {
+      for (const c of ['grid', 'size-3.5', 'place-items-center', 'rounded-full', 'ring-1']) expect(g.className.split(' ')).toContain(c);
+      expect(g.className).not.toMatch(/\bp-0\.5\b/);
+    }
+    const appr = glyphOf(/Calm post/).querySelector('svg').getAttribute('class');
+    expect(appr).toMatch(/lucide-check\b/);
+    expect(appr).not.toMatch(/circle/);
   });
 });

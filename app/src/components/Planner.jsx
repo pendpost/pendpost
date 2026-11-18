@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Bot, CalendarClock, CalendarDays, CheckCircle2, ChevronUp, ChevronDown, Plus, CornerUpLeft, ExternalLink, PauseCircle, PlayCircle, RefreshCw, Trash2, TriangleAlert } from 'lucide-react';
+import { Bot, CalendarClock, CalendarDays, Check, CheckCircle, CheckCircle2, ChevronUp, ChevronDown, Plus, CornerUpLeft, ExternalLink, PauseCircle, PlayCircle, RefreshCw, Send, Trash2, TriangleAlert } from 'lucide-react';
 import { dayKey, localDayKey, comparePostDate, fmtTime, fmtDayShort, fmtDayNum, fmtDayAria, fmtMonthYear, addDays, TIME_CHIP_META, timeChipTone, gridDisplayAspect, hasVisual, needsAttention, postIsDimmed, getCardAccent, STATUS_PILL_META, postDisplayStatusKey, postDisplayTitle, postPublishedTitle, postCaptionRun, deriveThread, collectThread, postStatusWord, approvalWord, ROW_STATUS_META, failedDisplayKey, liveFailure, blockedLanes as blockedLanesOf, resolveLivePermalink, STAIR, timeColumn, PLATFORMS, unconnectedLanes, rowTypeLabel } from '../lib/format.js';
 import { useReschedule } from '../lib/useReschedule.js';
 import { usePostActions } from '../lib/usePostActions.js';
@@ -34,12 +34,25 @@ import { approveNoticeText } from '../lib/approveNotice.js';
 // any later tweak stay in lockstep instead of three hand-typed literals.
 const EMPTY_TIME = '--:--';
 
+// A status glyph inside a small ring (the Week/Month chip, the List row's time chip). The ring
+// is a fixed square box (grid + place-items-center), so the icon centres geometrically; with
+// padding the paper plane and the checks sat visibly off-centre (UX round 10). Inside a ring a
+// CheckCircle reads as a double ring, so the ring draws the bare Check. Lucide's Send plane is
+// optically heavy top-right, so it moves half a pixel down-left. Only here: the pills keep
+// the meta's own icons (lib/format.js ROW_STATUS_META, TIME_CHIP_META).
+const RING_GLYPH = new Map([[CheckCircle, Check]]);
+function RingGlyph({ Icon, size }) {
+  const Glyph = RING_GLYPH.get(Icon) || Icon;
+  return <Glyph size={size} aria-hidden="true" className={Icon === Send ? '-translate-x-[0.5px] translate-y-[0.5px]' : undefined} />;
+}
+
 // FR1: the scheduled-time chip, color-coded to the post's approval/breaker state
 // and paired with an icon + accessible name so meaning is never color-only
 // (WCAG 1.4.1). Three variants:
 //  - overlay: the absolutely-positioned pill over a Week card cover image;
-//  - inline: a compact icon+time chip for the dense Month cell (lives inside the
-//    cell button, so it is a labeled non-interactive span, not a nested button);
+//  - inline: the time in the dense Week/Month chip (lives inside the chip button, so it
+//    is a labeled non-interactive span, not a nested button): plain text for the calm
+//    tone, a pill with its icon only for an attention tone (ATTENTION_TONES below);
 //  - standalone: a compact icon chip for the List row. It is a non-interactive
 //    labeled span (role=img + aria-label, like the other two variants), a sibling
 //    of the row's open-detail button - so it never nests an interactive control
@@ -47,6 +60,10 @@ const EMPTY_TIME = '--:--';
 //    pointer-only hover tooltip.
 // The Tip reveals the same accessible name on pointer hover; the aria-label
 // carries it for screen readers regardless of hover or focus.
+// The TIME_CHIP_META tones that ask for attention (amber needs-approval, red halted); the
+// inline chip keeps its pill only for these.
+const ATTENTION_TONES = new Set(['needs-approval', 'halted']);
+
 export function TimeChip({ post, lane, variant = 'overlay', tip = true }) {
   const t = useT();
   if (!post.scheduledAt) return null;
@@ -62,24 +79,33 @@ export function TimeChip({ post, lane, variant = 'overlay', tip = true }) {
         <span
           role="img"
           aria-label={accessibleName}
-          className={`inline-flex shrink-0 items-center rounded-full p-1 text-[10px] font-bold ring-1 ${meta.cls}`}
+          data-ring-glyph=""
+          className={`grid size-[19px] shrink-0 place-items-center rounded-full ring-1 ${meta.cls}`}
         >
           {/* List rows already render the editable time beside this chip; the chip
               is the color/approval signal only, so it drops the redundant clock
-              read-out and stays a compact icon (name still carries the time for SR). */}
-          <Icon size={11} aria-hidden="true" />
+              read-out and stays a compact icon (name still carries the time for SR).
+              19px = the old p-1 box around the 11px icon, so the row keeps its height. */}
+          <RingGlyph Icon={Icon} size={11} />
         </span>
       </Tip>
     );
   }
 
-  const className = variant === 'inline'
-    ? `inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 ${meta.cls}`
-    : `absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 backdrop-blur ${meta.cls}`;
-  // Inline (the dense chip): the calm approved tone drops its check, because the chip's own
-  // status glyph already says it; a second check beside it read as "approved" even on a
-  // published post. Amber and red keep their icon (a Meta lane halt is only said here).
-  const showIcon = !(variant === 'inline' && tone === 'approved');
+  // Inline (the dense chip): the chip already leads with the post's status glyph, so a calm
+  // time is just the time, plain tabular text in zinc ink with no pill and no check (a
+  // second check beside the glyph read as "approved" even on a published post, and a grey
+  // pill on every chip was noise; UX round 10). TIME_CHIP_META has three tones and only
+  // the calm 'approved' one is neutral: 'needs-approval' (amber) and 'halted' (red) mean
+  // the post waits on the owner or a Meta lane holds it, which only this chip says, so
+  // those keep the pill and their icon.
+  const plain = variant === 'inline' && !ATTENTION_TONES.has(tone);
+  const className = plain
+    ? 'shrink-0 text-[10px] font-bold tabular-nums text-zinc-700 dark:text-zinc-200'
+    : variant === 'inline'
+      ? `inline-flex shrink-0 items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 ${meta.cls}`
+      : `absolute right-1.5 top-1.5 inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold ring-1 backdrop-blur ${meta.cls}`;
+  const showIcon = !plain;
   const chip = (
     <span role="img" aria-label={accessibleName} className={className}>
       {showIcon ? <Icon size={11} aria-hidden="true" /> : null}
@@ -352,8 +378,9 @@ export function CompactPostCard({ post, onSelect, lane, draggable, dayLabel, sho
     >
       {/* The status word's glyph in the pill's tone (never colour alone: the shape is the
           pill's icon, and the button's name speaks the word). */}
-      <span aria-hidden="true" data-status-glyph={word} className={`inline-flex shrink-0 rounded-full p-0.5 ring-1 ${glyph.cls}`}>
-        <StatusGlyph size={10} />
+      {/* size-3.5 = the old p-0.5 box around the 10px icon, so the chip keeps its height. */}
+      <span aria-hidden="true" data-status-glyph={word} className={`grid size-3.5 shrink-0 place-items-center rounded-full ring-1 ${glyph.cls}`}>
+        <RingGlyph Icon={StatusGlyph} size={10} />
       </span>
       {/* FR1: color-coded time chip (visual only inside the labeled button) */}
       <span aria-hidden="true" className="contents">

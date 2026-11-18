@@ -163,12 +163,27 @@ describe('TimeChip inline variant: one status glyph per chip', () => {
     expect(container.querySelector('[role="img"] svg')).toBeNull();
   });
 
-  it('needs-approval and halted inline keep their icon', () => {
+  // UX round 10: the calm time is plain tabular text in zinc ink, no pill background or ring.
+  it('approved inline is plain tabular time: no pill, no ring, no tint', () => {
+    const { container } = renderChip(post({ approval: 'approved' }), {}, 'inline');
+    const chip = container.querySelector('[role="img"]');
+    expect(chip.textContent).toBe(fmtTime(AT));
+    expect(chip.getAttribute('aria-label')).toMatch(/^Approved, /);
+    for (const c of ['tabular-nums', 'font-bold', 'text-zinc-700']) expect(chip.className).toContain(c);
+    expect(chip.className).not.toMatch(/\bring-|\bbg-|rounded-full|px-1\.5/);
+  });
+
+  it('needs-approval and halted inline keep their pill and icon', () => {
     const a = renderChip(post({ approval: 'pending' }), {}, 'inline');
-    expect(a.container.querySelector('[role="img"] svg')).not.toBeNull();
+    const amber = a.container.querySelector('[role="img"]');
+    expect(amber.querySelector('svg')).not.toBeNull();
+    expect(amber.className).toContain('rounded-full');
+    expect(amber.className).toContain('bg-amber-500/90');
     a.unmount();
     const h = renderChip(post({ approval: 'approved', platforms: ['instagram'] }), { metaPaused: true }, 'inline');
-    expect(h.container.querySelector('[role="img"] svg')).not.toBeNull();
+    const red = h.container.querySelector('[role="img"]');
+    expect(red.querySelector('svg')).not.toBeNull();
+    expect(red.className).toContain('bg-red-600/90');
   });
 
   it('the overlay variant keeps the approved icon', () => {

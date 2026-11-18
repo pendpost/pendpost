@@ -64,13 +64,14 @@ const FULL = [
   /^(Back|Zurück)$/,
   /^(Today|Heute)$/,
   /^(Next|Weiter)$/,
-  /^(Run due posts now|Fällige Beiträge jetzt veröffentlichen)$/,
-  /^(Compact cards|Kompakte Karten|Larger cards|Grössere Karten)$/,
+  // Run-now, the density toggle, delivery, language and theme live in this one overflow menu
+  // since the Nov 2026 header diet (owner decision 8).
+  /^(More|Mehr)$/,
 ];
 const SEGMENTS = [/^(Week|Woche)$/, /^(Month|Monat)$/, /^(List|Liste)$/];
 
 describe('planner header controls: 44px hit area, painted box unchanged', () => {
-  it('back, today, next, run-now and the density toggle carry the 44x44 TAP_TARGET box and stay painted h-8', () => {
+  it('back, today, next and the overflow menu carry the 44x44 TAP_TARGET box and stay painted h-8', () => {
     renderApp();
     for (const name of FULL) {
       const btn = inHeader(name);
@@ -97,8 +98,8 @@ describe('planner header controls: 44px hit area, painted box unchanged', () => 
     // menu -> nav on < lg, and the wrapped title row -> control row on a phone.
     expect(tok(header, 'gap-3')).toBe(true);
     // The control cluster wraps into rows on a phone; those rows need 12px too.
-    const runNow = inHeader(FULL[3]);
-    const cluster = [...header.children].find((c) => c.contains(runNow));
+    const more = inHeader(FULL[3]);
+    const cluster = [...header.children].find((c) => c.contains(more));
     expect(tok(cluster, 'max-sm:gap-y-3')).toBe(true);
   });
 
@@ -118,13 +119,14 @@ describe('planner header controls: 44px hit area, painted box unchanged', () => 
     for (const t of ['h-8', 'rounded-xl', 'bg-zinc-200/60', 'has-[:focus-visible]:ring-2']) expect(tok(pill, t), t).toBe(true);
   });
 
-  it('run-now never paints under the view pill: it keeps its width and is icon-only below 2xl', () => {
+  it('the header holds about six controls: back, today, next, the view pill, campaign, More', () => {
     renderApp();
-    const runNow = inHeader(FULL[3]);
-    // At 1280 its label ran under Woche/Monat/Liste: the wrapper shrank, the button did not.
-    expect(tok(runNow.parentElement, 'shrink-0')).toBe(true);
-    const label = [...runNow.querySelectorAll('span')].find((s) => s.textContent.trim());
-    expect(tok(label, 'hidden')).toBe(true);
-    expect(tok(label, '2xl:inline')).toBe(true);
+    const header = document.querySelector('header');
+    const names = [...header.querySelectorAll('button, select')].map((el) => el.getAttribute('aria-label') || el.textContent.trim());
+    // The lg-hidden drawer trigger and the three view segments aside, nothing else sits there.
+    for (const gone of [/run due/i, /cards/i, /delivery/i, /switch to/i, /needs you/i]) {
+      expect(names.some((n) => gone.test(n)), String(gone)).toBe(false);
+    }
   });
+
 });

@@ -3,7 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
-import PlannerRunNow from '../PlannerRunNow.jsx';
+import { usePlannerRunNow } from '../PlannerRunNow.jsx';
+import { RowMenu } from '../ui/RowMenu.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
@@ -63,6 +64,18 @@ const releasePost = (id, over = {}) => ({
 const futurePost = (id) => duePost(id, { derivedState: 'waiting-due', scheduledAt: '2099-01-01T09:00:00.000Z' });
 const campaignsWith = (...posts) => [{ id: 'c', active: true, posts }];
 
+// Since the Nov 2026 header diet the run-now gate is a pair of items in the header's overflow
+// menu (App.jsx); this harness renders the same hook into the same RowMenu.
+function RunNowMenu(props) {
+  const { items, dialog } = usePlannerRunNow(props);
+  return (
+    <>
+      <RowMenu label="More" items={items} />
+      {dialog}
+    </>
+  );
+}
+
 function renderRunNow({ pendpostHealth, campaigns = [], onCheckReadiness = vi.fn(), clientName } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const utils = render(
@@ -70,7 +83,7 @@ function renderRunNow({ pendpostHealth, campaigns = [], onCheckReadiness = vi.fn
       <QueryClientProvider client={qc}>
         <TooltipProvider>
           <ConfirmProvider>
-            <PlannerRunNow pendpostHealth={pendpostHealth} campaigns={campaigns} onCheckReadiness={onCheckReadiness} clientName={clientName} />
+            <RunNowMenu pendpostHealth={pendpostHealth} campaigns={campaigns} onCheckReadiness={onCheckReadiness} clientName={clientName} />
           </ConfirmProvider>
         </TooltipProvider>
       </QueryClientProvider>
@@ -84,7 +97,8 @@ const BLOCKED = { ok: true, ready: false, schedulerRunning: true, blockers: [BLO
 
 // The header button (aria "Run due posts now") opens the dialog; the dialog's run
 // button is "Run due now (N)". The regexes below keep them unambiguous.
-const openDialog = async (user) => user.click(screen.getByRole('button', { name: /run due posts now/i }));
+const openMenu = async (user) => user.click(screen.getByRole('button', { name: 'More' }));
+const openDialog = async (user) => { await openMenu(user); await user.click(screen.getByRole('menuitem', { name: /run due posts now/i })); };
 const runBtn = () => screen.getByRole('button', { name: /run due now \(/i });
 
 beforeEach(() => {
@@ -97,13 +111,12 @@ describe('PlannerRunNow', () => {
     const user = userEvent.setup();
     renderRunNow({ pendpostHealth: BLOCKED, campaigns: campaignsWith(duePost('a')) });
 
-    expect(screen.getByText(/Meta action block active/i)).toBeInTheDocument();
-    const btn = screen.queryByRole('button', { name: /run due posts now/i });
-    if (btn) expect(btn).toBeDisabled();
+    await openMenu(user);
+    const btn = screen.getByRole('menuitem', { name: /run due posts now/i });
+    expect(btn).toBeDisabled();
+    await user.click(btn);
 
-    const check = screen.getByRole('button', { name: /check readiness/i });
-    await user.click(check);
-    if (btn) await user.click(btn);
+    await user.click(screen.getByRole('menuitem', { name: /check readiness/i }));
     // No dialog opens and nothing publishes.
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(runPublishDue).not.toHaveBeenCalled();

@@ -11,6 +11,8 @@
 //   Row 2: the platforms as icon-only toggles (the name rides the tooltip and the accessible
 //          name), the Type dropdown, Zurücksetzen and the "?" legend.
 // A page without status (Activity, Published, Insights, Approvals' "To review") keeps one row.
+// On Approvals, which has no header card, the first row also carries the app chrome: the
+// drawer trigger leads it and the "..." menu closes it (`lead` / `trail`).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown, HelpCircle } from 'lucide-react';
 import { useIsPhone } from '../lib/useIsPhone.js';
@@ -204,22 +206,28 @@ function PhoneTabs({ value, counts, onPick }) {
   );
 }
 
-function StatusRow({ value, counts = {}, onChange, helpExtra = null }) {
+function StatusRow({ value, counts = {}, onChange, helpExtra = null, lead = null, trail = null }) {
   const phone = useIsPhone();
   // "All" is no status; a pressed tab goes back to no status too.
   const pick = (key) => onChange(key === 'all' || value === key ? null : key);
   return (
     <div data-filter-row="status" className="flex items-center gap-2">
+      {lead}
       {phone
         ? <PhoneTabs value={value} counts={counts} onPick={pick} />
         : <FitTabs value={value} counts={counts} onPick={pick} />}
       <Legend extra={helpExtra} />
+      {trail}
     </div>
   );
 }
 
-// A platform as an icon-only toggle: the glyph in its own colour, filled with the accent when
-// it is the filter. aria-pressed carries the state, the name rides aria-label and the tooltip.
+// A platform as an icon-only toggle (UX round 10): neutral zinc at rest, so a row of brand
+// colours never shouts over the calendar it filters. The brand colour shows on hover and
+// keyboard focus and while the platform is the filter: the button carries the brand colour
+// (PLATFORM_META color) and the glyph's zinc gives way to it (text-inherit). Pressed never
+// rests on colour alone: a raised white disk with a 2px ring, against the flat grey disk at
+// rest, and aria-pressed carries the state; the name rides aria-label and the tooltip.
 function PlatformToggle({ platform, active, onToggle }) {
   const meta = PLATFORM_META[platform];
   if (!meta) return null;
@@ -232,13 +240,13 @@ function PlatformToggle({ platform, active, onToggle }) {
         aria-pressed={active}
         aria-label={meta.label}
         data-platform-toggle={platform}
-        className={`${TAP_TARGET} inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full ring-1 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+        className={`${TAP_TARGET} group inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${meta.color} ${
           active
-            ? 'bg-brand text-white ring-brand dark:bg-brand-light dark:text-zinc-900'
-            : 'bg-zinc-200/50 ring-zinc-900/5 hover:bg-zinc-200 dark:bg-zinc-800/50 dark:ring-white/10 dark:hover:bg-zinc-700/60'
+            ? 'bg-white shadow-sm ring-2 ring-brand dark:bg-zinc-800 dark:ring-brand-light'
+            : 'bg-zinc-200/50 ring-1 ring-zinc-900/5 hover:bg-zinc-200 dark:bg-zinc-800/50 dark:ring-white/10 dark:hover:bg-zinc-700/60'
         }`}
       >
-        <Icon size={13} className={active ? '' : meta.color} aria-hidden="true" />
+        <Icon size={13} className={active ? '' : 'text-zinc-500 group-hover:text-inherit group-focus-visible:text-inherit dark:text-zinc-400'} aria-hidden="true" />
       </button>
     </Tip>
   );
@@ -249,12 +257,21 @@ export default function FilterBar({
   types = [], typeFilter = [], onToggleType, showTypes = false,
   showStatus = false, status = null, onStatus, counts = {},
   extra = null, hasActive = false, onReset, helpExtra = null,
+  lead = null, trail = null,
 }) {
   const t = useT();
+  // `lead` / `trail`: the app chrome of a page without a header card (Approvals, UX round 10):
+  // the drawer trigger opens the first row and the "..." menu closes it, after the "?". The
+  // menu's 32px button sits ml-2 past the "?" (26px), the gap at which their two 44px tap
+  // boxes meet without overlapping. `relative z-10` lifts the bar's stacking context (the
+  // glass blur makes one) over the content panel below, so the open menu is not painted under
+  // it; the header keeps z-20, above this bar.
+  const trailNode = trail ? <span className="ml-2 flex shrink-0 items-center">{trail}</span> : null;
   return (
-    <div className="glass-panel space-y-2 rounded-2xl px-4 py-2" role="group" aria-label={t('app.filter.label')} data-filter-bar="">
-      {showStatus ? <StatusRow value={status} counts={counts} onChange={onStatus} helpExtra={helpExtra} /> : null}
+    <div className={`glass-panel space-y-2 rounded-2xl px-4 py-2 ${trail ? 'relative z-10' : ''}`} role="group" aria-label={t('app.filter.label')} data-filter-bar="">
+      {showStatus ? <StatusRow value={status} counts={counts} onChange={onStatus} helpExtra={helpExtra} lead={lead} trail={trailNode} /> : null}
       <div data-filter-row="facets" className="flex flex-wrap items-center gap-2">
+        {showStatus ? null : lead}
         {platforms.map((p) => (
           <PlatformToggle key={p} platform={p} active={platformFilter.includes(p)} onToggle={() => onTogglePlatform(p)} />
         ))}
@@ -276,8 +293,8 @@ export default function FilterBar({
             {t('app.filter.resetShort')}
           </button>
         ) : null}
-        {/* Where there is no status row, the legend closes this one. */}
-        {showStatus ? null : <div className="ml-auto"><Legend extra={helpExtra} /></div>}
+        {/* Where there is no status row, the legend (and the page's "..." menu) close this one. */}
+        {showStatus ? null : <div className={trailNode ? 'ml-auto flex items-center' : 'ml-auto'}><Legend extra={helpExtra} />{trailNode}</div>}
       </div>
     </div>
   );

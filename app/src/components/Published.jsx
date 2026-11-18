@@ -279,7 +279,7 @@ export default function Published({ campaigns = [], onOpen, platformFilter = [],
     { key: 'list', label: t('published.view.list'), Icon: ListIcon },
     { key: 'month', label: t('published.view.calendar'), Icon: CalendarDays },
   ];
-  // Each preset carries its in-window count (mirroring approvals.view.toReviewCount)
+  // Each preset carries its in-window count (mirroring the Approvals "Zu prüfen" count)
   // so an empty list reads as "no posts in this window" rather than "no posts ever".
   // The "all" segment is the baseline and stays uncounted to avoid redundant noise.
   const rangeOptions = RANGES.map((r) => ({

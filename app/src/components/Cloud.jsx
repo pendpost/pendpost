@@ -13,8 +13,8 @@
 // lowercase "pendpost"; the amber/red semantic palette is spent only on attention, and an
 // all-clear result (a clean re-sync, a clean pull, an active plan) is quiet grey (CLEAN_RESULT).
 import { useEffect, useRef, useState } from 'react';
-import { Cloud as CloudIcon, CloudOff, Loader2, CheckCircle2, AlertCircle, ExternalLink, LogOut, ListChecks, ShieldCheck, RefreshCw, DownloadCloud, CreditCard, Receipt, X, AtSign, ChevronLeft, ArrowRight, ChevronDown, UserCog, RefreshCcw, UserPlus } from 'lucide-react';
-import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, enableStart, healCloud, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud, recheckCloud, useSetCloudSync } from '../lib/cloud.js';
+import { Cloud as CloudIcon, CloudOff, Loader2, CheckCircle2, AlertCircle, ExternalLink, LogOut, ListChecks, ShieldCheck, RefreshCw, DownloadCloud, CreditCard, Receipt, X, AtSign, ChevronLeft, ArrowRight, ChevronDown, UserCog, RefreshCcw } from 'lucide-react';
+import { useCloud, useCloudClients, setClientAlwaysOn, useCloudSubscription, startCheckout, startBillingPortal, setSpendCap, redeemClaim, enableStart, healCloud, ejectCloud, signOutCloud, migrateCloud, reconcileCloud, useInvalidateCloud, recheckCloud, useSetCloudSync } from '../lib/cloud.js';
 import { useClients } from '../lib/api.js';
 import { useT } from '../lib/i18n.js';
 import { fmtDateShort } from '../lib/format.js';
@@ -156,13 +156,17 @@ function ReconnectView() {
   );
 }
 
-function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInterval = null, deepLinkTierLabel = null }) { // eslint-disable-line no-unused-vars
+function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInterval = null, claimCode = null, onStart }) {
   const t = useT();
   const invalidate = useInvalidateCloud();
   const [state, setState] = useState('idle'); // idle | starting | waiting | error
   const [error, setError] = useState(null);
   const [authUrl, setAuthUrl] = useState(null);
+  const [plan, setPlan] = useState(TIERS.includes(deepLinkPlan) ? deepLinkPlan : 'starter');
+  const [interval, setIntervalState] = useState(INTERVALS.includes(deepLinkInterval) ? deepLinkInterval : 'month');
   const timeoutRef = useRef(null);
+  // A fresh visitor picks a tier here; a keyless finish or a website claim code skips the pick.
+  const pickTier = !unfinished && !claimCode;
 
   // While waiting, poll the cloud status so the parent flips to ConnectedView as soon
   // as the loopback callback connects; a timeout returns to idle with a retry so the
@@ -178,6 +182,8 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
   }, [state]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const start = async () => {
+    // The picked tier rides through sign-in, so the connected view opens on its order summary.
+    if (pickTier && onStart) onStart({ plan, interval });
     setState('starting');
     setError(null);
     try {
@@ -192,92 +198,86 @@ function DisconnectedView({ unfinished = false, deepLinkPlan = null, deepLinkInt
 
   const cancel = () => { setState('idle'); setError(null); };
 
+  const actionLabel = state === 'error'
+    ? t('cloud.enable.retry')
+    : unfinished
+      ? t('cloud.enable.action')
+      : claimCode
+        ? t('cloud.signIn.action')
+        : t('cloud.start.action', { plan: t(`cloud.tier.${plan}`) });
+
   return (
     <section className={`space-y-4 rounded-2xl p-4 ${INNER_SURFACE}`} aria-labelledby="cloud-off-heading">
       <div className="flex flex-wrap items-center gap-2.5">
         <h3 id="cloud-off-heading" className="font-display text-sm font-bold">{t(unfinished ? 'cloud.unfinished.title' : 'cloud.off.title')}</h3>
         <span className="ml-auto"><IconBadge icon={CloudOff} tone="neutral" text={t('cloud.status.off')} /></span>
       </div>
-      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t(unfinished ? 'cloud.unfinished.body' : 'cloud.off.body')}</p>
+      {/* One line instead of the four explainer blocks (UX decision 6, 2026-11-12): what the
+          cloud is, then the prices, then one Start. The rest sits in "How it works". */}
+      <p className="text-[11px] text-zinc-600 dark:text-zinc-400">
+        {unfinished ? t('cloud.unfinished.body') : claimCode ? t('cloud.claim.signInFirst', { code: claimCode }) : t('cloud.off.line')}
+      </p>
 
-      {/* Honest hand-off from the website deep-link (/download?plan=<tier>): name the tier the
-          operator chose so the choice is visible BEFORE sign-in, then the same sign-in below
-          starts it. Only shown for a fresh connect (not the keyless-finish path), and only when a
-          recognized tier came in. Single accent, no all-caps. The pre-selection itself is carried
-          across the handshake in sessionStorage and seeded into the CheckoutFlow after connect. */}
-      {!unfinished && deepLinkTierLabel ? (
-        <p className="rounded-xl bg-brand/5 p-3 text-[11px] font-bold text-brand dark:bg-brand-light/10 dark:text-brand-light">
-          {t('cloud.deepLink.picked', { tier: deepLinkTierLabel })}
+      {pickTier ? (
+        <PlanCards plan={plan} setPlan={setPlan} interval={interval} setInterval={setIntervalState} disabled={state === 'starting' || state === 'waiting'} lanesNote={false} />
+      ) : null}
+
+      {state === 'waiting' ? (
+        <div role="status" className="space-y-2 rounded-xl bg-brand/5 p-3 text-xs text-zinc-600 dark:bg-brand-light/10 dark:text-zinc-300">
+          <p className="flex items-center gap-1.5 font-bold">
+            <Loader2 size={13} className="animate-spin text-brand dark:text-brand-light" aria-hidden="true" />
+            {t('cloud.enable.waiting')}
+          </p>
+          {authUrl ? (
+            <a href={authUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 font-bold text-brand underline dark:text-brand-light">
+              <ExternalLink size={12} aria-hidden="true" />
+              {t('cloud.enable.openLink')}
+            </a>
+          ) : null}
+          <div>
+            <button type="button" onClick={cancel} className={BTN_GHOST}>{t('cloud.enable.cancel')}</button>
+          </div>
+        </div>
+      ) : null}
+
+      {state === 'error' && error ? (
+        <ActionError error={error} box={ALERT_BANNER} />
+      ) : null}
+
+      {state === 'starting' ? (
+        <p role="status" className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+          <Loader2 size={13} className="animate-spin text-brand dark:text-brand-light" aria-hidden="true" />
+          {t('cloud.enable.starting')}
         </p>
       ) : null}
 
-      {/* The included rates + posts, shown at the decision point so the Cloud page is
-          self-sufficient (the same single-source copy as the header popover). */}
-      <div className="space-y-1.5 rounded-xl bg-brand/5 p-3 text-[11px] text-zinc-600 dark:bg-brand-light/10 dark:text-zinc-300">
-        <p>{t('connection.price.selfHost')}</p>
-        <p>{t('connection.price.cloud')}</p>
-        {/* Which lanes the cloud can NEVER fire, stated BEFORE sign-in/purchase. */}
-        <LanesHonestyNote />
-      </div>
+      {state === 'waiting' ? null : (
+        <button type="button" onClick={start} disabled={state === 'starting'} aria-busy={state === 'starting'} className={`flex w-full items-center justify-center gap-1.5 ${BTN_BRAND}`}>
+          {state === 'starting' ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
+          {actionLabel}
+          {state === 'starting' ? null : <ArrowRight size={14} aria-hidden="true" />}
+        </button>
+      )}
 
-      {/* The full plans + services page lives on the marketing site. Surface it
-          prominently here at the decision point - this is the only link out to
-          pricing from the Cloud tab, so it must be a real, visible button. */}
-      <a href={SERVICES_URL} target="_blank" rel="noopener noreferrer" className={`flex w-fit items-center gap-1.5 ${BTN_OUTLINE}`}>
-        {t('connection.viewPlans')}
-        <ExternalLink size={13} aria-hidden="true" />
-      </a>
-
-      {/* The account step, made EXPLICIT (story 3): signing in / creating a cloud account
-          is no longer an invisible side-effect of "enable a feature". The section names the
-          account action first; the single primary button signs you in (or creates the
-          account) AND - as the stated consequence, not a hidden one - turns always-on on. A
-          quiet line spells out that one sign-in mints a new account if you do not have one,
-          so there is no separate "create account" dead-end. The handshake itself is
-          unchanged; only the framing makes the account the headline. */}
-      <div className="space-y-3">
-        <h4 className={EYEBROW}>{t(unfinished ? 'cloud.connect.title' : 'cloud.signIn.title')}</h4>
-        {!unfinished ? <p className="text-[11px] text-zinc-600 dark:text-zinc-400">{t('cloud.signIn.body')}</p> : null}
-
-        {state === 'waiting' ? (
-          <div role="status" className="space-y-2 rounded-xl bg-brand/5 p-3 text-xs text-zinc-600 dark:bg-brand-light/10 dark:text-zinc-300">
-            <p className="flex items-center gap-1.5 font-bold">
-              <Loader2 size={13} className="animate-spin text-brand dark:text-brand-light" aria-hidden="true" />
-              {t('cloud.enable.waiting')}
-            </p>
-            {authUrl ? (
-              <a href={authUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 font-bold text-brand underline dark:text-brand-light">
-                <ExternalLink size={12} aria-hidden="true" />
-                {t('cloud.enable.openLink')}
-              </a>
-            ) : null}
-            <div>
-              <button type="button" onClick={cancel} className={BTN_GHOST}>{t('cloud.enable.cancel')}</button>
-            </div>
+      {unfinished ? null : (
+        <details className="group text-[11px]">
+          <summary className={DISCLOSURE_SUMMARY}>
+            <ChevronDown size={12} className="-rotate-90 transition group-open:rotate-0" aria-hidden="true" />
+            {t('cloud.off.more')}
+          </summary>
+          <div className="mt-2 space-y-2 text-zinc-600 dark:text-zinc-400">
+            <p>{t('connection.price.selfHost')}</p>
+            <p>{t('connection.price.cloud')}</p>
+            <LanesHonestyNote />
+            <p>{t('cloud.signIn.createHint')}</p>
+            <p>{t('cloud.claim.howTo')}</p>
+            <a href={SERVICES_URL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-bold text-brand underline-offset-2 hover:underline dark:text-brand-light">
+              {t('connection.viewPlans')}
+              <ExternalLink size={12} aria-hidden="true" />
+            </a>
           </div>
-        ) : null}
-
-        {state === 'error' && error ? (
-          <ActionError error={error} box={ALERT_BANNER} />
-        ) : null}
-
-        {state === 'starting' ? (
-          <p role="status" className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
-            <Loader2 size={13} className="animate-spin text-brand dark:text-brand-light" aria-hidden="true" />
-            {t('cloud.enable.starting')}
-          </p>
-        ) : null}
-
-        {state === 'waiting' ? null : (
-          <div className="space-y-1.5">
-            <button type="button" onClick={start} disabled={state === 'starting'} aria-busy={state === 'starting'} className={`flex w-fit items-center gap-1.5 ${BTN_BRAND}`}>
-              {state === 'starting' ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : <UserPlus size={14} aria-hidden="true" />}
-              {state === 'error' ? t('cloud.enable.retry') : t(unfinished ? 'cloud.enable.action' : 'cloud.signIn.action')}
-            </button>
-            {!unfinished ? <p className="text-[10px] text-zinc-600 dark:text-zinc-400">{t('cloud.signIn.createHint')}</p> : null}
-          </div>
-        )}
-      </div>
+        </details>
+      )}
     </section>
   );
 }
@@ -592,7 +592,7 @@ function AccountMenu({ email, accountPortalUrl, canManage, onSignOut, onEject, b
 // always-on brands' jobs) and eject (disconnect back to self-host). The technical
 // connection fields live in a disclosure at the bottom. There is NO standalone
 // pause/resume: a client's switch IS its pause.
-function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null, onLaunchConsumed, onIssueAction }) {
+function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null, deepLinkReview = false, claimCode = null, onClaimed, onLaunchConsumed, onIssueAction }) {
   const t = useT();
   const invalidate = useInvalidateCloud();
   // The connected view is where the deep-linked tier is finally consumed (SubscriptionMeter seeds
@@ -757,7 +757,7 @@ function ConnectedView({ cloud, onEjected, checkoutReturn = false, onReturnDismi
       <CloudClients sync={cloud.sync || null} connectivity={connectivity} onIssueAction={onIssueAction} onRaiseCap={raiseCap} />
 
       {/* (3) Plan & Abrechnung - compact, full breakdown behind a toggle. */}
-      <SubscriptionMeter deepLinkPlan={deepLinkPlan} deepLinkInterval={deepLinkInterval} capRequest={capRequest} />
+      <SubscriptionMeter deepLinkPlan={deepLinkPlan} deepLinkInterval={deepLinkInterval} deepLinkReview={deepLinkReview} claimCode={claimCode} onClaimed={onClaimed} capRequest={capRequest} />
 
       {/* Maintenance results surface here, wherever they were triggered. */}
       <ActionError error={error} box={ALERT_BANNER} />
@@ -848,7 +848,7 @@ function priceLine(t, tier, interval) {
 // storage backstop. ONE card is selected at a time (the whole card is the control); a single
 // segmented cadence toggle sits above. Pure presentation over controlled state - the selection
 // drives the order summary next. Numbers come from PLAN_INFO (mirror of the cloud catalog).
-function PlanCards({ plan, setPlan, interval, setInterval, disabled }) {
+function PlanCards({ plan, setPlan, interval, setInterval, disabled, lanesNote = true }) {
   const t = useT();
   return (
     <div className="space-y-3">
@@ -883,8 +883,10 @@ function PlanCards({ plan, setPlan, interval, setInterval, disabled }) {
               <span className="space-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400">
                 <span className="block">{t('cloud.plans.posts', { count: info.postsIncluded })}</span>
                 <span className="block">{t('cloud.plans.brands', { count: info.brandsIncluded })}</span>
-                <span className="block">{t('cloud.plans.overage', { rate: usd(info.overageCents) })}</span>
-                <span className="block">{t('cloud.plans.storage', { gb: info.storageGb })}</span>
+                {/* On a phone the three cards stack; the two secondary lines stay on wider screens
+                    (and in How it works) so Start is reachable without a long scroll. */}
+                <span className="hidden sm:block">{t('cloud.plans.overage', { rate: usd(info.overageCents) })}</span>
+                <span className="hidden sm:block">{t('cloud.plans.storage', { gb: info.storageGb })}</span>
               </span>
             </button>
           );
@@ -892,9 +894,11 @@ function PlanCards({ plan, setPlan, interval, setInterval, disabled }) {
       </div>
       {/* The same lanes honesty note as the connect view: stated again at the tier
           pick, the last calm moment before the order summary/checkout. */}
-      <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
-        <LanesHonestyNote />
-      </div>
+      {lanesNote ? (
+        <div className="text-[11px] text-zinc-500 dark:text-zinc-400">
+          <LanesHonestyNote />
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -961,9 +965,9 @@ function OrderSummary({ plan, interval, brandsBilled, busy, error, onBack, onCon
 // a silent no-op, never a dead spinner). The return into the app (?cloud=checkout) is handled at
 // the page level by CheckoutReturn. `defaultPlan`/`defaultInterval` pre-select from the website
 // deep-link; `brandsBilled` lets the summary show the honest extra-brand add-on.
-function CheckoutFlow({ defaultPlan = 'starter', defaultInterval = 'month', brandsBilled = 0, ctaLabelKey = 'cloud.checkout.review' }) {
+function CheckoutFlow({ defaultPlan = 'starter', defaultInterval = 'month', defaultStage = 'picker', brandsBilled = 0, ctaLabelKey = 'cloud.checkout.review' }) {
   const t = useT();
-  const [stage, setStage] = useState('picker'); // picker | summary | opening
+  const [stage, setStage] = useState(defaultStage === 'summary' ? 'summary' : 'picker'); // picker | summary | opening
   const [plan, setPlan] = useState(TIERS.includes(defaultPlan) ? defaultPlan : 'starter');
   const [interval, setIntervalState] = useState(INTERVALS.includes(defaultInterval) ? defaultInterval : 'month');
   const [busy, setBusy] = useState(false);
@@ -1108,7 +1112,59 @@ function CheckoutReturn({ onDismiss }) {
 // hard-stop banner above the same flow; an active/past_due subscription shows the Stripe
 // portal. Hidden until there is a plan (postsIncluded > 0); a grandfathered connection shows
 // nothing. The per-tier rates come from the view's OWN fields, never hardcoded.
-function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null, capRequest = 0 }) {
+// Redeem a plan bought on pendpost.com (a Stripe Payment Link): the website shows a claim code
+// after checkout, and this attaches that subscription to the connected workspace. Collapsed by
+// default (most people buy in-app); open and pre-filled when the app was opened at ?claim=.
+// Never auto-redeems: a link cannot attach a subscription without this one click.
+function ClaimCodeField({ initialCode = null, onClaimed }) {
+  const t = useT();
+  const invalidate = useInvalidateCloud();
+  const [code, setCode] = useState(initialCode || '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!code.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await redeemClaim(code);
+      if (onClaimed) onClaimed();
+      invalidate();
+    } catch (err) {
+      setError(actionAlert(err, t, 'cloud.claim.error'));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <details className="group text-[11px]" open={initialCode ? true : undefined}>
+      <summary className={DISCLOSURE_SUMMARY}>
+        <ChevronDown size={12} className="-rotate-90 transition group-open:rotate-0" aria-hidden="true" />
+        {t('cloud.claim.toggle')}
+      </summary>
+      <form onSubmit={submit} className="mt-2 flex flex-wrap items-center gap-2">
+        <input
+          type="text"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          aria-label={t('cloud.claim.label')}
+          placeholder={t('cloud.claim.placeholder')}
+          autoComplete="off"
+          spellCheck={false}
+          className="w-44 rounded-xl border border-black/10 bg-white px-2 py-1.5 font-mono text-sm tracking-wide text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:border-white/10 dark:bg-zinc-800 dark:text-zinc-200"
+        />
+        <button type="submit" disabled={busy || !code.trim()} aria-busy={busy} className={`flex items-center gap-1.5 ${BTN_OUTLINE}`}>
+          {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
+          {t('cloud.claim.action')}
+        </button>
+      </form>
+      {error ? <ActionError error={error} className="mt-2 text-xs text-red-600 dark:text-red-300" /> : null}
+    </details>
+  );
+}
+
+function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null, deepLinkReview = false, claimCode = null, onClaimed, capRequest = 0 }) {
   const t = useT();
   const invalidate = useInvalidateCloud();
   const { data: sub } = useCloudSubscription(true);
@@ -1261,12 +1317,16 @@ function SubscriptionMeter({ deepLinkPlan = null, deepLinkInterval = null, capRe
           compare plans -> review order -> open secure checkout. The CTA copy leads with "upgrade"
           when the trial is spent, else a calm "review". */}
       {canBuy ? (
-        <CheckoutFlow
-          defaultPlan={startPlan}
-          defaultInterval={startInterval}
-          brandsBilled={brandsBilled}
-          ctaLabelKey={trialExhausted ? 'cloud.checkout.reviewUpgrade' : 'cloud.checkout.review'}
-        />
+        <>
+          <CheckoutFlow
+            defaultPlan={startPlan}
+            defaultInterval={startInterval}
+            defaultStage={deepLinkReview && TIERS.includes(deepLinkPlan) ? 'summary' : 'picker'}
+            brandsBilled={brandsBilled}
+            ctaLabelKey={trialExhausted ? 'cloud.checkout.reviewUpgrade' : 'cloud.checkout.review'}
+          />
+          <ClaimCodeField initialCode={claimCode} onClaimed={onClaimed} />
+        </>
       ) : null}
 
       {/* Manage billing now lives in the ONE account menu (the identity row above), so it is
@@ -1513,39 +1573,66 @@ function readLaunchStash() {
   try {
     const plan = sessionStorage.getItem('pendpost.cloudLaunch.plan');
     const interval = sessionStorage.getItem('pendpost.cloudLaunch.interval');
+    const claim = sessionStorage.getItem('pendpost.cloudLaunch.claim');
     return {
       plan: TIERS.includes(plan) ? plan : null,
       interval: INTERVALS.includes(interval) ? interval : null,
+      review: sessionStorage.getItem('pendpost.cloudLaunch.review') === '1',
+      claim: claim && /^[0-9A-Za-z-]{4,20}$/.test(claim) ? claim.toUpperCase() : null,
     };
   } catch {
-    return { plan: null, interval: null };
+    return { plan: null, interval: null, review: false, claim: null };
   }
+}
+
+// The tier picked on the disconnected view, kept across the browser sign-in so the connected
+// view can open straight on that tier's order summary.
+function writeStartStash({ plan, interval }) {
+  try {
+    sessionStorage.setItem('pendpost.cloudLaunch.plan', plan);
+    sessionStorage.setItem('pendpost.cloudLaunch.interval', interval);
+    sessionStorage.setItem('pendpost.cloudLaunch.review', '1');
+  } catch { /* best-effort */ }
 }
 
 function clearLaunchStash() {
   try {
     sessionStorage.removeItem('pendpost.cloudLaunch.plan');
     sessionStorage.removeItem('pendpost.cloudLaunch.interval');
+    sessionStorage.removeItem('pendpost.cloudLaunch.review');
   } catch { /* best-effort */ }
 }
 
-export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null, onIssueAction }) {
+function clearClaimStash() {
+  try { sessionStorage.removeItem('pendpost.cloudLaunch.claim'); } catch { /* best-effort */ }
+}
+
+export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLinkPlan = null, deepLinkInterval = null, deepLinkClaim = null, onIssueAction }) {
   const t = useT();
   const { data: cloud, isLoading } = useCloud();
   // Resolve the deep-linked tier once: explicit launch props (an already-connected launch) take
   // precedence; otherwise fall back to the sessionStorage stash a first-run launch left behind so
   // the pre-selection survives sign-in. Held in state (read once on mount) so it stays stable
   // across the connected/disconnected re-render and can be cleared the moment it is consumed.
-  const [launch] = useState(() => {
+  const [launch, setLaunch] = useState(() => {
     const stash = readLaunchStash();
     return {
       plan: deepLinkPlan || stash.plan,
       interval: deepLinkInterval || stash.interval,
+      review: !deepLinkPlan && stash.review,
+      claim: deepLinkClaim || stash.claim,
     };
   });
   const resolvedPlan = launch.plan;
   const resolvedInterval = launch.interval;
-  const tierLabel = resolvedPlan ? t(`cloud.tier.${resolvedPlan}`) : null;
+  const onStart = (picked) => {
+    writeStartStash(picked);
+    setLaunch((prev) => ({ ...prev, ...picked, review: true }));
+  };
+  const onClaimed = () => {
+    clearClaimStash();
+    setLaunch((prev) => ({ ...prev, claim: null }));
+  };
   // The eject re-auth checklist lives HERE (not in ConnectedView) so it survives the
   // refetch that routes a just-disconnected install to the off view. Cleared once a new
   // workspace connects again.
@@ -1588,6 +1675,9 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
           onReturnDismiss={onReturnDismiss}
           deepLinkPlan={resolvedPlan}
           deepLinkInterval={resolvedInterval}
+          deepLinkReview={launch.review}
+          claimCode={launch.claim}
+          onClaimed={onClaimed}
           onLaunchConsumed={clearLaunchStash}
         />
       ) : cloud && !cloud.workspaceId && cloud.apiKey?.present && cloud.baseUrl ? (
@@ -1601,7 +1691,8 @@ export default function Cloud({ checkoutReturn = false, onReturnDismiss, deepLin
           unfinished={Boolean(cloud && cloud.workspaceId)}
           deepLinkPlan={resolvedPlan}
           deepLinkInterval={resolvedInterval}
-          deepLinkTierLabel={tierLabel}
+          claimCode={launch.claim}
+          onStart={onStart}
         />
       )}
     </div>

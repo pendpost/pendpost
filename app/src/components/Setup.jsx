@@ -16,7 +16,7 @@
 // no all-caps prose - it mirrors Settings.jsx / Clients.jsx verbatim.
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { CheckCircle2, MinusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ChevronLeft, ExternalLink, RefreshCw, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck, Cloud, CalendarClock, Laptop, ShieldAlert, BellOff, Radar as RadarIcon } from 'lucide-react';
+import { CheckCircle2, MinusCircle, PlusCircle, AlertCircle, ClipboardCopy, Check, Loader2, Terminal, ChevronDown, ChevronLeft, ExternalLink, RefreshCw, Bot, PauseCircle, PlayCircle, Clock, Lock, ShieldCheck, Cloud, CalendarClock, Laptop, ShieldAlert, BellOff, Radar as RadarIcon } from 'lucide-react';
 import { usePendpostHealth, usePlans, useConfig, saveConfig, recheckHealth, recheckAgent, connectAgent, adoptAgent, radarAgentScan, useAccounts, useSignals, setMetaLane, disconnectPlatform, useDiscover, useGbpMedia, useGbpAttributes, gbpMediaAdd, gbpAttributesSet, mastodonUpdateProfile, nostrUpdateProfile, telegramUpdateProfile, youtubeUpdateProfile, useBoards, usePinterestBoardSections, createPinterestBoard, createPinterestBoardSection, useGhostMembers, useGhostNewsletters, ghostNewsletterUpdate } from '../lib/api.js';
 import { useCapabilities, useCloud, useCloudClients } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
@@ -2808,16 +2808,29 @@ function railGroup(p) {
   return 'attention';
 }
 
-// The ONE attention count every surface reflects. The page summary derives from
-// railGroup, so the Sidebar badge must too - the server's structural
-// summary.incomplete undercounts (a connected-but-failed/unproven lane needs
-// attention but is not "incomplete"), and two counts for the same idea on one
-// screen is the exact contradiction the summary fix removed. Exported for
-// App.jsx's Sidebar wiring; null while setup has not loaded.
+// The nav badge counts only lanes someone actually connected and that now need a fix
+// (connected, but the live check failed, never ran, or the platform blocked it). A lane
+// nobody has started is not a to-do the app should nag about from every page: the Setup
+// page lists it, the sidebar stays quiet. Exported for App.jsx's Sidebar wiring; null
+// while setup has not loaded.
 export function setupAttentionCount(setup) {
   if (!Array.isArray(setup?.platforms)) return null;
-  return setup.platforms.filter((p) => railGroup(p) === 'attention').length;
+  return setup.platforms.filter((p) => p.status === 'connected' && railGroup(p) === 'attention').length;
 }
+
+// The first-run question leads only on a workspace nobody has set up: no lane connected,
+// none skipped, no platform policy written. Answering it writes the skip list (and the
+// picked lanes' policy), so it never comes back. Exported for its unit test.
+export function setupUntouched(setup, posting) {
+  if (!Array.isArray(setup?.platforms) || !setup.platforms.length) return false;
+  if (Array.isArray(posting?.skippedPlatforms) && posting.skippedPlatforms.length) return false;
+  if (posting?.platforms && Object.keys(posting.platforms).length) return false;
+  return setup.platforms.every((p) => p.status === 'incomplete');
+}
+
+// The lane a setup id turns on when the owner picks or un-skips it: Meta's default-on lane is
+// Instagram (Facebook stays deny-by-default), every other setup id is its own display lane.
+const primaryDisplay = (id) => (id === 'meta' ? 'instagram' : id);
 
 const RAIL_GROUPS = [
   ['connected', 'setup.group.connected'],
@@ -2825,27 +2838,95 @@ const RAIL_GROUPS = [
   ['skipped', 'setup.group.skipped'],
 ];
 
-// One rail row: brand glyph(s) with the status dot, the label, and the readable status
-// text underneath - status is never colour-only. min-h-11 keeps the 44px tap target.
+// "Which platforms do you use?": one tap per platform, then Continue. Every platform left
+// unpicked is skipped in the same write, so the rail that follows lists only the owner's own.
+function PlatformQuestion({ platforms, onAnswer }) {
+  const t = useT();
+  const [picked, setPicked] = useState(() => new Set());
+  const [saving, setSaving] = useState(false);
+  const toggle = (id) => setPicked((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const submit = async () => {
+    setSaving(true);
+    try { await onAnswer(picked); } catch { /* the page banner says what failed */ } finally { setSaving(false); }
+  };
+  const none = picked.size === 0;
+  return (
+    <section aria-labelledby="setup-ask" className={`rounded-2xl p-4 space-y-4 ${INNER_SURFACE}`}>
+      <h2 id="setup-ask" className="m-0 font-display text-base font-bold">{t('setup.ask.title')}</h2>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-4">
+        {platforms.map((p) => {
+          const on = picked.has(p.platform);
+          return (
+            <button
+              key={p.platform}
+              type="button"
+              aria-pressed={on}
+              onClick={() => toggle(p.platform)}
+              className={`flex min-h-11 items-center gap-2.5 rounded-xl px-3 py-2 text-left text-sm font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${on ? 'bg-brand/15 ring-1 ring-brand dark:bg-brand-light/15 dark:ring-brand-light' : 'ring-1 ring-zinc-900/10 hover:bg-zinc-200/60 dark:ring-white/10 dark:hover:bg-zinc-700/60'}`}
+            >
+              <PlatformGlyphs platformId={p.platform} tone={null} />
+              <span className="min-w-0 flex-1 leading-tight">{p.label}</span>
+              {on ? <Check size={14} className="shrink-0 text-brand dark:text-brand-light" aria-hidden="true" /> : null}
+            </button>
+          );
+        })}
+      </div>
+      <div className="flex justify-end">
+        <Tip label={none ? t('setup.ask.none') : undefined}>
+          {/* aria-disabled, not disabled: the reason stays a hover and a focus away. */}
+          <button
+            type="button"
+            aria-disabled={none || saving}
+            aria-describedby={none ? 'setup-ask-none' : undefined}
+            onClick={() => { if (!none && !saving) submit(); }}
+            className={`${BTN_BRAND} ${none ? 'cursor-not-allowed opacity-50' : ''}`}
+          >
+            {saving ? <Loader2 size={14} className="mr-1 inline animate-spin" aria-hidden="true" /> : null}
+            {t('setup.ask.continue')}
+          </button>
+        </Tip>
+        {none ? <span id="setup-ask-none" className="sr-only">{t('setup.ask.none')}</span> : null}
+      </div>
+    </section>
+  );
+}
+
+// One rail row: brand glyph(s) with the status dot, the label, and the status text only
+// where it says more than the group heading above it does. min-h-11 keeps the 44px tap target.
 // `implicit` marks the desktop DEFAULT selection (nothing clicked yet): its highlight
 // renders lg-only, because on the stacked <lg layout the list is the whole page and no
 // detail is open - a highlighted row there would claim a selection that does not exist.
+// `skip` is the row's own skip / use-again glyph (a sibling button, never nested).
 const ROW_CURRENT_LG = 'lg:bg-zinc-100 lg:ring-1 lg:ring-zinc-900/5 dark:lg:bg-zinc-800 dark:lg:ring-white/10';
-function RailRow({ id, icon, label, stateText, current, implicit, onSelect }) {
+function RailRow({ id, icon, label, stateText, current, implicit, onSelect, skip = null }) {
   return (
-    <button
-      type="button"
-      id={`setup-rail-${id}`}
-      onClick={onSelect}
-      aria-current={current && !implicit ? 'true' : undefined}
-      className={`flex min-h-11 w-full items-center gap-2.5 rounded-xl px-3 py-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${current ? (implicit ? ROW_CURRENT_LG : INNER_SURFACE) : 'hover:bg-zinc-200/50 dark:hover:bg-zinc-700/40'}`}
-    >
-      {icon}
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-bold">{label}</span>
-        <span className="block truncate text-[11px] text-zinc-600 dark:text-zinc-400">{stateText}</span>
-      </span>
-    </button>
+    <div className="flex items-center gap-1">
+      <button
+        type="button"
+        id={`setup-rail-${id}`}
+        onClick={onSelect}
+        aria-current={current && !implicit ? 'true' : undefined}
+        className={`flex min-h-11 min-w-0 flex-1 items-center gap-2.5 rounded-xl px-3 py-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${current ? (implicit ? ROW_CURRENT_LG : INNER_SURFACE) : 'hover:bg-zinc-200/50 dark:hover:bg-zinc-700/40'}`}
+      >
+        {icon}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-bold">{label}</span>
+          {stateText ? <span className="block truncate text-[11px] text-zinc-600 dark:text-zinc-400">{stateText}</span> : null}
+        </span>
+      </button>
+      {skip ? (
+        <Tip label={skip.label}>
+          <button
+            type="button"
+            onClick={skip.run}
+            aria-label={skip.label}
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-500 transition hover:bg-zinc-200/60 hover:text-zinc-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60 dark:hover:text-zinc-200"
+          >
+            <skip.Icon size={15} aria-hidden="true" />
+          </button>
+        </Tip>
+      ) : null}
+    </div>
   );
 }
 
@@ -2952,6 +3033,26 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
   const effective = selected || defaultId;
   const selectedPlatform = (setup?.platforms || []).find((p) => p.platform === effective) || null;
 
+  // The first-run question, and the per-row skip / use-again glyph. Both write the same two
+  // keys the card's "Active in pendpost" switch writes (skippedPlatforms + the lane policy).
+  const posting = config?.posting;
+  const skippedNow = Array.isArray(posting?.skippedPlatforms) ? posting.skippedPlatforms : [];
+  const policy = posting?.platforms || {};
+  // A deep-link (a post's fix button) or a recorded refusal means a lane was already in use:
+  // those land on the rail, never on the question.
+  const asking = !focusLane && !Object.keys(localRefusals).length && !Object.keys(cloudRefusals).length
+    && setupUntouched(setup, posting);
+  const answer = (picked) => writePosting({
+    platforms: { ...policy, ...Object.fromEntries([...picked].map((id) => [primaryDisplay(id), true])) },
+    skippedPlatforms: (setup?.platforms || []).map((p) => p.platform).filter((id) => !picked.has(id)),
+  });
+  const setSkipped = (id, skip) => writePosting(skip
+    ? { platforms: policy, skippedPlatforms: [...new Set([...skippedNow, id])] }
+    : { platforms: { ...policy, [primaryDisplay(id)]: true }, skippedPlatforms: skippedNow.filter((x) => x !== id) }).catch(() => {});
+  // Readiness, said once: live lanes out of the lanes the owner uses (skipped ones are out of scope).
+  const inUse = (setup?.platforms || []).length - groups.skipped.length;
+  const anyConnected = (setup?.platforms || []).some((p) => p.status === 'connected');
+
   const agentState = setup?.agent?.validation?.state || 'unproven';
   const agentText = setup?.agent?.connected && agentState === 'live'
     ? t('setup.status.connected')
@@ -2977,40 +3078,31 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
             </div>
           </div>
         </>
+      ) : asking ? (
+        <>
+          <PlatformQuestion platforms={setup.platforms} onAnswer={answer} />
+          <ActionError error={banner} className="rounded-xl bg-red-500/10 p-3" />
+        </>
       ) : (
         <>
-          {/* Summary: "X of Y platforms ready" + an overall ready / incomplete
-              affirmation. connected + skipped both count as "resolved" (ready)
-              against the total; skipped platforms are NEVER counted as incomplete. */}
-          {/* One truth on one screen: the ONE summary count derives from the SAME
-              grouping the rail shows (live-proven = connected, everything unfinished or
-              unproven = attention). A connected-but-failed lane is not "ready" and does
-              not count as one; its row says "Verbindung fehlgeschlagen" under "Braucht
-              Aufmerksamkeit". The per-bucket breakdown line ("0 verbunden, ...") is gone:
-              the rail's group headings carry those counts next to the rows they count,
-              and a bare "verbunden" count read as a lie beside a lane whose panel says
-              "Verbunden als ..." (credential present, last check failed). */}
-          <section className={`flex flex-wrap items-center gap-2.5 rounded-2xl p-4 ${INNER_SURFACE}`} aria-label={t('setup.summary.aria')}>
-            <div className="min-w-0">
-              <p className="text-sm font-bold">
-                {t('setup.summary.ready', { ready: groups.connected.length + groups.skipped.length, total: setup.summary.total })}
-              </p>
-            </div>
-            <div className="ml-auto flex items-center gap-2.5">
-              {setup.ready ? (
-                <IconBadge icon={CheckCircle2} tone="ok" text={t('setup.allReady')} />
-              ) : (
-                // Plain state affirmation paralleling "All ready" - the incomplete COUNT
-                // already lives in the "X of Y ready" line and the rail headings, so the pill
-                // does not repeat it.
-                <IconBadge icon={AlertCircle} tone="warn" text={t('setup.status.incomplete')} />
-              )}
-              <button type="button" onClick={validateAll} disabled={validatingAll} aria-busy={validatingAll} className={BTN_GHOST}>
-                {validatingAll ? <Loader2 size={14} className="inline animate-spin" aria-hidden="true" /> : <RefreshCw size={13} className="mr-1 inline" aria-hidden="true" />}
-                {t('setup.validateAll')}
-              </button>
-              <span className="sr-only" role="status" aria-live="polite">{validatedAll ? t('setup.validate.done') : ''}</span>
-            </div>
+          {/* The ONE readiness signal: "X of Y platforms ready", counted over the platforms the
+              owner uses (skipped ones are out of scope, not "ready"). It derives from the same
+              grouping the rail shows, so a connected-but-failed lane is not counted as ready.
+              No second pill, no counts on the group headings, no "Incomplete" under every row:
+              the rail says only what this line does not. Validate all is one glyph, and only
+              once something is connected (before that there is nothing to check). */}
+          <section className="flex min-h-11 items-center gap-2.5 px-1" aria-label={t('setup.summary.aria')}>
+            <p className="min-w-0 text-sm font-bold">
+              {t('setup.summary.ready', { ready: groups.connected.length, total: inUse })}
+            </p>
+            {anyConnected ? (
+              <Tip label={t('setup.validateAll')}>
+                <button type="button" onClick={validateAll} disabled={validatingAll} aria-busy={validatingAll} aria-label={t('setup.validateAll')} className="ml-auto grid h-11 w-11 shrink-0 place-items-center rounded-xl text-zinc-600 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-700/60">
+                  {validatingAll ? <Loader2 size={15} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={15} aria-hidden="true" />}
+                </button>
+              </Tip>
+            ) : null}
+            <span className="sr-only" role="status" aria-live="polite">{validatedAll ? t('setup.validate.done') : ''}</span>
           </section>
 
           {/* The write-error banner sits adjacent to the summary + the card controls
@@ -3042,19 +3134,34 @@ export default function Setup({ focus = null, onNavigate = () => {} }) {
               />
               {RAIL_GROUPS.map(([key, labelKey]) => (groups[key].length ? (
                 <div key={key} className="space-y-1">
-                  <h3 className={`${EYEBROW} px-3 pt-3`}>{t(labelKey, { n: groups[key].length })}</h3>
-                  {groups[key].map((p) => (
-                    <RailRow
-                      key={p.platform}
-                      id={p.platform}
-                      icon={<PlatformGlyphs platformId={p.platform} tone={statusTone(p.status, p.validation)} />}
-                      label={p.label}
-                      stateText={statusText(p.status, p.validation, t, cloudRefusals[p.platform] || null, openLocalRefusal(localRefusals, p))}
-                      current={effective === p.platform}
-                      implicit={!selected}
-                      onSelect={() => select(p.platform)}
-                    />
-                  ))}
+                  <h3 className={`${EYEBROW} px-3 pt-3`}>{t(labelKey)}</h3>
+                  {groups[key].map((p) => {
+                    const stateText = statusText(p.status, p.validation, t, cloudRefusals[p.platform] || null, openLocalRefusal(localRefusals, p));
+                    // The heading already says "Connected" / "Skipped", and a plain "Incomplete"
+                    // under every to-do row repeats it: only a state the heading does not name
+                    // (failed, not verified, blocked, a refusal) prints under the label.
+                    const redundant = stateText === t('setup.status.connected') || stateText === t('setup.status.skipped') || stateText === t('setup.status.incomplete');
+                    // Skip / use again, right on the row. A connected lane is never skipped from
+                    // here (a skip on a live lane is stale by definition); it disconnects in its card.
+                    const skip = p.status === 'skipped'
+                      ? { Icon: PlusCircle, label: t('setup.row.unskip', { platform: p.label }), run: () => setSkipped(p.platform, false) }
+                      : p.status === 'incomplete'
+                        ? { Icon: MinusCircle, label: t('setup.row.skip', { platform: p.label }), run: () => setSkipped(p.platform, true) }
+                        : null;
+                    return (
+                      <RailRow
+                        key={p.platform}
+                        id={p.platform}
+                        icon={<PlatformGlyphs platformId={p.platform} tone={redundant ? null : statusTone(p.status, p.validation)} />}
+                        label={p.label}
+                        stateText={redundant ? null : stateText}
+                        current={effective === p.platform}
+                        implicit={!selected}
+                        onSelect={() => select(p.platform)}
+                        skip={skip}
+                      />
+                    );
+                  })}
                 </div>
               ) : null))}
             </nav>

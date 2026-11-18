@@ -1,30 +1,20 @@
 // B6 — Planner Run-now / Check-readiness, routed through the in-app review gate.
 //
-// This is the ONLY publish-triggering control on the planner header. It is gated
-// by pendpost_health.blockers (the READ-ONLY Meta-368 surface, lib/writes.mjs pendpostHealth blockers push):
-//   - A recorded Meta action block (368) DISABLES Run-now and offers Check-readiness
-//     instead, so the blocked Meta lane is never poked. The 368 state is read from
-//     pendpost_health.blockers, NEVER inferred from the run result (the 368 is applied
+// The ONLY publish-triggering control on the planner header, as items of the header's one
+// overflow menu (Nov 2026 header diet). It is gated by pendpost_health.blockers (the READ-ONLY
+// Meta-368 surface, lib/writes.mjs pendpostHealth blockers push):
+//   - A recorded Meta action block (368) DISABLES Run-now (the line is its reason) and offers
+//     Check-readiness instead, so the blocked Meta lane is never poked. The 368 state is read
+//     from pendpost_health.blockers, NEVER inferred from the run result (the 368 is applied
 //     per-lane mid-run; runDueExclusive only returns in_flight when busy).
-//   - Otherwise, a click opens the PlannerRunNowDialog review sheet: it lists the
-//     posts the scheduler would fire now, pre-selected, and the owner picks a
-//     subset before any publish. The dialog IS the confirmation (a reviewed,
-//     deliberate red run button); it owns the per-post publish loop, the
-//     needs_confirm escalation, the in_flight handling, and the query refresh.
-//
-// Anti-slop: single accent tone, font-bold max, no all-caps prose; the disabled
-// blocker line uses icon + text (not color alone). Passes jest-axe.
-import { useMemo, useState } from 'react';
-import { Rocket, AlertCircle, ListChecks } from 'lucide-react';
+//   - Otherwise, the item opens the PlannerRunNowDialog review sheet: it lists the posts the
+//     scheduler would fire now, pre-selected, and the owner picks a subset before any publish.
+//     The dialog IS the confirmation; it owns the per-post publish loop, the needs_confirm
+//     escalation, the in_flight handling, and the query refresh.
+import { useState } from 'react';
+import { Rocket, ListChecks } from 'lucide-react';
 import { useT } from '../lib/i18n.js';
-import { isDueNow } from '../lib/format.js';
 import PlannerRunNowDialog from './PlannerRunNowDialog.jsx';
-import { Tip } from './ui/Tooltip.jsx';
-import { TAP_TARGET } from './ui/recipes.js';
-
-// TAP_TARGET: a 44px hit box around the painted 32px button (icon-only below 2xl, 33px wide).
-const HEADER_BTN =
-  `${TAP_TARGET} flex h-8 shrink-0 items-center gap-1.5 rounded-xl bg-zinc-200/60 px-2.5 text-xs font-bold transition hover:bg-zinc-300/60 dark:bg-zinc-800/60 dark:hover:bg-zinc-700/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand disabled:opacity-50`;
 
 // The 368 lives in pendpost_health.blockers[] as a free-form line (lib/writes.mjs pendpostHealth blockers push);
 // the stable marker is the "Meta action block" phrase. We surface the line verbatim
@@ -35,89 +25,23 @@ function find368Blocker(pendpostHealth) {
   return blockers.find((b) => META_368_RE.test(String(b))) || null;
 }
 
-export default function PlannerRunNow({ pendpostHealth, campaigns = [], onCheckReadiness, clientName }) {
+// The same gate as menu items, for the header's one overflow menu (App.jsx): the run-now entry
+// (disabled with the 368 line as its reason while Meta is blocked, plus Check readiness) and
+// the review dialog it opens. The menu closes before an item runs, so the dialog is rendered
+// by the caller, outside the menu.
+export function usePlannerRunNow({ pendpostHealth, campaigns = [], onCheckReadiness, clientName }) {
   const t = useT();
   const [open, setOpen] = useState(false);
-
   const blocker368 = find368Blocker(pendpostHealth);
-
-  // Tooltip count = EXACTLY what run-now will act on: isDueNow over the full client
-  // plan (the dialog's own predicate, lib/format.js), so the badge can never diverge
-  // from the dialog's list the way the old pendpost_health.nextDue count did (that
-  // counted the whole horizon, incl. future waiting-due posts, and missed YouTube
-  // private-overdue releases). Memoized like the dialog's dueItems.
-  const dueCount = useMemo(
-    () => campaigns.flatMap((c) => c.posts || []).filter(isDueNow).length,
-    [campaigns],
-  );
   const client = clientName || '';
-
-  // BLOCKED: never poke the lane. Show the verbatim blocker line and a
-  // Check-readiness affordance instead of a (disabled) Run-now.
-  if (blocker368) {
-    return (
-      // gap-3: the two icon-only buttons below 2xl carry 44px boxes that clear each other at 12px.
-      <div className="flex shrink-0 items-center gap-3">
-        <span className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-300">
-          <AlertCircle size={13} className="shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
-          <span className="sr-only">{t('planner.runNow.blockedAria')}</span>
-          <span>{blocker368}</span>
-        </span>
-        {/* Run-now is disabled while a 368 is recorded; clicking never publishes. */}
-        <button
-          type="button"
-          disabled
-          aria-label={t('planner.runNow.aria')}
-          className={HEADER_BTN}
-        >
-          <Rocket size={13} aria-hidden="true" />
-          {/* Label collapses to icon-only below 2xl so the toolbar stays one line
-              (the sidebar eats ~256px; at 1280 the label ran under the Woche/Monat/Liste pill). */}
-          <span className="hidden 2xl:inline">{t('planner.runNow.idle')}</span>
-        </button>
-        <Tip label={t('planner.runNow.tip.checkReadiness')}>
-          <button
-            type="button"
-            onClick={() => onCheckReadiness?.()}
-            aria-label={t('planner.runNow.checkReadiness')}
-            className={HEADER_BTN}
-          >
-            <ListChecks size={13} aria-hidden="true" />
-            <span className="hidden 2xl:inline">{t('planner.runNow.checkReadiness')}</span>
-          </button>
-        </Tip>
-      </div>
-    );
-  }
-
-  // The header button now OPENS the review dialog rather than publishing on
-  // click - the dialog owns the post list, the multiselect, and the real publish
-  // loop. It carries the live due-count badge (isDueNow over campaigns) so the
-  // owner sees the exact scope - identical to the dialog's list - before opening.
-  return (
-    <div className="flex shrink-0 items-center gap-2">
-      <Tip label={t('planner.runNow.tip.run', { client, count: dueCount })}>
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          aria-label={t('planner.runNow.aria')}
-          aria-haspopup="dialog"
-          className={HEADER_BTN}
-        >
-          <Rocket size={13} aria-hidden="true" />
-          {/* Label collapses to icon-only below 2xl so the toolbar stays one line
-              (the sidebar eats ~256px; at 1280 the label ran under the Woche/Monat/Liste pill). */}
-          <span className="hidden 2xl:inline">{t('planner.runNow.idle')}</span>
-        </button>
-      </Tip>
-      {open ? (
-        <PlannerRunNowDialog
-          campaigns={campaigns}
-          clientName={client}
-          onClose={() => setOpen(false)}
-          onDone={() => setOpen(false)}
-        />
-      ) : null}
-    </div>
-  );
+  const items = blocker368
+    ? [
+      { key: 'run-now', label: t('planner.runNow.aria'), Icon: Rocket, disabled: true, reason: blocker368 },
+      { key: 'check-readiness', label: t('planner.runNow.checkReadiness'), Icon: ListChecks, run: () => onCheckReadiness?.() },
+    ]
+    : [{ key: 'run-now', label: t('planner.runNow.aria'), Icon: Rocket, run: () => setOpen(true) }];
+  const dialog = open && !blocker368 ? (
+    <PlannerRunNowDialog campaigns={campaigns} clientName={client} onClose={() => setOpen(false)} onDone={() => setOpen(false)} />
+  ) : null;
+  return { items, dialog };
 }

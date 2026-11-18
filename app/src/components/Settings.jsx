@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { RefreshCw, HelpCircle, RotateCcw } from 'lucide-react';
-import { useConfig, saveConfig } from '../lib/api.js';
+import { useConfig, saveConfig, useInstallPing, setInstallPing } from '../lib/api.js';
 import { useT, LOCALES } from '../lib/i18n.js';
 import { getTimeFormat, setTimeFormat, getCardAccent, setCardAccent } from '../lib/format.js';
 import { FIELD, FIELD_ERR, SectionHeading } from './ui.jsx';
@@ -131,6 +131,15 @@ export default function Settings({ focus = null, onNavigate }) {
   // flip + revert as autoFix; the grace stays a config value (agent or config.json), not a field.
   const [mediaCleanup, setMediaCleanup] = useState(false);
   const [mediaCleanupBusy, setMediaCleanupBusy] = useState(false);
+  // The opt-in anonymous weekly install ping (lib/install-ping.mjs). Install-global, off by
+  // default, its own route (not config.json, which is per project). Same optimistic flip +
+  // revert as the switches above.
+  const installPingQuery = useInstallPing(true);
+  const [installPing, setInstallPingState] = useState(false);
+  const [installPingBusy, setInstallPingBusy] = useState(false);
+  useEffect(() => {
+    if (installPingQuery.data) setInstallPingState(installPingQuery.data.enabled === true);
+  }, [installPingQuery.data?.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!data) return;
@@ -184,6 +193,23 @@ export default function Settings({ focus = null, onNavigate }) {
       } else setError(saveAlert(err, t));
     } finally {
       setMediaCleanupBusy(false);
+    }
+  };
+
+  const onInstallPing = async (next) => {
+    if (installPingBusy) return;
+    const prior = installPing;
+    setInstallPingState(next);
+    setInstallPingBusy(true);
+    setError(null);
+    try {
+      await setInstallPing(next);
+      queryClient.invalidateQueries({ queryKey: ['install-ping'] });
+    } catch (err) {
+      setInstallPingState(prior);
+      setError(saveAlert(err, t));
+    } finally {
+      setInstallPingBusy(false);
     }
   };
 
@@ -350,6 +376,16 @@ export default function Settings({ focus = null, onNavigate }) {
                   <ActionError error={mediaBaseError} />
                 </div>
 
+                {/* The opt-in anonymous install ping: one switch, one line saying exactly what goes
+                    out. Off by default; off again deletes the random id (lib/install-ping.mjs). It sits in
+                    this column so the two Preferences columns end level. */}
+                <div className="!mt-6 flex items-center justify-between gap-3 rounded-2xl border border-zinc-200/70 p-4 dark:border-zinc-700/60">
+                  <div className="min-w-0">
+                    <p id="set-install-ping" className="text-sm font-bold">{t('settings.installPing.label')}</p>
+                    <p id="set-install-ping-hint" className="text-[11px] text-zinc-500 dark:text-zinc-400">{t('settings.installPing.hint')}</p>
+                  </div>
+                  <Switch checked={installPing} onChange={onInstallPing} busy={installPingBusy} disabled={installPingBusy || !installPingQuery.data} ariaLabel={t('settings.installPing.label')} />
+                </div>
               </section>
 
               {/* The right column: the other two display prefs + the dialog-warnings reset. The

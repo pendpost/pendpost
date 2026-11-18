@@ -84,7 +84,8 @@ describe('FilterBar', () => {
     expect([...rows].map((r) => r.dataset.filterRow)).toEqual(['status', 'facets']);
     const status = screen.getByRole('group', { name: 'Status' });
     const tabs = within(status).getAllByRole('button').map((b) => b.textContent);
-    expect(tabs).toEqual(['All 20', 'Needs you 15', 'Drafts 18', 'Awaiting approval 0', 'Approved 2', 'Published 0', 'More']);
+    // Needs you sits behind More since the Nov 2026 header diet: the planner's tray lists them.
+    expect(tabs).toEqual(['All 20', 'Drafts 18', 'Awaiting approval 0', 'Approved 2', 'Published 0', 'More']);
     // The "?" legend closes the tab row (no lone "?" line on a phone).
     expect(container.querySelector('[data-filter-row="status"] [data-filter-legend]')).not.toBeNull();
     expect(container.querySelector('[data-filter-row="facets"] [data-filter-legend]')).toBeNull();
@@ -92,11 +93,11 @@ describe('FilterBar', () => {
     await axeClean(container);
   });
 
-  it('German labels wear the pill words: Alle, Braucht dich, Entwürfe, Wartet auf Freigabe, Freigegeben, Veröffentlicht, Mehr', () => {
+  it('German labels wear the pill words: Alle, Entwürfe, Wartet auf Freigabe, Freigegeben, Veröffentlicht, Mehr', () => {
     renderBar({}, 'de-CH');
     const status = screen.getByRole('group', { name: 'Status' });
     expect(within(status).getAllByRole('button').map((b) => b.firstChild.textContent))
-      .toEqual(['Alle', 'Braucht dich', 'Entwürfe', 'Wartet auf Freigabe', 'Freigegeben', 'Veröffentlicht', 'Mehr']);
+      .toEqual(['Alle', 'Entwürfe', 'Wartet auf Freigabe', 'Freigegeben', 'Veröffentlicht', 'Mehr']);
   });
 
   it('single-select: a tab sets its status, the pressed tab or "All" goes back to no status', async () => {
@@ -117,12 +118,12 @@ describe('FilterBar', () => {
     expect(onStatus).toHaveBeenLastCalledWith(null);
   });
 
-  it('"More" holds Rejected, Overdue and Parked; while one is the filter the trigger wears it', async () => {
+  it('"More" holds Needs you, Rejected, Overdue and Parked; while one is the filter the trigger wears it', async () => {
     const user = userEvent.setup();
     const { onStatus, unmount } = renderBar();
     await user.click(screen.getByRole('button', { name: 'More' }));
     const menu = await screen.findByRole('group', { name: 'More' });
-    expect(within(menu).getAllByRole('button').map((b) => b.textContent)).toEqual(['Rejected 1', 'Overdue 3', 'Parked 0']);
+    expect(within(menu).getAllByRole('button').map((b) => b.textContent)).toEqual(['Needs you 15', 'Rejected 1', 'Overdue 3', 'Parked 0']);
     await user.click(within(menu).getByRole('button', { name: 'Overdue 3' }));
     expect(onStatus).toHaveBeenLastCalledWith('overdue');
     unmount();
@@ -131,7 +132,7 @@ describe('FilterBar', () => {
     expect(trigger).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('the header badge\'s needs-you filter shows as the pressed "Needs you" tab', () => {
+  it('a needs-you filter shows on the More trigger, pressed', () => {
     renderBar({ status: 'needs-you' });
     expect(screen.getByRole('button', { name: 'Needs you 15' })).toHaveAttribute('aria-pressed', 'true');
   });
@@ -147,6 +148,25 @@ describe('FilterBar', () => {
     await user.click(li);
     expect(onTogglePlatform).toHaveBeenCalledWith('linkedin');
     expect(within(facets).getByRole('button', { name: /^Type/ })).toBeInTheDocument();
+  });
+
+  // UX round 10: neutral zinc at rest, the brand colour on hover/focus and while pressed. The
+  // pressed state also changes the disk itself (white, 2px ring), never colour alone.
+  it('platform glyphs rest neutral and wear the brand colour only on hover, focus or pressed', () => {
+    renderBar({ platformFilter: ['linkedin'], platforms: ['linkedin', 'facebook'] });
+    const facets = document.querySelector('[data-filter-row="facets"]');
+    const fb = within(facets).getByRole('button', { name: 'Facebook' });
+    const fbGlyph = fb.querySelector('svg').getAttribute('class');
+    expect(fbGlyph).toContain('text-zinc-500');
+    expect(fbGlyph).toContain('group-hover:text-inherit');
+    expect(fbGlyph).toContain('group-focus-visible:text-inherit');
+    expect(fbGlyph).not.toContain('#1877F2');
+    expect(fb.className).toContain('ring-1');
+    const li = within(facets).getByRole('button', { name: 'LinkedIn' });
+    expect(li).toHaveAttribute('aria-pressed', 'true');
+    expect(li.className).toContain('text-[#0A66C2]');
+    expect(li.querySelector('svg').getAttribute('class')).not.toContain('text-zinc-500');
+    for (const c of ['bg-white', 'ring-2']) expect(li.className.split(' ')).toContain(c);
   });
 
   it('a page without status keeps ONE row and no status tabs', () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Wand2, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check, Upload, Wrench } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Loader2, ArrowLeft, Clapperboard, ChevronDown, X, Search, Eye, Plus, Trash2, BarChart3, HelpCircle, Link2, AtSign, MapPin, Hash, Music, CornerUpLeft, Check, Upload, Wrench } from 'lucide-react';
 import { useAssets, useConfig, usePlatformValidate, useValidateMedia, useActiveClient, useRedditFlairs, usePinterestBoardSections, createPost, updatePost, lintText } from '../lib/api.js';
 import { useAssetUpload } from '../lib/useAssetUpload.js';
 import { useT, useLocale } from '../lib/i18n.js';
@@ -54,11 +54,13 @@ export function srtToText(raw) {
 // to pick the single most-permissive platform when several are co-selected, so a
 // multi-target caption is not over-flagged for the laxest target (A4). The server
 // remains the source of truth; this map just orders the choice.
-// A new post's default format for its selected platforms: 'reel' while any of them publishes
-// one (the long-standing default), else the first format the first platform publishes. No
-// platform yet (accounts loading) keeps 'reel'.
+// A new post's default format for its selected platforms: Text whenever every one of them
+// publishes text (owner decision 9, Nov 2026: the caption leads the first screen, no media
+// picker in the way), else a reel while any of them publishes one, else the first format the
+// first platform publishes. No platform yet (none connected, or accounts loading) is Text.
 function defaultFormatFor(platforms) {
-  if (!platforms.length || platforms.some((p) => formatsForPlatform(p).includes('reel'))) return 'reel';
+  if (!platforms.length || platforms.every((p) => formatsForPlatform(p).includes('text'))) return 'text';
+  if (platforms.some((p) => formatsForPlatform(p).includes('reel'))) return 'reel';
   return formatsForPlatform(platforms[0])[0];
 }
 
@@ -1208,7 +1210,8 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
 
   const [campaign, setCampaign] = useState(isEdit ? post.campaign : campaigns.find((c) => c.active)?.id || campaigns[0]?.id || '');
   const [id, setId] = useState(isEdit ? post.id : '');
-  const [idEdited, setIdEdited] = useState(isEdit);
+  // A new post's id is always generated (suggestPostId below); only an edit carries its own.
+  const idEdited = isEdit;
   // #41: a new post starts on the FIRST platform the picker actually shows, never a
   // hidden default (a YouTube-only brand once saved an Instagram target it could not
   // see). While accounts are still loading nothing is preselected; the effect below
@@ -1217,8 +1220,8 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [initialPlatforms] = useState(() => (isEdit ? post.platforms : visiblePlatforms(accounts, posting).slice(0, 1)));
   const [rawPlatforms, setPlatforms] = useState(initialPlatforms);
   const [platformsTouched, setPlatformsTouched] = useState(isEdit);
-  // A new post's format defaults to 'reel' while a selected platform publishes one, else to
-  // the first format the first selected platform does publish (a YouTube-only brand starts
+  // A new post's format defaults to Text where every selected platform publishes it (see
+  // defaultFormatFor), else to a reel or the first format the first selected platform does publish (a YouTube-only brand starts
   // on a YouTube Short, never on a reel YouTube refuses). Like the platforms, it follows the
   // machine-default selection until the owner picks a format (or a seed brought one).
   const [initialType] = useState(() => (isEdit ? post.type : seedType || defaultFormatFor(initialPlatforms)));
@@ -1395,10 +1398,9 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   const [error, setError] = useState(null);
   const say = (text) => setError({ text, raw: null });
   const [showPreview, setShowPreview] = useState(false);
-  const idRef = useRef(null);
   const xReplyToRef = useRef(null);
-  // Focus targets for the no-platforms / no-campaign save() guards, mirroring
-  // idRef so a keyboard user lands on the blocking field, not just an alert.
+  // Focus targets for the no-platforms / no-campaign save() guards, so a keyboard user
+  // lands on the blocking field, not just an alert.
   const platformsFieldsetRef = useRef(null);
   const campaignSelectRef = useRef(null);
   const scheduleFieldRef = useRef(null);
@@ -1500,6 +1502,11 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
   // so the picker area says why and links to Setup, and save stays disabled with that line
   // as its reason, instead of refusing with "select a platform" when there is none.
   const noPlatformAvailable = !isEdit && Boolean(accounts) && pickerPlatforms.length === 0;
+  // Why Create draft cannot run yet, said beside the button (null = it can).
+  const saveBlockedReason = noPlatformAvailable ? t('composer.saveBlocked.noPlatform')
+    : platformsLoading ? t('composer.platforms.loading') : null;
+  // The campaign select only when there is a choice: one campaign is simply where the post goes.
+  const showCampaign = !isEdit && (campaigns.length !== 1 || !campaign);
   // A shared field's label names the platforms it feeds on THIS post: the selected ones
   // (platformsForField), never a platform the brand cannot even see.
   const fieldLabel = (key, field) => {
@@ -1904,7 +1911,6 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
     setError(null);
     if (!isEdit && !/^[a-zA-Z0-9_-]+$/.test(id)) {
       say(t('composer.error.idFormat'));
-      idRef.current?.focus();
       return;
     }
     // Reply-chain target: same charset as post ids (mirrors lib/writes.mjs
@@ -2116,12 +2122,15 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
           </button>
         </Tip>
         <div>
-          <p className={EYEBROW}>{isEdit ? `${prettyCampaign(post.campaign)} · ${post.id}` : t('composer.newDraft')}</p>
+          {/* The title says it once: "New post" (the old "New draft" eyebrow above it said the
+              same). Editing keeps the campaign line, the one thing the title does not say. */}
+          {isEdit ? <p className={EYEBROW}>{prettyCampaign(post.campaign)}</p> : null}
           <h2 className="font-display text-lg font-bold">{isEdit ? t('composer.editPost') : t('composer.newPost')}</h2>
         </div>
-        {/* Per-client signage (B4): the composer is an overlay that covers the
-            sidebar switcher, so the band names the active client here too. */}
-        <div className="ml-auto">
+        {/* Per-client signage (B4), only where the sidebar switcher is out of view (the drawer
+            below lg). From lg up the sidebar already names the project, so the band would say
+            it twice. */}
+        <div className="ml-auto lg:hidden">
           <ClientBand client={activeClient} />
         </div>
       </header>
@@ -2214,11 +2223,14 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </button>
           ) : null}
 
-          {!isEdit ? (
-            <div className="grid grid-cols-2 gap-3">
+          {/* Campaign, format and schedule share one row. The post id is generated (suggestPostId)
+              and never shown: it is plumbing, not a decision. The campaign select appears only when
+              there is a choice to make (more than one campaign, or none picked yet). */}
+          <div className={`grid grid-cols-2 gap-3 ${showCampaign ? 'sm:grid-cols-3' : ''}`}>
+            {showCampaign ? (
               <div className="space-y-1.5">
                 <label className={EYEBROW} htmlFor="composer-campaign">{t('composer.field.campaign')}</label>
-                <select id="composer-campaign" ref={campaignSelectRef} value={campaign} onChange={(e) => setCampaign(e.target.value)} className={`${FIELD} w-full`}>
+                <select id="composer-campaign" ref={campaignSelectRef} value={campaign} onChange={(e) => setCampaign(e.target.value)} className={`${FIELD} w-full h-10`}>
                   <option value="" disabled>{t('composer.campaignPlaceholder')}</option>
                   {campaigns.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -2227,17 +2239,7 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
                   ))}
                 </select>
               </div>
-              <div className="space-y-1.5">
-                <label className={`flex items-center gap-1 ${EYEBROW}`} htmlFor="composer-id">
-                  {t('composer.field.postId')}
-                  {!idEdited ? <Tip label={t('composer.postIdHint')}><span className="inline-flex"><Wand2 size={11} className="text-brand dark:text-brand-light" aria-hidden="true" /></span></Tip> : null}
-                </label>
-                <input id="composer-id" ref={idRef} value={id} onChange={(e) => { setIdEdited(true); setId(e.target.value); }} placeholder={t('composer.postIdPlaceholder')} className={`${FIELD} w-full`} />
-              </div>
-            </div>
-          ) : null}
-
-          <div className="grid grid-cols-2 gap-3">
+            ) : null}
             <div className="space-y-1.5">
               <label className={EYEBROW} htmlFor="composer-type">{t('composer.field.format')}</label>
               {/* Format + schedule share one explicit height and the same FIELD
@@ -2983,11 +2985,11 @@ export default function Composer({ mode, post, campaigns, onClose, onSaved, seed
             </div>
           ) : null}
 
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button type="button" onClick={requestClose} className="rounded-xl px-3.5 py-2 text-sm font-bold text-zinc-500 transition hover:bg-zinc-200/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-400 dark:hover:bg-zinc-700/60">
-              {t('composer.cancel')}
-            </button>
-            <button type="button" onClick={save} disabled={busy || noPlatformAvailable || platformsLoading} aria-describedby={noPlatformAvailable ? 'composer-no-platform' : undefined} className={`flex items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}>
+          {/* One exit (the header's back arrow); this row only saves. When saving is not
+              possible yet, the reason sits right beside the button, not just at the top. */}
+          <div className="flex items-center justify-end gap-3 pt-1">
+            {saveBlockedReason ? <p id="composer-save-blocked" className="min-w-0 text-right text-xs text-zinc-600 dark:text-zinc-300">{saveBlockedReason}</p> : null}
+            <button type="button" onClick={save} disabled={busy || Boolean(saveBlockedReason)} aria-describedby={saveBlockedReason ? 'composer-save-blocked' : undefined} className={`flex shrink-0 items-center gap-1.5 rounded-xl bg-brand px-4 py-2 text-sm font-bold text-white shadow-lg shadow-brand/20 transition hover:bg-brand/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:bg-brand-light dark:text-zinc-900 ${DISABLED_PRIMARY}`}>
               {busy ? <Loader2 size={14} className="animate-spin" aria-hidden="true" /> : null}
               {isEdit ? t('composer.save') : t('composer.createDraft')}
             </button>

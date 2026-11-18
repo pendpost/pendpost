@@ -100,7 +100,7 @@ function order() {
 }
 
 const sortButton = () => screen.getByRole('button', { name: new RegExp(`${t('approvals.sort.newest')}|${t('approvals.sort.oldest')}`) });
-const allTab = () => screen.getByRole('button', { name: t('approvals.view.all') });
+const allTab = () => screen.getByRole('button', { name: t('approvals.view.allShort') });
 
 beforeEach(() => { installStorage(); });
 
@@ -126,6 +126,8 @@ describe('Freigaben ordering', () => {
   it('the toggle reverses the order and states which direction is active', async () => {
     renderList();
     expect(sortButton()).toHaveAccessibleName(t('approvals.sort.oldest'));
+    // Glyph only (UX round 10): the order rides the Tip and the accessible name.
+    expect(sortButton().textContent).toBe('');
     await userEvent.click(sortButton());
     expect(order().slice(0, 3)).toEqual(['Newest post', 'Mid post', 'Oldest post']);
     expect(sortButton()).toHaveAccessibleName(t('approvals.sort.newest'));

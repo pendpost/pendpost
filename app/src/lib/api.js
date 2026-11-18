@@ -174,6 +174,21 @@ export function useConfig(enabled) {
   });
 }
 
+// The opt-in anonymous weekly install ping (lib/install-ping.mjs): { enabled, lastPingAt }
+// from GET /api/install-ping. Install-global (not per project), so the key carries no client.
+export function useInstallPing(enabled = true) {
+  return useQuery({
+    queryKey: ['install-ping'],
+    queryFn: () => getJson('/api/install-ping'),
+    enabled,
+    staleTime: 60_000,
+  });
+}
+
+// Turn it on or off (off deletes the stored id). Owner-only server-side: the Studio token rides
+// on every write, an agent has no face for it.
+export const setInstallPing = (enabled) => postJson('/api/install-ping', { enabled });
+
 // The autonomy ledger read (ux-audit R7): { dryRun: { matched, total, limit },
 // revocable } from GET /api/autonomy (lib/writes.mjs autonomyStatus). dryRun is the
 // AU5 preview ("this scope would auto-approve N of your last M drafts", computed with
