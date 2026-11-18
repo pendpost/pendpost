@@ -50,10 +50,12 @@ function renderApp() {
   );
 }
 
-const LABELS = [/^(Open menu|Menü öffnen)$/, /^(Delivery and 24\/7 status|Status von Zustellung und 24\/7-Betrieb)$/, /^(Switch to (English|German)|Auf (Englisch|Deutsch) wechseln)$/, /^(Switch to (dark|light) theme|Zum (dunklen|hellen) Design wechseln)$/];
+// Since the Nov 2026 header diet (owner decision 8) the delivery status, language and theme
+// sit in ONE overflow menu, so the persistent icons are the drawer trigger and that menu.
+const LABELS = [/^(Open menu|Menü öffnen)$/, /^(More|Mehr)$/];
 
 describe('header icon buttons: 44px hit area, unchanged painted box', () => {
-  it('menu, cloud status, language and theme each carry the 44x44 TAP_TARGET box and stay painted h-8 w-8', () => {
+  it('the drawer trigger and the overflow menu each carry the 44x44 TAP_TARGET box and stay painted h-8 w-8', () => {
     renderApp();
     const header = document.querySelector('header');
     expect(header).not.toBeNull();
@@ -69,13 +71,62 @@ describe('header icon buttons: 44px hit area, unchanged painted box', () => {
     }
   });
 
-  it('the status, language and theme buttons sit 12px apart, so their 44px boxes never overlap', () => {
+  it('the overflow menu lists delivery, language and theme on every page', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
     renderApp();
     const header = document.querySelector('header');
-    const theme = screen.getAllByRole('button', { name: LABELS[3] }).find((b) => header.contains(b));
-    const cloud = screen.getAllByRole('button', { name: LABELS[1] }).find((b) => header.contains(b));
-    const cluster = theme.parentElement;
-    expect(cluster.contains(cloud)).toBe(true);
-    expect(cluster.className).toMatch(/(^|\s)gap-3(\s|$)/);
+    await user.click(screen.getAllByRole('button', { name: LABELS[1] }).find((b) => header.contains(b)));
+    const items = screen.getAllByRole('menuitem').map((b) => b.textContent);
+    expect(items.some((x) => /switch to (english|german)/i.test(x))).toBe(true);
+    expect(items.some((x) => /switch to (dark|light) theme/i.test(x))).toBe(true);
+    expect(items.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// UX round 10, F1: Approvals and Radar carry no header card. Their title stays an sr-only <h1>
+// and the same two controls (the drawer trigger and the "..." menu) ride the page's first row:
+// the FilterBar on Approvals, the Radar title row on Radar. Every other page keeps its header.
+describe('pages without a header card: Approvals and Radar', () => {
+  const firstRow = {
+    freigaben: () => document.querySelector('[data-filter-bar]'),
+    radar: () => document.querySelector('[data-spot="radar"]'),
+  };
+  for (const [page, title] of [['freigaben', /^(Approvals|Freigaben)$/], ['radar', /^Radar$/]]) {
+    it(`${page}: no header card, an sr-only h1, and both controls in the first row`, async () => {
+      window.location.hash = `#${page}`;
+      renderApp();
+      expect(document.querySelector('header')).toBeNull();
+      const h1 = screen.getByRole('heading', { level: 1, name: title });
+      expect(h1.className.split(/\s+/)).toContain('sr-only');
+      const row = await vi.waitFor(() => {
+        const el = firstRow[page]();
+        if (!el) throw new Error('first row not rendered');
+        return el;
+      });
+      for (const name of LABELS) {
+        const btn = screen.getAllByRole('button', { name }).find((b) => row.contains(b));
+        expect(btn, String(name)).toBeTruthy();
+        expect(btn.className, String(name)).toMatch(/(^|\s)after:h-11(\s|$)/);
+      }
+    });
+  }
+
+  it('the menu in the Approvals first row still lists delivery, language and theme', async () => {
+    const { default: userEvent } = await import('@testing-library/user-event');
+    const user = userEvent.setup();
+    window.location.hash = '#freigaben';
+    renderApp();
+    const bar = document.querySelector('[data-filter-bar]');
+    await user.click(screen.getAllByRole('button', { name: LABELS[1] }).find((b) => bar.contains(b)));
+    const items = screen.getAllByRole('menuitem').map((b) => b.textContent);
+    expect(items.some((x) => /switch to (english|german)/i.test(x))).toBe(true);
+    expect(items.some((x) => /switch to (dark|light) theme/i.test(x))).toBe(true);
+    expect(items.length).toBe(3);
+  });
+
+  it('the planner keeps its header card', () => {
+    renderApp();
+    expect(document.querySelector('header')).not.toBeNull();
   });
 });

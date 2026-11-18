@@ -191,7 +191,7 @@ export function useCloudDelivery() {
 }
 
 // The ONE delivery state for the sidebar Delivery card, the header ConnectionStatus button and
-// App's DeliveryExplainer gate (contract B, 2026-11-01): where the projects in view publish
+// the Needs-you tray (contract B, 2026-11-01): where the projects in view publish
 // from and whether that is healthy. In All-projects mode (`allClients`, the browser setting
 // pendpost.allClients) it counts EVERY listed project; otherwise it describes the selected
 // one. Each read is shared with the other surfaces by its react-query key, so this costs no
@@ -211,6 +211,10 @@ export function useDeliveryState({ allClients = false } = {}) {
 // POST /api/cloud/checkout { plan, interval } -> { ok, url }. Opens a Stripe Checkout
 // (card 4242 in test) to subscribe to a tier; the server also opens the browser.
 export const startCheckout = (plan, interval) => postJson('/api/cloud/checkout', { plan, interval });
+
+// POST /api/cloud/claim { code } -> { ok, plan, interval, status, alreadyRedeemed }. Attaches a
+// plan bought on pendpost.com (the claim code its checkout page shows) to this workspace.
+export const redeemClaim = (code) => postJson('/api/cloud/claim', { code });
 
 // POST /api/cloud/spend-cap { cents } -> { ok, spendCapCents }. Sets (or clears, with
 // null) the overage spend cap in cents. The cap governs overage only.

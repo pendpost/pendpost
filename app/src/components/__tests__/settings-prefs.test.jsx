@@ -23,6 +23,9 @@ vi.mock('../../lib/api.js', () => ({
   useAccounts: () => ({ data: [] }),
   useSignals: () => ({ data: undefined }),
   saveConfig: (...args) => saveConfig(...args),
+  // The install ping switch (its own suite: Settings.install-ping.test.jsx) reads this.
+  useInstallPing: () => ({ data: { ok: true, enabled: false, lastPingAt: null } }),
+  setInstallPing: vi.fn(() => Promise.resolve({ ok: true })),
 }));
 
 // The auto-approve policy + the R6a gate knobs moved into the AutonomyLedger (ux-audit R7);

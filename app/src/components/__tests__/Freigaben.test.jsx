@@ -148,7 +148,7 @@ describe('Freigaben focused-card a/r keyboard shortcuts', () => {
     const user = userEvent.setup();
     renderFreigaben([approvedPost]);
     // 'All posts' view so the approved card is visible.
-    await user.click(screen.getByRole('button', { name: /all posts/i }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
     const card = cardFor('Already approved');
     card.focus();
     await user.keyboard('a');
@@ -321,13 +321,13 @@ describe('Freigaben settles rejected posts out of the queue', () => {
   it('counts only undecided work in the To-review tab', () => {
     renderFreigaben([pendingPost, rejectedPost]);
     // One actionable post (the pending draft); the rejected one is settled.
-    expect(screen.getByText(t('approvals.view.toReviewCount', { n: 1 }))).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `${t('approvals.view.toReview')} 1` })).toBeInTheDocument();
   });
 
-  it('shows the rejected post under "All posts", badged Rejected and with no approve/reject actions', async () => {
+  it('shows the rejected post under "All", badged Rejected and with no approve/reject actions', async () => {
     const user = userEvent.setup();
     renderFreigaben([pendingPost, rejectedPost]);
-    await user.click(screen.getByText(t('approvals.view.all')));
+    await user.click(screen.getByRole('button', { name: t('approvals.view.allShort') }));
     const card = cardFor('This one was declined');
     expect(within(card).getByText(t('approval.rejected'))).toBeInTheDocument();
     expect(within(card).queryByText(t('approvals.action.reject'))).not.toBeInTheDocument();
@@ -352,7 +352,7 @@ describe('Freigaben reports its tab via onModeChange', () => {
     renderFreigaben([pendingPost], { onModeChange });
     // Initial effect reports the default 'pending' tab.
     await waitFor(() => expect(onModeChange).toHaveBeenCalledWith('pending'));
-    await user.click(screen.getByText(t('approvals.view.all')));
+    await user.click(screen.getByRole('button', { name: t('approvals.view.allShort') }));
     await waitFor(() => expect(onModeChange).toHaveBeenCalledWith('all'));
   });
 });

@@ -397,14 +397,15 @@ describe('Freigaben copy-lane hand-off on the card', () => {
     fireEvent.click(await screen.findByRole('menuitem', { name }));
   };
 
-  it('a blocked X post wears the quiet X glyph; the hand-off sits in the menu, Approve is gone', async () => {
+  it('a blocked X post wears the quiet X glyph beside Approve; the hand-off sits in the menu', async () => {
     healthState = offlineX;
     renderFreigaben([xReplyPost], { onNavigate: vi.fn() });
     const row = screen.getByRole('listitem');
     expect(within(row).getByLabelText('X not connected')).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: 'Connect X' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /copy reply & open/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^approve$/i })).not.toBeInTheDocument();
+    // Approve before connect (owner decision 2, 2026-11-12).
+    expect(screen.getByRole('button', { name: /^approve$/i })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /^more actions$/i }));
     expect(await screen.findByRole('menuitem', { name: /copy reply & open/i })).toBeInTheDocument();
   });
@@ -542,7 +543,7 @@ describe('Freigaben posted cards link the live post in all-mode', () => {
   it('a posted card with a resolvable permalink renders the icon-only live link', async () => {
     renderFreigaben([postedWithProof]);
     const user = (await import('@testing-library/user-event')).default;
-    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
     const link = screen.getByRole('link', { name: /view on instagram/i });
     expect(link).toHaveAttribute('href', 'https://www.instagram.com/p/live-proof/');
     expect(link).toHaveAttribute('target', '_blank');
@@ -551,7 +552,7 @@ describe('Freigaben posted cards link the live post in all-mode', () => {
   it('a posted card with NO evidence renders no link at all', async () => {
     renderFreigaben([postedNoProof]);
     const user = (await import('@testing-library/user-event')).default;
-    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
     // The title is internal on an Instagram-only post (the title rule): the caption names it.
     expect(screen.getByText(/Spring promo headline line/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /view on/i })).not.toBeInTheDocument();
@@ -575,7 +576,7 @@ describe('Freigaben next-actor consolidation', () => {
     renderFreigaben([scheduledOffline]);
     // Approved posts live in the "All posts" tab.
     const user = (await import('@testing-library/user-event')).default;
-    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
     // The hand-off truth renders (the row's one action, approved or not)...
     expect(screen.getByRole('button', { name: /copy reply & open/i })).toBeInTheDocument();
     // ...and neither of the contradicting claims does.
@@ -601,7 +602,7 @@ describe('Freigaben next-actor consolidation', () => {
     };
     const { container } = renderFreigaben([scheduled]);
     const user = (await import('@testing-library/user-event')).default;
-    await user.click(screen.getByRole('button', { name: 'All posts' }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
     // The label carries the date AND the time, so the full stamp needs no hover title.
     expect(screen.getByText(/goes out/i).textContent).toMatch(/\d{2}[./]\d{2}[./]26/);
     // Canon (phase 3 final tail): no hover-only reveal and never a third badge. The
@@ -782,12 +783,14 @@ describe('Freigaben chip: blocked lane vs manual paste lane', () => {
     expect(items[0].className).not.toMatch(/red-/);
   });
 
-  it('a blocked row shows no Approve, Reject or Connect of its own; Reject and the hand-off are in the menu', async () => {
+  it('a blocked row shows Approve but no Reject or Connect of its own; Reject and the hand-off are in the menu', async () => {
     healthState = offline;
     renderFreigaben([tgPost], { onNavigate: vi.fn() });
     const row = screen.getByRole('listitem');
     const rowButtons = within(row).getAllByRole('button').map((b) => b.getAttribute('aria-label') || b.textContent.trim());
-    expect(rowButtons.some((n) => /^(reject|approve|copy and post yourself|connect telegram)$/i.test(n))).toBe(false);
+    expect(rowButtons.some((n) => /^(reject|copy and post yourself|connect telegram)$/i.test(n))).toBe(false);
+    // Approve before connect (owner decision 2, 2026-11-12).
+    expect(rowButtons.some((n) => /^approve$/i.test(n))).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: /^more actions$/i }));
     expect(await screen.findByRole('menuitem', { name: /copy and post yourself/i })).toBeInTheDocument();
   });

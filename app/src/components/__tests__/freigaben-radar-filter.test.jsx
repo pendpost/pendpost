@@ -1,9 +1,9 @@
-// B1: the Radar-Antworten facet on the pending tab. At engagement-engine volume the
-// queue mixes planned campaign posts with radar reply drafts; the chip narrows to the
-// radar work without touching the flat list mechanics (keyboard a/r triage, roving
-// focus). Pinned here: hidden at zero, count == list, one predicate, a/r still works
-// on a focused radar card, and the self-release when the last radar draft is decided.
-
+// B1: the Radar replies within the queue. At engagement-engine volume the queue mixes
+// planned campaign posts with radar reply drafts; the toolbar's "Replies" segment (UX round
+// 10: it replaced a separate Radar-replies chip beside the tabs) narrows to the radar work
+// without touching the flat list mechanics (keyboard a/r triage, roving focus). Pinned here:
+// hidden at zero, count == list, one predicate, a/r still works on a focused radar card, and
+// the self-release when the last radar draft is decided.
 import { useState } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -101,34 +101,57 @@ beforeEach(() => {
   lintText.mockClear();
 });
 
-describe('Freigaben Radar-Antworten filter chip', () => {
-  it('is hidden while no radar reply draft awaits a decision - never an empty toggle', () => {
+// The segment's accessible name is its word and its count ("Replies 2").
+const repliesSegment = (n) => screen.getByRole('button', { name: `Replies ${n}` });
+const queriedReplies = () => screen.queryByRole('button', { name: /^Replies/ });
+
+describe('Freigaben "Replies" segment', () => {
+  it('is hidden while no radar reply draft awaits a decision - never an empty choice', () => {
     renderFreigaben([planned]);
-    expect(screen.queryByRole('button', { name: /Radar replies/ })).not.toBeInTheDocument();
+    expect(queriedReplies()).not.toBeInTheDocument();
+    // The other two segments are always there.
+    expect(screen.getByRole('button', { name: 'To review 1' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'All' })).toBeInTheDocument();
   });
 
-  it('carries the same count the narrowed list will show', () => {
+  it('sits between To review and All, in ONE group, and carries the count the narrowed list will show', () => {
     renderFreigaben([planned, radarA, radarB]);
-    expect(screen.getByRole('button', { name: 'Radar replies (2)' })).toBeInTheDocument();
+    const group = screen.getByRole('group', { name: 'Which posts' });
+    const names = [...group.querySelectorAll('button')].map((b) => b.textContent);
+    expect(names).toEqual(['To review 3', 'Replies 2', 'All']);
+    expect(repliesSegment(2)).toBeInTheDocument();
   });
 
   it('narrows the queue to radar replies and back, one predicate, no other mechanics', async () => {
     const user = userEvent.setup();
     renderFreigaben([planned, radarA, radarB]);
-    const chip = screen.getByRole('button', { name: 'Radar replies (2)' });
-    await user.click(chip);
-    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    await user.click(repliesSegment(2));
+    expect(repliesSegment(2)).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'To review 3' })).toHaveAttribute('aria-pressed', 'false');
     expect(screen.queryByText(/Alpha promo headline/)).not.toBeInTheDocument();
     expect(screen.getByText(/Radar answer one headline/)).toBeInTheDocument();
     expect(screen.getByText(/Radar answer two headline/)).toBeInTheDocument();
-    await user.click(chip);
+    await user.click(screen.getByRole('button', { name: 'To review 3' }));
+    expect(repliesSegment(2)).toHaveAttribute('aria-pressed', 'false');
     expect(screen.getByText(/Alpha promo headline/)).toBeInTheDocument();
+  });
+
+  it('is offered on All too, and picking it there goes back to the queue, narrowed', async () => {
+    const user = userEvent.setup();
+    renderFreigaben([planned, radarA]);
+    await user.click(screen.getByRole('button', { name: 'All' }));
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(repliesSegment(1));
+    expect(repliesSegment(1)).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'All' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.queryByText(/Alpha promo headline/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Radar answer one headline/)).toBeInTheDocument();
   });
 
   it('keyboard a-approve still works on a focused radar card behind the filter', async () => {
     const user = userEvent.setup();
     renderFreigaben([planned, radarA]);
-    await user.click(screen.getByRole('button', { name: 'Radar replies (1)' }));
+    await user.click(repliesSegment(1));
     // Move focus onto the (now only) card, as ArrowDown/roving focus would.
     const li = screen.getByText(/Radar answer one headline/).closest('li');
     li.focus();
@@ -137,22 +160,23 @@ describe('Freigaben Radar-Antworten filter chip', () => {
     await waitFor(() => expect(approvePost).toHaveBeenCalledWith('spring', 'r1'));
   });
 
-  it('self-releases when the last radar draft is decided: the full queue returns, no pressed chip over an empty list', async () => {
+  it('self-releases when the last radar draft is decided: the full queue returns, no pressed segment over an empty list', async () => {
     const user = userEvent.setup();
     render(
       <Providers>
         <StatefulHost initial={[planned, radarA]} />
       </Providers>,
     );
-    await user.click(screen.getByRole('button', { name: 'Radar replies (1)' }));
+    await user.click(repliesSegment(1));
     expect(screen.queryByText(/Alpha promo headline/)).not.toBeInTheDocument();
     // The decision lands and the refetch drops the radar draft from the queue.
     hostSetPosts([planned]);
-    // The chip hides (count is 0) and the filter releases the same frame: the
-    // remaining decision work is visible again.
+    // The segment hides (count is 0) and the filter releases the same frame: the
+    // remaining decision work is visible again, under a pressed "To review".
     await waitFor(() => {
-      expect(screen.queryByRole('button', { name: /Radar replies/ })).not.toBeInTheDocument();
+      expect(queriedReplies()).not.toBeInTheDocument();
       expect(screen.getByText(/Alpha promo headline/)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'To review 1' })).toHaveAttribute('aria-pressed', 'true');
     });
   });
 });

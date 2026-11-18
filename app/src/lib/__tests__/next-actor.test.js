@@ -111,7 +111,8 @@ describe('nextActorOf: blocked lane vs manual paste lane', () => {
 
   it('a non-manual lane that is not connected reads blocked, you-actor (connect it)', () => {
     const post = { ...base, platforms: ['telegram'], approval: 'approved', scheduledAt: '2026-08-20T07:00:00Z', derivedState: 'waiting-due' };
-    expect(nextActorOf(post, setupTelegramOffline)).toEqual({ key: 'blocked', actor: 'you' });
+    // Approved before connecting (owner decision 2, 2026-11-12): it waits for the connection.
+    expect(nextActorOf(post, setupTelegramOffline)).toEqual({ key: 'waitsForConnect', actor: 'you', lanes: ['telegram'] });
     expect(nextActorOf({ ...post, approval: 'pending' }, setupTelegramOffline)).toEqual({ key: 'blocked', actor: 'you' });
   });
 

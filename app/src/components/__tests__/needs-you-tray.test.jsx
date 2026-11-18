@@ -2,7 +2,7 @@ import { render, screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import NeedsYouTray from '../NeedsYouTray.jsx';
+import NeedsYouTray, { NeedsYouToggle, useTrayFold } from '../NeedsYouTray.jsx';
 import { I18nProvider } from '../../lib/i18n.js';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
@@ -19,6 +19,7 @@ let healthData;
 let fixData;
 const setSchedulerRunningMock = vi.fn(() => Promise.resolve({ ok: true }));
 const resumeLaneMock = vi.fn(() => Promise.resolve({ ok: true }));
+const deletePostMock = vi.fn(() => Promise.resolve({ ok: true }));
 vi.mock('../../lib/agentFix.js', async (importOriginal) => {
   const actual = await importOriginal();
   return { ...actual, useAgentFixes: () => ({ data: fixData }) };
@@ -33,7 +34,7 @@ vi.mock('../../lib/api.js', () => ({
   recheckHealth: vi.fn(() => Promise.resolve({ ok: true })),
   agentFixPost: vi.fn(() => Promise.resolve({ ok: true })),
   markPosted: vi.fn(() => Promise.resolve({ ok: true })),
-  deletePost: vi.fn(() => Promise.resolve({ ok: true })),
+  deletePost: (...a) => deletePostMock(...a),
 }));
 
 const setup = { ready: false, platforms: [
@@ -73,6 +74,7 @@ beforeEach(() => {
   fixData = undefined;
   setSchedulerRunningMock.mockClear();
   resumeLaneMock.mockClear();
+  deletePostMock.mockClear();
 });
 
 describe('NeedsYouTray', () => {
@@ -165,6 +167,37 @@ describe('NeedsYouTray', () => {
     expect(tray).toHaveTextContent('Agent fixed 2 posts, ready to approve');
     await user.click(within(tray).getByRole('button', { name: 'Review' }));
     expect(onReview).toHaveBeenCalled();
+  });
+});
+
+// UX round 10: a discard (the Radar reply's thread is gone) is calm in the tray. Open is the
+// line's action; the trash glyph beside it is neutral and asks in the line before it deletes.
+describe('NeedsYouTray: a discard line', () => {
+  const gone = {
+    id: 'm1', campaign: 'launch', clientId: 'acme', title: 'Reply', caption: 'Hi', platforms: ['mastodon'], approval: 'approved',
+    derivedState: 'waiting-due', radarReplyTo: { source: 'mastodon', url: 'https://mastodon.social/@a/1' }, radarReplyState: 'target_gone',
+  };
+
+  it('says what happened, opens the post, and asks in the line before it discards', async () => {
+    const user = userEvent.setup();
+    const { onOpenPost } = renderTray({ posts: [gone] });
+    const row = screen.getByRole('region', { name: /Needs you/ }).querySelector('li');
+    expect(row).toHaveTextContent('Mastodon thread deleted');
+    await user.click(within(row).getByRole('button', { name: /^Open/ }));
+    expect(onOpenPost).toHaveBeenCalledWith(gone);
+    // The trash glyph is quiet zinc ink, never the loud red text button.
+    const trash = within(row).getByRole('button', { name: 'Discard draft' });
+    expect(trash).toHaveTextContent('');
+    expect(trash.className).toContain('text-zinc-500');
+    expect(trash.className).not.toMatch(/red/);
+    await user.click(trash);
+    expect(deletePostMock).not.toHaveBeenCalled();
+    // Cancel steps back without deleting.
+    await user.click(within(row).getByRole('button', { name: 'Cancel' }));
+    expect(deletePostMock).not.toHaveBeenCalled();
+    await user.click(within(row).getByRole('button', { name: 'Discard draft' }));
+    await user.click(within(row).getByRole('button', { name: 'Discard draft' }));
+    await waitFor(() => expect(deletePostMock).toHaveBeenCalledWith('launch', 'm1', false, 'acme'));
   });
 });
 
@@ -263,25 +296,117 @@ describe('NeedsYouTray: the cloud row', () => {
   });
 });
 
-// Planner bulk round 2 (fresh-eyes judge item 6): on a phone the tray starts folded to its title
-// line, so the first post starts in the first half of the screen; "Show" unfolds every line.
-describe('NeedsYouTray on a phone', () => {
-  it('starts folded to its title and unfolds every line on Show', async () => {
+// UX round 10: one fold for phone and desktop. Hide puts the tray away and leaves ONE needs-you
+// icon in the planner header (App renders it beside the More menu); the icon opens the tray
+// again, and a cause that turns up while it is folded puts a dot on it.
+function installStorage() {
+  const map = new Map();
+  const stub = {
+    getItem: (k) => (map.has(k) ? map.get(k) : null),
+    setItem: (k, v) => { map.set(k, String(v)); },
+    removeItem: (k) => { map.delete(k); },
+    clear: () => { map.clear(); },
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: stub, configurable: true, writable: true });
+  Object.defineProperty(window, 'localStorage', { value: stub, configurable: true, writable: true });
+  return map;
+}
+
+// What App renders: the tray, or (folded) the header icon.
+function Folding({ posts }) {
+  const fold = useTrayFold();
+  const groups = groupIssues(posts, setup);
+  const system = systemRows(healthData, { posts, groups, setupFor: () => setup, activeClientId: 'acme' });
+  return fold.collapsed
+    ? <NeedsYouToggle groups={groups} system={system} posts={posts} seen={fold.seen} onOpen={fold.open} />
+    : <NeedsYouTray groups={groups} system={system} posts={posts} onCollapse={fold.collapse} />;
+}
+function renderFolding(posts) {
+  healthData = { ready: true, setup, blockerCodes: [] };
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrap = (p) => (
+    <QueryClientProvider client={qc}>
+      <I18nProvider locale="en">
+        <TooltipProvider>
+          <ConfirmProvider>
+            <Folding posts={p} />
+          </ConfirmProvider>
+        </TooltipProvider>
+      </I18nProvider>
+    </QueryClientProvider>
+  );
+  const utils = render(wrap(posts));
+  return { ...utils, rerenderWith: (p) => utils.rerender(wrap(p)) };
+}
+
+describe('NeedsYouTray fold', () => {
+  let store;
+  beforeEach(() => { store = installStorage(); });
+
+  it('Hide folds the tray into one header icon with the count; the icon opens it again', async () => {
+    const user = userEvent.setup();
+    renderFolding([bsky('r1'), li('l1'), tgBlocked]);
+    const hide = screen.getByRole('button', { name: 'Hide' });
+    expect(hide).toHaveAttribute('aria-expanded', 'true');
+    expect(hide).toHaveAttribute('aria-controls', 'planner-tray');
+    await user.click(hide);
+    expect(screen.queryByRole('region', { name: /Needs you/ })).toBeNull();
+    const icon = screen.getByRole('button', { name: 'Needs you, 3' });
+    expect(icon).toHaveAttribute('aria-expanded', 'false');
+    expect(icon).toHaveAttribute('aria-controls', 'planner-tray');
+    expect(icon).toHaveTextContent('3');
+    expect(icon.querySelector('svg').getAttribute('class')).toMatch(/lucide-triangle-alert/);
+    expect(icon.className).toContain('text-rose-700');
+    expect(icon.querySelector('[data-tray-new]')).toBeNull();
+    // The choice is kept per viewer, with the causes that were in view.
+    expect(JSON.parse(store.get('pendpost-tray-collapsed'))).toHaveLength(3);
+    await user.click(icon);
+    expect(screen.getByRole('region', { name: /Needs you/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Needs you,/ })).toBeNull();
+    expect(store.get('pendpost-tray-collapsed')).toBe('0');
+  });
+
+  it('a cause that turns up while folded puts a dot on the icon; the tray stays folded until opened', async () => {
+    const user = userEvent.setup();
+    const { rerenderWith } = renderFolding([li('l1')]);
+    await user.click(screen.getByRole('button', { name: 'Hide' }));
+    // More posts on a cause the owner already put away: no dot.
+    rerenderWith([li('l1'), li('l2')]);
+    expect(screen.getByRole('button', { name: 'Needs you, 2' }).querySelector('[data-tray-new]')).toBeNull();
+    // A new cause: the dot, and "new" in the name. The tray stays put away.
+    rerenderWith([li('l1'), li('l2'), tgBlocked]);
+    const icon = screen.getByRole('button', { name: 'Needs you, 3, new' });
+    expect(icon.querySelector('[data-tray-new]')).not.toBeNull();
+    expect(screen.queryByRole('region', { name: /Needs you/ })).toBeNull();
+    // Opening clears it: folding again takes the new cause as seen.
+    await user.click(icon);
+    await user.click(screen.getByRole('button', { name: 'Hide' }));
+    expect(screen.getByRole('button', { name: 'Needs you, 3' }).querySelector('[data-tray-new]')).toBeNull();
+  });
+
+  it('nothing to show: neither the tray nor the icon', async () => {
+    const user = userEvent.setup();
+    const { container, rerenderWith } = renderFolding([li('l1')]);
+    await user.click(screen.getByRole('button', { name: 'Hide' }));
+    rerenderWith([]);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('on a phone with no choice yet it starts folded to the icon, and opens every line', async () => {
     const original = window.matchMedia;
     window.matchMedia = (q) => ({ matches: q.includes('max-width: 767px'), media: q, addEventListener() {}, removeEventListener() {} });
     try {
       const user = userEvent.setup();
-      renderTray({ posts: [bsky('r1'), li('l1'), tgBlocked] });
+      renderFolding([bsky('r1'), li('l1'), tgBlocked]);
+      expect(screen.queryByRole('region', { name: /Needs you/ })).toBeNull();
+      const icon = screen.getByRole('button', { name: 'Needs you, 3' });
+      // Folded by default, not by the owner: nothing counts as new.
+      expect(icon.querySelector('[data-tray-new]')).toBeNull();
+      await user.click(icon);
       const tray = screen.getByRole('region', { name: /Needs you/ });
-      expect(within(tray).getByRole('heading')).toHaveTextContent('3');
-      expect(within(tray).queryAllByRole('listitem')).toHaveLength(0);
-      const show = within(tray).getByRole('button', { name: 'Show' });
-      expect(show).toHaveAttribute('aria-expanded', 'false');
-      await user.click(show);
-      expect(within(tray).getAllByRole('listitem').filter((li) => !li.querySelector('[aria-expanded]'))).toHaveLength(3);
+      expect(within(tray).getAllByRole('listitem')).toHaveLength(3);
     } finally {
       window.matchMedia = original;
     }
   });
 });
-

@@ -28,8 +28,10 @@ import { serveStatic } from './lib/static.mjs';
 import { absorbMetaBlockSentinel } from './lib/accounts.mjs';
 import { initMultiClient } from './lib/multi-client.mjs';
 import { seedSeen } from './lib/whats-new.mjs';
+import { bootInstallPing } from './lib/install-ping.mjs';
 import { bootScheduler } from './lib/scheduler.mjs';
 import { bootCoverBackfill, bootScheduleBackfill } from './lib/writes.mjs';
+import { bootDemoPark } from './lib/demo.mjs';
 import { bootApprovalNotifier } from './lib/notify.mjs';
 import { bootReviewServer } from './lib/review-server.mjs';
 import { healConnection, resealChangedBrands } from './lib/cloud-client.mjs';
@@ -221,6 +223,10 @@ server.listen(PORT, HOST, () => {
   bootReviewServer();
   startHealthSchedule();
   startUpdateCheckSchedule();
+  // The opt-in anonymous weekly install ping (lib/install-ping.mjs). Off by default, so this
+  // only arms an unref'd timer that reads one small file; it sends nothing unless the owner
+  // turned the ping on in Settings. Never throws, never delays boot.
+  bootInstallPing();
   // US-ASSET-13 follow-up: one-time, best-effort first-frame cover backfill for
   // every active client's cover-less media. Fire-and-forget so it never delays
   // listen; idempotent, so it is a near-no-op on every boot after the first.
@@ -231,6 +237,11 @@ server.listen(PORT, HOST, () => {
   // forever, so heal it here. Same posture as the cover backfill - fire-and-forget,
   // idempotent, a near-no-op once clean - but refuses in dev:live (schedule state).
   bootScheduleBackfill();
+  // Demo safety (lib/demo.mjs): an install from before 2.13.1 may still hold the example
+  // campaign with its pre-approved Instagram teaser. Set that unmodified post back to draft
+  // and mark it demo, so it never publishes to a real account. The publish gate already
+  // refuses it before this runs; this makes the Studio show it honestly. Fire-and-forget.
+  bootDemoPark();
   // Heal a half-written cloud connection (api key present, workspaceId lost from
   // cloud.json): one authenticated read re-links the install. Fire-and-forget and a
   // no-op when connected or keyless, so it never delays boot or touches brand flags.

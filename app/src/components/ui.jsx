@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, AlertOctagon, AlertTriangle, Info, Wrench, Pencil, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX } from 'lucide-react';
+import { X, AlertOctagon, AlertTriangle, Info, Wrench, Pencil, Maximize2, FileText, HelpCircle, Tag, Smartphone, LayoutGrid, CheckCircle, CalendarClock, Clock, OctagonX, PlugZap } from 'lucide-react';
 import { STATE_META, TIME_CHIP_META, STATUS_PILL_META, ROW_STATUS_META, postStatusWord, mediaAspect, isImageMedia, carouselFrame, postNeedsMedia, gridCropInfo, nextActorOf, fmtStampShort } from '../lib/format.js';
 import { StoryStickerLayer } from './ui/StoryStickerLayer.jsx';
 import { MediaPlayer } from './ui/MediaPlayer.jsx';
@@ -121,6 +121,9 @@ export function NextActorChip({ post, setup = null }) {
       return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', CalendarClock, t('nextActor.scheduled', { time: fmtStampShort(next.at) }));
     case 'awaitingSlot':
       return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', Clock, t('nextActor.awaitingSlot'));
+    // Approved before the lane was connected: publishing waits for the connection.
+    case 'waitsForConnect':
+      return chip('bg-sky-500/15 text-sky-700 dark:text-sky-300 ring-sky-500/30', PlugZap, t('nextActor.waitsForConnect', { lanes: next.lanes.map((l) => PLATFORM_META[l]?.label || l).join(', ') }));
     default:
       return null;
   }
@@ -528,7 +531,10 @@ export function PostPreview({ post, videoRef, onEdit }) {
 // identical and now lives in one place.
 // countKey: while a selection exists the label names the count in its place ("3 selected"), a
 // polite live region, and the caller's onToggle clears.
-export function SelectAllControl({ total, selectedCount, onToggle, allKey, clearKey, countKey }) {
+// idleLabelClass: classes for the resting words ("Select all") only, e.g. `max-sm:sr-only` where a
+// phone row has no room for them (Approvals' toolbar). The checkbox keeps the name either way,
+// and the count, once there is a selection, always shows.
+export function SelectAllControl({ total, selectedCount, onToggle, allKey, clearKey, countKey, idleLabelClass = '' }) {
   const t = useT();
   const allSelected = total > 0 && selectedCount === total;
   const someSelected = selectedCount > 0 && selectedCount < total;
@@ -537,7 +543,7 @@ export function SelectAllControl({ total, selectedCount, onToggle, allKey, clear
   return (
     <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-bold text-zinc-500 dark:text-zinc-400">
       <Checkbox checked={allSelected} indeterminate={someSelected} onChange={onToggle} aria-label={label} />
-      {countKey && selectedCount ? <span role="status" aria-live="polite">{label}</span> : label}
+      {countKey && selectedCount ? <span role="status" aria-live="polite">{label}</span> : idleLabelClass ? <span className={idleLabelClass}>{label}</span> : label}
     </label>
   );
 }
@@ -845,24 +851,31 @@ export function Skeleton({ className = '' }) {
 // `disabled` (spec 50 row 1e): the whole control is inert while the system behind it
 // cannot act (Radar off). aria-disabled marks the group for assistive tech and each
 // segment is really disabled, so the choice is never offered where it would do nothing.
+// `tip` (optional, per option): a word that needs a sentence of context (Approvals' "Replies":
+// the drafts Radar wrote) carries it in the house Tip; the label stays the accessible name.
 export function Segmented({ label, value, options, onChange, disabled = false }) {
   return (
-    <div className={`flex items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60 ${disabled ? 'opacity-50' : ''}`} role="group" aria-label={label} aria-disabled={disabled || undefined}>
-      {options.map((o) => (
-        <button
-          key={o.key}
-          type="button"
-          onClick={() => onChange(o.key)}
-          disabled={disabled}
-          aria-pressed={value === o.key}
-          className={`flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${TAP_TARGET} ${
-            value === o.key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-600 dark:text-zinc-400'
-          }`}
-        >
-          {o.Icon ? <o.Icon size={13} aria-hidden="true" /> : null}
-          {o.label}
-        </button>
-      ))}
+    // w-fit: in a block parent (Radar's Feed / By search) a plain flex box stretched into a
+    // full-width grey bar with two short segments at its start.
+    <div className={`flex w-fit max-w-full items-center rounded-xl bg-zinc-200/60 p-0.5 dark:bg-zinc-800/60 ${disabled ? 'opacity-50' : ''}`} role="group" aria-label={label} aria-disabled={disabled || undefined}>
+      {options.map((o) => {
+        const button = (
+          <button
+            key={o.key}
+            type="button"
+            onClick={() => onChange(o.key)}
+            disabled={disabled}
+            aria-pressed={value === o.key}
+            className={`flex items-center gap-1 rounded-[10px] px-2.5 py-1 text-xs font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand ${TAP_TARGET} ${
+              value === o.key ? 'bg-white text-brand shadow dark:bg-zinc-700 dark:text-brand-light' : 'text-zinc-600 dark:text-zinc-400'
+            }`}
+          >
+            {o.Icon ? <o.Icon size={13} aria-hidden="true" /> : null}
+            {o.label}
+          </button>
+        );
+        return o.tip ? <Tip key={o.key} label={o.tip}>{button}</Tip> : button;
+      })}
     </div>
   );
 }

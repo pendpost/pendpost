@@ -158,26 +158,70 @@ describe('Freigaben bulk actions in the toolbar', () => {
     }
   });
 
-  // One toolbar line at 1024px in de-CH (measured): grouping is a glyph-only segment beside the
-  // density toggle (no switch, no word), and the post count yields its slot to "N selected"
-  // while a selection exists.
-  it('keeps the toolbar to one line: grouping as a glyph toggle, no post count while selecting', async () => {
+  // ONE toolbar (UX round 10, F3), left to right: Select all, the one To review | Replies | All
+  // choice, then at the trailing edge two glyph buttons, the sort order and the view options.
+  // Density and grouping no longer sit in the row; the post count yields its slot to
+  // "N selected" while a selection exists.
+  it('one toolbar: Select all first, then the one choice, then sort and view at the trailing edge', async () => {
     const user = userEvent.setup();
     renderFreigaben();
+    const selectAll = screen.getByRole('checkbox', { name: t('approvals.selectAll.all') });
+    const choice = screen.getByRole('group', { name: t('approvals.view.which') });
+    const sort = screen.getByRole('button', { name: t('approvals.sort.oldest') });
+    const view = screen.getByRole('button', { name: t('approvals.view.label') });
+    const follows = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(selectAll, choice)).toBe(true);
+    expect(follows(choice, sort)).toBe(true);
+    expect(follows(sort, view)).toBe(true);
+    // Sort and view are glyph-only, side by side at the trailing edge.
+    expect(sort.textContent).toBe('');
+    expect(view.textContent).toBe('');
+    expect(sort.parentElement.className.split(/\s+/)).toContain('ml-auto');
+    // No density or grouping control in the row itself.
+    expect(screen.queryByRole('group', { name: t('approvals.density.label') })).toBeNull();
     expect(screen.queryByRole('switch')).toBeNull();
-    const group = screen.getByRole('button', { name: t('approvals.group.toggle') });
-    expect(group).toHaveAttribute('aria-pressed', 'false');
-    expect(group.textContent).toBe('');
-    // Directly after the density toggle.
-    expect(group.parentElement.previousElementSibling).toBe(screen.getByRole('group', { name: t('approvals.density.label') }));
-    await user.click(group);
-    expect(group).toHaveAttribute('aria-pressed', 'true');
-    expect(group.className).toContain('bg-white');
-    await user.click(group);
-    await user.click(screen.getByRole('button', { name: t('approvals.view.all') }));
+    expect(screen.queryByRole('button', { name: t('approvals.group.toggle') })).toBeNull();
+    // On a phone the resting "Select all" words go sr-only; the checkbox keeps its name.
+    expect(screen.getByText(t('approvals.selectAll.all')).className).toContain('max-sm:sr-only');
+    await user.click(screen.getByRole('button', { name: t('approvals.view.allShort') }));
     expect(screen.getByText(t('approvals.postCount', { n: 3 }))).toBeInTheDocument();
     await user.click(rowBoxes()[0]);
     expect(screen.queryByText(t('approvals.postCount', { n: 3 }))).toBeNull();
+  });
+
+  it('the view options hold density (two segments) and grouping (a switch), both kept for the next visit', async () => {
+    const user = userEvent.setup();
+    try { localStorage.removeItem('pendpost-approvals-density'); localStorage.removeItem('pendpost-approvals-group'); } catch { /* private mode */ }
+    const { unmount } = renderFreigaben();
+    expect(document.querySelectorAll('[data-cross-post-group]')).toHaveLength(0);
+    await user.click(screen.getByRole('button', { name: t('approvals.view.label') }));
+    const density = screen.getByRole('group', { name: t('approvals.density.label') });
+    const comfortable = screen.getByRole('button', { name: t('approvals.density.comfortable') });
+    const compact = screen.getByRole('button', { name: t('approvals.density.compact') });
+    expect(density).toContainElement(comfortable);
+    expect(comfortable).toHaveAttribute('aria-pressed', 'true');
+    // Compact: the rows take the list padding.
+    await user.click(compact);
+    expect(compact).toHaveAttribute('aria-pressed', 'true');
+    expect(localStorage.getItem('pendpost-approvals-density')).toBe('compact');
+    expect(screen.getAllByRole('listitem')[0].className).toContain('py-2.5');
+    // Grouping: the ui Switch, off by default.
+    const group = screen.getByRole('switch', { name: t('approvals.group.toggle') });
+    expect(group).toHaveAttribute('aria-checked', 'false');
+    await user.click(group);
+    expect(group).toHaveAttribute('aria-checked', 'true');
+    expect(localStorage.getItem('pendpost-approvals-group')).toBe('on');
+    unmount();
+    // The next visit opens with both choices kept.
+    renderFreigaben();
+    expect(screen.getAllByRole('listitem')[0].className).toContain('py-2.5');
+    await user.click(screen.getByRole('button', { name: t('approvals.view.label') }));
+    expect(screen.getByRole('button', { name: t('approvals.density.compact') })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('switch', { name: t('approvals.group.toggle') })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('switch', { name: t('approvals.group.toggle') }));
+    await user.click(screen.getByRole('button', { name: t('approvals.density.comfortable') }));
+    expect(localStorage.getItem('pendpost-approvals-density')).toBe('comfortable');
+    expect(localStorage.getItem('pendpost-approvals-group')).toBe('off');
   });
 
   it('clicking the checkbox with a partial selection clears it', async () => {

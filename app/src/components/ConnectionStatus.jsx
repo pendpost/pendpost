@@ -18,7 +18,7 @@ import { ExternalLink, ArrowRight } from 'lucide-react';
 import { useCloud, useCloudClients, useCloudSubscription, useDeliveryState, cloudTone } from '../lib/cloud.js';
 import { useT } from '../lib/i18n.js';
 import { Tip } from './ui/Tooltip.jsx';
-import { Popover, PopoverTrigger, PopoverContent } from './ui/Popover.jsx';
+import { Popover, PopoverTrigger, PopoverContent, PopoverAnchor } from './ui/Popover.jsx';
 import { TAP_TARGET } from './ui/recipes.js';
 import { CloudIssueRow, ReasonAction, CONNECTIVITY } from './CloudIssues.jsx';
 import { deliveryDotClass, deliveryIcon } from './DeliveryGlyph.jsx';
@@ -75,7 +75,11 @@ function deriveStatus({ delivery, attention = false }) {
   return { channel: 'cloud', tone: null, key: 'connection.status.unknown' };
 }
 
-export default function ConnectionStatus({ allClients = false, onNavigate, onShowAtRisk, onIssueAction }) {
+// `anchor` (optional): render the popover against the caller's own control instead of the
+// built-in glyph button. App.jsx passes the header's one overflow menu: it gets
+// { open, Icon, label, dot } back, lists the status as a menu item ("open" shows this popover
+// under the menu button) and wears the dot, so a delivery problem stays visible on the header.
+export default function ConnectionStatus({ allClients = false, onNavigate, onShowAtRisk, onIssueAction, anchor = null }) {
   const t = useT();
   const dotId = useId();
   const { data: cloud } = useCloud();
@@ -137,8 +141,18 @@ export default function ConnectionStatus({ allClients = false, onNavigate, onSho
   // never fired - the popover just closed. Close it explicitly via setOpen instead.)
   const [open, setOpen] = useState(false);
 
+  // On the menu trigger the dot is decorative: the menu item names the same state in words.
+  const dotNode = dot ? (
+    <span data-tone={tone} className={`absolute right-0.5 top-0.5 h-2 w-2 rounded-full ring-2 ring-white dark:ring-zinc-900 ${dot}`} aria-hidden="true" />
+  ) : null;
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
+      {anchor ? (
+        <PopoverAnchor asChild>
+          {anchor({ open: () => setOpen(true), Icon, label: headline, dot: dotNode })}
+        </PopoverAnchor>
+      ) : (
       <Tip label={headline}>
         <PopoverTrigger asChild>
           <button
@@ -163,6 +177,7 @@ export default function ConnectionStatus({ allClients = false, onNavigate, onSho
           </button>
         </PopoverTrigger>
       </Tip>
+      )}
       {/* Full width on a phone (the old fixed 320px left a dead strip at 375px), the
           familiar 320px from sm up. collisionPadding (8px) keeps the gutter. */}
       <PopoverContent align="end" className="w-[calc(100vw-1rem)] space-y-3 p-3 sm:w-80" aria-label={t('connection.title')}>

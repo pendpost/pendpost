@@ -200,6 +200,7 @@ const ACTION_LABEL = {
   // correction on THIS post - the errorMessage carries the "press Try again"
   // guidance, so NO ACTION_NOTE (the raw message renders).
   'mock-id-cleared': 'activity.action.mockIdCleared',
+  'demo-parked': 'activity.action.demoParked',
   // Media cleanup + self-heal (docs/specs/media-cleanup.md): local videos every post was done
   // with were deleted, or a missing file an upcoming post needs came back from the cloud. Both
   // messages are dynamic (the files and sizes), so NO ACTION_NOTE - the raw message renders.
@@ -343,7 +344,7 @@ export const ACTION_GROUPS = [
   // reason: it is the one row that says why THIS due post did not fire (the cloud
   // has it and cannot answer the publish claim), and it is ok:true, so under
   // 'system' the default feed would hide it.
-  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'media-missing-defer', 'cloud-claim-wait', 'preflight-blocked', 'mock-id-cleared', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
+  { key: 'publish', label: 'activity.action.group.publish', actions: ['publish-reel', 'publish-story', 'publish', 'mark-posted', 'publish-due', 'media-missing-defer', 'cloud-claim-wait', 'preflight-blocked', 'mock-id-cleared', 'demo-parked', 'post-comment', 'set-alt', 'set-caption', 'set-seo', 'post-edit', 'discord-event'] },
   // 'slot-slip' (R6a) is a machine-initiated reschedule of an unapproved post, so
   // it files with the schedule moves and rides the default feed - the operator must
   // see that the slot moved (and can approve earlier to publish earlier).

@@ -1,4 +1,4 @@
-import { render, screen, within, act } from '@testing-library/react';
+import { render, screen, within, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import App from '../../App.jsx';
@@ -181,31 +181,22 @@ describe('all-clients mode (issue 6)', () => {
     expect(refetchAcme).toHaveBeenCalledTimes(1);
   });
 
-  // 2026-09-29: a failed reel in a project the operator was not viewing never lit the chip,
-  // so opening the app showed nothing to act on. The chip reads every project's late posts
-  // even with the mode off, and its click opens the all-projects scope so the list is not empty.
-  it('with the mode off, a failed post in another project lights the chip, and the click opens all projects', async () => {
+  // 2026-09-29: a failed reel in a project the operator was not viewing never showed up, so
+  // opening the app showed nothing to act on. The header pill that carried it went in the Nov
+  // 2026 header diet (owner decision 8); the planner's "Needs you" tray reads every project's
+  // posts even with the mode off, so the other project's failure is still in view.
+  it('with the mode off, a failed post in another project shows in the Needs you tray, with no header pill', async () => {
+    window.location.hash = '#planner';
     window.localStorage.setItem('pendpost.allClients', '0');
     plansAll.results[1] = {
       data: { campaigns: [{ id: 'c-globex', active: true, posts: [basePost({ id: 'g2', title: 'Globex failed reel', approval: 'approved', derivedState: 'publish-failed', lastFailure: { recovery: 'reconnect', terminal: true } })] }] },
       isLoading: false, isError: false, error: null, refetch: vi.fn(),
     };
-    const { default: userEvent } = await import('@testing-library/user-event');
-    const user = userEvent.setup();
     renderApp();
-    // The viewed project (Acme, via the empty usePlans mock) has nothing late; the chip still counts Globex.
-    // Studio fix flow (package C): the badge counts everything the Needs you tray lists.
-    const chip = screen.getByRole('button', { name: 'Needs you: 1. Open the list' });
-    // Polish 2026-11-01: ONE needs-you mark. The badge wears the halted rose stop and the
-    // TriangleAlert, the same as the planner tray's count (needs-you-tray.test.jsx), with the
-    // same classes in light and dark (no theme-only red).
-    expect(chip).toHaveAttribute('data-needs-you-mark');
-    for (const c of ['bg-rose-400/15', 'text-rose-700', 'dark:text-rose-300', 'ring-rose-400/30']) expect(chip.className).toContain(c);
-    expect(chip.className).not.toMatch(/\bred-\d/);
-    expect(chip.querySelector('svg').getAttribute('class')).toMatch(/lucide-triangle-alert/);
-    await user.click(chip);
-    expect(window.localStorage.getItem('pendpost.allClients')).toBe('1');
-    expect(await screen.findByText('Globex failed reel')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Needs you: \d/ })).toBeNull();
+    expect(document.querySelector('header [data-needs-you-mark]')).toBeNull();
+    // The tray renders only while something needs the owner; here that is Globex's failed reel.
+    await waitFor(() => expect(document.getElementById('planner-tray')).not.toBeNull());
   });
 });
 

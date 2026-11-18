@@ -151,6 +151,8 @@ optional `clientId` for schema parity, and never reads or writes a credential VA
 (the registry holds only non-secret profile data). (`client_list` stays a plain
 read twin; reads are safe.)
 
+`POST /api/install-ping` is owner-only and dashboard-only: it turns the opt-in anonymous weekly install ping on or off (`lib/install-ping.mjs`; off deletes the stored random id). Sending anything off the machine is consent only the owner can give, so there is deliberately no MCP twin and the route refuses a request without the Studio token. The read is `GET /api/install-ping` (on or off, and when the last ping went out; never the id). Its one face is the switch in Settings.
+
 `POST /api/whats-new/seen` is dashboard-only too: it remembers which release notes the owner already saw (`data/.whats-new.json`), a Studio display preference with no effect on posts, so an agent has nothing to do with it. The read is `GET /api/whats-new` (docs/specs/whats-new.md).
 
 `POST /api/dashboard-update` remains operator/dashboard-only: it fast-forward-pulls
@@ -195,7 +197,7 @@ verb in v1 (single keypair, D1/D4). Because neither verb is registered in `lib/a
 the `routes` / `tools` JSON lists below is needed; this paragraph is the exemption record.
 
 The `POST /api/cloud/*` routes (`connect`, `heal`, `enabled`, `push`, `eject`, `hand-tokens`,
-`migrate`, `enable/start`, `clients/always-on`, `checkout`, `billing-portal`, `spend-cap`) are the OPTIONAL managed-cloud (pendpost-cloud) operator
+`migrate`, `enable/start`, `clients/always-on`, `checkout`, `claim`, `billing-portal`, `spend-cap`) are the OPTIONAL managed-cloud (pendpost-cloud) operator
 ceremonies. They are operator-only and deliberately NOT agent tools: connecting,
 pushing, and handing tokens carry the cloud api key and the platform tokens (both .env
 secrets, never exposed) and act on the paid always-on runtime, so an agent must never
@@ -210,7 +212,8 @@ echo and persisting the id - it authenticates with the same operator-held key th
 ceremonies protect, never mints one, and never touches brand flags, so it stays
 operator-only with them; `clients/always-on` toggles one client brand's always-on in
 the install-global workspace; `checkout` opens a Stripe Checkout to subscribe to a tier
-(`plan` + `interval` in the body); `billing-portal` opens the Stripe billing portal to manage
+(`plan` + `interval` in the body); `claim` redeems the claim code pendpost.com shows after a
+web checkout (a Stripe Payment Link), attaching that paid subscription to this workspace; `billing-portal` opens the Stripe billing portal to manage
 plan, payment method, and invoices; `spend-cap` sets or clears the overage spend cap (the
 running overage pauses once it is reached).) The core stays fully standalone when the feature is
 unconnected (per-client always-on off by default), consistent with the open-core boundary
@@ -314,6 +317,7 @@ one, not added.
     "/api/engagers/dismiss-link",
     "/api/dashboard-update",
     "/api/whats-new/seen",
+    "/api/install-ping",
     "/api/connect",
     "/api/agent/connect",
     "/api/agent/adopt",
@@ -329,6 +333,7 @@ one, not added.
     "/api/cloud/enable/start",
     "/api/cloud/clients/always-on",
     "/api/cloud/checkout",
+    "/api/cloud/claim",
     "/api/cloud/billing-portal",
     "/api/cloud/spend-cap",
     "/api/cloud/sign-out",

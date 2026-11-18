@@ -61,6 +61,13 @@ export const BTN_PRIMARY = `inline-flex items-center gap-1.5 rounded-xl bg-brand
 export const BTN_QUIET = `inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 disabled:opacity-50 dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5 ${FOCUS_RING}`;
 export const BTN_GHOST = `inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-zinc-500 transition hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200 ${FOCUS_RING}`;
 
+// d''. ICON BUTTON - a glyph-only action: a 28px square in the subtle fill, the same look as
+// ActionButton's size="icon" variant="subtle" (ui/ActionButton.jsx IDLE_VARIANTS.subtle) but as a
+// plain button, for actions that are not network writes (ActionButton's success flash would lie).
+// The Approvals toolbar and the Radar card's action bar share it. Pair it with TAP_TARGET, a Tip
+// and an aria-label carrying the same words.
+export const BTN_ICON = `flex h-7 w-7 shrink-0 items-center justify-center rounded-xl bg-zinc-200/60 text-zinc-700 transition hover:bg-zinc-300/60 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-800/60 dark:text-zinc-200 dark:hover:bg-zinc-700/60 ${FOCUS_RING}`;
+
 // e. TAP TARGET - the 44px floor (WCAG 2.5.5, Apple HIG; canon Tier 2 "tap targets >= 44px").
 // A row control is deliberately small to look at: the Radar feed and the "Needs you" strip live
 // in the Stripe/Linear density band, and a 44px glyph would blow the row open. So the HIT area
@@ -89,16 +96,17 @@ export const TAP_TARGET = `${TAP_TARGET_Y} after:min-w-11`;
 // consequence.
 export const BTN_DANGER_QUIET = `${TAP_TARGET} inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-zinc-600 transition hover:bg-red-500/10 hover:text-red-600 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-red-300 ${FOCUS_RING}`;
 
-// f. MENU ITEM - one row inside an overflow menu (ui/RowMenu.jsx, and the Radar-local RowMenu in
-// radar/RadarFeed.jsx). Unlike a row control, a menu item has no density to protect: the popover
+// f. MENU ITEM - one row inside an overflow menu (ui/RowMenu.jsx, and the Radar filter and sort
+// menus in radar/RadarFeed.jsx). Unlike a row control, a menu item has no density to protect: the popover
 // is transient and owns its own space, so here the 44px floor is PAINTED rather than hidden behind
 // a TAP_TARGET pseudo-box. `min-h-11` is that floor as real height (canon Tier 2, WCAG 2.5.5), the
 // padding only centres the label inside it, and the text size is the one it always had.
 //
 // MENU_ITEM_HEIGHT is the same 44 as a number, because RowMenu decides its drop direction by
-// sizing the popover from the item count BEFORE it is painted. Both menus take the class and the
-// number from here, so the two cannot drift - and that drift is exactly what made the flip-up
-// decision wrong while the items rendered ~28px tall against arithmetic that assumed 44.
+// sizing the popover from the item count BEFORE it is painted. The class and the number come from
+// here, so the two cannot drift - and that drift is exactly what made the flip-up decision wrong
+// while the items rendered ~28px tall against arithmetic that assumed 44. (Radar's own copy of
+// the menu is retired, round 10 R4: the feed uses ui/RowMenu too.)
 export const MENU_ITEM_HEIGHT = 44;
 export const MENU_ITEM = `flex min-h-11 w-full items-center gap-2 rounded-lg px-2.5 py-2.5 text-left text-sm transition disabled:cursor-not-allowed disabled:opacity-40 ${FOCUS_RING}`;
 export const MENU_ITEM_TONES = {

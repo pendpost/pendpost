@@ -1,7 +1,7 @@
 // Delivery state: WHERE the projects in view publish from (the managed cloud or this
 // computer) and whether that is healthy. Pure, no React, no t(): the hook
 // useDeliveryState (lib/cloud.js) gathers the reads, this turns them into one answer, and
-// the sidebar Delivery card, the header ConnectionStatus button and App's DeliveryExplainer
+// the sidebar Delivery card, the header ConnectionStatus button and the Needs-you tray
 // gate all read the same answer (they used to copy three slightly different derivations,
 // each looking at the ACTIVE project only, so two always-on projects in All-projects mode
 // still showed the local monitor).

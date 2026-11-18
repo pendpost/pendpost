@@ -36,6 +36,10 @@ let pass = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); pass += 1; };
 
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-block-rows-'));
+// This test drives the fire-and-fail path of a lane with no stored credential. Since
+// approve-before-connect (lib/scheduler.mjs laneWaitsForConnect) such a lane WAITS by
+// default, so opt back into dispatching it (posting.waitForConnect:false).
+fs.writeFileSync(path.join(WS, 'config.json'), JSON.stringify({ waitForConnect: false }, null, 2));
 process.env.PENDPOST_ROOT = WS;
 delete process.env.PENDPOST_MODE; // LIVE: the scheduler spawns the (stub) engines
 delete process.env.PENDPOST_MOCK_FAIL;

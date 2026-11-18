@@ -118,7 +118,7 @@ describe('wrong-pasted-link repair on the posted card (S4 posted state)', () => 
     const user = userEvent.setup();
     renderFreigaben([postedManual]);
     // Posted cards live on the "All posts" tab.
-    await user.click(screen.getByRole('button', { name: /all posts/i }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
 
     // The live link renders from the (wrong) captured URL; beside it, the repair door.
     expect(screen.getByRole('link', { name: /view on mastodon/i })).toHaveAttribute('href', 'https://wrong.example/mistake');
@@ -142,7 +142,7 @@ describe('wrong-pasted-link repair on the posted card (S4 posted state)', () => 
   it('refuses a non-absolute pasted link with the localized message and never calls the server', async () => {
     const user = userEvent.setup();
     renderFreigaben([postedManual]);
-    await user.click(screen.getByRole('button', { name: /all posts/i }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
     await user.click(screen.getByRole('button', { name: /fix link/i }));
     const input = screen.getByLabelText('Link to the published post');
     await user.clear(input);
@@ -156,7 +156,7 @@ describe('wrong-pasted-link repair on the posted card (S4 posted state)', () => 
   it('offers NO repair door on an engine-published card (its link is evidence, not a claim)', async () => {
     const user = userEvent.setup();
     renderFreigaben([{ ...postedManual, id: 'ep1', publishedVia: undefined, externalUrl: undefined, permalinks: { mastodon: 'https://mastodon.example/@us/9' } }]);
-    await user.click(screen.getByRole('button', { name: /all posts/i }));
+    await user.click(screen.getByRole('button', { name: 'All' }));
     expect(screen.getByRole('link', { name: /view on mastodon/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /fix link/i })).toBeNull();
   });

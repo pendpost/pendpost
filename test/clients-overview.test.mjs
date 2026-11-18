@@ -257,10 +257,12 @@ try {
   // 165 routes / 136 tools = +GET /api/dashboard-update (the update toast status read, no MCP twin), routes +1.
   // 167 routes / 138 tools = +media_cleanup with its REST twin POST /api/media/cleanup (docs/specs/media-cleanup.md): +1 each.
   // 169 routes / 138 tools = +GET /api/whats-new and POST /api/whats-new/seen (docs/specs/whats-new.md), UI-only reads and a display preference: +2 routes, no tool.
+  // 171 routes / 138 tools = +GET and POST /api/install-ping (lib/install-ping.mjs), the owner-only opt-in with no MCP twin: +2 routes, no tool.
   // 166 routes / 137 tools = +restore_post with its REST twin POST /api/plans/<c>/posts/<id>/restore (post trash, planner bulk 2026-11-01): +1 each.
-  ok(/169 routes, 138 tools/.test(parityOut), `parity is 169 routes / 138 tools: ${parityOut.trim()}`);
+  // 172 routes / 138 tools = +POST /api/cloud/claim (redeem a pendpost.com claim code; operator-only cloud ceremony, no tool).
+  ok(/172 routes, 138 tools/.test(parityOut), `parity is 172 routes / 138 tools: ${parityOut.trim()}`);
 
-  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 169/138 (${pass} assertions).`);
+  console.log(`[clients-overview] OK - per-client roll-up metrics, 368=>metaBlocked+zero-writes, isolation (no nextDue bleed), corrupt-subtree fail-soft, parity 172/138 (${pass} assertions).`);
 } finally {
   fs.rmSync(WS, { recursive: true, force: true });
 }

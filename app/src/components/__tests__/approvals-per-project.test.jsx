@@ -98,12 +98,13 @@ describe('each post is judged by its own project', () => {
     expect(within(row).queryByRole('button', { name: /connect x/i })).not.toBeInTheDocument();
   });
 
-  it('a post whose own project lacks X wears the quiet X glyph; Connect X sits once on TILL\'s project line', () => {
+  it('a post whose own project lacks X wears the quiet X glyph beside Approve; Connect X sits once on TILL\'s project line', () => {
     const { container } = renderApprovals([pendpostX, tillX], { seed: bothProjects });
     const row = rowFor('TILL weekly note');
     expect(within(row).getByLabelText('X not connected')).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: 'Connect X' })).not.toBeInTheDocument();
-    expect(within(row).queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+    // Approve before connect (owner decision 2, 2026-11-12): publishing waits for X.
+    expect(within(row).getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     const lines = container.querySelectorAll('[data-unconnected-projects] [data-project]');
     expect([...lines].map((l) => l.getAttribute('data-project'))).toEqual(['till']);
     expect(within(lines[0]).getByRole('button', { name: 'Connect X' })).toBeInTheDocument();
@@ -168,11 +169,11 @@ describe('an Approvals row reads in one glance', () => {
       expect(items[0]).toHaveTextContent('Reject');
     });
 
-    it(`${density}: a blocked row has no action button of its own, only the quiet glyph, and no pill`, () => {
+    it(`${density}: a blocked row keeps Approve as its one action, the quiet glyph beside it, and no pill`, () => {
       renderApprovals([tillX], { seed: bothProjects, density });
       const row = rowFor('TILL weekly note');
       const actions = rowActions(row).map((b) => b.getAttribute('aria-label') || b.textContent.trim());
-      expect(actions).toEqual([]);
+      expect(actions).toEqual(['Approve']);
       expect(within(row).getByLabelText('X not connected').closest('[data-row-action]')).not.toBeNull();
       expect(within(row).queryByText(/^Blocked$/)).not.toBeInTheDocument();
       expect(within(row).queryByText(/copy and post yourself/i)).not.toBeInTheDocument();
@@ -187,9 +188,10 @@ describe('an Approvals row reads in one glance', () => {
       // An X post publishes no title: no bold line, the caption is one paragraph, first line kept.
       expect(row.querySelector('[data-row-title]')).toBeNull();
       expect(within(row).getByText(/^pendpost 2\.10 is out One status signal per row/)).toBeInTheDocument();
-      // No thumbnail for a text post (CoverThumb renders an img or a text tile): a quiet lane tile.
+      // No thumbnail and no media column for a text post (UX round 10): the meta line names the lane.
       expect(row.querySelector('img, video')).toBeNull();
-      expect(row.querySelector('[data-row-media] [data-lane-tile="x"]')).not.toBeNull();
+      expect(row.querySelector('[data-row-media]')).toBeNull();
+      expect(within(row.querySelector('[data-row-meta]')).getByLabelText('X')).toBeInTheDocument();
       expect(container.querySelectorAll('[data-text-preview]')).toHaveLength(0);
     });
 

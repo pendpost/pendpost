@@ -43,6 +43,7 @@ function installFetch() {
     if (url.endsWith('/v1/billing/checkout')) return json({ url: 'https://checkout.test/session' });
     if (url.endsWith('/v1/billing/portal')) return json({ url: 'https://portal.test/session' });
     if (url.endsWith('/v1/billing/spend-cap')) return json({ spendCapCents: JSON.parse(body || '{}').cents });
+    if (url.endsWith('/v1/claim/redeem')) return json({ plan: 'studio', interval: 'month', status: 'active', alreadyRedeemed: false, echo: JSON.parse(body || '{}').code });
     if (url.endsWith('/v1/subscription')) return json({ alwaysOn: true, status: 'active', tier: 'studio', postsUsed: 5, postsIncluded: 300 });
     return { ok: false, status: 404, text: async () => JSON.stringify({ error: 'not found' }) };
   };
@@ -81,6 +82,15 @@ try {
   await cloud.setSpendCap(null);
   const clearCall = calls.find((c) => c.url.endsWith('/v1/billing/spend-cap'));
   ok(JSON.parse(clearCall.body).cents === null, 'setSpendCap(null) sends cents:null to clear the cap');
+
+  // --- (3b) redeemClaim sends the trimmed website claim code -------------------
+  calls.length = 0;
+  const claimed = await cloud.redeemClaim('  ABCD-EFGH-JKMN \n');
+  ok(claimed && claimed.plan === 'studio' && claimed.status === 'active', 'redeemClaim returns the attached plan');
+  const claimCall = calls.find((c) => c.url.endsWith('/v1/claim/redeem'));
+  ok(claimCall && claimCall.method === 'POST', 'redeemClaim POSTs /v1/claim/redeem');
+  ok(JSON.parse(claimCall.body).code === 'ABCD-EFGH-JKMN', 'the claim body carries the trimmed code');
+  ok((claimCall.headers.Authorization || '') === `Bearer ${API_KEY}`, 'the claim rides the workspace api key');
 
   // --- (4) the api key NEVER leaks (header only) -------------------------------
   let keyInHeaderCount = 0;

@@ -55,8 +55,8 @@ function formatOptions() {
   return [...screen.getByLabelText('Format').querySelectorAll('option')].map((o) => o.value);
 }
 
+// The post id is generated and never shown (owner decision 9, Nov 2026), so saving needs a date only.
 async function fillAndSave(user) {
-  await user.type(screen.getByLabelText('Post ID'), 'newpost1');
   await user.click(screen.getByRole('button', { name: 'Pick a date' }));
   await user.click(document.querySelector('button[aria-current="date"]'));
   await user.click(screen.getByRole('button', { name: 'Create draft' }));
@@ -127,10 +127,12 @@ describe('Composer starts on a visible platform (#41)', () => {
     expect(createPost.mock.calls.at(-1)[1].platforms).toEqual(['instagram', 'youtube']);
   });
 
-  it('an Instagram brand keeps the reel default, and an owner-picked format survives accounts arriving', async () => {
+  it('with no platform known yet the format is Text, and an owner-picked format survives accounts arriving', async () => {
     const user = userEvent.setup();
     const { rerenderWith } = renderComposer({});
-    expect(screen.getByLabelText('Format')).toHaveValue('reel');
+    // Owner decision 9: Text by default, so the caption leads the first screen.
+    expect(screen.getByLabelText('Format')).toHaveValue('text');
+    expect(screen.getByLabelText('Post text')).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText('Format'), 'video');
     rerenderWith({ accounts: YOUTUBE_ONLY });
     expect(await screen.findByRole('button', { name: 'YouTube', pressed: true })).toBeInTheDocument();
@@ -153,7 +155,9 @@ describe('Composer starts on a visible platform (#41)', () => {
     expect(screen.queryAllByRole('button', { pressed: false })).toHaveLength(0);
     const save = screen.getByRole('button', { name: 'Create draft' });
     expect(save).toBeDisabled();
-    expect(save).toHaveAccessibleDescription('No platform is connected yet, so this post has nowhere to publish.');
+    // The reason sits right beside the disabled button, not only at the top of the form.
+    expect(save).toHaveAccessibleDescription('Connect a platform first.');
+    expect(screen.getByText('Connect a platform first.')).toBeVisible();
     expect(line).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Connect one in Setup.' }));
     expect(onNavigate).toHaveBeenCalledWith('setup');
@@ -200,5 +204,27 @@ describe('Composer media field label follows the format', () => {
     const post = editPost({ type: 'reel', media: { file: 'a.mp4', exists: true, url: null, cover: null, path: '/tmp/assets/a.mp4' } });
     renderComposer({ mode: 'edit', post, campaigns: [{ id: 'launch', active: true, posts: [post] }], accounts: IG });
     expect(screen.getByText('Video', { selector: 'label' })).toBeInTheDocument();
+  });
+});
+
+// Owner decision 9 (Nov 2026): the composer shows one exit, the title and the project once,
+// and none of the plumbing (the post id, the data/media folder).
+describe('Composer chrome', () => {
+  it('a new post shows no Post ID, no data/media path, no second exit and no "New draft" eyebrow', () => {
+    renderComposer({ accounts: { meta: { configured: true } } });
+    expect(screen.queryByLabelText('Post ID')).toBeNull();
+    expect(screen.queryByText(/data\/media/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeInTheDocument();
+    expect(screen.queryByText('New draft')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'New post' })).toBeInTheDocument();
+  });
+
+  it('one campaign is simply where the post goes; with two the select appears', () => {
+    const { unmount } = renderComposer({ accounts: { meta: { configured: true } } });
+    expect(screen.queryByLabelText('Campaign')).toBeNull();
+    unmount();
+    renderComposer({ accounts: { meta: { configured: true } }, campaigns: [...CAMPAIGNS, { id: 'autumn', active: true, posts: [] }] });
+    expect(screen.getByLabelText('Campaign')).toHaveValue('launch');
   });
 });

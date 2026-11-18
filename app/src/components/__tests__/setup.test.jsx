@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { axeClean } from '../../test-utils/axe.js';
-import Setup from '../Setup.jsx';
+import Setup, { setupAttentionCount, setupUntouched } from '../Setup.jsx';
 import { TooltipProvider } from '../ui/Tooltip.jsx';
 import { ConfirmProvider } from '../ui/confirm.jsx';
 import { BTN_DANGER_QUIET } from '../ui/recipes.js';
@@ -62,6 +62,8 @@ let configIdentifiers;
 // test. The mock reads it lazily at render so a test can drive paused / cadence.
 let accountsState;
 let configSecrets;
+// The posting subtree useConfig returns; per test (the first-run question reads it).
+let configPosting;
 
 vi.mock('../../lib/api.js', () => ({
   usePendpostHealth: () => ({ data: { ok: true, ready: false, setup }, isLoading: false, isError: false }),
@@ -69,7 +71,7 @@ vi.mock('../../lib/api.js', () => ({
   useSignals: () => ({ data: undefined, isLoading: false }),
   usePlans: () => ({ data: undefined }),
   useConfig: () => ({
-    data: { ok: true, rev: CONFIG_REV, identifiers: configIdentifiers, posting: { locale: 'en', platforms: {}, skippedPlatforms: ['x'] }, secrets: configSecrets },
+    data: { ok: true, rev: CONFIG_REV, identifiers: configIdentifiers, posting: configPosting, secrets: configSecrets },
     isLoading: false,
   }),
   useAccounts: () => ({ data: accountsState }),
@@ -224,6 +226,7 @@ beforeEach(() => {
   setup = makeSetup();
   configIdentifiers = {};
   configSecrets = {};
+  configPosting = { locale: 'en', platforms: {}, skippedPlatforms: ['x'] };
   accountsState = {
     meta: { paused: false, pauseReason: null, cadence: { maxPer24h: 2, minGapMinutes: 360 }, pausedByEnv: false },
     scheduler: { lastRun: null },
@@ -294,10 +297,10 @@ describe('Setup page - guided cards', () => {
     }
   });
 
-  it('renders the "X of Y platforms ready" summary count', () => {
+  it('renders the "X of Y platforms ready" summary count over the platforms in use', () => {
     renderSetup();
-    // connected (1) + skipped (1) = 2 of 4 are resolved
-    expect(screen.getByText('2 of 4 platforms ready')).toBeInTheDocument();
+    // 1 live (LinkedIn) of the 3 in use: X is skipped, so it is out of scope, not "ready".
+    expect(screen.getByText('1 of 3 platforms ready')).toBeInTheDocument();
   });
 
   // Judge round 2: the summary said "0 verbunden" while the LinkedIn panel said
@@ -310,21 +313,45 @@ describe('Setup page - guided cards', () => {
     setup.platforms.find((p) => p.platform === 'linkedin').validation = { state: 'failed', ok: false, detail: 'token expired', checkedAt: '2026-06-17T00:00:00Z', fix: null };
     renderSetup();
     const summary = screen.getByRole('region', { name: /setup readiness summary/i });
-    expect(within(summary).getByText('1 of 4 platforms ready')).toBeInTheDocument();
+    expect(within(summary).getByText('0 of 3 platforms ready')).toBeInTheDocument();
     expect(summary.textContent).not.toMatch(/\d+ connected/i);
     const rail = screen.getByRole('navigation', { name: /platforms/i });
     expect(within(rail).queryByText(/^Connected \(/)).not.toBeInTheDocument();
-    expect(within(rail).getByText('Needs attention (3)')).toBeInTheDocument();
+    expect(within(rail).getByText('Needs attention')).toBeInTheDocument();
     expect(within(rail).getByRole('button', { name: /LinkedIn/ })).toHaveTextContent('Connection failed');
   });
 
-  it('every rail group heading counts exactly the rows listed under it', () => {
+  // Owner decision 7 (Nov 2026): readiness is said ONCE, in the summary line. No pill beside
+  // it, no counts on the group headings, and a row prints its state only when the heading
+  // above it does not already say it.
+  it('says readiness once: no pill, no heading counts, no "Incomplete" / "Connected" / "Skipped" under the rows', () => {
+    renderSetup();
+    const summary = screen.getByRole('region', { name: /setup readiness summary/i });
+    expect(within(summary).queryByText('Incomplete')).toBeNull();
+    expect(within(summary).queryByText('All set')).toBeNull();
+    const rail = screen.getByRole('navigation', { name: /platforms/i });
+    for (const heading of within(rail).getAllByRole('heading')) expect(heading.textContent).not.toMatch(/\(\d+\)/);
+    const platformRows = [...rail.querySelectorAll('button[id^="setup-rail-"]')].filter((b) => b.id !== 'setup-rail-agent');
+    for (const row of platformRows) expect(row.textContent).not.toMatch(/Incomplete|Connected|Skipped/);
+  });
+
+  it('each to-do row has a visible skip glyph, each skipped row a use-again glyph; both write the skip list', async () => {
+    const user = userEvent.setup();
     renderSetup();
     const rail = screen.getByRole('navigation', { name: /platforms/i });
-    for (const heading of within(rail).getAllByRole('heading')) {
-      const n = Number((heading.textContent.match(/\((\d+)\)/) || [])[1]);
-      expect(within(heading.parentElement).getAllByRole('button')).toHaveLength(n);
-    }
+    // A connected lane is never skipped from the rail (it disconnects in its card).
+    expect(within(rail).queryByRole('button', { name: 'Skip LinkedIn' })).toBeNull();
+    await user.click(within(rail).getByRole('button', { name: 'Skip YouTube' }));
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledWith(CONFIG_REV, { posting: { platforms: {}, skippedPlatforms: ['x', 'youtube'] } }));
+    await user.click(within(rail).getByRole('button', { name: 'Use X again' }));
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledWith(CONFIG_REV, { posting: { platforms: { x: true }, skippedPlatforms: [] } }));
+  });
+
+  it('the sidebar badge counts only connected lanes that need a fix, never untouched ones', () => {
+    // Default fixture: meta + youtube untouched (incomplete), linkedin live, x skipped.
+    expect(setupAttentionCount(makeSetup())).toBe(0);
+    expect(setupAttentionCount(withPlatform('linkedin', { validation: { state: 'failed', ok: false, detail: 'x', checkedAt: null, fix: null } }))).toBe(1);
+    expect(setupAttentionCount(null)).toBeNull();
   });
 
   // final-a7: the rail is not sticky and never was on desktop; a comment claimed "the sticky rail
@@ -1373,5 +1400,54 @@ describe('Setup Nostr media-server note', () => {
     const region = await expandCard(user, 'Nostr');
     expect(within(region).getByText(/Media server connected/)).toBeInTheDocument();
     expect(within(region).queryByText(/Articles publish text-only/)).toBeNull();
+  });
+});
+
+// Owner decision 7 (Nov 2026): a workspace nobody has set up opens with ONE question instead
+// of a 14-row list of "Incomplete".
+describe('Setup page - "Which platforms do you use?"', () => {
+  const untouched = () => makeSetup({
+    platforms: makeSetup().platforms.map((p) => ({ ...p, status: 'incomplete', connected: false, skipped: false, validation: { state: 'unproven', ok: null, detail: null, checkedAt: null, fix: null } })),
+  });
+
+  it('asks first on an untouched workspace, and only there', () => {
+    expect(setupUntouched(untouched(), { platforms: {}, skippedPlatforms: [] })).toBe(true);
+    expect(setupUntouched(untouched(), { platforms: {}, skippedPlatforms: ['x'] })).toBe(false);
+    expect(setupUntouched(untouched(), { platforms: { linkedin: true }, skippedPlatforms: [] })).toBe(false);
+    expect(setupUntouched(makeSetup(), { platforms: {}, skippedPlatforms: [] })).toBe(false);
+    setup = untouched();
+    configPosting = { locale: 'en', platforms: {}, skippedPlatforms: [] };
+    renderSetup();
+    expect(screen.getByRole('heading', { name: 'Which platforms do you use?' })).toBeInTheDocument();
+    // The rail and the readiness line wait until the question is answered.
+    expect(screen.queryByRole('navigation', { name: /platforms/i })).toBeNull();
+    expect(screen.queryByRole('region', { name: /setup readiness summary/i })).toBeNull();
+  });
+
+  it('Continue skips every platform not picked and turns the picked ones on', async () => {
+    const user = userEvent.setup();
+    setup = untouched();
+    configPosting = { locale: 'en', platforms: {}, skippedPlatforms: [] };
+    renderSetup();
+    const go = screen.getByRole('button', { name: 'Continue' });
+    // Nothing picked yet: Continue says why instead of doing nothing silently.
+    expect(go).toHaveAttribute('aria-disabled', 'true');
+    expect(go).toHaveAccessibleDescription('Pick at least one platform first.');
+    await user.click(go);
+    expect(saveConfig).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /Meta \(Instagram\)/ }));
+    await user.click(screen.getByRole('button', { name: /LinkedIn/ }));
+    expect(screen.getByRole('button', { name: /LinkedIn/ })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledWith(CONFIG_REV, {
+      posting: { platforms: { instagram: true, linkedin: true }, skippedPlatforms: ['x', 'youtube'] },
+    }));
+  });
+
+  it('has no axe violations while asking', async () => {
+    setup = untouched();
+    configPosting = { locale: 'en', platforms: {}, skippedPlatforms: [] };
+    const { container } = renderSetup();
+    expect(await axeClean(container)).toHaveNoViolations();
   });
 });

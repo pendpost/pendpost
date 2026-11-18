@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   Radar as RadarIcon, RefreshCw, AlertCircle, History, Radio, Bot, ChevronDown,
   MessageSquareReply, Settings as SettingsIcon, HelpCircle, Plus, Loader2, CheckCircle2, Pause, Play, Clock,
-  Zap, ShieldCheck, ExternalLink, CircleSlash, Trash2,
+  Zap, ShieldCheck, ExternalLink, CircleSlash, Trash2, Eraser, Power,
 } from 'lucide-react';
 import { fmtRelative, fmtTime, effectiveRadarSourcesClient, isStaleRadarSourceRow, redditWarmth, signalIsKarma, signalIsPostIdea, signalIsMention, replyLaneState } from '../lib/format.js';
 import { useConfig, useSignals, useCommentInbox, useAccounts, useActiveClient, useEngage, saveConfig, fetchConfig, radarTriage, radarTriageBulk, radarRestore, radarTune, radarQueueReply, radarAgentScan, radarAgentStop, radarGeoReset, approvePost, usePendpostHealth, radarFollowupCheck, engagePause, engageProbe, errAlert, errReason } from '../lib/api.js';
@@ -13,8 +13,9 @@ import { useConfirm } from './ui/confirm.jsx';
 import RadarSourceGlyphs from './RadarSourceGlyphs.jsx';
 import { Tip } from './ui/Tooltip.jsx';
 import { useT, tCount } from '../lib/i18n.js';
-import { SignalRow, StatFilters, DimensionFilters, ActiveFilterStrip, QueryQualityList, WHEN_WINDOWS_MS, EMPTY_DIM_FILTERS, dimFiltersActive, JobRow, AgentNote, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS } from './radar/RadarFeed.jsx';
-import { GeoStrip, WarmthGauge, PanelMenu } from './radar/RadarGeo.jsx';
+import { SignalRow, FeedFilterRow, ActiveFilterStrip, QueryQualityList, WHEN_WINDOWS_MS, EMPTY_DIM_FILTERS, dimFiltersActive, JobRow, AgentNote, tierOf, SOURCE_META, SIGNAL_FILTERS, JOB_OWNED_LANE_REASONS } from './radar/RadarFeed.jsx';
+import { GeoStrip, WarmthGauge } from './radar/RadarGeo.jsx';
+import { RowMenu } from './ui/RowMenu.jsx';
 import CommentInbox from './radar/CommentInbox.jsx';
 import { inboxUnanswered, radarSignalKeyOf } from '../lib/replies.js';
 import { jumpToSignal } from '../lib/radarJump.js';
@@ -85,7 +86,12 @@ const NOTICE_LINK = `inline-flex items-center gap-1 rounded-lg font-bold text-br
 const NOTICE_LINE = 'flex min-h-11 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-zinc-500 dark:text-zinc-400';
 const NOTICE_GLYPH_QUIET = 'text-zinc-500 dark:text-zinc-400';
 
-export default function Radar({ active = true, campaigns = [], allClients = false, allSignals = null, allFailed = [], allLoading = false, allInbox = null, allInboxFailed = [], allInboxLoading = false, onNavigate, onNewPost, onOpenPost }) {
+// `lead` / `trail`: the app chrome App hands a page without a header card (UX round 10): the
+// drawer trigger opens the title row, the app's "..." menu closes it. `trail` is a render
+// function that takes Radar's own overflow entries, so the row carries ONE "..." menu (R1)
+// instead of Radar's beside the app's. Mounted without it (the panel's own tests), Radar shows
+// its entries in a menu of its own.
+export default function Radar({ active = true, campaigns = [], allClients = false, allSignals = null, allFailed = [], allLoading = false, allInbox = null, allInboxFailed = [], allInboxLoading = false, onNavigate, onNewPost, onOpenPost, lead = null, trail = null }) {
   const t = useT();
   const queryClient = useQueryClient();
   const { data: config } = useConfig(true);
@@ -476,10 +482,17 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
   // S7.3 (radar-reliability 2026-08-31): reset the GEO state - footprint log + derived
   // comparison backlog + dismissed ledger - for THIS client. The recovery for a polluted
   // tenant (rows seeded under another brand), which no config edit can clear because it is
-  // state, not config. The deliberate act lives in PanelMenu (inline confirm, the feed's
-  // "Erledigt" idiom); this is the commit half. Success speaks through the existing quiet
-  // receipt line (checkNote), failure through the existing error surface.
+  // state, not config. The entry rides the title row's overflow and asks first (the shared
+  // confirm dialog, like the bulk clear), since it drops history no edit brings back. Success
+  // speaks through the existing quiet receipt line (checkNote), failure through the existing
+  // error surface.
   const onGeoReset = async () => {
+    const ok = await confirm({
+      title: t('radar.geo.reset.confirm'),
+      confirmLabel: t('radar.geo.reset.yes'),
+      danger: true,
+    });
+    if (!ok) return;
     setError(null);
     setCheckNote(null);
     try {
@@ -705,8 +718,8 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
     watched: signals.filter((s) => s.watched === true).length,
   } : null;
   // Derived, not an effect: `signalFilter` stays the REQUESTED filter, but a filter whose count
-  // is 0 renders as 'all' this very frame - its chip just hid (StatFilters hides every zero
-  // chip), so the pressed chip and the rendered list can never disagree. The count predicates
+  // is 0 renders as 'all' this very frame - its view just hid (the filter row hides every zero
+  // view but Offen and Alle), so the pressed view and the rendered list can never disagree. The count predicates
   // below are the same predicates visibleBase filters with, so count>0 <=> rows exist. This also
   // survives the client switch (the page does not remount; the derivation recomputes from the
   // fresh feed) and a filter whose count later returns re-engages the user's last explicit
@@ -1077,6 +1090,22 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
     );
   };
   // One row renderer, reused by the primary list and the collapsed older group.
+  // The title row's scan tools show for one project, on Discovered, with the beta on.
+  const scanTools = !allClients && enabled && segment === 'discovered';
+  // Radar's own overflow entries, folded into the app's "..." menu (R1). The kill switch sits at
+  // feature altitude here, not as a loud link beside the primary Scan. The GEO reset shows only
+  // when there IS GEO state to drop (footprint log or comparison backlog), never an entry that
+  // resets nothing. The auto-reply entry shows only while no reply channel exists: the
+  // Auto-Antwort card then has nothing to turn on, so this leads to where lanes get connected.
+  const hasGeoState = Boolean(feed?.geo?.footprint?.length || feed?.geo?.comparisonBacklog?.length);
+  const pageMenuItems = scanTools ? [
+    hasGeoState && { key: 'geo-reset', label: t('radar.geo.reset'), Icon: Eraser, run: onGeoReset },
+    !showAutoCard && { key: 'auto-reply', label: t('radar.engage.auto.setup'), Icon: Zap, run: () => onNavigate?.('settings', 'engage') },
+    { key: 'radar-off', label: t('radar.disable'), Icon: Power, run: onToggleEnabled },
+  ].filter(Boolean) : [];
+  const overflow = typeof trail === 'function'
+    ? trail(pageMenuItems)
+    : pageMenuItems.length ? <RowMenu items={pageMenuItems} label={t('radar.more')} stopPropagation={false} /> : null;
   const renderRow = (s, { grouped = false } = {}) => {
     // Karma builder: a warm-up-query signal is a karma item; if it points at a subreddit
     // (not a thread) it is a POST IDEA the operator submits by hand, so it has no reply path.
@@ -1111,6 +1140,7 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
           144x32). The row gap only exists once the header wraps, so desktop is unchanged; 20px
           lets the boxes of stacked rows meet instead of overlapping. */}
       <div data-spot="radar" className="flex flex-wrap items-center gap-x-2 gap-y-5 rounded-xl">
+        {lead}
         <RadarIcon size={18} className="text-brand dark:text-brand-light" aria-hidden="true" />
         <h2 className="font-display text-base font-bold">{t('nav.radar')}</h2>
         {/* UX issue 10: a tag, not a warning - the info-chip recipe (quiet zinc), not a status
@@ -1135,9 +1165,15 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
             { key: 'replies', label: repliesUnanswered > 0 ? `${t('replies.segment')} · ${repliesUnanswered}` : t('replies.segment') },
           ]}
         />
-        {allClients ? <span className={CHIP}>{t('clientSwitcher.all')}</span> : null}
-        {!allClients && enabled && segment === 'discovered' ? (
+        {/* No "Alle Projekte" chip in the all-projects overview: the project switcher already
+            says it. */}
+        {/* The right cluster: the scan tools (one project, Discovered, beta on), then the ONE
+            "..." menu (Radar's entries plus the app's), which this row always closes now that
+            Radar has no header card. ml-2 on top of gap-2: two 28px icon buttons need 16px
+            between them for both 44px tap boxes to fit (the app's 32px menu needs 14px). */}
+        {scanTools || overflow ? (
           <div className="ml-auto flex items-center gap-2">
+            {scanTools ? (<>
             {/* The networks being scanned: a READOUT ("Reddit: wird durchsucht."), ONE shared
                 component with the Settings searches card. Scanning only, never a reply verdict:
                 the per-lane Connect and the reply state live in the Auto-Antwort lane list below
@@ -1178,22 +1214,14 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                 {t('radar.scan.connectFirst')}
               </button>
             )}
-            {/* The searches editor moved to Settings; this quiet gear deep-links straight to it.
-                mr-2.5: two 28px icon buttons need 17px between them for both 44px boxes to fit
-                (the overflow's box covered the gear's right edge: measured 35x44). */}
+            {/* The searches editor moved to Settings; this quiet gear deep-links straight to it. */}
             <Tip label={t('radar.settingsLink.tip')}>
-              <button type="button" onClick={() => onNavigate?.('settings', 'radar')} aria-label={t('radar.settingsLink')} className={`mr-2.5 inline-flex items-center justify-center rounded-xl p-1.5 text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5 ${TAP_TARGET}`}>
+              <button type="button" onClick={() => onNavigate?.('settings', 'radar')} aria-label={t('radar.settingsLink')} className={`inline-flex items-center justify-center rounded-xl p-1.5 text-zinc-600 ring-1 ring-zinc-900/10 transition hover:bg-zinc-900/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand dark:text-zinc-300 dark:ring-white/10 dark:hover:bg-white/5 ${TAP_TARGET}`}>
                 <SettingsIcon size={15} aria-hidden="true" />
               </button>
             </Tip>
-            {/* S7.3: the GEO reset rides the overflow only when there IS GEO state to drop
-                (footprint log or comparison backlog) - never a menu entry that resets nothing. */}
-            <PanelMenu
-              onDisable={onToggleEnabled}
-              onGeoReset={(feed?.geo?.footprint?.length || feed?.geo?.comparisonBacklog?.length) ? onGeoReset : null}
-              onSetupAutoReply={showAutoCard ? null : () => onNavigate?.('settings', 'engage')}
-              t={t}
-            />
+            </>) : null}
+            {overflow ? <span className="ml-2 flex shrink-0 items-center">{overflow}</span> : null}
           </div>
         ) : null}
       </div>
@@ -1572,17 +1600,21 @@ export default function Radar({ active = true, campaigns = [], allClients = fals
                 <QueryQualityList groups={byQueryGroups} onShow={onShowQuery} onTune={(id) => onNavigate?.('settings', id ? `radar:${id}` : 'radar')} onDismissAll={onClearShown} onTuneAction={onTuneAction} clearing={clearingShown} t={t} />
               ) : (
               <>
-              {/* The counts are filters: all / to-act / watched, sitting with the list they scope. */}
-              {stats ? <StatFilters counts={stats} value={effectiveFilter} onChange={setSignalFilter} sortBy={sortBy} onSort={setSortBy} t={t} /> : null}
-              {/* Granular filters sit WITH the list they scope, under the status chips: platform,
-                  priority, search, found-when, latest-run - each one control. The applied-filters
-                  strip shows what is on (removable) and the honest "N of TOTAL shown" count. */}
+              {/* ONE control row sits with the list it scopes (R2): the state switch (Offen /
+                  Beantwortet / Alle) and its Filter slices, the dimensions (platform, priority,
+                  search, found-when, latest run), and sort at the end. The applied-filters strip
+                  under it shows what is on (removable) and the honest "N of TOTAL shown" count. */}
               {stats ? (
                 <div className="space-y-1.5">
-                  <DimensionFilters
+                  <FeedFilterRow
+                    counts={stats}
+                    value={effectiveFilter}
+                    onChange={setSignalFilter}
+                    sortBy={sortBy}
+                    onSort={setSortBy}
                     options={dimOptions}
-                    value={dimFilters}
-                    onChange={patchDimFilters}
+                    dims={dimFilters}
+                    onDims={patchDimFilters}
                     latestRunAvailable={!allClients && latestRunSince != null}
                     latestRunTip={latestRunSince == null ? t('radar.dim.latestRun.none') : t('radar.dim.latestRun.tip', { time: fmtRelative(scanJob.startedAt) })}
                     t={t}

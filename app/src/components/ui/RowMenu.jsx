@@ -28,7 +28,8 @@ import { Tip } from './Tooltip.jsx';
 // `mt-1`/`mb-1` offset from the trigger (4px), rounded up so the estimate never lands short.
 const MENU_CHROME = 16;
 
-export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right', stopPropagation = true, triggerClassName }) {
+// `dot` (optional): a status mark painted on the trigger (the header menu wears the delivery dot).
+export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right', stopPropagation = true, triggerClassName, dot = null }) {
   const [open, setOpen] = useState(false);
   // Open upward when the trigger sits low in the viewport (e.g. the ⋯ at the bottom of a
   // tall Freigaben card), so the menu is never cut off below the fold.
@@ -80,6 +81,7 @@ export function RowMenu({ items = [], label = 'Weitere Aktionen', align = 'right
           className={`${triggerClassName || `${BTN_GHOST} px-1.5 py-1.5`} ${TAP_TARGET}`}
         >
           <MoreHorizontal size={16} aria-hidden="true" />
+          {dot}
         </button>
       </Tip>
       {open ? (

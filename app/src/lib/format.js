@@ -82,6 +82,30 @@ export function setPlannerDensity(value) {
   } catch { /* ignore */ }
 }
 
+// Planner "Needs you" tray fold (UX round 10): the owner can hide the tray, and the planner
+// header then carries one needs-you icon that opens it again. Per viewer (localStorage), like
+// the density above. ONE key holds both facts: '0' when the owner opened it, or the JSON list
+// of cause keys that were in view when they folded it, so the header icon can tell a NEW
+// cause (a dot) from one the owner already chose to put away. null = no choice yet (the
+// caller picks the default: folded on a phone, open elsewhere).
+const TRAY_COLLAPSED_KEY = 'pendpost-tray-collapsed';
+
+// null (no choice yet), false (open), or the cause keys seen when it was folded.
+export function getTrayCollapsed() {
+  try {
+    const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(TRAY_COLLAPSED_KEY) : null;
+    if (stored === null || stored === undefined) return null;
+    if (stored === '0') return false;
+    const seen = JSON.parse(stored);
+    return Array.isArray(seen) ? seen.filter((k) => typeof k === 'string') : null;
+  } catch { return null; /* localStorage unavailable, or a hand-edited value */ }
+}
+export function setTrayCollapsed(collapsed, seenKeys = []) {
+  try {
+    localStorage.setItem(TRAY_COLLAPSED_KEY, collapsed ? JSON.stringify(seenKeys) : '0');
+  } catch { /* ignore */ }
+}
+
 // Sidebar rail width in px: a client-side display preference (localStorage), synced
 // in-module and persisted, mirroring the card-accent pattern above. The rail is a
 // fixed 240px drawer below lg, so this only ever applies to the desktop rail; the
@@ -1783,7 +1807,9 @@ export function fieldRelevance(platforms = [], type = 'reel') {
   // the article authoring surface clean (net-simplify).
   const nostrLong = has('nostr') && type === 'nostr-longform';
   return {
-    caption: CAPTION_PLATFORMS.some(has) && !nostrLong,
+    // No platform picked yet (none connected, or the accounts read failed): the caption is the
+    // one field every post has, so it shows and leads (owner decision 9, Nov 2026).
+    caption: (!platforms.length || CAPTION_PLATFORMS.some(has)) && !nostrLong,
     xCaption: has('x'),
     xReplyTo: has('x'),
     mastodonCaption: has('mastodon'),
@@ -2354,11 +2380,13 @@ export function statusBucket(post, setup = null) {
   return 'scheduled';
 }
 
-// The filter bar's status tabs (planner bulk 2026-11-01, package P): the five the owner reaches
-// for first, then the rarer three behind "More". Every key is a STATUS_FILTERS key, so a tab and
-// the predicate it filters by can never drift.
-export const STATUS_TABS = ['needs-you', 'draft', 'pending', 'scheduled', 'posted'];
-export const STATUS_MORE = ['rejected', 'overdue', 'parked'];
+// The filter bar's status tabs (planner bulk 2026-11-01, package P): the four the owner reaches
+// for first, then the rarer ones behind "More". 'needs-you' moved behind "More" in the Nov 2026
+// header diet (owner decision 8): the planner's "Needs you" tray already lists exactly those
+// posts, so a tab beside it said the same thing twice. Every key is a STATUS_FILTERS key, so a
+// tab and the predicate it filters by can never drift.
+export const STATUS_TABS = ['draft', 'pending', 'scheduled', 'posted'];
+export const STATUS_MORE = ['needs-you', 'rejected', 'overdue', 'parked'];
 
 // The live count on each status tab: what that tab WOULD show under the current platform + type
 // filters (never the status filter itself, or every other tab would read 0). `all` is the count
@@ -2416,6 +2444,14 @@ export function nextActorOf(post, setup) {
   // V6 clamp, folded into the derivation: a post awaiting client sign-off never
   // reads overdue-red (the engine keeps reviewPending out of 'overdue'; this
   // guards the GUI the same way the old pillState clamp did).
+  // Approved before connecting (owner decision 2, 2026-11-12): an approved post on a lane
+  // that is not connected waits for the connection (the scheduler holds it, lib/scheduler.mjs
+  // laneWaitsForConnect), so it reads "Approved, waits for Instagram", never the red overdue
+  // alarm its slot would otherwise raise. A real failure still leads (checked first).
+  if (post.approval === 'approved' && !post.editedSinceApproval && !post.reviewPending && post.derivedState !== 'publish-failed') {
+    const waiting = blockedLanes(post, setup);
+    if (waiting.length) return { key: 'waitsForConnect', actor: 'you', lanes: waiting };
+  }
   if (!post.reviewPending && (post.derivedState === 'publish-failed' || post.derivedState === 'overdue')) {
     return { key: post.derivedState, actor: 'you' };
   }

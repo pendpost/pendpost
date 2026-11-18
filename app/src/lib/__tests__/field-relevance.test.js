@@ -169,9 +169,11 @@ describe('fieldRelevance', () => {
     }
   });
 
-  it('is a pure function of platforms + type (empty is all-false)', () => {
+  it('is a pure function of platforms + type (empty is all-false except the caption)', () => {
     const r = fieldRelevance([], 'reel');
-    expect(Object.values(r).every((v) => v === false)).toBe(true);
+    // With no platform picked the caption still shows: it is the one field every post has.
+    expect(r.caption).toBe(true);
+    expect(Object.entries(r).filter(([k]) => k !== 'caption').every(([, v]) => v === false)).toBe(true);
   });
 
   // Specs 21+39: cross-lane image alt-text. Spec 39 closed the Instagram coverage

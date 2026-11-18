@@ -37,6 +37,10 @@ const ok = (cond, msg) => { assert.ok(cond, msg); console.log(`  ok - ${msg}`); 
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WS = fs.mkdtempSync(path.join(os.tmpdir(), 'pendpost-silent-skip-'));
+// This test drives the fire-and-fail path of a lane with no stored credential. Since
+// approve-before-connect (lib/scheduler.mjs laneWaitsForConnect) such a lane WAITS by
+// default, so opt back into dispatching it (posting.waitForConnect:false).
+fs.writeFileSync(path.join(WS, 'config.json'), JSON.stringify({ waitForConnect: false }, null, 2));
 process.env.PENDPOST_ROOT = WS;
 delete process.env.PENDPOST_MODE; // LIVE: the real reddit engine runs (skips before any network call)
 delete process.env.PENDPOST_MOCK_FAIL;

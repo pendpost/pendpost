@@ -5,7 +5,7 @@ import { setSchedulerRunning, useSignals } from '../lib/api.js';
 import { useDeliveryState, cloudTone, localTone } from '../lib/cloud.js';
 import { fmtTime, fmtDayShort, fmtFull, STAIR } from '../lib/format.js';
 import { STATUS_INK, TAP_TARGET } from './ui/recipes.js';
-import { useT } from '../lib/i18n.js';
+import { useT, tCount } from '../lib/i18n.js';
 import { INNER_SURFACE, PLATFORM_META, DISABLED_PRIMARY } from './ui.jsx';
 import ClientSwitcher from './ClientSwitcher.jsx';
 import { Popover, PopoverTrigger, PopoverContent, PopoverClose } from './ui/Popover.jsx';
@@ -270,7 +270,7 @@ export default function Sidebar({ accounts, posting, pendingCount, nextPost, nex
           icon={Wrench}
           label={t('nav.setup')}
           badge={setupReady === false && setupIncomplete > 0 ? String(setupIncomplete) : undefined}
-          badgeLabel={setupReady === false && setupIncomplete > 0 ? t('sidebar.setupBadge', { count: setupIncomplete }) : undefined}
+          badgeLabel={setupReady === false && setupIncomplete > 0 ? tCount(t, 'sidebar.setupBadge', setupIncomplete) : undefined}
           active={activePage === 'setup'}
           onClick={() => onNavigate('setup')}
         />

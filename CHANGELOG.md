@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [2.14.0] - 2026-11-18
+
+You can approve a post before you connect its platform: it waits and goes out once you connect. An install from before 2.13.1 that still holds the pre-approved Acme example can no longer publish it. The Studio's Planner, Approvals and Radar pages show less at once: one state and one text button where there were several, and icons with tooltips for the rest. This release includes the 2.13.2 changes, which were never published on their own.
+
+### Studio
+
+- Needs you sits at the top of the Planner, so the filters sit right on the calendar. You can fold it into one warning icon with its count, beside the More menu. A dot on the icon tells you when a new problem comes up while it is folded. Discarding a draft from that list is a quiet trash icon with a confirm step, and the deleted-thread line now reads "Mastodon thread deleted".
+- The status glyphs in the Week and Month chips sit centred in their circles. A calm time in those chips is plain text; only a time that needs you keeps its coloured pill.
+- Platform filter icons stay grey until you hover or pick one.
+- Approvals and Radar no longer open with a card that only repeats the page name. Text posts in Approvals lose the grey placeholder tile. The Approvals toolbar is one row: select all, To review | Replies | All, a sort icon and one View menu for row density and cross-post grouping.
+- Radar has one heading and one More menu. Its three control rows are one: Open | All, a Filter menu for the rarer views, Platform, Priority, Any | 24h | 7d and a sort menu (1h and 6h live there). Each card shows one state, the latest action wins, and the agent's earlier verdict moves into the bot icon's tooltip. The Fresh and High chips are gone. Each card has one text button; edit, open, done and not relevant are icons with tooltips.
+
+### Security
+
+- Demo content never publishes to a real account. A post marked `demo: true` (on the post, its plan file or its manifest entry) is skipped by the one publish gate the scheduler, Publish now and the cloud push all use, and a demo job the cloud already holds is taken back. Mock mode still runs the demo end to end. The owner setting `posting.demoLiveGuard` (default on) controls it.
+- The Acme example's pre-approved Instagram `teaser`, which releases before 2.13.1 shipped, is recognised by its exact content and its shipped approval stamp. It is blocked from publishing, and on start pendpost sets it back to draft and marks it demo, with one Activity row. A copy you edited and your own posts are never touched.
+
+### Changed
+
+- Approvals keeps Approve on every card, also when the post's platform is not connected. The grey "not connected" glyph sits beside it. An approved post on such a platform reads "Approved, waits for Instagram" instead of turning overdue.
+- An approved post whose platform has no stored credential now waits: pendpost does not try to publish it, so it records no failure and no retry, and it goes out on the first run after you connect. Set `posting.waitForConnect` to false for the old behaviour.
+
 ## [2.13.1] - 2026-11-12
 
 pendpost no longer ships an example campaign. The Acme Launch example came with an Instagram post that was already approved, so a new install that connected a real Instagram account could have published it without anyone approving it.
